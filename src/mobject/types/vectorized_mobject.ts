@@ -226,6 +226,41 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  set_sheen(
+    factor: number,
+    direction?: number[] | readonly number[] | NDArray | null,
+    family = true,
+  ): this {
+    // Mirrors Python VMobject.set_sheen: recurse into submobjects, store
+    // the factor, optionally set the direction (without further recursion),
+    // then re-apply stroke/fill colors so the sheen takes effect.
+    if (family) {
+      for (const submob of this.submobjects) {
+        (submob as VMobject).set_sheen(factor, direction, family);
+      }
+    }
+    this.sheen_factor = factor;
+    if (direction !== undefined && direction !== null) {
+      // Family already handled above, matching Python's family=False here.
+      this.set_sheen_direction(direction, false);
+    }
+    // Reset color to put sheen_factor into effect. A null stroke color means
+    // "keep" (Python passes None through set_stroke the same way).
+    if (factor !== 0) {
+      this.set_stroke(this.get_stroke_color() ?? undefined, undefined, undefined, family);
+      this.set_fill(this.get_fill_color() ?? undefined, undefined, family);
+    }
+    return this;
+  }
+
+  setSheen(
+    factor: number,
+    direction?: number[] | readonly number[] | NDArray | null,
+    family = true,
+  ): this {
+    return this.set_sheen(factor, direction, family);
+  }
+
   getSheenDirection(): number[] {
     return this.get_sheen_direction();
   }

@@ -2,6 +2,7 @@ import { array, type NDArray } from "numpy-ts";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { config } from "../../_config/utils.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
+import { arange, isNDArray, numeric, pointRows } from "../../utils/arrays.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
 export type ParametricFunctionT = (t: number) => number[] | readonly number[] | NDArray;
@@ -52,6 +53,11 @@ export class ParametricFunction extends VMobject {
     this.use_smoothing = use_smoothing;
     this.use_vectorized = use_vectorized;
     [this.t_min, this.t_max, this.t_step] = full_range;
+    // NOTE: Python sets these fields before super().__init__() so that the
+    // generate_points() call inside the base constructor already sees them.
+    // TS requires super() first; the base-constructor call is guarded as a
+    // no-op below and points are (re)generated here instead.
+    this.generate_points();
   }
 
   get_function(): (t: number) => NDArray {
@@ -60,6 +66,88 @@ export class ParametricFunction extends VMobject {
 
   get_point_from_function(t: number): NDArray {
     return this.function(t);
+  }
+
+  override generate_points(): this {
+    // Guard: the base Mobject constructor invokes generate_points() before
+    // this class assigns t_min/t_max/t_step (TS requires super() first,
+    // whereas Python sets them before super().__init__()). Treat that early
+    // call as a no-op; the constructor regenerates afterwards.
+    if (this.t_min === undefined || this.t_max === undefined || this.t_step === undefined) return this;
+    let boundary_times: number[];
+    if (this.discontinuities !== null) {
+      const discs = this.discontinuities.filter((t) => this.t_min <= t && t <= this.t_max);
+      boundary_times = [
+        this.t_min,
+        this.t_max,
+        ...discs.map((t) => t - this.dt),
+        ...discs.map((t) => t + this.dt),
+      ].sort((a, b) => a - b);
+    } else {
+      boundary_times = [this.t_min, this.t_max];
+    }
+    for (let i = 0; i + 1 < boundary_times.length; i += 2) {
+      const t1 = boundary_times[i] ?? 0;
+      const t2 = boundary_times[i + 1] ?? 0;
+      // Mirrors `np.array([*scaling.function(np.arange(t1, t2, t_step)),
+      // scaling.function(t2)])`. NOTE: the scaled samples form a flat 1-D
+      // list (not one row per sample), so they are flattened element-wise
+      // rather than read via pointRows.
+      const scaledOut = this.scaling.function(arange(t1, t2, this.t_step));
+      const scaledRaw: unknown = isNDArray(scaledOut) ? scaledOut.toArray() : scaledOut;
+      const scaled: number[] = [];
+      const collect = (v: unknown): void => {
+        if (Array.isArray(v)) for (const item of v) collect(item);
+        else scaled.push(numeric(v));
+      };
+      collect(scaledRaw);
+      const endValue = this.scaling.function(t2);
+      const t_values = [
+        ...scaled,
+        typeof endValue === "number" ? endValue : (pointRows(endValue, 1)[0]?.[0] ?? 0),
+      ];
+      let point_list: number[][];
+      if (this.use_vectorized) {
+        // Python calls self.function(t_range) once with the whole array;
+        // accept a vectorized result, else fall back to per-sample calls.
+        const out = (this.function as unknown as (t: unknown) => unknown)(array(t_values));
+        if (typeof out !== "object" || out === null || !("shape" in (out as Record<string, unknown>))) {
+          point_list = t_values.map(
+            (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
+          );
+        } else {
+          const asArray = (out as NDArray).toArray() as unknown;
+          point_list = Array.isArray(asArray) && Array.isArray(asArray[0])
+            ? (asArray as unknown[][]).map((row) => (row as unknown[]).map(Number))
+            : t_values.map(
+              (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
+            );
+        }
+      } else {
+        // NOTE: Python calls self.function(t) here; the TS FunctionGraph
+        // restores self.function to the raw user function after super(),
+        // so the polymorphic get_point_from_function (which yields the
+        // parametric form for FunctionGraph) is used instead.
+        point_list = t_values.map(
+          (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
+        );
+      }
+      this.start_new_path(point_list[0]);
+      this.add_points_as_corners(point_list.slice(1));
+    }
+    if (this.use_smoothing) {
+      // NOTE: VMobject.make_smooth is translated in a later batch; smooth here once available.
+      // (The Mobject proxy throws AttributeError on missing members, so `in` must guard the access.)
+      if ("make_smooth" in this) {
+        (this as unknown as { make_smooth: () => void }).make_smooth();
+      }
+    }
+    return this;
+  }
+
+  init_points(): this {
+    this.generate_points();
+    return this;
   }
 }
 
@@ -117,6 +205,9 @@ export class FunctionGraph extends ParametricFunction {
     // NOTE: ParametricFunction.__init__ overwrites self.function with the
     // wrapped form; restore the raw user function like Python does.
     this.function = function_ as unknown as (t: number) => NDArray;
+    // Regenerate now that x_range/parametric_function are assigned (see the
+    // super-first note on ParametricFunction above).
+    this.generate_points();
   }
 
   override get_function(): (t: number) => NDArray {
@@ -125,6 +216,19 @@ export class FunctionGraph extends ParametricFunction {
 
   override get_point_from_function(x: number): NDArray {
     return this.parametric_function(x);
+  }
+
+  override generate_points(): this {
+    // Guard: the ParametricFunction constructor invokes generate_points()
+    // before this class assigns parametric_function/x_range (TS requires
+    // super() first, whereas Python sets them before super().__init__()).
+    // Treat that early call as a no-op; the constructor regenerates below.
+    // NOTE: `in` is used instead of a plain undefined comparison because
+    // Mobject instances are Proxies that throw AttributeError on undeclared
+    // attribute reads during construction.
+    if (!("parametric_function" in this) || this.parametric_function === undefined) return this;
+    if (!("x_range" in this) || this.x_range === undefined) return this;
+    return super.generate_points();
   }
 }
 

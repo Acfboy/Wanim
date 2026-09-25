@@ -168,10 +168,17 @@ export function lerp(a: number, b: number, alpha: number): number {
 }
 
 export function arange(start: number, stop: number, step = 1): number[] {
+  // NOTE: mirrors np.arange (half-open interval with values computed as
+  // start + i * step rather than accumulated: numpy sizes the range up
+  // front, so naive accumulation drifts -- e.g. arange(0, 1, 0.1) must
+  // yield 10 values ([0, ..., 0.9]), not 11.
   if (step === 0) throw new Error("step cannot be zero");
   const result: number[] = [];
-  if (step > 0) for (let value = start; value < stop; value += step) result.push(value);
-  else for (let value = start; value > stop; value += step) result.push(value);
+  if (step > 0) {
+    for (let i = 0; start + i * step < stop; i += 1) result.push(start + i * step);
+  } else {
+    for (let i = 0; start + i * step > stop; i += 1) result.push(start + i * step);
+  }
   return result;
 }
 

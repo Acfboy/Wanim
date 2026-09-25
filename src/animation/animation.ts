@@ -1,9 +1,8 @@
 import { Mobject, Group, get_animation_override, type FunctionLike } from "../mobject/mobject.js";
 import { DEFAULT_ANIMATION_LAG_RATIO, DEFAULT_ANIMATION_RUN_TIME } from "../constants.js";
+import { linear, smooth } from "../utils/rate_functions.js";
 
-export const DEFAULT_RATE_FUNC = (t: number): number => t * t * (3 - 2 * t);
-export const linear = (t: number): number => t;
-export const smooth = DEFAULT_RATE_FUNC;
+export { linear, smooth };
 
 export type RateFunction = (alpha: number) => number;
 export type AnimationInput = Mobject | null | undefined;
