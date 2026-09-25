@@ -187,7 +187,9 @@ export class ManimColor {
   static _internal_from_string(name: string, alpha: number): ColorArray {
     const named = NAMED_COLORS[name.toUpperCase()];
     if (named) return array([...named.slice(0, 3), alpha]) as ColorArray;
-    throw new Error(`Color ${name} not found`);
+    const error = new Error(`Color ${name} not found`);
+    error.name = "ValueError";
+    throw error;
   }
 
   get internal_space(): ColorArray {

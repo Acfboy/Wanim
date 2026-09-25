@@ -28,7 +28,11 @@ export class CoordinateSystem {
   }
 
   c2p(...coords: (number | number[] | NDArray)[]): NDArray { return this.coords_to_point(...coords); }
-  point_to_coords(_point: readonly number[]): number[] { throw new Error("CoordinateSystem.point_to_coords must be implemented by a subclass."); }
+  point_to_coords(_point: readonly number[]): number[] {
+    const error = new Error("CoordinateSystem.point_to_coords must be implemented by a subclass.");
+    error.name = "NotImplementedError";
+    throw error;
+  }
   static _origin_shift(_axis_range: readonly number[]): number {
     throw new Error("CoordinateSystem._origin_shift must be implemented by a subclass.");
   }

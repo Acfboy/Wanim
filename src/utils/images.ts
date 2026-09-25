@@ -10,7 +10,7 @@ export function change_to_rgba_array(image: PixelInput, dtype = "uint8"): NDArra
     const raw = (image as NDArray).toArray() as unknown;
     if (shape.length <= 2) {
       const flat = (Array.isArray(raw) ? raw : [raw]) as unknown[];
-      const flatNums = flat.map(numeric);
+      const flatNums = flat.flatMap((item) => Array.isArray(item) ? (item as unknown[]).map(numeric) : [numeric(item)]);
       const cols = shape.length === 2 ? shape[1] : flatNums.length;
       const grid: number[][] = [];
       for (let i = 0; i < flatNums.length; i += cols) grid.push(flatNums.slice(i, i + cols));
