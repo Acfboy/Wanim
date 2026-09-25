@@ -10,6 +10,15 @@ export interface AbstractImageMobjectOptions extends MobjectOptions {
 
 export const RESAMPLE_BICUBIC = 3;
 
+export const RESAMPLING_ALGORITHMS: Record<string, number> = {
+  nearest: 0,
+  none: 0,
+  bilinear: 2,
+  linear: 2,
+  bicubic: 3,
+  cubic: 3,
+};
+
 export class AbstractImageMobject extends Mobject {
   pixel_array_dtype: string;
   scale_to_resolution: number | false;
@@ -32,6 +41,21 @@ export class AbstractImageMobject extends Mobject {
     const error = new Error();
     error.name = "NotImplementedError";
     throw error;
+  }
+
+  set_resampling_algorithm(resampling_algorithm: number): this {
+    if (!Object.values(RESAMPLING_ALGORITHMS).includes(resampling_algorithm)) {
+      const error = new Error(
+        "resampling_algorithm has to be an int, one of the values defined in " +
+          "RESAMPLING_ALGORITHMS or a Pillow resampling filter constant. " +
+          "Available algorithms: 'bicubic' (or 'cubic'), 'nearest' (or 'none'), " +
+          "'bilinear' (or 'linear').",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    this.resampling_algorithm = resampling_algorithm;
+    return this;
   }
 }
 

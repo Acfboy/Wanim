@@ -12,6 +12,40 @@ export function clip<T>(a: T, min_a: T, max_a: T): T {
   return a;
 }
 
+const chooseCache = new Map<string, number>();
+
+export function choose(n: number, k: number): number {
+  const key = `${n},${k}`;
+  const cached = chooseCache.get(key);
+  if (cached !== undefined) return cached;
+  const value = comb(n, k);
+  if (chooseCache.size >= 10) {
+    const oldest = chooseCache.keys().next();
+    if (!oldest.done) chooseCache.delete(oldest.value);
+  }
+  chooseCache.set(key, value);
+  return value;
+}
+
+function comb(n: number, k: number): number {
+  if (!Number.isInteger(n) || !Number.isInteger(k)) {
+    const error = new Error("n and k must be integers");
+    error.name = "ValueError";
+    throw error;
+  }
+  if (k < 0 || n < 0 || k > n) {
+    const error = new Error(`n must be a non-negative integer and k must satisfy 0 <= k <= n, got n=${n}, k=${k}`);
+    error.name = "ValueError";
+    throw error;
+  }
+  const small = Math.min(k, n - k);
+  let result = 1;
+  for (let i = 1; i <= small; i += 1) {
+    result = (result * (n - small + i)) / i;
+  }
+  return Math.round(result);
+}
+
 export function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x));
 }

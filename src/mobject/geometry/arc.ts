@@ -1,5 +1,36 @@
 import { array, type NDArray } from "numpy-ts";
+import { DEFAULT_ARROW_TIP_LENGTH, OUT } from "../../constants.js";
 import { linspace } from "../../utils/arrays.js";
+import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+
+export interface TipableVMobjectOptions extends VMobjectOptions {
+  tip_length?: number;
+  normal_vector?: readonly number[] | NDArray;
+  tip_style?: Record<string, unknown>;
+}
+
+export class TipableVMobject extends VMobject {
+  tip_length: number;
+  normal_vector: readonly number[] | NDArray;
+  tip_style: Record<string, unknown>;
+
+  constructor(options: TipableVMobjectOptions = {}) {
+    const {
+      tip_length = DEFAULT_ARROW_TIP_LENGTH,
+      normal_vector = OUT,
+      tip_style = {},
+      ...rest
+    } = options;
+    super(rest);
+    this.tip_length = tip_length;
+    this.normal_vector = normal_vector;
+    this.tip_style = tip_style ?? {};
+  }
+
+  get_default_tip_length(): number {
+    return this.tip_length;
+  }
+}
 
 export class Arc {
   static _create_quadratic_bezier_points(angle: number, start_angle = 0, n_components = 8): NDArray {

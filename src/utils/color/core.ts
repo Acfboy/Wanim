@@ -123,7 +123,7 @@ function valuesOf(value: unknown): number[] {
 }
 
 export class ManimColor {
-  private readonly internal: ColorArray;
+  protected internal: ColorArray;
 
   constructor(value: ParsableManimColor | null | undefined = null, alpha = 1) {
     if (value === null || value === undefined) {
@@ -320,6 +320,304 @@ export class ManimColor {
 
   toRepr(): string {
     return `ManimColor('${this.toHex()}')`;
+  }
+}
+
+export function is_sequence(
+  color: ParsableManimColor | readonly ParsableManimColor[] | null | undefined,
+): boolean {
+  return Array.isArray(color);
+}
+
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  const maxc = Math.max(r, g, b);
+  const minc = Math.min(r, g, b);
+  const v = maxc;
+  if (minc === maxc) return [0.0, 0.0, v];
+  const s = (maxc - minc) / maxc;
+  const rc = (maxc - r) / (maxc - minc);
+  const gc = (maxc - g) / (maxc - minc);
+  const bc = (maxc - b) / (maxc - minc);
+  let h: number;
+  if (r === maxc) h = bc - gc;
+  else if (g === maxc) h = 2.0 + rc - bc;
+  else h = 4.0 + gc - rc;
+  h = (((h / 6.0) % 1.0) + 1.0) % 1.0;
+  return [h, s, v];
+}
+
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  if (s === 0.0) return [v, v, v];
+  const i = Math.trunc(h * 6.0);
+  const f = h * 6.0 - i;
+  const p = v * (1.0 - s);
+  const q = v * (1.0 - s * f);
+  const t = v * (1.0 - s * (1.0 - f));
+  switch (i % 6) {
+    case 0: return [v, t, p];
+    case 1: return [q, v, p];
+    case 2: return [p, v, t];
+    case 3: return [p, q, v];
+    case 4: return [t, p, v];
+    default: return [v, p, q];
+  }
+}
+
+export class HSV extends ManimColor {
+  private hsvValues: ColorArray;
+  private alphaValue: number;
+
+  constructor(hsv: number[] | readonly number[] | ColorArray, alpha = 1) {
+    super(null);
+    const values = valuesOf(hsv);
+    if (values.length === 3) {
+      this.hsvValues = array([...values, alpha]) as ColorArray;
+    } else if (values.length === 4) {
+      this.hsvValues = array([...values]) as ColorArray;
+    } else {
+      const error = new Error("HSV Color must be an array of 3 values");
+      error.name = "ValueError";
+      throw error;
+    }
+    // NOTE: mirrors Python, where super().__init__(None) always leaves the
+    // alpha at its default of 1.0: neither the 4th input element nor the
+    // `alpha` parameter affects the converted RGBA alpha.
+    this.alphaValue = 1;
+    this.syncBaseInternal();
+  }
+
+  static _from_internal(value: ColorArray): HSV {
+    const rows = pointRows(value, 4)[0] ?? [0, 0, 0, 1];
+    const hsv = rgbToHsv(rows[0] ?? 0, rows[1] ?? 0, rows[2] ?? 0);
+    return new HSV([...hsv, rows[3] ?? 1]);
+  }
+
+  private syncBaseInternal(): void {
+    const rows = pointRows(this.hsvValues, 4)[0] ?? [0, 0, 0, 1];
+    const rgb = hsvToRgb(rows[0] ?? 0, rows[1] ?? 0, rows[2] ?? 0);
+    this.internal = array([rgb[0], rgb[1], rgb[2], this.alphaValue]) as ColorArray;
+  }
+
+  get hue(): number {
+    return (pointRows(this.hsvValues, 4)[0] ?? [])[0] ?? 0;
+  }
+
+  set hue(hue: number) {
+    const rows = pointRows(this.hsvValues, 4)[0] ?? [0, 0, 0, 1];
+    rows[0] = hue;
+    this.hsvValues = array(rows) as ColorArray;
+    this.syncBaseInternal();
+  }
+
+  get saturation(): number {
+    return (pointRows(this.hsvValues, 4)[0] ?? [])[1] ?? 0;
+  }
+
+  set saturation(saturation: number) {
+    const rows = pointRows(this.hsvValues, 4)[0] ?? [0, 0, 0, 1];
+    rows[1] = saturation;
+    this.hsvValues = array(rows) as ColorArray;
+    this.syncBaseInternal();
+  }
+
+  get value(): number {
+    return (pointRows(this.hsvValues, 4)[0] ?? [])[2] ?? 0;
+  }
+
+  set value(value: number) {
+    const rows = pointRows(this.hsvValues, 4)[0] ?? [0, 0, 0, 1];
+    rows[2] = value;
+    this.hsvValues = array(rows) as ColorArray;
+    this.syncBaseInternal();
+  }
+
+  get h(): number {
+    return this.hue;
+  }
+
+  set h(hue: number) {
+    this.hue = hue;
+  }
+
+  get s(): number {
+    return this.saturation;
+  }
+
+  set s(saturation: number) {
+    this.saturation = saturation;
+  }
+
+  get v(): number {
+    return this.value;
+  }
+
+  set v(value: number) {
+    this.value = value;
+  }
+
+  override get internal_space(): ColorArray {
+    return this.hsvValues;
+  }
+
+  override get _internal_value(): ColorArray {
+    const rows = pointRows(this.hsvValues, 4)[0] ?? [0, 0, 0, 1];
+    const rgb = hsvToRgb(rows[0] ?? 0, rows[1] ?? 0, rows[2] ?? 0);
+    return array([rgb[0], rgb[1], rgb[2], this.alphaValue]) as ColorArray;
+  }
+
+  override set _internal_value(value: ColorArray) {
+    if (!isNDArray(value)) {
+      throw new TypeError("Value must be a NumPy array.");
+    }
+    if ((value as NDArray).shape[0] !== 4) {
+      throw new TypeError("Array must have exactly 4 values.");
+    }
+    const rows = pointRows(value, 4)[0] ?? [0, 0, 0, 1];
+    const hsv = rgbToHsv(rows[0] ?? 0, rows[1] ?? 0, rows[2] ?? 0);
+    this.hsvValues = array(hsv) as ColorArray;
+    this.alphaValue = rows[3] ?? 1;
+    this.syncBaseInternal();
+  }
+}
+
+const PALETTE_ORDER = [
+  "WHITE", "GRAY_A", "GREY_A", "GRAY_B", "GREY_B", "GRAY_C", "GREY_C",
+  "GRAY_D", "GREY_D", "GRAY_E", "GREY_E", "BLACK", "LIGHTER_GRAY",
+  "LIGHTER_GREY", "LIGHT_GRAY", "LIGHT_GREY", "GRAY", "GREY", "DARK_GRAY",
+  "DARK_GREY", "DARKER_GRAY", "DARKER_GREY", "PURE_RED", "PURE_GREEN",
+  "PURE_BLUE", "PURE_CYAN", "PURE_MAGENTA", "PURE_YELLOW", "BLUE_A", "BLUE_B",
+  "BLUE_C", "BLUE_D", "BLUE_E", "BLUE", "DARK_BLUE", "TEAL_A", "TEAL_B",
+  "TEAL_C", "TEAL_D", "TEAL_E", "TEAL", "GREEN_A", "GREEN_B", "GREEN_C",
+  "GREEN_D", "GREEN_E", "GREEN", "YELLOW_A", "YELLOW_B", "YELLOW_C",
+  "YELLOW_D", "YELLOW_E", "YELLOW", "GOLD_A", "GOLD_B", "GOLD_C", "GOLD_D",
+  "GOLD_E", "GOLD", "RED_A", "RED_B", "RED_C", "RED_D", "RED_E", "RED",
+  "MAROON_A", "MAROON_B", "MAROON_C", "MAROON_D", "MAROON_E", "MAROON",
+  "PURPLE_A", "PURPLE_B", "PURPLE_C", "PURPLE_D", "PURPLE_E", "PURPLE",
+  "PINK", "LIGHT_PINK", "ORANGE", "LIGHT_BROWN", "DARK_BROWN", "GRAY_BROWN",
+  "GREY_BROWN", "LOGO_WHITE", "LOGO_GREEN", "LOGO_BLUE", "LOGO_RED",
+  "LOGO_BLACK",
+];
+
+class MersenneTwister {
+  private static readonly N = 624;
+  private static readonly M = 397;
+  private static readonly MATRIX_A = 0x9908b0df;
+  private static readonly UPPER_MASK = 0x80000000;
+  private static readonly LOWER_MASK = 0x7fffffff;
+  private readonly mt: number[] = new Array<number>(MersenneTwister.N).fill(0);
+  private index = MersenneTwister.N;
+
+  constructor(seed: number) {
+    this.seedInt(seed);
+  }
+
+  private initGenrand(s: number): void {
+    this.mt[0] = s >>> 0;
+    for (let i = 1; i < MersenneTwister.N; i += 1) {
+      const prev = this.mt[i - 1] ?? 0;
+      this.mt[i] = (Math.imul(1812433253, prev ^ (prev >>> 30)) + i) >>> 0;
+    }
+    this.index = MersenneTwister.N;
+  }
+
+  private initByArray(key: number[]): void {
+    this.initGenrand(19650218);
+    const keyLength = key.length;
+    let i = 1;
+    let j = 0;
+    let k = Math.max(MersenneTwister.N, keyLength);
+    for (; k > 0; k -= 1) {
+      const prev = this.mt[i - 1] ?? 0;
+      this.mt[i] = (((this.mt[i] ?? 0) ^ Math.imul(prev ^ (prev >>> 30), 1664525)) + (keyLength > 0 ? (key[j] ?? 0) : 0) + j) >>> 0;
+      i += 1;
+      j += 1;
+      if (i >= MersenneTwister.N) {
+        this.mt[0] = this.mt[MersenneTwister.N - 1] ?? 0;
+        i = 1;
+      }
+      if (keyLength > 0 && j >= keyLength) j = 0;
+    }
+    for (let t = MersenneTwister.N - 1; t > 0; t -= 1) {
+      const prev = this.mt[i - 1] ?? 0;
+      this.mt[i] = (((this.mt[i] ?? 0) ^ Math.imul(prev ^ (prev >>> 30), 1566083941)) - i) >>> 0;
+      i += 1;
+      if (i >= MersenneTwister.N) {
+        this.mt[0] = this.mt[MersenneTwister.N - 1] ?? 0;
+        i = 1;
+      }
+    }
+    this.mt[0] = 0x80000000;
+  }
+
+  private seedInt(seed: number): void {
+    // Mirrors CPython's Random.seed(int): little-endian 32-bit limbs of the
+    // absolute value through init_by_array (seed 0 maps to key [0]).
+    // NOTE: float/str seeds and >32-bit masking nuances of CPython are out of
+    // scope; non-integer seeds are truncated.
+    let v = BigInt(Number.isFinite(seed) ? Math.trunc(Math.abs(seed)) : 0);
+    const limbs: number[] = [];
+    while (v > 0n) {
+      limbs.push(Number(v & 0xffffffffn));
+      v >>= 32n;
+    }
+    this.initByArray(limbs.length > 0 ? limbs : [0]);
+  }
+
+  private int32(): number {
+    if (this.index >= MersenneTwister.N) {
+      for (let i = 0; i < MersenneTwister.N; i += 1) {
+        const y = (((this.mt[i] ?? 0) & MersenneTwister.UPPER_MASK) | ((this.mt[(i + 1) % MersenneTwister.N] ?? 0) & MersenneTwister.LOWER_MASK)) >>> 0;
+        this.mt[i] = ((this.mt[(i + MersenneTwister.M) % MersenneTwister.N] ?? 0) ^ (y >>> 1) ^ ((y & 1) !== 0 ? MersenneTwister.MATRIX_A : 0)) >>> 0;
+      }
+      this.index = 0;
+    }
+    let y = this.mt[this.index] ?? 0;
+    this.index += 1;
+    y ^= y >>> 11;
+    y ^= (y << 7) & 0x9d2c5680;
+    y ^= (y << 15) & 0xefc60000;
+    y ^= y >>> 18;
+    return y >>> 0;
+  }
+
+  getrandbits(k: number): number {
+    if (k <= 0) return 0;
+    const words = Math.floor((k - 1) / 32) + 1;
+    let r = 0;
+    for (let i = 0; i < words; i += 1) r = r * 2 ** 32 + this.int32();
+    return Math.floor(r / 2 ** (32 * words - k));
+  }
+
+  randbelow(n: number): number {
+    const k = n.toString(2).length;
+    let r = this.getrandbits(k);
+    while (r >= n) r = this.getrandbits(k);
+    return r;
+  }
+}
+
+export class RandomColorGenerator {
+  private static singleton: RandomColorGenerator | null = null;
+  private readonly twister: MersenneTwister | null;
+  readonly colors: ManimColor[];
+
+  constructor(seed: number | null = null, sample_colors: ManimColor[] | null = null) {
+    this.twister = seed === null || seed === undefined ? null : new MersenneTwister(seed);
+    this.colors = sample_colors ?? PALETTE_ORDER.map((name) => new ManimColor(name));
+  }
+
+  next(): ManimColor {
+    const index = this.twister !== null
+      ? this.twister.randbelow(this.colors.length)
+      : Math.floor(Math.random() * this.colors.length);
+    return (this.colors[index] ?? this.colors[0]) as ManimColor;
+  }
+
+  static _random_color(): ManimColor {
+    if (RandomColorGenerator.singleton === null) {
+      RandomColorGenerator.singleton = new RandomColorGenerator();
+    }
+    return RandomColorGenerator.singleton.next();
   }
 }
 

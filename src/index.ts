@@ -6,7 +6,25 @@ export * from "./utils/exceptions.js";
 export * from "./utils/file_ops.js";
 export * from "./utils/iterables.js";
 export * from "./utils/simple_functions.js";
-export * from "./utils/space_ops.js";
+export {
+  R3_to_complex,
+  angle_of_vector,
+  cartesian_to_spherical,
+  center_of_mass,
+  complex_to_R3,
+  cross,
+  cross2d,
+  norm_squared,
+  normalize_along_axis,
+  quaternion_conjugate,
+  quaternion_mult,
+  shoelace,
+} from "./utils/space_ops.js";
+// NOTE: ./utils/arrays.js also exports `normalize` (element-wise, no
+// fall_back); the barrel keeps that one, while space_ops.normalize (with
+// fall_back, mirroring manim.utils.space_ops.normalize) stays importable
+// from ./utils/space_ops.js directly.
+export type { Quaternion } from "./utils/space_ops.js";
 export * from "./utils/images.js";
 export * from "./utils/config_ops.js";
 export * from "./utils/commands.js";

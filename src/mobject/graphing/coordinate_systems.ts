@@ -114,3 +114,52 @@ export class Axes extends NumberPlane {
   }
 }
 
+export interface AxisShadingSubmobject {
+  get_gradient_start_and_end_points: () => [unknown, unknown];
+  get_unit_normal: (point: unknown) => number[];
+  set_sheen: (factor: number, ...rest: unknown[]) => unknown;
+  family_members_with_points(): AxisShadingSubmobject[];
+}
+
+export interface ShadedAxis {
+  get_edge_center: (direction: readonly number[]) => unknown;
+  family_members_with_points(): AxisShadingSubmobject[];
+}
+
+export class ThreeDAxes extends Axes {
+  light_source: number[];
+  shaded_axes: ShadedAxis[];
+
+  constructor(
+    x_range: number[] | null = null,
+    y_range: number[] | null = null,
+    x_length: number | null = null,
+    y_length: number | null = null,
+    light_source: readonly number[] = [-7, -9, 10],
+    shaded_axes: ShadedAxis[] = [],
+  ) {
+    super(x_range, y_range, x_length, y_length);
+    this.light_source = [...light_source];
+    this.shaded_axes = shaded_axes;
+  }
+
+  _set_axis_shading(): void {
+    const make_func = (axis: ShadedAxis): (() => [unknown, unknown]) => {
+      const vect = this.light_source;
+      const negated = vect.map((value) => -value);
+      return (): [unknown, unknown] => [
+        axis.get_edge_center(negated),
+        axis.get_edge_center(vect),
+      ];
+    };
+
+    for (const axis of this.shaded_axes) {
+      for (const submob of axis.family_members_with_points()) {
+        submob.get_gradient_start_and_end_points = make_func(axis);
+        submob.get_unit_normal = (_point: unknown): number[] => [1, 1, 1];
+        submob.set_sheen(0.2);
+      }
+    }
+  }
+}
+

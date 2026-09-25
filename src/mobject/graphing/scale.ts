@@ -8,6 +8,12 @@ function valueError(message: string): Error {
 }
 
 export class _ScaleBase {
+  custom_labels: boolean;
+
+  constructor(custom_labels = false) {
+    this.custom_labels = custom_labels;
+  }
+
   function(_value: number | NDArray): number | NDArray {
     const error = new Error();
     error.name = "NotImplementedError";
@@ -15,6 +21,15 @@ export class _ScaleBase {
   }
 
   inverse_function(_value: number | NDArray): number | NDArray {
+    const error = new Error();
+    error.name = "NotImplementedError";
+    throw error;
+  }
+
+  get_custom_labels(
+    _val_range: Iterable<number>,
+    ..._kw_args: unknown[]
+  ): unknown[] {
     const error = new Error();
     error.name = "NotImplementedError";
     throw error;

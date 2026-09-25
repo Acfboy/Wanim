@@ -25,6 +25,51 @@ function toRows(value: VectorInput): { rows: number[][]; single: boolean } {
   return { rows: [[... (value as unknown[])].map(numeric)], single: true };
 }
 
+export function norm_squared(v: number[] | readonly number[] | NDArray): number {
+  const flat = toRows(v as VectorInput).rows[0] ?? [];
+  return flat.reduce((sum, value) => sum + value * value, 0);
+}
+
+export function cross(
+  v1: number[] | readonly number[] | NDArray,
+  v2: number[] | readonly number[] | NDArray,
+): number[] {
+  const a = toRows(v1 as VectorInput).rows[0] ?? [0, 0, 0];
+  const b = toRows(v2 as VectorInput).rows[0] ?? [0, 0, 0];
+  return [
+    (a[1] ?? 0) * (b[2] ?? 0) - (a[2] ?? 0) * (b[1] ?? 0),
+    (a[2] ?? 0) * (b[0] ?? 0) - (a[0] ?? 0) * (b[2] ?? 0),
+    (a[0] ?? 0) * (b[1] ?? 0) - (a[1] ?? 0) * (b[0] ?? 0),
+  ];
+}
+
+export function normalize(
+  vect: number[] | readonly number[] | NDArray,
+  fall_back?: number[] | readonly number[] | NDArray | null,
+): number[] {
+  const flat = toRows(vect as VectorInput).rows[0] ?? [];
+  const norm = Math.sqrt(flat.reduce((sum, value) => sum + value * value, 0));
+  if (norm > 0) return flat.map((value) => value / norm);
+  if (fall_back !== undefined && fall_back !== null) {
+    return [...(toRows(fall_back as VectorInput).rows[0] ?? [])];
+  }
+  return new Array(flat.length).fill(0);
+}
+
+export function cartesian_to_spherical(
+  vec: number[] | readonly number[] | NDArray,
+): number[] {
+  const flat = toRows(vec as VectorInput).rows[0] ?? [0, 0, 0];
+  const norm = Math.sqrt(
+    flat.reduce((sum, value) => sum + value * value, 0),
+  );
+  if (norm === 0) return [0, 0, 0];
+  const r = norm;
+  const phi = Math.acos((flat[2] ?? 0) / r);
+  const theta = Math.atan2(flat[1] ?? 0, flat[0] ?? 0);
+  return [r, theta, phi];
+}
+
 export function cross2d(a: VectorInput, b: VectorInput): number | number[] {
   const left = toRows(a);
   const right = toRows(b);

@@ -1,4 +1,4 @@
-import { array, type NDArray } from "numpy-ts";
+import { array, zeros, type NDArray } from "numpy-ts";
 
 export function make_even<T, U>(iterable_1: Iterable<T>, iterable_2: Iterable<U>): [T[], U[]] {
   const list_1 = Array.from(iterable_1);
@@ -79,6 +79,25 @@ export function batch_by_property<T, U>(
 export function list_difference_update<T>(l1: Iterable<T>, l2: Iterable<T>): T[] {
   const l2set = new Set(l2);
   return [...l1].filter((e) => !l2set.has(e));
+}
+
+export function resize_array(nparray: NDArray, length: number): NDArray {
+  const { rows, flat } = elementRows(nparray);
+  if (rows.length === length) {
+    if (isNDArrayLike(nparray)) return nparray as NDArray;
+    return array(flat ? rows.map((row) => row[0]) : rows) as NDArray;
+  }
+  // np.resize tiles the input in C-order; with the trailing shape preserved
+  // this is exactly row cycling.
+  if (rows.length === 0) {
+    const rest = (nparray as NDArray).shape?.slice(1) ?? [];
+    return zeros([length, ...rest]) as NDArray;
+  }
+  const out: number[][] = Array.from(
+    { length },
+    (_, i) => [...(rows[i % rows.length] ?? [])],
+  );
+  return array(flat ? out.map((row) => row[0]) : out) as NDArray;
 }
 
 export function resize_preserving_order(nparray: NDArray, length: number): NDArray {

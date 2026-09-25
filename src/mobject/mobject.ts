@@ -466,14 +466,35 @@ export class Mobject {
     return this;
   }
 
+  stretch(factor: number, dim: number, aboutPoint?: readonly number[], aboutEdge?: readonly number[]): this {
+    const func = (points: NDArray): NDArray => {
+      const rows = pointRows(points, this.dim).map((point) => {
+        const scaled = [...point];
+        scaled[dim] = (scaled[dim] ?? 0) * factor;
+        return scaled;
+      });
+      return pointArray(rows);
+    };
+    this.apply_points_function_about_point(func, aboutPoint, aboutEdge);
+    return this;
+  }
+
   apply_function(func: (point: number[]) => number[] | NDArray, aboutPoint?: readonly number[], aboutEdge?: readonly number[]): this {
-    const center = aboutPoint !== undefined ? vector(aboutPoint, this.dim) : aboutEdge !== undefined ? this.get_critical_point(aboutEdge) : vector(ORIGIN, this.dim);
-    for (const mobject of this.family_members_with_points()) {
-      mobject.points = pointArray(pointRows(mobject.points, this.dim).map((point) => {
-        const transformed = func(addPoints(subtractPoints(point, center, this.dim), [0, 0, 0], this.dim));
-        return addPoints(vector(transformed, this.dim), center, this.dim);
-      }));
+    let about_point: readonly number[] | undefined = aboutPoint;
+    const about_edge: readonly number[] | undefined = aboutEdge;
+    if (about_point === undefined && about_edge === undefined) {
+      about_point = ORIGIN;
     }
+    const multi_mapping_function = (points: NDArray): NDArray => {
+      return pointArray(
+        pointRows(points, this.dim).map((point) => vector(func(point), this.dim)),
+      );
+    };
+    this.apply_points_function_about_point(
+      multi_mapping_function,
+      about_point,
+      about_edge,
+    );
     return this;
   }
 
@@ -833,6 +854,12 @@ export class Mobject {
     if (this.get_num_points() < other.get_num_points()) this.points = pointsFrom(other.points, this.dim);
     else if (other.get_num_points() < this.get_num_points()) other.points = pointsFrom(this.points, other.dim);
     return this;
+  }
+
+  align_points_with_larger(_larger_mobject: Mobject): this {
+    const error = new Error("Please override in a child class.");
+    error.name = "NotImplementedError";
+    throw error;
   }
 
   push_self_into_submobjects(): this {

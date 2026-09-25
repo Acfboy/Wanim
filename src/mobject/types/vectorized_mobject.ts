@@ -201,6 +201,25 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  get_fill_rgbas(): NDArray {
+    if (this.fill_rgbas !== undefined && this.fill_rgbas !== null) {
+      return this.fill_rgbas;
+    }
+    return array([[0, 0, 0, 0]]) as NDArray;
+  }
+
+  get_stroke_rgbas(background = false): NDArray {
+    const rgbas = background ? this.background_stroke_rgbas : this.stroke_rgbas;
+    if (rgbas !== undefined && rgbas !== null) {
+      return rgbas;
+    }
+    return array([[0, 0, 0, 0]]) as NDArray;
+  }
+
+  get_background_image(): string | null {
+    return this.background_image;
+  }
+
   get_fill_color(): ManimColor {
     const first = pointRows(this.fill_rgbas, 4)[0];
     return first ? new ManimColor(array(first.slice(0, 3)) as any) : this.fill_color;
@@ -305,6 +324,16 @@ export class VMobject extends Mobject {
     for (let index = 0; index < this.get_num_points(); index += this.n_points_per_cubic_curve) {
       const point = pointAt(this.points, index, this.dim);
       result.push(point);
+    }
+    return result;
+  }
+
+  get_end_anchors(): number[][] {
+    const result: number[][] = [];
+    const nppcc = this.n_points_per_cubic_curve;
+    const count = this.get_num_points();
+    for (let index = nppcc - 1; index < count; index += nppcc) {
+      result.push(pointAt(this.points, index, this.dim));
     }
     return result;
   }

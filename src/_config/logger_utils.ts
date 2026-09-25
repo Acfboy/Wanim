@@ -50,6 +50,46 @@ function validStyle(value: string): boolean {
   return source.split(/\s+/).every((part) => namedStyles.has(part));
 }
 
+export interface LogRecord {
+  levelname: string;
+  module: string;
+  message: string;
+  args?: unknown;
+  [key: string]: unknown;
+}
+
+export class JSONFormatter {
+  format(record: LogRecord): string {
+    return JSON.stringify({
+      levelname: record.levelname,
+      module: record.module,
+      message: getMaskedMessage(record),
+    });
+  }
+}
+
+function getMaskedMessage(record: LogRecord): string {
+  // Mirrors logging.Formatter.format(record) after masking record.args with
+  // "<>" (mapping values key-by-key, tuples positionally). The input record
+  // is never mutated (Python deep-copies it first).
+  const args = record.args;
+  if (args === null || args === undefined) return record.message;
+  if (typeof args === "object" && !Array.isArray(args)) {
+    return record.message.replace(
+      /%\(([^)]+)\)[sdri]/g,
+      (_match, _key) => "<>",
+    );
+  }
+  const values = (Array.isArray(args) ? args : [args]) as unknown[];
+  const masked = new Array(values.length).fill("<>");
+  let index = 0;
+  void masked;
+  return record.message.replace(/%[sdri]/g, () => {
+    index += 1;
+    return "<>";
+  });
+}
+
 export function parse_theme(parser: SectionProxyLike): RichTheme | null {
   const theme: RichTheme = {};
   for (const [key, value] of entriesOf(parser)) theme[key.replaceAll("_", ".")] = value;

@@ -11,8 +11,10 @@ export {
   GREY,
   LIGHT_GRAY,
   LIGHT_GREY,
+  HSV,
   ManimColor,
   ORANGE,
+  RandomColorGenerator,
   PINK,
   PURPLE,
   RED,
@@ -23,6 +25,7 @@ export {
   color_to_rgb,
   interpolate_color,
   invert_color,
+  is_sequence,
   rgb_to_color,
 } from "./core.js";
 export type { ColorArray, ParsableManimColor } from "./core.js";

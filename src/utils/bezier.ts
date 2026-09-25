@@ -1,5 +1,11 @@
 import { array, type NDArray } from "numpy-ts";
-import { isNDArray, pointRows } from "./arrays.js";
+import { isNDArray, nestedRows, numeric, pointRows } from "./arrays.js";
+
+function rawRows(value: number[] | number[][] | NDArray): number[][] {
+  return nestedRows(value).map((row) =>
+    (Array.isArray(row) ? row : [row]).map(numeric),
+  );
+}
 
 export type BezierPoint = number[] | NDArray;
 export type BezierAlpha = number | NDArray;
@@ -160,6 +166,95 @@ export function _get_subdivision_matrix(
 
   SUBDIVISION_MATRICES[n_points - 1]?.set(n_divisions, subdivision_matrix);
   return array(subdivision_matrix) as NDArray;
+}
+
+export let CP_OPEN_MEMO: number[] = [0.5];
+
+export function get_smooth_open_cubic_bezier_handle_points(
+  anchors: number[][] | NDArray,
+): [NDArray, NDArray] {
+  // NOTE: unlike rowsOf/pointRows, the anchor width is taken as-is from the
+  // input (Python uses A.shape[1]); rows are NOT padded to 3 components.
+  const A = rawRows(anchors);
+  const N = A.length - 1;
+  const dim = A[0]?.length ?? 0;
+
+  const len_memo = CP_OPEN_MEMO.length;
+  let cp: number[];
+  if (len_memo < N - 1) {
+    cp = new Array(N - 1).fill(0);
+    for (let i = 0; i < len_memo; i += 1) cp[i] = CP_OPEN_MEMO[i] ?? 0;
+    for (let i = len_memo; i < N - 1; i += 1) {
+      cp[i] = 1 / (4 - (cp[i - 1] ?? 0));
+    }
+    CP_OPEN_MEMO = cp;
+  } else {
+    cp = CP_OPEN_MEMO.slice(0, N - 1);
+  }
+  // Mirror Python's negative indexing (cp[-1] etc.); on an empty memo this
+  // raises IndexError exactly like the Python version does for N <= 1.
+  const cpAt = (index: number): number => {
+    const resolved = index < 0 ? cp.length + index : index;
+    if (resolved < 0 || resolved >= cp.length) {
+      const error = new Error("list index out of range");
+      error.name = "IndexError";
+      throw error;
+    }
+    return cp[resolved] ?? 0;
+  };
+
+  const Dp: number[][] = Array.from({ length: N }, () =>
+    new Array(dim).fill(0),
+  );
+  const add = (a: number[], b: number[]): number[] =>
+    a.map((v, c) => v + (b[c] ?? 0));
+  const scale = (a: number[], s: number): number[] => a.map((v) => v * s);
+  const sub = (a: number[], b: number[]): number[] =>
+    a.map((v, c) => v - (b[c] ?? 0));
+  Dp[0] = add(scale(A[0] ?? [], 0.5), A[1] ?? []);
+  for (let i = 1; i < N - 1; i += 1) {
+    const aux = add(scale(A[i] ?? [], 4), scale(A[i + 1] ?? [], 2));
+    Dp[i] = scale(sub(aux, Dp[i - 1] ?? []), cpAt(i));
+  }
+  Dp[N - 1] = scale(
+    sub(
+      add(scale(A[N - 1] ?? [], 8), A[N] ?? []),
+      scale(Dp[N - 2] ?? [], 2),
+    ),
+    1 / (7 - 2 * cpAt(N - 2)),
+  );
+
+  // Backward substitution. H1 aliases Dp, exactly as in Python.
+  const H1 = Dp;
+  for (let i = N - 2; i >= 0; i -= 1) {
+    H1[i] = sub(Dp[i] ?? [], scale(H1[i + 1] ?? [], cpAt(i)));
+  }
+
+  const H2: number[][] = Array.from({ length: N }, () =>
+    new Array(dim).fill(0),
+  );
+  for (let i = 0; i < N - 1; i += 1) {
+    H2[i] = sub(scale(A[i + 1] ?? [], 2), H1[i + 1] ?? []);
+  }
+  H2[N - 1] = scale(add(A[N] ?? [], H1[N - 1] ?? []), 0.5);
+
+  return [array(H1) as NDArray, array(H2) as NDArray];
+}
+
+export function is_closed(points: number[][] | NDArray): boolean {
+  const all = rawRows(points);
+  const start = all[0] ?? [];
+  const end = all[all.length - 1] ?? [];
+  const rtol = 1e-5;
+  const atol = 1e-8;
+  const tolerance = start.map((s) => atol + rtol * s);
+  if (Math.abs((end[0] ?? 0) - (start[0] ?? 0)) > (tolerance[0] ?? 0)) {
+    return false;
+  }
+  if (Math.abs((end[1] ?? 0) - (start[1] ?? 0)) > (tolerance[1] ?? 0)) {
+    return false;
+  }
+  return Math.abs((end[2] ?? 0) - (start[2] ?? 0)) <= (tolerance[2] ?? 0);
 }
 
 export function get_quadratic_approximation_of_cubic(
