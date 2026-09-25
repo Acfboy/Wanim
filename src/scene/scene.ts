@@ -4,6 +4,7 @@ import { Animation, prepare_animation } from "../animation/animation.js";
 export class Scene {
   mobjects: Mobject[] = [];
   foreground_mobjects: Mobject[] = [];
+  meshes: Mobject[] = [];
   animations: Animation[] = [];
   camera: any = null;
   renderer: any = null;
@@ -23,9 +24,16 @@ export class Scene {
   }
 
   remove(...mobjects: Mobject[]): this {
+    const meshes_to_remove = new Set(mobjects);
+    function lambda_function(mesh: Mobject): boolean {
+      return !meshes_to_remove.has(mesh);
+    }
+    this.meshes = this.meshes.filter(lambda_function);
     for (const mobject of mobjects) {
       const index = this.mobjects.indexOf(mobject);
       if (index >= 0) this.mobjects.splice(index, 1);
+      const foreground_index = this.foreground_mobjects.indexOf(mobject);
+      if (foreground_index >= 0) this.foreground_mobjects.splice(foreground_index, 1);
     }
     return this;
   }

@@ -131,6 +131,14 @@ export class VMobject extends Mobject {
     return array(all[all.length - 1] ?? []) as NDArray;
   }
 
+  get_sheen_factor(): number {
+    return this.sheen_factor;
+  }
+
+  getSheenFactor(): number {
+    return this.get_sheen_factor();
+  }
+
   getLastPoint(): NDArray {
     return this.get_last_point();
   }

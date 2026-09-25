@@ -74,3 +74,278 @@ export function sha256Hex(value: string): string {
   }
   return [h0, h1, h2, h3, h4, h5, h6, h7].map((value) => value.toString(16).padStart(8, "0")).join("");
 }
+
+export const KEYS_TO_FILTER_OUT = new Set([
+  "original_id",
+  "background",
+  "pixel_array",
+  "pixel_array_to_cairo_context",
+]);
+
+function pythonRepr(value: unknown): string {
+  if (value === null || value === undefined) return "None";
+  if (typeof value === "string") return `'${value}'`;
+  if (typeof value === "boolean") return value ? "True" : "False";
+  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+export function _canonical_field_title(title: unknown): unknown {
+  if (title === null || title === undefined) {
+    return null;
+  }
+  // Map JS runtime types onto Python type names: Python reports
+  // builtins.int for ints, builtins.float for floats, builtins.str,
+  // builtins.bool. JS typeof/ctor names (Number/String/Boolean) differ,
+  // so translate explicitly to match `type(x).__module__/__qualname__`.
+  let qualName: string;
+  switch (typeof title) {
+    case "number":
+      qualName = Number.isInteger(title) ? "int" : "float";
+      break;
+    case "string":
+      qualName = "str";
+      break;
+    case "boolean":
+      qualName = "bool";
+      break;
+    case "bigint":
+      qualName = "int";
+      break;
+    default: {
+      const titleType = (title as object)?.constructor;
+      qualName = titleType?.name ?? typeof title;
+      break;
+    }
+  }
+  const moduleName = "builtins";
+  return [`${moduleName}.${qualName}`, pythonRepr(title)];
+}
+
+function stringHash32(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+  return hash;
+}
+
+let nextObjectId = 1;
+const objectIds = new WeakMap<object, number>();
+
+function identityOf(value: object): number {
+  let id = objectIds.get(value);
+  if (id === undefined) {
+    id = nextObjectId;
+    nextObjectId += 1;
+    objectIds.set(value, id);
+  }
+  return id;
+}
+
+function hashOf(value: unknown): number {
+  if (value === null || value === undefined) return stringHash32(String(value));
+  switch (typeof value) {
+    case "number":
+      return stringHash32(`float:${String(value)}`);
+    case "bigint":
+      return stringHash32(`int:${String(value)}`);
+    case "boolean":
+      return value ? 1 : 0;
+    case "string":
+      return stringHash32(value);
+    case "function":
+      return stringHash32(Function.prototype.toString.call(value));
+    default:
+      break;
+  }
+  if (typeof value === "object") {
+    try {
+      return stringHash32(JSON.stringify(value) ?? String(identityOf(value as object)));
+    } catch {
+      return identityOf(value as object);
+    }
+  }
+  return stringHash32(String(value));
+}
+
+export class _Memoizer {
+  static ALREADY_PROCESSED_PLACEHOLDER = "AP";
+  static THRESHOLD_WARNING = 170_000;
+
+  private _already_processed = new Set<string>();
+  private _keep_alive = new Map<number, unknown>();
+
+  constructor() {
+    this._already_processed = new Set<string>();
+    this._keep_alive = new Map<number, unknown>();
+  }
+
+  check_already_processed_decorator(is_method = false): (func: (obj: unknown) => unknown) => (obj: unknown) => unknown {
+    const self = this;
+    return function layer(func: (obj: unknown) => unknown): (obj: unknown) => unknown {
+      if (is_method) {
+        return function (obj: unknown): unknown {
+          return self._handle_already_processed(obj, (value: unknown) =>
+            (func as unknown as (selfArg: unknown, objArg: unknown) => unknown)(self, value),
+          );
+        };
+      }
+      return function (obj: unknown): unknown {
+        return self._handle_already_processed(obj, func);
+      };
+    };
+  }
+
+  check_already_processed(obj: unknown): unknown {
+    return this._handle_already_processed(obj, (value: unknown) => value);
+  }
+
+  mark_as_processed(obj: unknown): void {
+    this._handle_already_processed(obj, (value: unknown) => value);
+    this._return(obj, (value: unknown) => identityOf(value as object), (value: unknown) => value, false);
+  }
+
+  _handle_already_processed(obj: unknown, default_function: (value: unknown) => unknown): unknown {
+    if (
+      (typeof obj === "number" || typeof obj === "string" || typeof obj === "boolean") &&
+      obj !== (_Memoizer.ALREADY_PROCESSED_PLACEHOLDER as unknown)
+    ) {
+      return obj;
+    }
+    try {
+      return this._return(obj, hashOf, default_function);
+    } catch {
+      // Fall back to identity-based membership when hashing fails.
+    }
+    return this._return(obj, (value: unknown) => identityOf(value as object), default_function);
+  }
+
+  _return(
+    obj: unknown,
+    obj_to_membership_sign: (value: unknown) => number,
+    default_func: (value: unknown) => unknown,
+    memoizing = true,
+  ): unknown {
+    const sign_kind = obj_to_membership_sign === hashOf ? "h" : "i";
+    const signature = obj_to_membership_sign(obj);
+    const membership = `${sign_kind}:${String(signature)}`;
+    if (this._already_processed.has(membership)) {
+      return _Memoizer.ALREADY_PROCESSED_PLACEHOLDER;
+    }
+    if (memoizing) {
+      this._already_processed.add(membership);
+      if (obj !== null && (typeof obj === "object" || typeof obj === "function")) {
+        this._keep_alive.set(identityOf(obj as object), obj);
+      }
+    }
+    return default_func(obj);
+  }
+}
+
+export class _CustomEncoder {
+  _memoizer: _Memoizer;
+  include_pixel_array: boolean;
+
+  constructor(memoizer: _Memoizer, include_pixel_array = false) {
+    this._memoizer = memoizer;
+    this.include_pixel_array = include_pixel_array;
+  }
+
+  default(obj: unknown): unknown {
+    if (typeof obj === "function") {
+      return this._cleaned_iterable({
+        code: Function.prototype.toString.call(obj),
+        nonlocals: {},
+      } as Record<string, unknown>);
+    }
+    if (obj !== null && typeof obj === "object" && "shape" in obj && "toArray" in obj) {
+      const ndarray = obj as { toArray: () => unknown };
+      const raw = ndarray.toArray();
+      const size = Array.isArray(raw) ? raw.length : 1;
+      if (size > 1000) {
+        return `TRUNCATED ARRAY: ${pythonRepr(raw)}`;
+      }
+      return pythonRepr(raw);
+    }
+    if (obj !== null && (typeof obj === "object" || typeof obj === "function")) {
+      const record = obj as Record<string, unknown>;
+      const cleaned: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(record)) {
+        if (KEYS_TO_FILTER_OUT.has(key) && !(this.include_pixel_array && key === "pixel_array")) {
+          continue;
+        }
+        cleaned[key] = value;
+      }
+      return this._cleaned_iterable(cleaned);
+    }
+    if (typeof obj === "number" && Number.isInteger(obj) && obj >= 0 && obj <= 255) {
+      return Math.trunc(obj);
+    }
+    return String((obj as object)?.constructor?.name ?? typeof obj);
+  }
+
+  _cleaned_iterable(iterable: unknown[] | Record<string, unknown>): unknown[] | Record<string, unknown> {
+    const cleanList = (lst: unknown[]): unknown[] => {
+      const processed: unknown[] = new Array(lst.length);
+      for (let index = 0; index < lst.length; index += 1) {
+        let el = this._memoizer.check_already_processed(lst[index]);
+        if (Array.isArray(el)) {
+          el = cleanList(el);
+        } else if (el !== null && typeof el === "object" && !Array.isArray(el)) {
+          el = cleanDict(el as Record<string, unknown>);
+        }
+        processed[index] = el;
+      }
+      return processed;
+    };
+    const cleanDict = (dct: Record<string, unknown>): Record<string, unknown> => {
+      const processed: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(dct)) {
+        const next = this._memoizer.check_already_processed(value);
+        if (KEYS_TO_FILTER_OUT.has(key) && !(this.include_pixel_array && key === "pixel_array")) {
+          continue;
+        }
+        const nextKey: string = key;
+        if (typeof next === "object" && next !== null && !Array.isArray(next)) {
+          processed[nextKey] = cleanDict(next as Record<string, unknown>);
+        } else if (Array.isArray(next)) {
+          processed[nextKey] = cleanList(next);
+        } else {
+          processed[nextKey] = next;
+        }
+      }
+      return processed;
+    };
+    if (Array.isArray(iterable)) {
+      return cleanList(iterable);
+    }
+    if (iterable !== null && typeof iterable === "object") {
+      return cleanDict(iterable as Record<string, unknown>);
+    }
+    throw new TypeError("'iterable' is neither an iterable nor a dictionary.");
+  }
+
+  encode(obj: unknown): string {
+    this._memoizer.mark_as_processed(obj);
+    if (Array.isArray(obj) || (obj !== null && typeof obj === "object" && obj.constructor === Object)) {
+      return JSON.stringify(this._cleaned_iterable(obj as Record<string, unknown>), (_key, value: unknown) => {
+        if (typeof value === "bigint") return Number(value);
+        if (typeof value === "function") return this.default(value);
+        if (value !== null && typeof value === "object" && !(value instanceof Array) && (value as object).constructor !== Object) {
+          return this.default(value);
+        }
+        return value;
+      });
+    }
+    return JSON.stringify(obj, (_key, value: unknown) => {
+      if (typeof value === "function") return this.default(value);
+      return value;
+    });
+  }
+}

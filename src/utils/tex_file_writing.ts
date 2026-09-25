@@ -1,8 +1,26 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
+import { config } from "../_config/utils.js";
+import { sha256Hex } from "./hash.js";
 
 export type PathLike = string;
+
+export function tex_hash(expression: unknown): string {
+  const id_str = String(expression);
+  return sha256Hex(id_str).slice(0, 16);
+}
+
+export function delete_nonsvg_files(additional_endings: Iterable<string> = []): void {
+  const tex_dir: string = config.getDir("tex_dir");
+  const file_suffix_whitelist = new Set([".svg", ".tex", ...additional_endings]);
+  for (const f of readdirSync(tex_dir)) {
+    const suffix = path.extname(f);
+    if (!file_suffix_whitelist.has(suffix)) {
+      unlinkSync(path.join(tex_dir, f));
+    }
+  }
+}
 
 function asPosix(file: PathLike): string {
   return file;

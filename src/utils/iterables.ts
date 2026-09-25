@@ -1,5 +1,29 @@
 import { array, type NDArray } from "numpy-ts";
 
+export function make_even<T, U>(iterable_1: Iterable<T>, iterable_2: Iterable<U>): [T[], U[]] {
+  const list_1 = Array.from(iterable_1);
+  const list_2 = Array.from(iterable_2);
+  const len_list_1 = list_1.length;
+  const len_list_2 = list_2.length;
+  const length = Math.max(len_list_1, len_list_2);
+  if (length === 0) {
+    return [[], []];
+  }
+  return [
+    Array.from({ length }, (_, n) => list_1[Math.floor((n * len_list_1) / length)] as T),
+    Array.from({ length }, (_, n) => list_2[Math.floor((n * len_list_2) / length)] as U),
+  ];
+}
+
+export function tuplify(obj: string): [string];
+export function tuplify<T>(obj: Iterable<T>): T[];
+export function tuplify<T>(obj: T): [T];
+export function tuplify<T>(obj: string | Iterable<T> | T): [string] | T[] | [T] {
+  if (typeof obj === "string") return [obj];
+  if (isIterableObject(obj)) return Array.from(obj as Iterable<T>);
+  return [obj as T];
+}
+
 export function uniq_chain<T>(...args: Iterable<T>[]): Generator<T, void, void> {
   function* generator(): Generator<T, void, void> {
     const unique_items = new Set<T>();

@@ -6,6 +6,46 @@ export interface HasUniforms {
   uniforms: Record<string, unknown>;
 }
 
+export interface _HasData {
+  data: Record<string, unknown>;
+}
+
+export interface _HasUniforms {
+  uniforms: Record<string, number | readonly number[]>;
+}
+
+export function merge_dicts_recursively(...dicts: Array<Record<string, unknown>>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const dict of dicts) {
+    for (const [key, value] of Object.entries(dict)) {
+      if (
+        key in result &&
+        result[key] !== null &&
+        typeof result[key] === "object" &&
+        !Array.isArray(result[key]) &&
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      ) {
+        result[key] = merge_dicts_recursively(
+          result[key] as Record<string, unknown>,
+          value as Record<string, unknown>,
+        );
+      } else {
+        result[key] = value;
+      }
+    }
+  }
+  return result;
+}
+
+export function update_dict_recursively(current_dict: Record<string, unknown>, ...others: Array<Record<string, unknown>>): void {
+  const updated = merge_dicts_recursively(current_dict, ...others);
+  for (const [key, value] of Object.entries(updated)) {
+    current_dict[key] = value;
+  }
+}
+
 export class _Data<T = unknown> {
   name = "";
 
