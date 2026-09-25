@@ -1507,6 +1507,18 @@ export class Mobject {
     return this;
   }
 
+  surround(
+    mobject: Mobject,
+    dim_to_match = 0,
+    stretch = false,
+    buff: number = MED_SMALL_BUFF,
+  ): this {
+    this.replace(mobject, dim_to_match, stretch);
+    const length = mobject.length_over_dim(dim_to_match);
+    this.scale((length + buff) / length);
+    return this;
+  }
+
   match_points(other: Mobject, _copy_submobjects = true): this {
     for (let index = 0; index < this.get_family().length; index += 1) {
       const source = other.get_family()[index];

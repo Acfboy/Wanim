@@ -11,6 +11,7 @@ import { interpolate } from "../../utils/bezier.js";
 import { BLACK, ManimColor, WHITE, color_gradient, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { arange, isNDArray, linspace, pointRows } from "../../utils/arrays.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
+import { stretch_array_to_length } from "../../utils/iterables.js";
 
 export interface PMobjectOptions extends MobjectOptions {
   stroke_width?: number;
@@ -251,6 +252,50 @@ export class PMobject extends Mobject {
     const index = alpha * (this.get_num_points() - 1);
     const rows = this.points.toArray() as unknown[][];
     return array(rows[Math.floor(index)] ?? []) as NDArray;
+  }
+
+  align_points_with_larger(larger_mobject: Mobject): this {
+    if (!(larger_mobject instanceof PMobject)) {
+      const error = new Error("larger_mobject must be an instance of PMobject");
+      error.name = "AssertionError";
+      throw error;
+    }
+    this.apply_over_attr_arrays((a) =>
+      stretch_array_to_length(a, larger_mobject.get_num_points()),
+    );
+    return this;
+  }
+
+  interpolate_color(mobject1: Mobject, mobject2: Mobject, alpha: number): this {
+    const first = mobject1 as PMobject;
+    const second = mobject2 as PMobject;
+    // NOTE: bezier.interpolate() collapses single-row inputs to 1-D and
+    // truncates rows to width 3, so the (N, 4) shape of rgbas is restored
+    // explicitly here.
+    const blended = pointRows(interpolate(first.rgbas, second.rgbas, alpha), 4);
+    this.rgbas = array(blended.length > 0 ? blended : []).reshape(blended.length, 4) as NDArray;
+    this.set_stroke_width(
+      interpolate(first.get_stroke_width(), second.get_stroke_width(), alpha) as number,
+    );
+    return this;
+  }
+
+  pointwise_become_partial(mobject: Mobject, a: number, b: number): this {
+    const count = mobject.get_num_points();
+    const lower_index = Math.trunc(count * a);
+    const upper_index = Math.trunc(count * b);
+    for (const attr of this.get_array_attrs()) {
+      const full_array = (mobject as unknown as Record<string, NDArray>)[attr];
+      if (full_array === undefined) continue;
+      const width = full_array.shape.length > 1
+        ? (full_array.shape[full_array.shape.length - 1] ?? this.dim)
+        : this.dim;
+      const partial = pointRows(full_array, width).slice(lower_index, upper_index);
+      (this as unknown as Record<string, NDArray>)[attr] = array(
+        partial.length > 0 ? partial : [],
+      ).reshape(partial.length, width) as NDArray;
+    }
+    return this;
   }
 }
 

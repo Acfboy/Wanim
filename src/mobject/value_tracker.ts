@@ -1,5 +1,7 @@
-import { zeros } from "numpy-ts";
+import { array, zeros } from "numpy-ts";
 import { Mobject, type MobjectOptions } from "./mobject.js";
+import { pointRows } from "../utils/arrays.js";
+import { straight_path, type PathFuncType } from "../utils/paths.js";
 import type { ComplexPoint } from "../utils/arrays.js";
 
 export type ComplexValue = ComplexPoint | readonly [number, number] | number;
@@ -43,6 +45,29 @@ export class ValueTracker extends Mobject {
 
   __bool__(): boolean {
     return Boolean(this.get_value());
+  }
+
+  __add__(d_value: number | Mobject): ValueTracker {
+    if (d_value instanceof Mobject) {
+      const error = new Error(
+        "Cannot increment ValueTracker by a Mobject. Please provide a scalar value.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    return new ValueTracker(this.get_value() + d_value);
+  }
+
+  __iadd__(d_value: number | Mobject): this {
+    if (d_value instanceof Mobject) {
+      const error = new Error(
+        "Cannot increment ValueTracker by a Mobject. Please provide a scalar value.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    this.increment_value(d_value);
+    return this;
   }
 
   __floordiv__(d_value: number): ValueTracker {
@@ -119,6 +144,47 @@ export class ValueTracker extends Mobject {
       throw error;
     }
     this.set_value(this.get_value() / d_value);
+    return this;
+  }
+
+  __sub__(d_value: number | Mobject): ValueTracker {
+    if (d_value instanceof Mobject) {
+      const error = new Error(
+        "Cannot decrement ValueTracker by a Mobject. Please provide a scalar value.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    return new ValueTracker(this.get_value() - d_value);
+  }
+
+  __isub__(d_value: number | Mobject): this {
+    if (d_value instanceof Mobject) {
+      const error = new Error(
+        "Cannot decrement ValueTracker by a Mobject. Please provide a scalar value.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    this.increment_value(-d_value);
+    return this;
+  }
+
+  interpolate(
+    mobject1: Mobject,
+    mobject2: Mobject,
+    alpha: number,
+    path_func: PathFuncType | null = null,
+  ): this {
+    const func = (path_func ?? straight_path()) as PathFuncType;
+    const blended = func(mobject1.points, mobject2.points, alpha);
+    // NOTE: numpy path functions preserve the (1, 3) shape of the points,
+    // while the shared interpolate() collapses single rows to 1-D; restore
+    // the 2-D shape so get_value() keeps working (mirrors Python).
+    const rows = pointRows(blended, this.dim);
+    this.set({
+      points: array(rows.length > 0 ? rows : []).reshape(rows.length, this.dim),
+    });
     return this;
   }
 }

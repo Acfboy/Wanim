@@ -2,7 +2,7 @@ import { Mobject, Group } from "./mobject.js";
 import { VMobject, VGroup } from "./types/vectorized_mobject.js";
 import { array } from "numpy-ts";
 import type { NDArray } from "numpy-ts";
-import { addPoints, norm, pointRows, pointsFrom } from "../utils/arrays.js";
+import { addPoints, isNDArray, norm, pointRows, pointsFrom } from "../utils/arrays.js";
 
 export type GraphVertex = string | number | boolean | object;
 export type GraphEdge = readonly [GraphVertex, GraphVertex];
@@ -62,11 +62,19 @@ export const LayoutFunction = class LayoutFunction {
   }
 };
 
+export type EdgeConstructor = new (...args: any[]) => Mobject;
+
 export class GenericGraph extends VMobject {
   vertices: Map<GraphVertex, Mobject>;
   edges: Map<string, Mobject>;
   _graph: NetworkXGraphLike;
   _layout: Map<GraphVertex, NDArray>;
+  _edge_config: Map<string, Record<string, unknown>> = new Map();
+  _tip_config: Map<string, Record<string, unknown>> = new Map();
+  _labels: Map<GraphVertex, unknown> = new Map();
+  _vertex_config: Map<GraphVertex, Record<string, unknown>> = new Map();
+  default_vertex_config: Record<string, unknown> = {};
+  default_edge_config: Record<string, unknown> = {};
 
   constructor(vertices: GraphVertex[] = [], edges: GraphEdge[] = [], options: Record<string, unknown> = {}) {
     super(options);
@@ -103,11 +111,54 @@ export class GenericGraph extends VMobject {
     if (edge) return edge;
     throw new Error(`Could not find ${String(key)} in vertices or edges`);
   }
+
+  _populate_edge_dict(_edges: GraphEdge[], _edge_type: EdgeConstructor): void {
+    const error = new Error("To be implemented in concrete subclasses");
+    error.name = "NotImplementedError";
+    throw error;
+  }
+
+  _add_created_vertex(
+    vertex: GraphVertex,
+    position: number[] | NDArray,
+    vertex_config: Record<string, unknown>,
+    vertex_mobject: Mobject,
+  ): Mobject {
+    if (this.vertices.has(vertex)) {
+      const error = new Error(
+        `Vertex identifier '${String(vertex)}' is already used for a vertex in this graph.`,
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    this._graph.addNode(vertex);
+    this._layout.set(vertex, isNDArray(position) ? position : array(position) as NDArray);
+    if ("label" in vertex_config) this._labels.set(vertex, vertex_config["label"]);
+    this._vertex_config.set(vertex, vertex_config);
+    this.vertices.set(vertex, vertex_mobject);
+    (this.vertices.get(vertex) as Mobject).move_to(position);
+    this.add(this.vertices.get(vertex) as Mobject);
+    return this.vertices.get(vertex) as Mobject;
+  }
 }
 
 export class Graph extends GenericGraph {
   static _empty_networkx_graph(): NetworkXGraphLike {
     return new NetworkXGraph();
+  }
+
+  override _populate_edge_dict(edges: GraphEdge[], edge_type: EdgeConstructor): void {
+    for (const [u, v] of edges) {
+      const cfg = this._edge_config.get(edgeKey(u, v)) ?? {};
+      this.edges.set(
+        edgeKey(u, v),
+        new edge_type(
+          (this.getItem(u) as Mobject).get_center(),
+          (this.getItem(v) as Mobject).get_center(),
+          { z_index: -1, ...cfg },
+        ),
+      );
+    }
   }
 }
 
@@ -116,6 +167,29 @@ export class DiGraph extends GenericGraph {
     const graph = new NetworkXGraph();
     graph.directed = true;
     return graph;
+  }
+
+  override _populate_edge_dict(edges: GraphEdge[], edge_type: EdgeConstructor): void {
+    for (const [u, v] of edges) {
+      const cfg = this._edge_config.get(edgeKey(u, v)) ?? {};
+      const edge = new edge_type(this.getItem(u), this.getItem(v), { z_index: -1, ...cfg });
+      this.edges.set(edgeKey(u, v), edge);
+    }
+    for (const [u, v] of edges) {
+      const edge = this.edges.get(edgeKey(u, v)) as Mobject;
+      const tipCfg = this._tip_config.get(edgeKey(u, v)) ?? {};
+      // NOTE: Python calls edge.add_tip(**tip_config); TipableVMobject.add_tip
+      // takes positional arguments, so the known keys are mapped explicitly.
+      (edge as unknown as {
+        add_tip(tip?: unknown, tip_shape?: unknown, tip_length?: unknown, tip_width?: unknown, at_start?: unknown): void;
+      }).add_tip(
+        (tipCfg["tip"] as unknown) ?? null,
+        (tipCfg["tip_shape"] as unknown) ?? null,
+        (tipCfg["tip_length"] as unknown) ?? null,
+        (tipCfg["tip_width"] as unknown) ?? null,
+        (tipCfg["at_start"] as unknown) ?? false,
+      );
+    }
   }
 }
 

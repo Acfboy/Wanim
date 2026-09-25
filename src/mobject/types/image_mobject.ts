@@ -2,6 +2,7 @@ import { array, type NDArray } from "numpy-ts";
 import { DOWN, LEFT, RIGHT, UP } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { addPoints, isNDArray, numeric, pointRows } from "../../utils/arrays.js";
+import { interpolate } from "../../utils/bezier.js";
 import { ManimColor, YELLOW_C, color_to_int_rgb, type ParsableManimColor } from "../../utils/color/core.js";
 import { change_to_rgba_array, get_full_raster_image_path } from "../../utils/images.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
@@ -251,6 +252,33 @@ export class ImageMobject extends AbstractImageMobject {
     return this;
   }
 
+  interpolate_color(mobject1: Mobject, mobject2: Mobject, alpha: number): this {
+    if (!(mobject1 instanceof ImageMobject) || !(mobject2 instanceof ImageMobject)) {
+      const error = new Error("Both mobjects must be ImageMobjects");
+      error.name = "AssertionError";
+      throw error;
+    }
+    if (mobject1.pixel_array.shape.join(",") !== mobject2.pixel_array.shape.join(",")) {
+      const error = new Error(
+        `Mobject pixel array shapes incompatible for interpolation.\nMobject 1 (${mobject1}) : ${mobject1.pixel_array.shape}\nMobject 2 (${mobject2}) : ${mobject2.pixel_array.shape}`,
+      );
+      error.name = "AssertionError";
+      throw error;
+    }
+    this.fill_opacity = interpolate(mobject1.fill_opacity, mobject2.fill_opacity, alpha) as number;
+    this.stroke_opacity = interpolate(mobject1.stroke_opacity, mobject2.stroke_opacity, alpha) as number;
+    // NOTE: bezier.interpolate() flattens arrays to rows, so the elementwise
+    // lerp over the (h, w, 4) pixel arrays is done on nested lists instead to
+    // preserve the shape exactly (mirrors numpy broadcasting in Python).
+    const first = mobject1.pixel_array.toArray() as unknown;
+    const second = mobject2.pixel_array.toArray() as unknown;
+    const blended = lerpNested(first, second, alpha);
+    this.pixel_array = (array(blended as number[][][]) as NDArray).astype(
+      this.pixel_array_dtype as "uint8",
+    ) as NDArray;
+    return this;
+  }
+
   get_style(): Record<string, unknown> {
     return {
       fill_color: new ManimColor(this.color.toRgb()).toHex(),
@@ -264,4 +292,11 @@ function alphaChannel(pixel_array: NDArray): number[][] {
   if (shape.length < 3 || (shape[2] ?? 0) < 4) return [];
   const voxels = (pixel_array as NDArray).toArray() as unknown[][][];
   return voxels.map((row) => row.map((pixel) => numeric((pixel as unknown[])[3])));
+}
+
+function lerpNested(first: unknown, second: unknown, alpha: number): unknown {
+  if (Array.isArray(first) && Array.isArray(second)) {
+    return first.map((value, index) => lerpNested(value, second[index], alpha));
+  }
+  return (1 - alpha) * Number(first) + alpha * Number(second);
 }

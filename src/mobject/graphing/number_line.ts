@@ -5,6 +5,7 @@ import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.j
 import { interpolate } from "../../utils/bezier.js";
 import { normalize } from "../../utils/space_ops.js";
 import { VGroup } from "../types/vectorized_mobject.js";
+import { Mobject } from "../mobject.js";
 import { LinearBase, _ScaleBase } from "./scale.js";
 
 // NOTE: mirrors CPython repr/str for floats: scientific notation when the
@@ -190,6 +191,36 @@ export class NumberLine extends VGroup {
 
   p2n(point: number[] | number[][] | NDArray): number | NDArray {
     return this.point_to_number(point);
+  }
+
+  number_to_point(number: number | number[] | NDArray): NDArray {
+    const scaled = this.scaling.inverse_function(number as number);
+    const x_min = this.x_range[0] ?? 0;
+    const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
+    let alphas: number | NDArray;
+    if (typeof scaled === "number") {
+      alphas = (scaled - x_min) / span;
+    } else {
+      const values = pointRows(scaled, 1).map((row) => row[0] ?? 0);
+      alphas = array(values.map((value) => (value - x_min) / span)) as NDArray;
+    }
+    const [start, end] = this.get_start_and_end();
+    const result = interpolate(start, end, alphas);
+    return (isNDArray(result) ? result : array(result as unknown as number[])) as NDArray;
+  }
+
+  n2p(number: number | number[] | NDArray): NDArray {
+    return this.number_to_point(number);
+  }
+
+  __matmul__(other: number | number[] | NDArray): NDArray {
+    return this.n2p(other);
+  }
+
+  __rmatmul__(other: number[] | NDArray | Mobject): number | NDArray {
+    let target: unknown = other;
+    if (target instanceof Mobject) target = (target as Mobject).get_center();
+    return this.p2n(target as number[] | NDArray);
   }
 
   get_unit_size(): number {
