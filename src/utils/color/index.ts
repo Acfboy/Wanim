@@ -4,7 +4,6 @@ export {
   BLUE_C,
   BLUE_D,
   BLUE_E,
-  BROWN,
   DARK_GRAY,
   DARK_GREY,
   GRAY,
