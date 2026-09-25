@@ -1,4 +1,4 @@
-import { array, type NDArray } from "numpy-ts";
+import { array, roots as polyRoots, type NDArray } from "numpy-ts";
 import { isNDArray, nestedRows, numeric, pointRows } from "./arrays.js";
 
 function rawRows(value: number[] | number[][] | NDArray): number[][] {
@@ -312,7 +312,245 @@ export function _get_subdivision_matrix(
   return array(subdivision_matrix) as NDArray;
 }
 
+export function integer_interpolate(
+  start: number,
+  end: number,
+  alpha: number,
+): [number, number] {
+  if (alpha >= 1) return [Math.trunc(end - 1), 1.0];
+  if (alpha <= 0) return [Math.trunc(start), 0];
+  const value = Math.trunc(interpolate(start, end, alpha) as number);
+  // NOTE: Python's % is floor-modulo (result takes the divisor's sign, so it
+  // always lands in [0, 1) here); JS % is truncated and can go negative.
+  const residue = ((end - start) * alpha) % 1;
+  return [value, residue < 0 ? residue + 1 : residue];
+}
+
+export function match_interpolate(
+  new_start: number,
+  new_end: number,
+  old_start: number,
+  old_end: number,
+  old_value: number | number[] | NDArray,
+): number | NDArray {
+  const old_alpha = inverse_interpolate(old_start, old_end, old_value);
+  return interpolate(new_start, new_end, old_alpha);
+}
+
+export let CP_CLOSED_MEMO: number[] = [1 / 3];
+export let UP_CLOSED_MEMO: number[] = [1 / 3];
+
 export let CP_OPEN_MEMO: number[] = [0.5];
+
+export function get_smooth_cubic_bezier_handle_points(
+  anchors: number[][] | NDArray,
+): [NDArray, NDArray] {
+  const rows = rawRows(anchors);
+  const n_anchors = rows.length;
+  const dim = rows[0]?.length ?? 0;
+
+  if (n_anchors === 1) {
+    return [array([]).reshape(0, dim) as NDArray, array([]).reshape(0, dim) as NDArray];
+  }
+
+  if (n_anchors === 2) {
+    const val = interpolate(
+      rows[0] ?? [],
+      rows[1] ?? [],
+      array([[1 / 3], [2 / 3]]),
+    ) as NDArray;
+    const valRows = pointRows(val, dim);
+    return [array(valRows[0] ?? []) as NDArray, array(valRows[1] ?? []) as NDArray];
+  }
+
+  if (is_closed(anchors)) {
+    return get_smooth_closed_cubic_bezier_handle_points(anchors);
+  }
+  return get_smooth_open_cubic_bezier_handle_points(anchors);
+}
+
+export function get_smooth_closed_cubic_bezier_handle_points(
+  anchors: number[][] | NDArray,
+): [NDArray, NDArray] {
+  const A = rawRows(anchors);
+  const N = A.length - 1;
+  const dim = A[0]?.length ?? 0;
+
+  const len_memo = CP_CLOSED_MEMO.length;
+  let cp: number[];
+  let up: number[];
+  if (len_memo < N - 1) {
+    cp = new Array(N - 1).fill(0);
+    up = new Array(N - 1).fill(0);
+    for (let i = 0; i < len_memo; i += 1) {
+      cp[i] = CP_CLOSED_MEMO[i] ?? 0;
+      up[i] = UP_CLOSED_MEMO[i] ?? 0;
+    }
+    for (let i = len_memo; i < N - 1; i += 1) {
+      cp[i] = 1 / (4 - (cp[i - 1] ?? 0));
+      up[i] = -(cp[i] ?? 0) * (up[i - 1] ?? 0);
+    }
+    CP_CLOSED_MEMO = cp;
+    UP_CLOSED_MEMO = up;
+  } else {
+    cp = CP_CLOSED_MEMO.slice(0, N - 1);
+    up = UP_CLOSED_MEMO.slice(0, N - 1);
+  }
+
+  const cpAt = (index: number): number => cp[index] ?? 0;
+  const upAt = (index: number): number => up[index] ?? 0;
+
+  // The last element of u' is different.
+  const cp_last_division = 1 / (3 - cpAt(N - 2));
+  const up_last = cp_last_division * (1 - upAt(N - 2));
+
+  // Backward Substitution 1: calculate q.
+  const q: number[][] = Array.from({ length: N }, () => new Array(dim).fill(0));
+  q[N - 1] = new Array(dim).fill(up_last);
+  for (let i = N - 2; i >= 0; i -= 1) {
+    const next = q[i + 1] ?? [];
+    q[i] = Array.from(
+      { length: dim },
+      (_, c) => (upAt(i) - cpAt(i) * (next[c] ?? 0)),
+    );
+  }
+
+  // Forward Substitution 2: calculate Dp (D prime).
+  const aux: number[][] = Array.from({ length: N }, (_, i) =>
+    (A[i] ?? []).map((v, c) => 4 * v + 2 * ((A[i + 1] ?? [])[c] ?? 0)),
+  );
+  const Dp: number[][] = Array.from({ length: N }, () => new Array(dim).fill(0));
+  Dp[0] = (aux[0] ?? []).map((v) => v / 3);
+  for (let i = 1; i < N - 1; i += 1) {
+    Dp[i] = (aux[i] ?? []).map((v, c) => cpAt(i) * (v - ((Dp[i - 1] ?? [])[c] ?? 0)));
+  }
+  Dp[N - 1] = (aux[N - 1] ?? []).map(
+    (v, c) => cp_last_division * (v - ((Dp[N - 2] ?? [])[c] ?? 0)),
+  );
+
+  // Backward Substitution: Y aliases Dp (exactly as in Python).
+  const Y = Dp;
+  for (let i = N - 2; i >= 0; i -= 1) {
+    Y[i] = (Dp[i] ?? []).map((v, c) => v - cpAt(i) * ((Y[i + 1] ?? [])[c] ?? 0));
+  }
+
+  // H1 = Y - 1/(1 + q0 + q{N-1}) * q * (Y0 + Y{N-1}).
+  // NOTE: v is an N-vector with v_0 = v_{N-1} = 1, so v^t q = q_0 + q_{N-1}
+  // is a dim-vector and the division below is elementwise per component:
+  // H1[i][c] = Y[i][c] - q[i][c] * (Y[0][c] + Y[N-1][c]) / (1 + q[0][c] + q[N-1][c]).
+  // NOTE: the subtraction term is associated exactly like NumPy evaluates
+  // `Y - 1/(1 + q[0] + q[N-1]) * q * (Y[0] + Y[N-1])` (left-associative per
+  // component); any other grouping differs by 1 ulp in cancellation regimes.
+  const q0 = q[0] ?? [];
+  const qLast = q[N - 1] ?? [];
+  const y0 = Y[0] ?? [];
+  const yLast = Y[N - 1] ?? [];
+  const H1: number[][] = Y.map((row, i) =>
+    (row ?? []).map((v, c) => {
+      const s = 1 / (1 + (q0[c] ?? 0) + (qLast[c] ?? 0));
+      return v - s * (((q[i] ?? [])[c] ?? 0) * ((y0[c] ?? 0) + (yLast[c] ?? 0)));
+    }),
+  );
+
+  // H2[0:N-1] = 2*A[1:N] - H1[1:N]; H2[N-1] = 2*A[N] - H1[0].
+  const H2: number[][] = Array.from({ length: N }, () => new Array(dim).fill(0));
+  for (let i = 0; i < N - 1; i += 1) {
+    H2[i] = (A[i + 1] ?? []).map((v, c) => 2 * v - ((H1[i + 1] ?? [])[c] ?? 0));
+  }
+  H2[N - 1] = (A[N] ?? []).map((v, c) => 2 * v - ((H1[0] ?? [])[c] ?? 0));
+
+  return [array(H1) as NDArray, array(H2) as NDArray];
+}
+
+function choose(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  const kk = Math.min(k, n - k);
+  let result = 1;
+  for (let i = 0; i < kk; i += 1) result = (result * (n - i)) / (i + 1);
+  return Math.round(result);
+}
+
+function bankersRound(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  const scaled = value * factor;
+  const floored = Math.floor(scaled);
+  const diff = scaled - floored;
+  let rounded: number;
+  if (diff < 0.5) rounded = floored;
+  else if (diff > 0.5) rounded = floored + 1;
+  else rounded = floored % 2 === 0 ? floored : floored + 1;
+  return rounded / factor;
+}
+
+export function proportions_along_bezier_curve_for_point(
+  point: number[] | NDArray,
+  control_points: number[][] | NDArray,
+  round_to = 1e-6,
+): NDArray {
+  // NOTE: Python requires np.shape(point) == np.shape(c_p) for every
+  // control point; a flat 3-point vs 3-vectors is the normal case.
+  const pointCoords = rawRows(point)[0] ?? [];
+  const cpRows = rawRows(control_points);
+  for (const c_p of cpRows) {
+    if (c_p.length !== pointCoords.length) {
+      const error = new Error(
+        `Point ${JSON.stringify(point)} and Control Points ${JSON.stringify(control_points)} have different shapes.`,
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+  }
+  const n = cpRows.length - 1;
+  const dim = pointCoords.length;
+
+  const decimals = Math.trunc(Math.log10(1 / round_to));
+  const perDimRoots: number[][] = [];
+  for (let d = 0; d < dim; d += 1) {
+    const coord = pointCoords[d] ?? 0;
+    const control_coords = cpRows.map((row) => row[d] ?? 0);
+    const terms: number[] = [];
+    for (let term_power = n; term_power >= 0; term_power -= 1) {
+      const outercoeff = choose(n, term_power);
+      let inner = 0;
+      let sign = 1;
+      for (let subterm_num = term_power; subterm_num >= 0; subterm_num -= 1) {
+        const innercoeff = choose(term_power, subterm_num) * sign;
+        let subterm = innercoeff * (control_coords[subterm_num] ?? 0);
+        if (term_power === 0) subterm -= coord;
+        inner += subterm;
+        sign *= -1;
+      }
+      terms.push(outercoeff * inner);
+    }
+    if (terms.every((term) => term === 0)) continue;
+    // NOTE: numpy's Polynomial(terms[::-1]).roots() solves the same zeros as
+    // numpy.roots(terms) (highest-degree-first); feed terms directly.
+    const found = polyRoots(terms) as NDArray;
+    const raw = found.toArray() as unknown[];
+    if (raw.length === 0) {
+      perDimRoots.push([]);
+      continue;
+    }
+    const rounded = raw.map((item) => {
+      if (typeof item === "number") return { re: bankersRound(item, decimals), im: 0 };
+      const c = item as { re: number; im: number };
+      return { re: bankersRound(c.re ?? 0, decimals), im: bankersRound(c.im ?? 0, decimals) };
+    });
+    perDimRoots.push(rounded.filter((c) => c.im === 0).map((c) => c.re));
+  }
+
+  if (perDimRoots.length === 0) {
+    const error = new TypeError("reduce() of empty iterable with no initial value");
+    throw error;
+  }
+  // NOTE: Python reduce(np.intersect1d, roots): sorted unique intersection.
+  let common = [...new Set(perDimRoots[0] ?? [])].sort((a, b) => a - b);
+  for (const list of perDimRoots.slice(1)) {
+    const other = new Set(list);
+    common = [...new Set(common.filter((v) => other.has(v)))].sort((a, b) => a - b);
+  }
+  return array(common.filter((r) => 0 <= r && r <= 1)) as NDArray;
+}
 
 export function get_smooth_open_cubic_bezier_handle_points(
   anchors: number[][] | NDArray,

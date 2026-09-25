@@ -1,9 +1,11 @@
 import { platform } from "node:os";
 import { config } from "../_config/utils.js";
+import { MethodWithArgs } from "../data_structures.js";
 import { Mobject } from "../mobject/mobject.js";
 import { Animation, prepare_animation } from "../animation/animation.js";
+import { DefaultSectionType } from "./section.js";
 
-export type SceneInteractAction = SceneInteractRerun | SceneInteractContinue | string;
+export type SceneInteractAction = SceneInteractRerun | SceneInteractContinue | MethodWithArgs | string;
 
 export class SceneInteractContinue {
   sender: string;
@@ -131,6 +133,14 @@ export class Scene {
     this.mobjects = [];
     this.foreground_mobjects = [];
     return this;
+  }
+
+  next_section(
+    name = "unnamed",
+    section_type: string = DefaultSectionType.NORMAL,
+    skip_animations = false,
+  ): void {
+    this.renderer.file_writer.next_section(name, section_type, skip_animations);
   }
 
   get_mobject_family_members(): Mobject[] {
@@ -287,12 +297,39 @@ export class Scene {
     const get_embedded_method = (methodName: string): ((...args: unknown[]) => void) => {
       const method = (this as unknown as Record<string, (...args: unknown[]) => void>)[methodName];
       const embedded_method = (...args: unknown[]): void => {
-        this.queue.push(`${methodName}(${args.map(String).join(", ")})`);
-        void method;
+        // NOTE: mirrors Python's MethodWithArgs(method, args, kwargs); the
+        // TS interactive shell has no **kwargs channel, so kwargs is {}.
+        this.queue.push(new MethodWithArgs(method, [...args], {}));
       };
       return embedded_method;
     };
     void get_embedded_method;
     console.warn("interactive_embed requires an IPython terminal session, which is not available in the TypeScript runtime.");
+  }
+
+  _configure_pygui(update = true): void {
+    // NOTE: DearPyGUI has no TypeScript equivalent; only the queue/config
+    // behavior of the GUI callbacks is ported. The window construction itself
+    // is out of scope for the interpreter target.
+    const rerun_callback = (_sender: unknown, _data: unknown): void => {
+      this.queue.push(new SceneInteractRerun("gui"));
+    };
+
+    const continue_callback = (_sender: unknown, _data: unknown): void => {
+      this.queue.push(new SceneInteractContinue("gui"));
+    };
+
+    const scene_selection_callback = (sender: { get_value?: () => string } | string, _data: unknown): void => {
+      const selected = typeof sender === "string"
+        ? sender
+        : sender.get_value?.() ?? "";
+      config.scene_names = [selected];
+      this.queue.push(new SceneInteractRerun("gui"));
+    };
+    void rerun_callback;
+    void continue_callback;
+    void scene_selection_callback;
+    void update;
+    console.warn("_configure_pygui requires DearPyGUI, which is not available in the TypeScript runtime.");
   }
 }

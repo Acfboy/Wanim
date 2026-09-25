@@ -282,9 +282,35 @@ export class VMobject extends Mobject {
     return values.length === 0 ? this.fill_opacity : values.every((value) => value === 0) ? 0 : values[0];
   }
 
+  get_fill_colors(): Array<ManimColor | null> {
+    return pointRows(this.get_fill_rgbas(), 4).map((rgba) =>
+      rgba.some((value) => value !== 0)
+        ? new ManimColor(array(rgba.slice(0, 3)) as ParsableManimColor)
+        : null,
+    );
+  }
+
+  get_fill_opacities(): NDArray {
+    return array(pointRows(this.get_fill_rgbas(), 4).map((rgba) => rgba[3] ?? 0)) as NDArray;
+  }
+
   get_stroke_opacity(): number {
     const values = pointRows(this.stroke_rgbas, 4).map((row) => row[3] ?? 0);
     return values.length === 0 ? this.stroke_opacity : values[0];
+  }
+
+  get_stroke_colors(background = false): Array<ManimColor | null> {
+    return pointRows(this.get_stroke_rgbas(background), 4).map((rgba) =>
+      rgba.some((value) => value !== 0)
+        ? new ManimColor(array(rgba.slice(0, 3)) as ParsableManimColor)
+        : null,
+    );
+  }
+
+  get_stroke_opacities(background = false): NDArray {
+    return array(
+      pointRows(this.get_stroke_rgbas(background), 4).map((rgba) => rgba[3] ?? 0),
+    ) as NDArray;
   }
 
   get_stroke_width(background = false): number {
@@ -411,7 +437,38 @@ export class VMobject extends Mobject {
     return result;
   }
 
-  get_anchors(): number[][] { return this.get_start_anchors(); }
+  get_anchors(): number[][] {
+    if (this.get_num_points() === 1) return rows(this.points, this.dim);
+    const starts = this.get_start_anchors();
+    const ends = this.get_end_anchors();
+    // NOTE: Python returns list(chain(zip(s, e, strict=True))): interleaved
+    // start/end anchors (length 2 * num_curves), not just the starts.
+    if (starts.length !== ends.length) {
+      const error = new Error(
+        `zip() argument 2 is shorter than argument 1 (strict zip lengths: ${starts.length}, ${ends.length})`,
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    const result: number[][] = [];
+    for (let index = 0; index < starts.length; index += 1) {
+      result.push(starts[index] ?? []);
+      result.push(ends[index] ?? []);
+    }
+    return result;
+  }
+
+  get_nth_curve_points(index: number): NDArray {
+    if (!(index < this.get_num_curves())) {
+      const error = new Error("assert n < self.get_num_curves()");
+      error.name = "AssertionError";
+      throw error;
+    }
+    const nppcc = this.n_points_per_cubic_curve;
+    return array(
+      rows(this.points, this.dim).slice(nppcc * index, nppcc * (index + 1)),
+    ) as NDArray;
+  }
 
   get_nth_curve_function(index: number): (t: number) => number[] {
     const start = index * this.n_points_per_cubic_curve;

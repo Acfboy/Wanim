@@ -103,6 +103,55 @@ export interface ManimConsole {
   print: (...args: unknown[]) => void;
 }
 
+import { appendFileSync, writeFileSync } from "node:fs";
+
+// NOTE: mirrors logging.FileHandler(log_path, mode="w") + JSONFormatter
+// attached to the shared "manim" logger. The TS port has no shared logger
+// registry (make_logger returns standalone loggers), so file targets are
+// kept in a module-level registry: set_file_logger truncates/creates the
+// file, and loggers created by make_logger append one JSON line per call.
+const fileLoggerPaths: string[] = [];
+
+export function get_file_logger_paths(): string[] {
+  return [...fileLoggerPaths];
+}
+
+function appendToFileLoggers(levelname: string, args: unknown[]): void {
+  if (fileLoggerPaths.length === 0) return;
+  const message = args.map((arg) => {
+    if (typeof arg === "string") return arg;
+    try {
+      return JSON.stringify(arg) ?? String(arg);
+    } catch {
+      return String(arg);
+    }
+  }).join(" ");
+  const line = JSON.stringify({ levelname, module: "manim", message }) + "\n";
+  for (const path of fileLoggerPaths) {
+    try {
+      appendFileSync(path, line, { encoding: "utf-8" });
+    } catch {
+      // NOTE: logging must never crash the program; ignore file errors.
+    }
+  }
+}
+
+export function set_file_logger(
+  scene_name: string,
+  module_name: string,
+  log_dir: string | { toString(): string },
+): void {
+  // NOTE: the log file name is <module>_<scene>.log (see the Python
+  // docstring); the file is opened with mode="w", i.e. truncated.
+  const log_file_name = `${String(module_name)}_${String(scene_name)}.log`;
+  const dir = String(log_dir);
+  const log_file_path = dir.endsWith("/") || dir.endsWith("\\")
+    ? `${dir}${log_file_name}`
+    : `${dir}/${log_file_name}`;
+  writeFileSync(log_file_path, "", { encoding: "utf-8" });
+  if (!fileLoggerPaths.includes(log_file_path)) fileLoggerPaths.push(log_file_path);
+}
+
 export function make_logger(
   parser: SectionProxyLike,
   verbosity: string,
@@ -128,11 +177,11 @@ export function make_logger(
   };
   const logger: ManimLogger = {
     level: active,
-    debug: (...args: unknown[]): void => { if (enabled("DEBUG")) stdoutConsole.print(...args); },
-    info: (...args: unknown[]): void => { if (enabled("INFO")) stdoutConsole.print(...args); },
-    warning: (...args: unknown[]): void => { if (enabled("WARNING")) errorConsole.print(...args); },
-    warn: (...args: unknown[]): void => { if (enabled("WARNING")) errorConsole.print(...args); },
-    error: (...args: unknown[]): void => { if (enabled("ERROR")) errorConsole.print(...args); },
+    debug: (...args: unknown[]): void => { if (enabled("DEBUG")) { stdoutConsole.print(...args); appendToFileLoggers("DEBUG", args); } },
+    info: (...args: unknown[]): void => { if (enabled("INFO")) { stdoutConsole.print(...args); appendToFileLoggers("INFO", args); } },
+    warning: (...args: unknown[]): void => { if (enabled("WARNING")) { errorConsole.print(...args); appendToFileLoggers("WARNING", args); } },
+    warn: (...args: unknown[]): void => { if (enabled("WARNING")) { errorConsole.print(...args); appendToFileLoggers("WARNING", args); } },
+    error: (...args: unknown[]): void => { if (enabled("ERROR")) { errorConsole.print(...args); appendToFileLoggers("ERROR", args); } },
   };
   return [logger, stdoutConsole, errorConsole];
 }

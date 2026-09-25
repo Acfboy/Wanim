@@ -257,6 +257,12 @@ export class Mobject {
     }
     this._assert_valid_submobjects(values);
     const unique = remove_list_redundancies(values);
+    if (values.length !== unique.length) {
+      console.warn(
+        "Attempted adding some Mobject as a child more than once, " +
+          "this is not possible. Repetitions are ignored.",
+      );
+    }
     this.submobjects = this.submobjects.filter((mobject) => !unique.includes(mobject));
     this.submobjects.push(...unique);
     return this;
@@ -572,6 +578,10 @@ export class Mobject {
   }
 
   save_state(): this {
+    if ("saved_state" in this && this.saved_state !== undefined) {
+      // Prevent exponential growth of data.
+      this.saved_state = null;
+    }
     this.saved_state = this.copy();
     return this;
   }
@@ -856,8 +866,10 @@ export class Mobject {
   }
 
   align_points(other: Mobject): this {
-    if (this.get_num_points() < other.get_num_points()) this.points = pointsFrom(other.points, this.dim);
-    else if (other.get_num_points() < this.get_num_points()) other.points = pointsFrom(this.points, other.dim);
+    const count1 = this.get_num_points();
+    const count2 = other.get_num_points();
+    if (count1 < count2) this.align_points_with_larger(other);
+    else if (count2 < count1) other.align_points_with_larger(this);
     return this;
   }
 

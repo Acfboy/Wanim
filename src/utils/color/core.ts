@@ -1132,3 +1132,22 @@ export function color_gradient(referenceColors: readonly ParsableManimColor[], l
 export function invert_color(color: ManimColor): ManimColor {
   return color.invert();
 }
+
+export function get_shaded_rgb(
+  rgb: number[] | readonly number[] | ColorArray,
+  point: number[] | readonly number[] | ColorArray,
+  unit_normal_vect: number[] | readonly number[] | ColorArray,
+  light_source: number[] | readonly number[] | ColorArray,
+): number[] {
+  const rgbRows = pointRows(rgb, 3)[0] ?? [0, 0, 0];
+  const pointRowsValue = pointRows(point, 3)[0] ?? [0, 0, 0];
+  const normalRows = pointRows(unit_normal_vect, 3)[0] ?? [0, 0, 0];
+  const lightRows = pointRows(light_source, 3)[0] ?? [0, 0, 0];
+  const diff = lightRows.map((value, index) => value - (pointRowsValue[index] ?? 0));
+  const norm = Math.hypot(...diff);
+  const to_sun = norm > 0 ? diff.map((value) => value / norm) : diff.map(() => 0);
+  const dot = normalRows.reduce((sum, value, index) => sum + value * (to_sun[index] ?? 0), 0);
+  let light = 0.5 * dot ** 3;
+  if (light < 0) light *= 0.5;
+  return rgbRows.map((value) => (value ?? 0) + light);
+}

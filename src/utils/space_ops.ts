@@ -1,6 +1,6 @@
 import { array, average, type NDArray } from "numpy-ts";
 import { isNDArray, numeric, type ComplexPoint } from "./arrays.js";
-import { OUT, RIGHT, TAU, UP } from "../constants.js";
+import { DOWN, OUT, RIGHT, TAU, UP } from "../constants.js";
 
 type VectorInput = NDArray | number[] | number[][] | readonly number[];
 
@@ -464,4 +464,50 @@ export function find_intersection(
 
 export function shoelace_direction(x_y: number[][] | NDArray): string {
   return shoelace(x_y) > 0 ? "CW" : "CCW";
+}
+
+export function get_unit_normal(
+  v1: number[] | readonly number[] | NDArray,
+  v2: number[] | readonly number[] | NDArray,
+  tol = 1e-6,
+): number[] {
+  const np_v1 = [...(toRows(v1 as VectorInput).rows[0] ?? [])];
+  const np_v2 = [...(toRows(v2 as VectorInput).rows[0] ?? [])];
+
+  // NOTE: Python divides by the greatest absolute component (not the norm).
+  const div1 = Math.max(...np_v1.map((value) => Math.abs(value)));
+  const div2 = Math.max(...np_v2.map((value) => Math.abs(value)));
+  let u: number[];
+  if (div1 === 0.0) {
+    if (div2 === 0.0) return [...(DOWN as unknown as number[])];
+    u = np_v2.map((value) => value / div2);
+  } else if (div2 === 0.0) {
+    u = np_v1.map((value) => value / div1);
+  } else {
+    // Normal scenario: v1 and v2 are both non-null.
+    const u1 = np_v1.map((value) => value / div1);
+    const u2 = np_v2.map((value) => value / div2);
+    const cp = cross(u1, u2);
+    const cp_norm = Math.sqrt(norm_squared(cp));
+    if (cp_norm > tol) return cp.map((value) => value / cp_norm);
+    // Otherwise, v1 and v2 were aligned.
+    u = u1;
+  }
+
+  // If you are here, you have an "unique", non-zero, unit-ish vector u.
+  // If it's also too aligned to the Z axis, just return DOWN.
+  if (Math.abs(u[0] ?? 0) < tol && Math.abs(u[1] ?? 0) < tol) {
+    return [...(DOWN as unknown as number[])];
+  }
+  // Otherwise rotate u in the plane it shares with the Z axis, 90° TOWARDS
+  // the Z axis: (u x [0, 0, 1]) x u == [-xz, -yz, x²+y²].
+  const cp = [
+    -(u[0] ?? 0) * (u[2] ?? 0),
+    -(u[1] ?? 0) * (u[2] ?? 0),
+    (u[0] ?? 0) * (u[0] ?? 0) + (u[1] ?? 0) * (u[1] ?? 0),
+  ];
+  const cp_norm = Math.sqrt(norm_squared(cp));
+  // Because the norm(u) == 0 case was filtered in the beginning, there is
+  // no need to check if the norm of cp is 0.
+  return cp.map((value) => value / cp_norm);
 }

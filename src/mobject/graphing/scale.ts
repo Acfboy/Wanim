@@ -14,13 +14,13 @@ export class _ScaleBase {
     this.custom_labels = custom_labels;
   }
 
-  function(_value: number | NDArray): number | NDArray {
+  function(_value: number | NDArray | readonly number[]): number | NDArray {
     const error = new Error();
     error.name = "NotImplementedError";
     throw error;
   }
 
-  inverse_function(_value: number | NDArray): number | NDArray {
+  inverse_function(_value: number | NDArray | readonly number[]): number | NDArray {
     const error = new Error();
     error.name = "NotImplementedError";
     throw error;
@@ -44,12 +44,28 @@ export class LinearBase extends _ScaleBase {
     this.scale_factor = scale_factor;
   }
 
-  override function(value: number): number {
-    return this.scale_factor * value;
+  override function(value: number): number;
+  override function(value: NDArray): NDArray;
+  override function(value: number[] | readonly number[]): NDArray;
+  override function(value: number | NDArray | number[] | readonly number[]): number | NDArray {
+    if (typeof value === "number") return this.scale_factor * value;
+    if (isNDArray(value)) {
+      const mapped = mapDeep((value as NDArray).toArray(), (item) => this.scale_factor * numeric(item));
+      return array(mapped as number | number[]) as NDArray;
+    }
+    return array((value as readonly number[]).map((item) => this.scale_factor * numeric(item))) as NDArray;
   }
 
-  override inverse_function(value: number): number {
-    return value / this.scale_factor;
+  override inverse_function(value: number): number;
+  override inverse_function(value: NDArray): NDArray;
+  override inverse_function(value: number[] | readonly number[]): NDArray;
+  override inverse_function(value: number | NDArray | number[] | readonly number[]): number | NDArray {
+    if (typeof value === "number") return value / this.scale_factor;
+    if (isNDArray(value)) {
+      const mapped = mapDeep((value as NDArray).toArray(), (item) => numeric(item) / this.scale_factor);
+      return array(mapped as number | number[]) as NDArray;
+    }
+    return array((value as readonly number[]).map((item) => numeric(item) / this.scale_factor)) as NDArray;
   }
 }
 

@@ -2,6 +2,7 @@ declare module "node:fs" {
   export function existsSync(path: string): boolean;
   export function readFileSync(path: string, options: { encoding: string }): string;
   export function writeFileSync(path: string, data: string, options?: { encoding: string }): void;
+  export function appendFileSync(path: string, data: string, options?: { encoding: string }): void;
   export function readdirSync(path: string): string[];
   export function unlinkSync(path: string): void;
   export function accessSync(path: string, mode?: number): void;

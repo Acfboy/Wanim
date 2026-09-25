@@ -99,8 +99,47 @@ function cloneValue(value: unknown): unknown {
   return value;
 }
 
+function keyError(message: string): Error {
+  const error = new Error(message);
+  error.name = "KeyError";
+  return error;
+}
+
+function purePosixNormalize(path: string): string {
+  // NOTE: mirrors pathlib.PurePosixPath: single dots and empty segments
+  // (from "./" prefixes or doubled slashes) are dropped, ".." is kept
+  // literally, and a leading "/" marks an absolute path.
+  if (path === "") return path;
+  const absolute = path.startsWith("/");
+  const kept: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    kept.push(segment);
+  }
+  const joined = kept.join("/");
+  if (absolute) return `/${joined}`;
+  return joined === "" ? "." : joined;
+}
+
+function formatG(value: number): string {  // NOTE: mirrors Python f"{value:g}": general format with 6 significant
+  // digits, trailing zeros stripped, fixed notation for small exponents.
+  if (!Number.isFinite(value)) {
+    if (Number.isNaN(value)) return "nan";
+    return value > 0 ? "inf" : "-inf";
+  }
+  if (value === 0) return "0";
+  let text = value.toPrecision(6);
+  if (text.includes("e") || text.includes("E")) {
+    text = text.replace(/(\.\d*?)0+e/, "$1e").replace(/\.e/, "e");
+  } else if (text.includes(".")) {
+    text = text.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  }
+  return text;
+}
+
 export class ManimConfig {
   private readonly values: Record<string, unknown>;
+  private parserData: ConfigParserData | null = null;
 
   constructor(initializeDefaults = false) {
     this.values = {};
@@ -630,6 +669,285 @@ export class ManimConfig {
     const result = new ManimConfig(false);
     for (const key of Object.keys(this.values)) result.values[key] = cloneValue(this.values[key]);
     return result;
+  }
+
+  digest_parser(parser: ConfigParserData): this {
+    this.parserData = parser;
+
+    const sectionOf = (name: string): Map<string, string> => {
+      const section = parser.get(name);
+      if (!section) {
+        // NOTE: mirrors configparser, where parser[name] raises KeyError
+        // for a missing section.
+        throw keyError(name);
+      }
+      return section;
+    };
+    const getOrFallback = (section: Map<string, string>, key: string, fallback: string): string => {
+      const value = section.get(key);
+      return value === undefined ? fallback : value;
+    };
+    const getRequired = (sectionName: string, key: string): string => {
+      const section = sectionOf(sectionName);
+      const value = section.get(key);
+      if (value === undefined) {
+        const error = new Error(`No option '${key}' in section: '${sectionName}'`);
+        error.name = "NoOptionError";
+        throw error;
+      }
+      return value;
+    };
+    const getBoolean = (sectionName: string, key: string, fallback = false): boolean => {
+      const section = sectionOf(sectionName);
+      const raw = section.get(key);
+      if (raw === undefined) return fallback;
+      const normalized = raw.trim().toLowerCase();
+      if (["1", "yes", "true", "on"].includes(normalized)) return true;
+      if (["0", "no", "false", "off"].includes(normalized)) return false;
+      const error = new Error(`Not a boolean: ${raw}`);
+      error.name = "ValueError";
+      throw error;
+    };
+    const getInt = (sectionName: string, key: string): number => {
+      const raw = getRequired(sectionName, key);
+      if (!/^[+-]?\d+$/.test(raw.trim())) {
+        const error = new Error(`invalid literal for int() with base 10: '${raw}'`);
+        error.name = "ValueError";
+        throw error;
+      }
+      return Number.parseInt(raw.trim(), 10);
+    };
+    const getFloat = (sectionName: string, key: string, fallback?: number): number => {
+      const section = sectionOf(sectionName);
+      const raw = section.get(key);
+      if (raw === undefined) {
+        if (fallback !== undefined) return fallback;
+        const error = new Error(`No option '${key}' in section: '${sectionName}'`);
+        error.name = "NoOptionError";
+        throw error;
+      }
+      const value = Number(raw);
+      if (Number.isNaN(value)) {
+        const error = new Error(`could not convert string to float: '${raw}'`);
+        error.name = "ValueError";
+        throw error;
+      }
+      return value;
+    };
+
+    // boolean keys
+    for (const key of [
+      "notify_outdated_version",
+      "write_to_movie",
+      "save_last_frame",
+      "write_all",
+      "save_pngs",
+      "save_as_gif",
+      "save_sections",
+      "preview",
+      "show_in_file_browser",
+      "log_to_file",
+      "disable_caching",
+      "disable_caching_warning",
+      "flush_cache",
+      "custom_folders",
+      "enable_gui",
+      "fullscreen",
+      "use_projection_fill_shaders",
+      "use_projection_stroke_shaders",
+      "enable_wireframe",
+      "force_window",
+      "no_latex_cleanup",
+      "dry_run",
+    ] as const) {
+      const value = getBoolean("CLI", key, false);
+      if (key === "custom_folders") {
+        // NOTE: Python stores the raw boolean via _set_dir; the TS
+        // custom_folders setter only accepts strings, so store directly.
+        (this as unknown as { _set_dir(key: string, val: unknown): void })._set_dir(key, value);
+      } else {
+        (this as unknown as Record<string, unknown>)[key] = value;
+      }
+    }
+
+    // int keys
+    for (const key of [
+      "from_animation_number",
+      "upto_animation_number",
+      "max_files_cached",
+      "max_inflight_encoders",
+      "encoder_queue_size",
+      // the next two must be set BEFORE digesting frame_width and frame_height
+      "pixel_height",
+      "pixel_width",
+      "seed",
+      "window_monitor",
+      "zero_pad",
+    ] as const) {
+      (this as unknown as Record<string, unknown>)[key] = getInt("CLI", key);
+    }
+
+    // str keys
+    for (const key of [
+      "assets_dir",
+      "verbosity",
+      "media_dir",
+      "log_dir",
+      "video_dir",
+      "sections_dir",
+      "images_dir",
+      "text_dir",
+      "tex_dir",
+      "partial_movie_dir",
+      "input_file",
+      "output_file",
+      "movie_file_extension",
+      "background_color",
+      "renderer",
+      "window_position",
+      "preview_command",
+    ] as const) {
+      const value = getOrFallback(sectionOf("CLI"), key, "");
+      if (
+        key === "media_dir" || key === "video_dir" || key === "images_dir" ||
+        key === "partial_movie_dir" || key === "movie_file_extension"
+      ) {
+        // NOTE: these have no dedicated TS accessors; store generically.
+        this.set(key, value);
+      } else {
+        (this as unknown as Record<string, unknown>)[key] = value;
+      }
+    }
+
+    // float keys
+    for (const key of ["background_opacity", "frame_rate"] as const) {
+      (this as unknown as Record<string, unknown>)[key] = getFloat("CLI", key);
+    }
+
+    // tuple keys
+    const gui_location = getRequired("CLI", "gui_location").split(/[;,\-]/).map((part) => Number.parseInt(part.trim(), 10));
+    this.gui_location = gui_location;
+
+    const window_size = getRequired("CLI", "window_size");
+    if (window_size !== "default") {
+      this.window_size = window_size.split(/[;,\-]/).map((part) => Number.parseInt(part.trim(), 10));
+    } else {
+      this.window_size = window_size;
+    }
+
+    // plugins
+    const plugins = getOrFallback(sectionOf("CLI"), "plugins", "");
+    this.plugins = plugins === "" ? [] : plugins.split(",");
+
+    // the next two must be set AFTER digesting pixel_width and pixel_height
+    this.set("frame_height", getFloat("CLI", "frame_height", 8.0));
+    const frame_width_raw = sectionOf("CLI").get("frame_width");
+    if (frame_width_raw === undefined || frame_width_raw === null || String(frame_width_raw).trim() === "" || String(frame_width_raw).trim().toLowerCase() === "none") {
+      this.set("frame_width", (this.get("frame_height") as number) * (this.get("aspect_ratio") as number));
+    } else {
+      this.set("frame_width", Number(frame_width_raw));
+    }
+
+    // other logic
+    const tex_template_file = sectionOf("CLI").get("tex_template_file");
+    if (tex_template_file) this.tex_template_file = tex_template_file;
+
+    const progress_bar = sectionOf("CLI").get("progress_bar");
+    if (progress_bar) this.progress_bar = progress_bar;
+
+    const ffmpeg_loglevel = sectionOf("ffmpeg").get("loglevel");
+    if (ffmpeg_loglevel) {
+      (this as unknown as { values: Record<string, unknown> }).values["ffmpeg_loglevel"] = ffmpeg_loglevel;
+    }
+
+    let media_embed: boolean | null;
+    const raw_embed = sectionOf("jupyter").get("media_embed");
+    if (raw_embed === undefined) {
+      // NOTE: mirrors configparser.getboolean with no fallback, which raises
+      // NoOptionError for a missing option (only ValueError is caught below
+      // in Python, so this propagates there too).
+      const error = new Error(`No option 'media_embed' in section: 'jupyter'`);
+      error.name = "NoOptionError";
+      throw error;
+    }
+    const normalized = raw_embed.trim().toLowerCase();
+    if (["1", "yes", "true", "on"].includes(normalized)) media_embed = true;
+    else if (["0", "no", "false", "off"].includes(normalized)) media_embed = false;
+    else media_embed = null;
+    this.set("media_embed", media_embed);
+
+    const media_width = sectionOf("jupyter").get("media_width");
+    if (media_width) this.set("media_width", media_width);
+
+    const quality = getOrFallback(sectionOf("CLI"), "quality", "");
+    if (quality) this.quality = _determine_quality(quality);
+
+    return this;
+  }
+
+  get_dir(key: string, kwargs: Record<string, unknown> = {}): string | null {
+    const dirs = [
+      "assets_dir",
+      "media_dir",
+      "video_dir",
+      "sections_dir",
+      "images_dir",
+      "text_dir",
+      "tex_dir",
+      "log_dir",
+      "input_file",
+      "output_file",
+      "partial_movie_dir",
+    ];
+    if (!dirs.includes(key)) {
+      throw keyError(
+        "must pass one of "
+        + "{media,video,images,text,tex,log}_dir "
+        + "or {input,output}_file",
+      );
+    }
+
+    const remaining = dirs.filter((candidate) => candidate !== key);
+
+    const all_args: Record<string, unknown> = {};
+    for (const candidate of remaining) all_args[candidate] = this.get(candidate);
+    for (const [name, value] of Object.entries(kwargs)) all_args[name] = value;
+    all_args["quality"] = `${this.get("pixel_height")}p${formatG(this.get("frame_rate") as number)}`;
+
+    const raw = this.get(key);
+    if (typeof raw !== "string") {
+      const error = new Error(`assert isinstance(path, str)`);
+      error.name = "AssertionError";
+      throw error;
+    }
+    let path = raw;
+    const template = raw;
+    while (path.includes("{")) {
+      try {
+        path = path.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+          if (!Object.prototype.hasOwnProperty.call(all_args, name) || all_args[name] === undefined) {
+            const missing = new Error(name);
+            missing.name = "KeyError";
+            throw missing;
+          }
+          return String(all_args[name]);
+        });
+      } catch (error) {
+        if ((error as Error).name === "KeyError") {
+          throw keyError(
+            `${key} ${template} requires the following keyword arguments: ${(error as Error).message}`,
+          );
+        }
+        throw error;
+      }
+      // NOTE: if no placeholder matched (e.g. a literal "{{"), Python would
+      // loop forever; break defensively instead.
+      if (path === raw) break;
+    }
+    if (!path) return null;
+    // NOTE: Python returns a pathlib.Path, which normalizes away "./" and
+    // duplicate slashes (Path("./media/Tex").as_posix() == "media/Tex").
+    return purePosixNormalize(path);
   }
 }
 
