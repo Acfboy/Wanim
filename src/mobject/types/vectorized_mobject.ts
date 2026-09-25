@@ -1,4 +1,4 @@
-import { array, NDArray } from "numpy-ts";
+import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
@@ -105,6 +105,64 @@ export class VMobject extends Mobject {
 
   get n_points_per_curve(): number {
     return this.n_points_per_cubic_curve;
+  }
+
+  static get_mobject_type_class(): typeof VMobject {
+    return VMobject;
+  }
+
+  static getMobjectTypeClass(): typeof VMobject {
+    return VMobject.get_mobject_type_class();
+  }
+
+  set_points(points: unknown): this {
+    this.points = (
+      isNDArray(points) ? points.copy() : array(points as unknown[])
+    ) as NDArray;
+    return this;
+  }
+
+  setPoints(points: unknown): this {
+    return this.set_points(points);
+  }
+
+  get_last_point(): NDArray {
+    const all = rows(this.points, this.dim);
+    return array(all[all.length - 1] ?? []) as NDArray;
+  }
+
+  getLastPoint(): NDArray {
+    return this.get_last_point();
+  }
+
+  consider_points_equals(p0: unknown, p1: unknown): boolean {
+    const a = (
+      isNDArray(p0) ? p0 : array(p0 as unknown[])
+    ) as NDArray;
+    const b = (
+      isNDArray(p1) ? p1 : array(p1 as unknown[])
+    ) as NDArray;
+    return allclose(a, b, 1e-05, this.tolerance_for_point_equality);
+  }
+
+  considerPointsEquals(p0: unknown, p1: unknown): boolean {
+    return this.consider_points_equals(p0, p1);
+  }
+
+  gen_cubic_bezier_tuples_from_points(points: unknown): number[][][] {
+    const nppcc = this.n_points_per_cubic_curve;
+    const all = rows(points, this.dim);
+    const remainder = all.length % nppcc;
+    const trimmed = all.slice(0, all.length - remainder);
+    const result: number[][][] = [];
+    for (let i = 0; i < trimmed.length; i += nppcc) {
+      result.push(trimmed.slice(i, i + nppcc));
+    }
+    return result;
+  }
+
+  genCubicBezierTuplesFromPoints(points: unknown): number[][][] {
+    return this.gen_cubic_bezier_tuples_from_points(points);
   }
 
   init_colors(propagate_colors = true): this {

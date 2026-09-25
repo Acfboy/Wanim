@@ -218,7 +218,9 @@ export class Mobject {
     return this;
   }
 
-  generate_points(): void {}
+  generate_points(): this {
+    return this;
+  }
 
   init_colors(): this {
     return this;
@@ -296,6 +298,14 @@ export class Mobject {
 
   getGroupClass(): typeof Group {
     return this.get_group_class();
+  }
+
+  static get_mobject_type_class(): typeof Mobject {
+    return Mobject;
+  }
+
+  static getMobjectTypeClass(): typeof Mobject {
+    return Mobject.get_mobject_type_class();
   }
 
   copy(): this {

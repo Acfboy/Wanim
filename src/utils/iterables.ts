@@ -1,5 +1,154 @@
 import { array, type NDArray } from "numpy-ts";
 
+export function uniq_chain<T>(...args: Iterable<T>[]): Generator<T, void, void> {
+  function* generator(): Generator<T, void, void> {
+    const unique_items = new Set<T>();
+    for (const iterable of args) {
+      for (const x of iterable) {
+        if (unique_items.has(x)) continue;
+        unique_items.add(x);
+        yield x;
+      }
+    }
+  }
+  return generator();
+}
+
+function isIterableObject(value: unknown): value is Iterable<unknown> {
+  return (
+    value !== null &&
+    value !== undefined &&
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function"
+  );
+}
+
+export function listify<T>(obj: string): string[];
+export function listify<T>(obj: Iterable<T>): T[];
+export function listify<T>(obj: T): T[];
+export function listify<T>(obj: string | Iterable<T> | T): string[] | T[] {
+  if (typeof obj === "string") return [obj];
+  if (isIterableObject(obj)) return Array.from(obj as Iterable<T>);
+  return [obj as T];
+}
+
+export function batch_by_property<T, U>(
+  items: Iterable<T>,
+  property_func: (item: T) => U,
+): Array<[T[], U | null]> {
+  const batch_prop_pairs: Array<[T[], U | null]> = [];
+  let curr_batch: T[] = [];
+  let curr_prop: U | null = null;
+  for (const item of items) {
+    const prop = property_func(item);
+    if (prop !== (curr_prop as unknown as U)) {
+      if (curr_batch.length > 0) batch_prop_pairs.push([curr_batch, curr_prop]);
+      curr_prop = prop as U;
+      curr_batch = [item];
+    } else {
+      curr_batch.push(item);
+    }
+  }
+  if (curr_batch.length > 0) batch_prop_pairs.push([curr_batch, curr_prop]);
+  return batch_prop_pairs;
+}
+
+export function list_difference_update<T>(l1: Iterable<T>, l2: Iterable<T>): T[] {
+  const l2set = new Set(l2);
+  return [...l1].filter((e) => !l2set.has(e));
+}
+
+export function resize_preserving_order(nparray: NDArray, length: number): NDArray {
+  const raw = nparray.toArray() as unknown;
+  const rowsArray: unknown[] = Array.isArray(raw) ? raw : [];
+  if (rowsArray.length === 0) {
+    const rest = nparray.shape.slice(1);
+    const total = rest.reduce((acc, dim) => acc * dim, length);
+    return array(new Array(total).fill(0)).reshape(length, ...rest) as NDArray;
+  }
+  if (rowsArray.length === length) return nparray;
+  const indices = Array.from(
+    { length },
+    (_, i) => Math.floor((i * rowsArray.length) / length),
+  );
+  const picked = indices.map((index) => rowsArray[index]);
+  return array(picked as unknown[]) as NDArray;
+}
+
+export function hash_obj(obj: unknown): number {
+  if (obj !== null && typeof obj === "object") {
+    if (obj instanceof Map) {
+      const pairs = [...obj.entries()].map(
+        ([k, v]) => [hash_obj(k), hash_obj(v)] as [number, number],
+      );
+      pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      return hashTuple(pairs.map(([k, v]) => k * 31 + v));
+    }
+    if (obj instanceof Set) {
+      const hashes = [...obj].map(hash_obj).sort((a, b) => a - b);
+      return hashTuple(hashes);
+    }
+    if (Array.isArray(obj)) return hashTuple(obj.map(hash_obj));
+    if (isNDArrayLike(obj)) {
+      return hashTuple(
+        JSON.stringify((obj as NDArray).toArray())
+          .split("")
+          .map((ch) => ch.charCodeAt(0)),
+      );
+    }
+    if ((obj as object).constructor?.name === "Object") {
+      const entries = Object.entries(obj as Record<string, unknown>).map(
+        ([k, v]) => [hash_obj(k), hash_obj(v)] as [number, number],
+      );
+      entries.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      return hashTuple(entries.map(([k, v]) => k * 31 + v));
+    }
+  }
+  return hashPrimitive(obj);
+}
+
+function hashTuple(items: number[]): number {
+  let hash = 0x345678;
+  for (const item of items) {
+    hash = Math.imul(hash ^ (item | 0), 1000003);
+    hash ^= hash >>> 16;
+  }
+  hash = Math.imul(hash ^ items.length, 0x45d9f3b);
+  hash ^= hash >>> 16;
+  return hash | 0;
+}
+
+function hashPrimitive(value: unknown): number {
+  if (value === null || value === undefined) {
+    const key = value === null ? "None" : "NoneType";
+    return stringHash(key);
+  }
+  switch (typeof value) {
+    case "number":
+      if (Number.isNaN(value)) return 0;
+      if (Object.is(value, -0)) return stringHash("-0.0");
+      return stringHash(`float:${value}`);
+    case "bigint":
+      return stringHash(`int:${value}`);
+    case "boolean":
+      return value ? 1 : 0;
+    case "string":
+      return stringHash(value);
+    case "function":
+      return stringHash((value as Function).toString());
+    default:
+      return stringHash(String(value));
+  }
+}
+
+function stringHash(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
+}
+
 function sameValue(first: unknown, second: unknown): boolean {
   if (typeof first === "number" && typeof second === "number") return !Number.isNaN(first) && !Number.isNaN(second) && first === second;
   if (typeof first === "boolean" && typeof second === "number") return Number(first) === second;
