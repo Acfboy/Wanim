@@ -42,3 +42,58 @@ export function cross2d(a: VectorInput, b: VectorInput): number | number[] {
   }
   return result;
 }
+
+export function normalize_along_axis(arr: NDArray, axis: number): NDArray {
+  // Faithful port of manim's implementation, which broadcasts via
+  // `np.repeat(norms, shape[axis]).reshape(shape)`:
+  //   norms = sqrt((array * array).sum(axis)); norms[norms == 0] = 1
+  //   buffed = repeat(norms, shape[axis]).reshape(shape); array /= buffed
+  // NOTE: for non-last axes this misaligns norms against elements (each
+  // norm is repeated shape[axis] times contiguously in C-order). The port
+  // replicates that behaviour exactly so results match Python bit-for-bit.
+  const shape = [...arr.shape];
+  const rank = shape.length;
+  const ax = axis < 0 ? axis + rank : axis;
+  const axisSize = shape[ax] ?? 0;
+  const total = shape.reduce((a, b) => a * b, 1);
+  const strides = stridesFor(shape);
+  const reduced = shape.filter((_, i) => i !== ax);
+  const reducedStrides = stridesFor(reduced);
+  const indexOf = (flat: number): number[] =>
+    shape.map((size, i) => Math.floor(flat / (strides[i] ?? 1)) % (size ?? 1));
+  const reducedIndexOf = (full: number[]): number => {
+    const coords = full.filter((_, i) => i !== ax);
+    return coords.reduce(
+      (acc, coord, i) => acc + coord * (reducedStrides[i] ?? 1),
+      0,
+    );
+  };
+  const reducedCount = reduced.reduce((a, b) => a * b, 1);
+  const sums = new Array(reducedCount).fill(0);
+  const values = new Array(total).fill(0);
+  for (let flat = 0; flat < total; flat += 1) {
+    const full = indexOf(flat);
+    const value = Number(arr.get(full));
+    values[flat] = value;
+    sums[reducedIndexOf(full)] += value * value;
+  }
+  const norms = sums.map((sum) => {
+    const norm = Math.sqrt(sum);
+    return norm === 0 ? 1 : norm;
+  });
+  for (let flat = 0; flat < total; flat += 1) {
+    const full = indexOf(flat);
+    arr.set(full, values[flat]! / (norms[Math.floor(flat / axisSize)] ?? 1));
+  }
+  return arr;
+}
+
+function stridesFor(shape: number[]): number[] {
+  const strides = new Array(shape.length).fill(0);
+  let stride = 1;
+  for (let i = shape.length - 1; i >= 0; i -= 1) {
+    strides[i] = stride;
+    stride *= shape[i] ?? 1;
+  }
+  return strides;
+}
