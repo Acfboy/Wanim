@@ -28,4 +28,22 @@ export class Polygram extends VMobject {
   get_vertices(): number[][] {
     return this.get_start_anchors();
   }
+
+  get_vertex_groups(): number[][][] {
+    const vertex_groups: number[][][] = [];
+    const starts = this.get_start_anchors();
+    const ends = this.get_end_anchors();
+
+    // TODO: If any of the original vertex groups contained the starting
+    // vertex N times, then .get_vertex_groups() splits it into N groups.
+    let group: number[][] = [];
+    for (let index = 0; index < starts.length; index += 1) {
+      group.push(starts[index] ?? []);
+      if (this.consider_points_equals(ends[index], group[0])) {
+        vertex_groups.push(group.map((point) => [...point]));
+        group = [];
+      }
+    }
+    return vertex_groups;
+  }
 }

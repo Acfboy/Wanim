@@ -52,6 +52,14 @@ export function change_to_rgba_array(image: PixelInput, dtype = "uint8"): NDArra
   return array(voxels) as NDArray;
 }
 
+export function get_full_vector_image_path(image_file_name: string): string {
+  return seek_full_path_from_defaults(
+    image_file_name,
+    config.getDir("assets_dir"),
+    [".svg"],
+  );
+}
+
 export function get_full_raster_image_path(image_file_name: string): string {
   return seek_full_path_from_defaults(
     image_file_name,

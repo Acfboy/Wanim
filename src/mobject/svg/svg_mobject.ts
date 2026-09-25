@@ -21,6 +21,33 @@ export interface SVGMobjectOptions extends VMobjectOptions {
   use_svg_cache?: boolean;
 }
 
+export interface SVGXmlElement {
+  tag: string;
+  attrib: Record<string, string>;
+  children: SVGXmlElement[];
+}
+
+export interface SVGXmlTree {
+  getroot(): SVGXmlElement;
+}
+
+export function createSVGXmlElement(
+  tag: string,
+  attrib: Record<string, string> = {},
+): SVGXmlElement {
+  return { tag, attrib: { ...attrib }, children: [] };
+}
+
+export function subSVGXmlElement(
+  parent: SVGXmlElement,
+  tag: string,
+  attrib: Record<string, string> = {},
+): SVGXmlElement {
+  const child = createSVGXmlElement(tag, attrib);
+  parent.children.push(child);
+  return child;
+}
+
 export class SVGMobject extends VMobject {
   file_name: string | null;
   should_center: boolean;
@@ -87,6 +114,33 @@ export class SVGMobject extends VMobject {
 
   init_svg_mobject(_use_svg_cache: boolean): this {
     throw new Error("TODO: text/tex not ported yet");
+  }
+
+  modify_xml_tree(element_tree: SVGXmlTree): SVGXmlTree {
+    const config_style_dict = this.generate_config_style_dict();
+    const style_keys = new Set([
+      "fill",
+      "fill-opacity",
+      "stroke",
+      "stroke-opacity",
+      "stroke-width",
+      "style",
+    ]);
+    const root = element_tree.getroot();
+    const root_style_dict: Record<string, string> = {};
+    for (const [key, value] of Object.entries(root.attrib)) {
+      if (style_keys.has(key)) root_style_dict[key] = value;
+    }
+
+    const new_root = createSVGXmlElement("svg", {});
+    const config_style_node = subSVGXmlElement(new_root, "g", config_style_dict);
+    const root_style_node = subSVGXmlElement(
+      config_style_node,
+      "g",
+      root_style_dict,
+    );
+    root_style_node.children.push(...root.children);
+    return { getroot: () => new_root };
   }
 
   generate_mobject(): this {

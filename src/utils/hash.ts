@@ -349,3 +349,56 @@ export class _CustomEncoder {
     });
   }
 }
+
+export interface DtypeDescriptor {
+  str?: string;
+  names?: readonly string[] | null;
+  fields?: Record<string, readonly unknown[]>;
+  subdtype?: readonly [unknown, readonly number[]] | null;
+  itemsize?: number;
+  alignment?: number;
+  isalignedstruct?: boolean;
+  newbyteorder?: (order: string) => DtypeDescriptor;
+}
+
+export function _canonical_dtype_descriptor(dtype: string | DtypeDescriptor): unknown {
+  if (typeof dtype === "string") {
+    return dtype;
+  }
+  const canonical: DtypeDescriptor =
+    typeof dtype.newbyteorder === "function" ? dtype.newbyteorder("<") : dtype;
+  if (canonical.names !== null && canonical.names !== undefined) {
+    return [
+      "struct",
+      (canonical.names ?? []).map((name) => {
+        const field = canonical.fields?.[name] ?? [];
+        return [
+          name,
+          _canonical_dtype_descriptor(field[0] as string | DtypeDescriptor),
+          field[1],
+          field.length > 2 ? _canonical_field_title(field[2]) : null,
+        ];
+      }),
+      canonical.itemsize,
+      canonical.alignment,
+      canonical.isalignedstruct,
+    ];
+  }
+  if (canonical.subdtype) {
+    const [base, shape] = canonical.subdtype;
+    return ["subarray", _canonical_dtype_descriptor(base as string | DtypeDescriptor), [...shape]];
+  }
+  return canonical.str;
+}
+
+export function _get_json(
+  obj: unknown,
+  memoizer: _Memoizer,
+  include_pixel_array = false,
+): string {
+  return new _CustomEncoder(memoizer, include_pixel_array).encode(obj);
+}
+
+export function get_json(obj: unknown, include_pixel_array = false): string {
+  return _get_json(obj, new _Memoizer(), include_pixel_array);
+}

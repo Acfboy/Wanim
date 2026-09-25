@@ -41,6 +41,96 @@ export function _deprecation_text_component(
   return `deprecated ${sincePart}and ${untilPart}.${msg}`;
 }
 
+export interface DeprecatedOptions {
+  since?: string | null;
+  until?: string | null;
+  replacement?: string | null;
+  message?: string | null;
+}
+
+export function deprecated(
+  func?: AnyCallable | null,
+  since: string | null = null,
+  until: string | null = null,
+  replacement: string | null = null,
+  message: string | null = "",
+): AnyCallable | ((func: AnyCallable) => AnyCallable) {
+  // If used as factory:
+  if (func === null || func === undefined) {
+    return (inner: AnyCallable) =>
+      deprecated(inner, since, until, replacement, message) as AnyCallable;
+  }
+
+  const [what, name] = _get_callable_info(func);
+
+  function warning_msg(for_docs = false): string {
+    let msg = message;
+    if (replacement !== null && replacement !== undefined) {
+      let repl = replacement;
+      if (for_docs) {
+        const mapper: Record<string, string> = {
+          class: "class",
+          method: "meth",
+          function: "func",
+        };
+        repl = `:${mapper[what]}:\`~.${replacement}\``;
+      }
+      msg = `Use ${repl} instead.${msg ? ` ${msg}` : ""}`;
+    }
+    const deprecatedText = _deprecation_text_component(since, until, msg);
+    return `The ${what} ${name} has been ${deprecatedText}`;
+  }
+
+  function deprecate_docs(target: AnyCallable): void {
+    const warning = warning_msg(true);
+    const docString =
+      (target as AnyCallable & { __doc__?: string }).__doc__ ?? "";
+    (target as AnyCallable & { __doc__?: string }).__doc__ =
+      `${docString}\n\n.. attention:: Deprecated\n  ${warning}`;
+  }
+
+  function deprecate(
+    this: unknown,
+    ...args: unknown[]
+  ): unknown {
+    console.warn(warning_msg());
+    return (func as (...a: unknown[]) => unknown).apply(this, args);
+  }
+
+  if (callableTypeName(func) !== "function") {
+    deprecate_docs(func);
+    const originalInit = (
+      func as unknown as { prototype: { constructor: AnyCallable } }
+    ).prototype?.constructor;
+    void originalInit;
+    const Original = func as unknown as new (...args: unknown[]) => object;
+    class DeprecatedClass extends Original {
+      constructor(...args: unknown[]) {
+        console.warn(warning_msg());
+        super(...args);
+      }
+    }
+    Object.defineProperty(DeprecatedClass, "name", {
+      value: func.name,
+      configurable: true,
+    });
+    (DeprecatedClass as unknown as CallableWithMeta).__qualname__ = (
+      func as CallableWithMeta
+    ).__qualname__ ?? func.name;
+    deprecate_docs(DeprecatedClass as unknown as AnyCallable);
+    return DeprecatedClass as unknown as AnyCallable;
+  }
+
+  Object.defineProperty(deprecate, "name", {
+    value: func.name,
+    configurable: true,
+  });
+  (deprecate as CallableWithMeta).__qualname__ =
+    (func as CallableWithMeta).__qualname__ ?? func.name;
+  deprecate_docs(deprecate as AnyCallable);
+  return deprecate as AnyCallable;
+}
+
 export type Redirector =
   | [string, string]
   | ((...args: unknown[]) => Record<string, unknown>);

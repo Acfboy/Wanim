@@ -1,9 +1,9 @@
 import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
-import { ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
+import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
 import { bezier_remap } from "../../utils/bezier.js";
-import { resize_array, stretch_array_to_length } from "../../utils/iterables.js";
+import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { ORIGIN } from "../../constants.js";
 
 export interface VMobjectOptions extends MobjectOptions {
@@ -184,6 +184,38 @@ export class VMobject extends Mobject {
 
   genCubicBezierTuplesFromPoints(points: unknown): number[][][] {
     return this.gen_cubic_bezier_tuples_from_points(points);
+  }
+
+  generate_rgbas_array(
+    color: ParsableManimColor | Iterable<ManimColor> | null,
+    opacity: number | Iterable<number>,
+  ): NDArray {
+    // First arg can be either a color, or a tuple/list of colors.
+    // Likewise, opacity can either be a float, or a tuple of floats.
+    // If self.sheen_factor is not zero, and only one color was passed in,
+    // a second slightly light color will automatically be added for the gradient.
+    const colors: ManimColor[] = (
+      tuplify(color as unknown as ManimColor) as unknown[]
+    ).map((c) => (c === null || c === undefined ? BLACK : new ManimColor(c as ParsableManimColor)));
+    const opacities: number[] = (
+      tuplify(opacity as unknown as number) as unknown[]
+    ).map((o) => (o === null || o === undefined ? 0.0 : Number(o)));
+    const [evenColors, evenOpacities] = make_even(colors, opacities);
+    let rows: number[][] = evenColors.map((c, index) =>
+      [...(pointRows(c.to_rgba_with_alpha(evenOpacities[index] ?? 0), 4)[0] ?? [0, 0, 0, 0])],
+    );
+
+    const sheen_factor = this.get_sheen_factor();
+    if (sheen_factor !== 0 && rows.length === 1) {
+      const light_rows: number[][] = rows.map((row) => [...row]);
+      for (const row of light_rows) {
+        row[0] = Math.min(1, Math.max(0, (row[0] ?? 0) + sheen_factor));
+        row[1] = Math.min(1, Math.max(0, (row[1] ?? 0) + sheen_factor));
+        row[2] = Math.min(1, Math.max(0, (row[2] ?? 0) + sheen_factor));
+      }
+      rows = [...rows, ...light_rows];
+    }
+    return array(rows) as NDArray;
   }
 
   init_colors(propagate_colors = true): this {
@@ -555,6 +587,10 @@ export class VMobject extends Mobject {
       this.append_points([[...pointRow]]);
     }
     return this;
+  }
+
+  get_cubic_bezier_tuples_from_points(points: unknown): NDArray {
+    return array(this.gen_cubic_bezier_tuples_from_points(points)) as NDArray;
   }
 
   get_cubic_bezier_tuples(): number[][][] {

@@ -1,4 +1,5 @@
 /** Rate functions (speed curves) for animations. Faithful port of manim/utils/rate_functions.py (layer 0 subset). */
+import { sigmoid } from "./simple_functions.js";
 
 export type RateFunction = (t: number, ...args: unknown[]) => number;
 
@@ -53,3 +54,21 @@ export const lingering: RateFunction = unit_interval((t: number): number => {
   // TODO: Isn't this just 0.8 * t?
   return (squish_rate_func(identity as RateFunction, 0, 0.8) as RateFunction)(t);
 }) as RateFunction;
+
+export const smooth: RateFunction = unit_interval(((t: number, inflection: number = 10.0): number => {
+  const error = sigmoid(-inflection / 2);
+  return Math.min(
+    Math.max((sigmoid(inflection * (t - 0.5)) - error) / (1 - 2 * error), 0),
+    1,
+  );
+}) as RateFunction);
+
+export function not_quite_there(
+  func: RateFunction = smooth,
+  proportion = 0.7,
+): RateFunction {
+  function result(t: number, ...args: unknown[]): number {
+    return proportion * (func as (...a: unknown[]) => number)(t, ...args);
+  }
+  return result as RateFunction;
+}

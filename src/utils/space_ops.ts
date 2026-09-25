@@ -1,5 +1,6 @@
 import { array, average, type NDArray } from "numpy-ts";
 import { isNDArray, numeric, type ComplexPoint } from "./arrays.js";
+import { OUT, RIGHT, TAU, UP } from "../constants.js";
 
 type VectorInput = NDArray | number[] | number[][] | readonly number[];
 
@@ -317,4 +318,150 @@ export function rotation_about_z(angle: number): NDArray {
     [s, c, 0],
     [0, 0, 1],
   ]) as NDArray;
+}
+
+function valueError(message: string): Error {
+  const error = new Error(message);
+  error.name = "ValueError";
+  return error;
+}
+
+export function quaternion_from_angle_axis(
+  angle: number,
+  axis: Quaternion | VectorInput,
+  axis_normalized = false,
+): number[] {
+  const normalized = axis_normalized
+    ? quatRows(axis as Quaternion)
+    : normalize(axis as number[] | readonly number[] | NDArray);
+  const half = angle / 2;
+  const s = Math.sin(half);
+  return [Math.cos(half), ...normalized.map((value) => s * value)];
+}
+
+export function angle_axis_from_quaternion(
+  quaternion: Quaternion,
+): [number, number[]] {
+  const flat = quatRows(quaternion);
+  const axis = normalize(flat.slice(1), [1, 0, 0]);
+  let angle = 2 * Math.acos(flat[0] ?? 0);
+  if (angle > TAU / 2) {
+    angle = TAU - angle;
+  }
+  return [angle, axis];
+}
+
+export function rotation_matrix_transpose_from_quaternion(
+  quat: Quaternion,
+): number[][] {
+  const quat_inv = quaternion_conjugate(quat);
+  return [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(
+    (basis) => (quaternion_mult(quat, [0, ...basis], quat_inv) as number[]).slice(1),
+  );
+}
+
+export function z_to_vector(vector: VectorInput): NDArray {
+  const axis_z = normalize(vector as number[] | readonly number[] | NDArray);
+  let axis_y = normalize(cross(axis_z, [...RIGHT]));
+  let axis_x = cross(axis_y, axis_z);
+  if (Math.hypot(...axis_y) === 0) {
+    // The vector passed just so happened to be in the x direction.
+    axis_x = normalize(cross([...UP], axis_z));
+    axis_y = cross(axis_x, axis_z).map((value) => -value);
+  }
+  return array([
+    [axis_x[0] ?? 0, axis_y[0] ?? 0, axis_z[0] ?? 0],
+    [axis_x[1] ?? 0, axis_y[1] ?? 0, axis_z[1] ?? 0],
+    [axis_x[2] ?? 0, axis_y[2] ?? 0, axis_z[2] ?? 0],
+  ]) as NDArray;
+}
+
+export function angle_between_vectors(
+  v1: VectorInput,
+  v2: VectorInput,
+): number {
+  const a = normalize(v1 as number[] | readonly number[] | NDArray);
+  const b = normalize(v2 as number[] | readonly number[] | NDArray);
+  const diff = Math.hypot(...a.map((value, index) => value - (b[index] ?? 0)));
+  const sum = Math.hypot(...a.map((value, index) => value + (b[index] ?? 0)));
+  return 2 * Math.atan2(diff, sum);
+}
+
+export function complex_func_to_R3_func(
+  complex_func: (value: ComplexPoint) => ComplexPoint | number,
+): (point: readonly number[] | number[] | NDArray) => number[] {
+  return (p) => complex_to_R3(complex_func(R3_to_complex(p)));
+}
+
+export function midpoint(
+  point1: VectorInput,
+  point2: VectorInput,
+): number[] {
+  const rows = [
+    toRows(point1).rows[0] ?? [],
+    toRows(point2).rows[0] ?? [],
+  ];
+  return center_of_mass(rows);
+}
+
+export function line_intersection(
+  line1: VectorInput,
+  line2: VectorInput,
+): number[] {
+  const first = toRows(line1).rows;
+  const second = toRows(line2).rows;
+  if ([...first, ...second].some((point) => (point[2] ?? 0) !== 0)) {
+    throw valueError("Coords must be in the xy-plane.");
+  }
+  const padded = [first, second].map((line) =>
+    line.map((point) => [point[0] ?? 0, point[1] ?? 0, 1]),
+  );
+  const [a1 = [0, 0, 1], b1 = [0, 0, 1]] = padded[0] ?? [];
+  const [a2 = [0, 0, 1], b2 = [0, 0, 1]] = padded[1] ?? [];
+  const l1 = cross(a1, b1);
+  const l2 = cross(a2, b2);
+  const [x = 0, y = 0, z = 0] = cross(l1, l2);
+  if (z === 0) {
+    throw valueError(
+      "The lines are parallel, there is no unique intersection point.",
+    );
+  }
+  return [x / z, y / z, 0];
+}
+
+export function find_intersection(
+  p0s: number[][] | NDArray,
+  v0s: number[][] | NDArray,
+  p1s: number[][] | NDArray,
+  v1s: number[][] | NDArray,
+  threshold = 1e-5,
+): number[][] {
+  const p0rows = toRows(p0s).rows;
+  const v0rows = toRows(v0s).rows;
+  const p1rows = toRows(p1s).rows;
+  const v1rows = toRows(v1s).rows;
+  const counts = [p0rows.length, v0rows.length, p1rows.length, v1rows.length];
+  if (!counts.every((count) => count === counts[0])) {
+    throw valueError(
+      `zip() argument 2 is longer than argument 1 (strict zip lengths: ${counts.join(", ")})`,
+    );
+  }
+  return p0rows.map((p0, index) => {
+    const v0 = v0rows[index] ?? [];
+    const p1 = p1rows[index] ?? [];
+    const v1 = v1rows[index] ?? [];
+    const normal = cross(v1, cross(v0, v1));
+    const denom = Math.max(
+      v0.reduce((sum, value, i) => sum + value * (normal[i] ?? 0), 0),
+      threshold,
+    );
+    const along = p1
+      .map((value, i) => value - (p0[i] ?? 0))
+      .reduce((sum, value, i) => sum + value * (normal[i] ?? 0), 0) / denom;
+    return p0.map((value, i) => value + along * (v0[i] ?? 0));
+  });
+}
+
+export function shoelace_direction(x_y: number[][] | NDArray): string {
+  return shoelace(x_y) > 0 ? "CW" : "CCW";
 }

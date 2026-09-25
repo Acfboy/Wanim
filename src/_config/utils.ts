@@ -135,10 +135,50 @@ export class ManimConfig {
     if (key === "frame_width") { this.frame_width = Number(value); return; }
     if (key === "frame_x_radius") { this.frame_x_radius = Number(value); return; }
     if (key === "frame_y_radius") { this.frame_y_radius = Number(value); return; }
+    if (key === "frame_size") { this.frame_size = value as [number, number]; return; }
     if (key === "background_color") { this.background_color = value as ParsableManimColor; return; }
     if (key === "background_opacity") { this.background_opacity = Number(value); return; }
     if (key === "quality") { this.quality = value as string; return; }
     if (key === "renderer") { this.renderer = value as RendererType; return; }
+    if (key === "pixel_height") { this.pixel_height = value as number; return; }
+    if (key === "pixel_width") { this.pixel_width = value as number; return; }
+    if (key === "seed") { this.seed = value as number | null; return; }
+    if (key === "verbosity") { this.verbosity = value as string; return; }
+    if (key === "write_to_movie") { this.write_to_movie = value as boolean; return; }
+    if (key === "preview") { this.preview = value as boolean; return; }
+    if (key === "show_in_file_browser") { this.show_in_file_browser = value as boolean; return; }
+    if (key === "progress_bar") { this.progress_bar = value as string; return; }
+    if (key === "log_to_file") { this.log_to_file = value as boolean; return; }
+    if (key === "notify_outdated_version") { this.notify_outdated_version = value as boolean; return; }
+    if (key === "save_last_frame") { this.save_last_frame = value as boolean; return; }
+    if (key === "write_all") { this.write_all = value as boolean; return; }
+    if (key === "save_pngs") { this.save_pngs = value as boolean; return; }
+    if (key === "save_as_gif") { this.save_as_gif = value as boolean; return; }
+    if (key === "save_sections") { this.save_sections = value as boolean; return; }
+    if (key === "enable_wireframe") { this.enable_wireframe = value as boolean; return; }
+    if (key === "force_window") { this.force_window = value as boolean; return; }
+    if (key === "no_latex_cleanup") { this.no_latex_cleanup = value as boolean; return; }
+    if (key === "preview_command") { this.preview_command = value as string; return; }
+    if (key === "upto_animation_number") { this.upto_animation_number = value as number; return; }
+    if (key === "max_files_cached") { this.max_files_cached = value as number; return; }
+    if (key === "window_monitor") { this.window_monitor = value as number; return; }
+    if (key === "flush_cache") { this.flush_cache = value as boolean; return; }
+    if (key === "disable_caching") { this.disable_caching = value as boolean; return; }
+    if (key === "disable_caching_warning") { this.disable_caching_warning = value as boolean; return; }
+    if (key === "enable_gui") { this.enable_gui = value as boolean; return; }
+    if (key === "gui_location") { this.gui_location = value; return; }
+    if (key === "fullscreen") { this.fullscreen = value as boolean; return; }
+    if (key === "use_projection_fill_shaders") { this.use_projection_fill_shaders = value as boolean; return; }
+    if (key === "use_projection_stroke_shaders") { this.use_projection_stroke_shaders = value as boolean; return; }
+    if (key === "zero_pad") { this.zero_pad = value as number; return; }
+    if (key === "assets_dir") { this.assets_dir = value as string; return; }
+    if (key === "log_dir") { this.log_dir = value as string; return; }
+    if (key === "sections_dir") { this.sections_dir = value as string; return; }
+    if (key === "text_dir") { this.text_dir = value as string; return; }
+    if (key === "tex_dir") { this.tex_dir = value as string; return; }
+    if (key === "custom_folders") { this.custom_folders = value as string; return; }
+    if (key === "input_file") { this.input_file = value as string; return; }
+    if (key === "output_file") { this.output_file = value as string; return; }
     this.values[key] = value;
   }
 
@@ -486,19 +526,98 @@ export class ManimConfig {
   }
 
   get pixel_height(): number { return this.__getitem__("pixel_height"); }
-  set pixel_height(value: number) { this.__setitem__("pixel_height", value); }
+  set pixel_height(value: number) { this._set_pos_number("pixel_height", value, false); }
   get pixel_width(): number { return this.__getitem__("pixel_width"); }
-  set pixel_width(value: number) { this.__setitem__("pixel_width", value); }
+  set pixel_width(value: number) { this._set_pos_number("pixel_width", value, false); }
   get frame_rate(): number { return this.__getitem__("frame_rate"); }
   set frame_rate(value: number) { this.__setitem__("frame_rate", value); }
   get seed(): unknown { return this.__getitem__("seed"); }
-  set seed(value: unknown) { this.__setitem__("seed", value); }
+  set seed(value: number | null) {
+    if (value === null || value === undefined) {
+      return;
+    }
+    this._set_pos_number("seed", value, false);
+  }
   get verbosity(): string { return this.__getitem__("verbosity"); }
-  set verbosity(value: string) { this.__setitem__("verbosity", value); }
+  set verbosity(value: string) {
+    this._set_from_list(
+      "verbosity",
+      value,
+      ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    );
+    // NOTE: Python also calls logger.setLevel(val) here. The TS port has no
+    // shared global logger instance yet, so only the stored value is updated.
+  }
   get write_to_movie(): boolean { return this.__getitem__("write_to_movie"); }
-  set write_to_movie(value: boolean) { this.__setitem__("write_to_movie", value); }
-  get preview(): boolean { return this.__getitem__("preview"); }
-  set preview(value: boolean) { this.__setitem__("preview", value); }
+  set write_to_movie(value: boolean) { this._set_boolean("write_to_movie", value); }
+  get preview(): boolean { return this.__getitem__("preview") || this.__getitem__("enable_gui"); }
+  set preview(value: boolean) { this._set_boolean("preview", value); }
+  get show_in_file_browser(): boolean { return this.__getitem__("show_in_file_browser"); }
+  set show_in_file_browser(value: boolean) { this._set_boolean("show_in_file_browser", value); }
+  get progress_bar(): string { return this.__getitem__("progress_bar"); }
+  set progress_bar(value: string) { this._set_from_list("progress_bar", value, ["none", "display", "leave"]); }
+  get log_to_file(): boolean { return this.__getitem__("log_to_file"); }
+  set log_to_file(value: boolean) { this._set_boolean("log_to_file", value); }
+  get notify_outdated_version(): boolean { return this.__getitem__("notify_outdated_version"); }
+  set notify_outdated_version(value: boolean) { this._set_boolean("notify_outdated_version", value); }
+  get save_last_frame(): boolean { return this.__getitem__("save_last_frame"); }
+  set save_last_frame(value: boolean) { this._set_boolean("save_last_frame", value); }
+  get write_all(): boolean { return this.__getitem__("write_all"); }
+  set write_all(value: boolean) { this._set_boolean("write_all", value); }
+  get save_pngs(): boolean { return this.__getitem__("save_pngs"); }
+  set save_pngs(value: boolean) { this._set_boolean("save_pngs", value); }
+  get save_as_gif(): boolean { return this.__getitem__("save_as_gif"); }
+  set save_as_gif(value: boolean) { this._set_boolean("save_as_gif", value); }
+  get save_sections(): boolean { return this.__getitem__("save_sections"); }
+  set save_sections(value: boolean) { this._set_boolean("save_sections", value); }
+  get enable_wireframe(): boolean { return this.__getitem__("enable_wireframe"); }
+  set enable_wireframe(value: boolean) { this._set_boolean("enable_wireframe", value); }
+  get force_window(): boolean { return this.__getitem__("force_window"); }
+  set force_window(value: boolean) { this._set_boolean("force_window", value); }
+  get no_latex_cleanup(): boolean { return this.__getitem__("no_latex_cleanup"); }
+  set no_latex_cleanup(value: boolean) { this._set_boolean("no_latex_cleanup", value); }
+  get preview_command(): string { return this.__getitem__("preview_command"); }
+  set preview_command(value: string) { this._set_str("preview_command", value); }
+  get upto_animation_number(): number { return this.__getitem__("upto_animation_number"); }
+  set upto_animation_number(value: number) { this._set_pos_number("upto_animation_number", value, true); }
+  get max_files_cached(): number { return this.__getitem__("max_files_cached"); }
+  set max_files_cached(value: number) { this._set_pos_number("max_files_cached", value, true); }
+  get window_monitor(): number { return this.__getitem__("window_monitor"); }
+  set window_monitor(value: number) { this._set_pos_number("window_monitor", value, true); }
+  get flush_cache(): boolean { return this.__getitem__("flush_cache"); }
+  set flush_cache(value: boolean) { this._set_boolean("flush_cache", value); }
+  get disable_caching(): boolean { return this.__getitem__("disable_caching"); }
+  set disable_caching(value: boolean) { this._set_boolean("disable_caching", value); }
+  get disable_caching_warning(): boolean { return this.__getitem__("disable_caching_warning"); }
+  set disable_caching_warning(value: boolean) { this._set_boolean("disable_caching_warning", value); }
+  get enable_gui(): boolean { return this.__getitem__("enable_gui"); }
+  set enable_gui(value: boolean) { this._set_boolean("enable_gui", value); }
+  get gui_location(): unknown { return this.__getitem__("gui_location"); }
+  set gui_location(value: unknown) { this._set_tuple("gui_location", value); }
+  get fullscreen(): boolean { return this.__getitem__("fullscreen"); }
+  set fullscreen(value: boolean) { this._set_boolean("fullscreen", value); }
+  get use_projection_fill_shaders(): boolean { return this.__getitem__("use_projection_fill_shaders"); }
+  set use_projection_fill_shaders(value: boolean) { this._set_boolean("use_projection_fill_shaders", value); }
+  get use_projection_stroke_shaders(): boolean { return this.__getitem__("use_projection_stroke_shaders"); }
+  set use_projection_stroke_shaders(value: boolean) { this._set_boolean("use_projection_stroke_shaders", value); }
+  get zero_pad(): number { return this.__getitem__("zero_pad"); }
+  set zero_pad(value: number) { this._set_int_between("zero_pad", value, 0, 9); }
+  get assets_dir(): string { return this.__getitem__("assets_dir"); }
+  set assets_dir(value: string) { this._set_dir("assets_dir", value); }
+  get log_dir(): string { return this.__getitem__("log_dir"); }
+  set log_dir(value: string) { this._set_dir("log_dir", value); }
+  get sections_dir(): string { return this.__getitem__("sections_dir"); }
+  set sections_dir(value: string) { this._set_dir("sections_dir", value); }
+  get text_dir(): string { return this.__getitem__("text_dir"); }
+  set text_dir(value: string) { this._set_dir("text_dir", value); }
+  get tex_dir(): string { return this.__getitem__("tex_dir"); }
+  set tex_dir(value: string) { this._set_dir("tex_dir", value); }
+  get custom_folders(): unknown { return this.__getitem__("custom_folders"); }
+  set custom_folders(value: string) { this._set_dir("custom_folders", value); }
+  get input_file(): string { return this.__getitem__("input_file"); }
+  set input_file(value: string) { this._set_dir("input_file", value); }
+  get output_file(): string { return this.__getitem__("output_file"); }
+  set output_file(value: string) { this._set_dir("output_file", value); }
 
   getDir(key: string): string {
     const value = this.__getitem__(key);

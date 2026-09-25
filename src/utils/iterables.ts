@@ -81,6 +81,11 @@ export function list_difference_update<T>(l1: Iterable<T>, l2: Iterable<T>): T[]
   return [...l1].filter((e) => !l2set.has(e));
 }
 
+export function list_update<T>(l1: Iterable<T>, l2: Iterable<T>): T[] {
+  const l2list = Array.from(l2);
+  return [...list_difference_update(l1, l2list), ...l2list];
+}
+
 export function resize_array(nparray: NDArray, length: number): NDArray {
   const { rows, flat } = elementRows(nparray);
   if (rows.length === length) {

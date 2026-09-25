@@ -20,6 +20,120 @@ function inputNdim(value: number[] | number[][] | NDArray): number {
   return 1;
 }
 
+export type BezierFn = (t: number | NDArray) => number[] | number[][] | NDArray;
+
+function asControlCurves(points: number[][] | number[][][] | NDArray): {
+  curves: number[][][];
+  batched: boolean;
+} {
+  if (isNDArray(points)) {
+    const shape = (points as NDArray).shape;
+    const nested = (points as NDArray).toArray() as unknown;
+    if (shape.length === 3) {
+      // Batched layout (d+1, M, 3): transpose to M curves of (d+1) points.
+      const stacked = nested as number[][][];
+      const degree = stacked.length - 1;
+      const count = (stacked[0] as number[][]).length;
+      return {
+        curves: Array.from({ length: count }, (_, m) =>
+          Array.from({ length: degree + 1 }, (_, i) => [...((stacked[i] as number[][])[m] ?? [])].map(numeric)),
+        ),
+        batched: true,
+      };
+    }
+    return { curves: [rawRows(points as number[] | number[][] | NDArray)], batched: false };
+  }
+  if (
+    Array.isArray(points) &&
+    points.length > 0 &&
+    Array.isArray(points[0]) &&
+    (points[0] as unknown[]).length > 0 &&
+    Array.isArray((points[0] as unknown[])[0])
+  ) {
+    const stacked = points as number[][][];
+    const degree = stacked.length - 1;
+    const count = (stacked[0] as number[][]).length;
+    return {
+      curves: Array.from({ length: count }, (_, m) =>
+        Array.from({ length: degree + 1 }, (_, i) => [...((stacked[i] as number[][])[m] ?? [])].map(numeric)),
+      ),
+      batched: true,
+    };
+  }
+  return { curves: [rawRows(points as number[][])], batched: false };
+}
+
+function evalBezierCurve(curve: number[][], t: number): number[] {
+  const degree = curve.length - 1;
+  const dim = curve[0]?.length ?? 3;
+  if (degree === 0) return [...(curve[0] ?? [])];
+  if (degree === 1) {
+    const [p0 = [], p1 = []] = curve;
+    return Array.from({ length: dim }, (_, c) => (p0[c] ?? 0) + t * ((p1[c] ?? 0) - (p0[c] ?? 0)));
+  }
+  if (degree === 2) {
+    const [p0 = [], p1 = [], p2 = []] = curve;
+    const t2 = t * t;
+    const mt = 1 - t;
+    const mt2 = mt * mt;
+    return Array.from(
+      { length: dim },
+      (_, c) => mt2 * (p0[c] ?? 0) + 2 * t * mt * (p1[c] ?? 0) + t2 * (p2[c] ?? 0),
+    );
+  }
+  if (degree === 3) {
+    const [p0 = [], p1 = [], p2 = [], p3 = []] = curve;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const mt = 1 - t;
+    const mt2 = mt * mt;
+    const mt3 = mt2 * mt;
+    return Array.from(
+      { length: dim },
+      (_, c) =>
+        mt3 * (p0[c] ?? 0) +
+        3 * t * mt2 * (p1[c] ?? 0) +
+        3 * t2 * mt * (p2[c] ?? 0) +
+        t3 * (p3[c] ?? 0),
+    );
+  }
+  // De Casteljau for higher degrees (mirrors nth_grade_bezier).
+  let level = curve.map((point) => [...point]);
+  for (let i = 0; i < degree; i += 1) {
+    level = level
+      .slice(0, degree - i)
+      .map((point, k) =>
+        point.map((v, c) => v + t * ((level[k + 1]?.[c] ?? 0) - v)),
+      );
+  }
+  return [...(level[0] ?? [])];
+}
+
+function colValues(t: NDArray): number[] {
+  return rowsOf(t, 1).map((row) => row[0] ?? 0);
+}
+
+export function bezier(points: number[][] | number[][][] | NDArray): BezierFn {
+  const { curves, batched } = asControlCurves(points);
+  if (!batched) {
+    const single = curves[0]!;
+    return (t: number | NDArray): number[] | NDArray => {
+      if (typeof t === "number") return evalBezierCurve(single, t);
+      const values = colValues(t as NDArray);
+      return array(values.map((value) => evalBezierCurve(single, value))) as NDArray;
+    };
+  }
+  return (t: number | NDArray): number[][] | NDArray => {
+    if (typeof t === "number") {
+      return curves.map((curve) => evalBezierCurve(curve, t));
+    }
+    const values = colValues(t as NDArray);
+    return array(
+      curves.map((curve, m) => evalBezierCurve(curve, values[m] ?? values[0] ?? 0)),
+    ) as NDArray;
+  };
+}
+
 export function interpolate(
   start: number | number[] | NDArray,
   end: number | number[] | NDArray,
