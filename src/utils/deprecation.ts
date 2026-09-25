@@ -259,7 +259,9 @@ export function deprecated_params(
 
   const identifier = /^[^\d\W]\w*$/u;
   if (!paramList.every((param) => identifier.test(param))) {
-    throw new Error("Given parameter values are invalid.");
+    const error = new Error("Given parameter values are invalid.");
+    error.name = "ValueError";
+    throw error;
   }
 
   function redirect_params_closure(

@@ -765,6 +765,95 @@ export function subdivide_bezier(
   return beziers.flat();
 }
 
+export function partial_bezier_points(
+  points: number[][] | NDArray,
+  a: number,
+  b: number,
+): number[][] {
+  const source = rawRows(points as number[] | number[][] | NDArray);
+  const dim = source[0]?.length ?? 3;
+  // Border cases (mirror Python: fill with the end/start point).
+  if (a === 1) return source.map(() => [...(source[source.length - 1] ?? new Array(dim).fill(0))]);
+  if (b === 0) return source.map(() => [...(source[0] ?? new Array(dim).fill(0))]);
+  const degree = source.length - 1;
+
+  const applyMatrix = (matrix: number[][]): number[][] =>
+    matrix.map((matrixRow) =>
+      Array.from({ length: dim }, (_, column) =>
+        matrixRow.reduce((sum, value, index) => sum + value * (source[index]?.[column] ?? 0), 0),
+      ),
+    );
+
+  if (degree === 3) {
+    const ma = 1 - a;
+    const mb = 1 - b;
+    const a2 = a * a;
+    const b2 = b * b;
+    const ma2 = ma * ma;
+    const mb2 = mb * mb;
+    const a3 = a2 * a;
+    const b3 = b2 * b;
+    const ma3 = ma2 * ma;
+    const mb3 = mb2 * mb;
+    return applyMatrix([
+      [ma3, 3 * ma2 * a, 3 * ma * a2, a3],
+      [ma2 * mb, 2 * ma * a * mb + ma2 * b, a2 * mb + 2 * ma * a * b, a2 * b],
+      [ma * mb2, a * mb2 + 2 * ma * mb * b, 2 * a * mb * b + ma * b2, a * b2],
+      [mb3, 3 * mb2 * b, 3 * mb * b2, b3],
+    ]);
+  }
+
+  if (degree === 2) {
+    const ma = 1 - a;
+    const mb = 1 - b;
+    return applyMatrix([
+      [ma * ma, 2 * a * ma, a * a],
+      [ma * mb, a * mb + ma * b, a * b],
+      [mb * mb, 2 * b * mb, b * b],
+    ]);
+  }
+
+  if (degree === 1) {
+    const start = source[0] ?? new Array(dim).fill(0);
+    const end = source[1] ?? [...start];
+    const direction = end.map((value, column) => value - (start[column] ?? 0));
+    return [
+      start.map((value, column) => value + a * (direction[column] ?? 0)),
+      start.map((value, column) => value + b * (direction[column] ?? 0)),
+    ];
+  }
+
+  if (degree === 0) return source.map((row) => [...row]);
+
+  // Fallback for higher-degree curves: de Casteljau splitting at a then at u.
+  const arr = source.map((row) => [...row]);
+  const count = arr.length;
+  if (a !== 0) {
+    for (let i = 1; i < count; i += 1) {
+      for (let k = 0; k < count - i; k += 1) {
+        const left = arr[k] ?? [];
+        const right = arr[k + 1] ?? [];
+        arr[k] = left.map((value, column) => value + a * ((right[column] ?? 0) - value));
+      }
+    }
+  }
+  if (b !== 1) {
+    const mu = (1 - b) / (1 - a);
+    for (let i = 1; i < count; i += 1) {
+      // NOTE: NumPy evaluates the whole RHS from pre-update values, so
+      // snapshot the row first (ascending order would otherwise reuse the
+      // already-updated predecessor).
+      const snapshot = arr.map((row) => [...row]);
+      for (let k = i; k < count; k += 1) {
+        const current = snapshot[k] ?? [];
+        const prev = snapshot[k - 1] ?? [];
+        arr[k] = current.map((value, column) => value + mu * ((prev[column] ?? 0) - value));
+      }
+    }
+  }
+  return arr;
+}
+
 export function bezier_remap(
   bezier_tuples: number[][][] | NDArray,
   new_number_of_curves: number,

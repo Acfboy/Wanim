@@ -2,10 +2,10 @@ import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
-import { bezier_remap } from "../../utils/bezier.js";
+import { bezier_remap, integer_interpolate, partial_bezier_points } from "../../utils/bezier.js";
 import { shoelace_direction } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
-import { ORIGIN } from "../../constants.js";
+import { ORIGIN, UL } from "../../constants.js";
 
 export interface VMobjectOptions extends MobjectOptions {
   fill_color?: ParsableManimColor;
@@ -78,18 +78,18 @@ export class VMobject extends Mobject {
   fill_opacity: number;
   stroke_opacity: number;
   stroke_width: number;
-  background_stroke_color: ManimColor | null = null;
+  background_stroke_color: ManimColor | null = new ManimColor(BLACK);
   background_stroke_opacity = 1;
   background_stroke_width = 0;
   sheen_factor = 0;
-  sheen_direction: number[] = [0, 0, 0];
+  sheen_direction: number[] = [...UL];
   joint_type = "AUTO";
   cap_style = "AUTO";
   close_new_points = false;
-  pre_function_handle_to_anchor_scale_factor = 0;
-  make_smooth_after_applying_functions = true;
+  pre_function_handle_to_anchor_scale_factor = 0.01;
+  make_smooth_after_applying_functions = false;
   background_image: string | null = null;
-  shade_in_3d = true;
+  shade_in_3d = false;
   tolerance_for_point_equality = 1e-6;
   n_points_per_cubic_curve: number;
   fill_rgbas: NDArray;
@@ -253,6 +253,10 @@ export class VMobject extends Mobject {
     this.stroke_rgbas = array(Array.from({ length: pointCount }, () => [...this.stroke_color.toRgb().toArray() as number[], this.stroke_opacity])) as NDArray;
     this.background_stroke_rgbas = array(Array.from({ length: pointCount }, () => [0, 0, 0, this.background_stroke_opacity])) as NDArray;
     if (!propagate_colors) for (const submob of this.submobjects) (submob as VMobject).init_colors(false);
+    // NOTE: Python exposes `color` as a live property (get_color on read,
+    // set_fill+set_stroke on write). The TS port keeps a plain field for
+    // construction-order safety, so refresh it wherever the rgbas change.
+    this.color = this.get_color();
     return this;
   }
 
@@ -319,9 +323,20 @@ export class VMobject extends Mobject {
     return array(pointRows(this.get_fill_rgbas(), 4).map((rgba) => rgba[3] ?? 0)) as NDArray;
   }
 
-  get_stroke_opacity(): number {
-    const values = pointRows(this.stroke_rgbas, 4).map((row) => row[3] ?? 0);
-    return values.length === 0 ? this.stroke_opacity : values[0];
+  get_stroke_opacity(background = false): number {
+    const values = pointRows(background ? this.background_stroke_rgbas : this.stroke_rgbas, 4).map((row) => row[3] ?? 0);
+    if (background) return values.length === 0 ? this.background_stroke_opacity : values[0] ?? 0;
+    return values.length === 0 ? this.stroke_opacity : values[0] ?? 0;
+  }
+
+  fade(darkness = 0.5, family = true): this {
+    const factor = 1.0 - darkness;
+    this.set_fill(undefined, factor * this.get_fill_opacity(), false);
+    this.set_stroke(undefined, undefined, factor * this.get_stroke_opacity(), false);
+    this.background_stroke_opacity = factor * this.get_stroke_opacity(true);
+    this.init_colors(false);
+    super.fade(darkness, family);
+    return this;
   }
 
   get_stroke_colors(background = false): Array<ManimColor | null> {
@@ -564,25 +579,44 @@ export class VMobject extends Mobject {
       const result = typeof first === "number" || typeof second === "number" ? Number(first) * (1 - alpha) + Number(second) * alpha : interpolateArray(first, second, alpha);
       (this as unknown as Record<string, unknown>)[attribute] = alpha === 1 ? cloneAttribute(second) : result;
     }
+    this.color = this.get_color();
     return this;
   }
 
   get_group_class(): typeof VGroup { return VGroup; }
 
   pointwise_become_partial(other: VMobject, a: number, b: number): this {
-    const source = rows(other.points, this.dim);
-    const result: number[][] = [];
-    for (let index = 0; index < this.get_num_curves(); index += 1) {
-      const start = index * this.n_points_per_cubic_curve;
-      const curve = source.slice(start, start + 4);
-      if (curve.length < 4) continue;
-      const steps = 12;
-      for (let step = 0; step <= steps; step += 1) {
-        const t = a + (b - a) * (step / steps);
-        result.push(curveValue(curve, t, this.dim));
-      }
+    if (!(other instanceof VMobject)) {
+      throw new TypeError(
+        `Expected a VMobject, got value ${other} of type ${pythonTypeName(other)}.`,
+      );
     }
-    this.points = asPoints(result.length > 0 ? result : source, this.dim);
+    // Partial curve includes three portions:
+    // - A middle section, which matches the curve exactly.
+    // - A start, which is some ending portion of an inner cubic.
+    // - An end, which is the starting portion of a later inner cubic.
+    if (a <= 0 && b >= 1) {
+      this.set_points(rows(other.points, this.dim));
+      return this;
+    }
+    const num_curves = other.get_num_curves();
+    if (num_curves === 0) return this;
+    const [lower_index, lower_residue] = integer_interpolate(0, num_curves, a);
+    const [upper_index, upper_residue] = integer_interpolate(0, num_curves, b);
+    const nppc = this.n_points_per_curve;
+    // Copy other.points when other is this to prevent in-place modification.
+    const source = other === this ? rows(other.points, this.dim).map((row) => [...row]) : rows(other.points, this.dim);
+    const slice = (curve: number): number[][] => source.slice(nppc * curve, nppc * (curve + 1));
+    if (lower_index === upper_index) {
+      this.points = asPoints(partial_bezier_points(slice(lower_index), lower_residue, upper_residue), this.dim);
+    } else {
+      const result: number[][] = [
+        ...partial_bezier_points(slice(lower_index), lower_residue, 1),
+        ...source.slice(nppc * (lower_index + 1), nppc * upper_index),
+        ...partial_bezier_points(slice(upper_index), 0, upper_residue),
+      ];
+      this.points = asPoints(result, this.dim);
+    }
     return this;
   }
 
