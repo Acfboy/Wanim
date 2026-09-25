@@ -122,7 +122,8 @@ export class PMobject extends Mobject {
       const point_rows = pointRows(this.points, this.dim);
       const alphas = point_rows.map((point) => {
         const distances = point.map((value, index) => Math.abs(value - (center_row[index] ?? 0)));
-        return Math.hypot(...distances) / radius;
+        // NOTE: mirrors Python `t = min(t, 1)`.
+        return Math.min(Math.hypot(...distances) / radius, 1);
       });
       const start_rows = pointRows(start_rgba, 4)[0] ?? [0, 0, 0, 1];
       const end_rows = pointRows(end_rgba, 4)[0] ?? [0, 0, 0, 1];

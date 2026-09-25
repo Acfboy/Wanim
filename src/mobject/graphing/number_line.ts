@@ -121,6 +121,25 @@ export class NumberLine extends VGroup {
     if (options.tip_height !== undefined) this.tip_height = options.tip_height;
     if (options.include_numbers !== undefined) this.include_numbers = options.include_numbers;
     if (options.font_size !== undefined) this.font_size = options.font_size;
+    // Baseline line geometry (mirrors Python NumberLine.__init__: a Line from
+    // x_range[0]*RIGHT to x_range[1]*RIGHT, then set_length(length) (which
+    // also refreshes unit_size) or scale(unit_size), then center()).
+    // Ticks/tips/numbers need text rendering and stay out of scope.
+    this.set_points_as_corners([
+      [x_range[0], 0, 0],
+      [x_range[1], 0, 0],
+    ]);
+    // NOTE: Python tests `if self.length:` (falsy for None *and* 0).
+    if (this.length) {
+      const [lineStart, lineEnd] = this.get_start_and_end();
+      const baseLength = norm(subtractPoints(lineEnd, lineStart, this.dim));
+      this.scale(this.length / baseLength);
+      this.unit_size = this.get_unit_size();
+    } else {
+      this.scale(this.unit_size);
+    }
+    this.center();
+    if (this.rotation) this.rotate(this.rotation);
   }
 
   static _decimal_places_from_step(step: number): number {
