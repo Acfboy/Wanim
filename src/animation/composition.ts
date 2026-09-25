@@ -1,6 +1,7 @@
-import { Animation, type AnimationOptions, type RateFunction, linear, prepare_animation } from "./animation.js";
+import { Animation, type AnimationClass, type AnimationOptions, type RateFunction, linear, prepare_animation } from "./animation.js";
 import { Mobject, Group } from "../mobject/mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
+import { DEFAULT_LAGGED_START_LAG_RATIO } from "../constants.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
 
 export interface AnimationTiming {
@@ -64,7 +65,7 @@ export class AnimationGroup extends Animation {
   }
 
   get_all_mobjects(): Mobject[] {
-    return this.group.submobjects;
+    return [...this.group];
   }
 
   begin(): void {
@@ -211,5 +212,59 @@ export class Succession extends AnimationGroup {
     if (!timing) return;
     const runTime = timing.end - timing.start;
     this.active_animation.interpolate(runTime === 0 ? 1 : (this.rate_func(alpha) * (timing.end - timing.start)) / runTime);
+  }
+}
+
+function isAnimationGroupOptions(value: unknown): value is AnimationGroupOptions {
+  return value !== null && typeof value === "object" && !(value instanceof Animation) && !Array.isArray(value) && !(value instanceof Mobject) && typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] !== "function";
+}
+
+function isIterableValue(value: unknown): value is Iterable<unknown> {
+  return value !== null && value !== undefined && typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function";
+}
+
+export class LaggedStart extends AnimationGroup {
+  constructor(...args: any[]) {
+    const last = args[args.length - 1];
+    if (isAnimationGroupOptions(last)) {
+      const { lag_ratio = DEFAULT_LAGGED_START_LAG_RATIO, ...rest } = last as AnimationGroupOptions;
+      super(...args.slice(0, -1), { ...rest, lag_ratio });
+    } else {
+      super(...args, { lag_ratio: DEFAULT_LAGGED_START_LAG_RATIO });
+    }
+  }
+}
+
+export type LaggedStartMapArgCreator = (mob: Mobject) => unknown;
+
+export class LaggedStartMap extends LaggedStart {
+  constructor(
+    animationClass: AnimationClass,
+    mobject: Mobject,
+    argCreator: LaggedStartMapArgCreator | null = null,
+    run_time = 2,
+    lag_ratio = DEFAULT_LAGGED_START_LAG_RATIO,
+    options: AnimationOptions = {},
+  ) {
+    // Mirrors Python `LaggedStartMap.__init__`: the default `arg_creator`
+    // is the identity function defined inside `__init__`.
+    function identity(mob: Mobject): Mobject {
+      return mob;
+    }
+    const creator = argCreator ?? identity;
+    const argsList = [...mobject].map((submob) => creator(submob));
+    const { lag_ratio: _droppedLagRatio, ...animKwargs } = options as AnimationOptions & { lag_ratio?: number };
+    void _droppedLagRatio;
+    const hasAnimKwargs = Object.keys(animKwargs).length > 0;
+    const animations = argsList.map((args) => {
+      let spread: unknown[];
+      if (Array.isArray(args)) spread = args;
+      else if (isIterableValue(args)) spread = [...args];
+      else {
+        throw new TypeError(`'${typeof args}' object is not iterable`);
+      }
+      return hasAnimKwargs ? new animationClass(...spread, animKwargs) : new animationClass(...spread);
+    });
+    super(...animations, { run_time, lag_ratio });
   }
 }

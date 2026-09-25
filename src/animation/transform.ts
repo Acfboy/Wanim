@@ -16,6 +16,7 @@ export interface TransformOptions extends AnimationOptions {
 
 export class Transform extends Animation {
   target_mobject: Mobject;
+  target_copy!: Mobject;
   path_arc_axis!: number[] | readonly number[] | NDArray;
   path_arc_centers!: unknown;
   private _path_arc!: number;
@@ -81,18 +82,66 @@ export class Transform extends Animation {
   }
 
   create_target(): Mobject {
-    return this.mobject.copy();
+    // Has no meaningful effect here, but may be useful
+    // in subclasses
+    return this.target_mobject;
   }
 
-  interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): void {
-    // NOTE: mirrors Python `submobject.interpolate(starting, target_copy,
-    // alpha, self.path_func)`; the TS Animation base tracks no target_copy,
-    // so the (aligned) target_mobject points are used directly.
-    submobject.interpolate(startingSubmobject, this.target_mobject, alpha, this.path_func);
+  override begin(): void {
+    // Use a copy of target_mobject for the align_data
+    // call so that the actual target_mobject stays
+    // preserved.
+    this.target_mobject = this.create_target();
+    this.target_copy = this.target_mobject.copy();
+    // Note, this potentially changes the structure
+    // of both mobject and target_mobject
+    this.mobject.align_data(this.target_copy);
+    super.begin();
   }
 
-  get_all_mobjects(): Mobject[] {
-    return [this.mobject, this.starting_mobject, this.target_mobject];
+  override interpolate_mobject(alpha: number): void {
+    const families = this.get_all_families_zipped();
+    for (let index = 0; index < families.length; index += 1) {
+      const mobs = families[index] ?? [];
+      this.interpolate_submobject(
+        mobs[0] as Mobject,
+        mobs[1] as Mobject,
+        mobs[2] as Mobject,
+        this.get_sub_alpha(alpha, index, families.length),
+      );
+    }
+  }
+
+  interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, targetCopyOrAlpha: Mobject | number, alpha?: number): void {
+    // NOTE: Python's signature is
+    // `(submobject, starting_submobject, target_copy, alpha)`; the extra
+    // `target_copy` is threaded through `get_all_families_zipped`. The
+    // union form also accepts the base-class 3-argument call shape, in
+    // which case the aligned copy is used as the target.
+    if (typeof targetCopyOrAlpha === "number") {
+      submobject.interpolate(startingSubmobject, this.target_copy ?? this.target_mobject, targetCopyOrAlpha, this.path_func);
+    } else {
+      submobject.interpolate(startingSubmobject, targetCopyOrAlpha, alpha as number, this.path_func);
+    }
+  }
+
+  override get_all_mobjects(): Mobject[] {
+    const mobs = [this.mobject, this.starting_mobject, this.target_mobject];
+    if (this.target_copy !== undefined && this.target_copy !== null) mobs.push(this.target_copy);
+    return mobs;
+  }
+
+  override get_all_families_zipped(): Mobject[][] {
+    const mobs = [
+      this.mobject,
+      this.starting_mobject,
+      this.target_copy ?? this.target_mobject,
+    ];
+    return (mobs[0] as Mobject).family_members_with_points().map((mob, index) => [
+      mob,
+      (mobs[1] as Mobject).family_members_with_points()[index] ?? mob,
+      (mobs[2] as Mobject).family_members_with_points()[index] ?? mob,
+    ]);
   }
 
   clean_up_from_scene(scene: any): void {
@@ -221,6 +270,33 @@ export class FadeTransformPieces extends FadeTransform {
     }
     for (let index = 0; index < sourceFamily.length; index += 1) {
       super.ghost_to(sourceFamily[index], targetFamily[index]);
+    }
+  }
+}
+
+export class MoveToTarget extends Transform {
+  constructor(mobject: Mobject, options: TransformOptions = {}) {
+    // NOTE: Python calls `self.check_validity_of_input(mobject)` before
+    // `super().__init__`; TS cannot touch `this` before `super()`, so the
+    // same check runs as a static here and as an instance method below.
+    MoveToTarget.validateInput(mobject);
+    const target = ((mobject as unknown as { target?: Mobject | null }).target ?? new Mobject());
+    super(mobject, target, options);
+  }
+
+  check_validity_of_input(mobject: Mobject): void {
+    MoveToTarget.validateInput(mobject);
+  }
+
+  checkValidityOfInput(mobject: Mobject): void {
+    this.check_validity_of_input(mobject);
+  }
+
+  private static validateInput(mobject: Mobject): void {
+    if (!("target" in (mobject as unknown as object))) {
+      const error = new Error("MoveToTarget called on mobjectwithout attribute 'target'");
+      error.name = "ValueError";
+      throw error;
     }
   }
 }

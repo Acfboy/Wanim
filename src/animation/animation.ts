@@ -27,26 +27,119 @@ export function getAnimationOverride(method: FunctionLike): AnimationClass | und
   return animationOverrides.get(method) ?? (get_animation_override(method) as unknown as AnimationClass | undefined) ?? (method as FunctionLike & { _override_animation?: AnimationClass })._override_animation;
 }
 
+export type AnimationClass = new (...args: any[]) => Animation;
+
+/** Per-class default kwargs installed by `set_default` (mirrors Python `partialmethod` wrapping). */
+export function classDefaultsOf(target: unknown): Record<string, unknown> {
+  return ((target as { _wanimDefaultKwargs?: Record<string, unknown> } | null | undefined)?._wanimDefaultKwargs) ?? {};
+}
+
+export function animationOverrideForMobject(
+  mobject: Mobject,
+  cls: unknown,
+): ((...args: any[]) => Animation) | undefined {
+  const mob = mobject as unknown as {
+    animation_override_for?: (cls: unknown) => ((...args: any[]) => Animation) | undefined;
+  };
+  if (typeof mob.animation_override_for === "function") {
+    return mob.animation_override_for(cls) as ((...args: any[]) => Animation) | undefined;
+  }
+  return undefined;
+}
+
 export class Animation {
   static DEFAULT_ANIMATION_RUN_TIME = DEFAULT_ANIMATION_RUN_TIME;
   static DEFAULT_ANIMATION_LAG_RATIO = DEFAULT_ANIMATION_LAG_RATIO;
-  mobject: Mobject;
-  starting_mobject: Mobject;
-  lag_ratio: number;
-  rate_func: RateFunction;
-  reverse_rate_function: boolean;
-  name: string | null;
-  remover: boolean;
-  introducer: boolean;
-  suspend_mobject_updating: boolean;
-  on_finish: (scene: any) => void;
-  protected _run_time: number;
+  /** Mirrors Python `Animation._original__init__`: the unwrapped constructor. */
+  static _original__init__: unknown = Animation;
+  mobject!: Mobject;
+  starting_mobject!: Mobject;
+  lag_ratio!: number;
+  rate_func!: RateFunction;
+  reverse_rate_function!: boolean;
+  name!: string | null;
+  remover!: boolean;
+  introducer!: boolean;
+  suspend_mobject_updating!: boolean;
+  on_finish!: (scene: any) => void;
+  protected _run_time!: number;
+
+  /**
+   * Mirrors Python `Animation.__new__`: when `mobject` defines an animation
+   * override for the class being constructed (and `use_override` is true),
+   * the override animation is returned instead of a fresh instance.
+   * Returns the override animation, or null when normal construction applies.
+   */
+  static __new__(
+    mobject: AnimationInput = null,
+    use_override = true,
+    ...args: unknown[]
+  ): Animation | null {
+    void args;
+    if (mobject instanceof Mobject && use_override) {
+      const cls = this as unknown;
+      const func = animationOverrideForMobject(mobject, cls);
+      if (func !== undefined && func !== null) {
+        return (func as (...callArgs: unknown[]) => Animation)(mobject);
+      }
+    }
+    return null;
+  }
+
+  /** Mirrors Python `Animation.__init_subclass__`: records the unwrapped constructor. */
+  static __init_subclass__(..._kwargs: unknown[]): void {
+    void _kwargs;
+    const cls = this as unknown as { _original__init__?: unknown };
+    // NOTE: TS has no automatic subclass-creation hook; this records the
+    // current constructor so `set_default()` with no arguments can restore
+    // original defaults (mirroring `cls.__init__ = cls._original__init__`).
+    if (cls._original__init__ === undefined || cls._original__init__ === Animation._original__init__) {
+      cls._original__init__ = this;
+    }
+  }
+
+  /**
+   * Mirrors Python `Animation.set_default`: stores default keyword arguments
+   * for this class (merged in the constructor). Called with no arguments,
+   * the original defaults are restored.
+   */
+  static set_default(kwargs: Record<string, unknown> = {}): void {
+    const ctor = this as unknown as {
+      _wanimDefaultKwargs?: Record<string, unknown>;
+      _original__init__?: unknown;
+    };
+    if (ctor._original__init__ === undefined) ctor._original__init__ = this;
+    if (Object.keys(kwargs).length > 0) {
+      ctor._wanimDefaultKwargs = { ...(ctor._wanimDefaultKwargs ?? {}), ...kwargs };
+    } else {
+      delete ctor._wanimDefaultKwargs;
+    }
+  }
+
+  static setDefault(kwargs: Record<string, unknown> = {}): void {
+    (this as unknown as typeof Animation).set_default(kwargs);
+  }
 
   constructor(mobjectOrOptions: AnimationInput | AnimationOptions = null, options: AnimationOptions = {}) {
     const first = mobjectOrOptions as AnimationOptions;
     const isOptions = mobjectOrOptions !== null && typeof mobjectOrOptions === "object" && !(mobjectOrOptions instanceof Mobject) && ("mobject" in first || "run_time" in first || "lag_ratio" in first || "rate_func" in first || "remover" in first || "introducer" in first);
-    const actualOptions = isOptions ? { ...(first as AnimationOptions), ...options } : options;
+    let actualOptions = isOptions ? { ...(first as AnimationOptions), ...options } : options;
     const mobject = isOptions ? actualOptions.mobject ?? null : (mobjectOrOptions as AnimationInput);
+    // Mirrors `Animation.__new__` override interception (Python `__new__`
+    // runs before `__init__` on every construction).
+    const useOverride = (actualOptions.use_override as boolean | undefined) ?? true;
+    if (mobject instanceof Mobject && useOverride) {
+      const cls = (new.target as unknown) ?? this.constructor;
+      const func = animationOverrideForMobject(mobject, cls);
+      if (func !== undefined && func !== null) {
+        const { use_override: _ignored, ...restOptions } = actualOptions;
+        return (func as (...callArgs: unknown[]) => Animation)(mobject, restOptions) as unknown as this;
+      }
+    }
+    // Mirrors `set_default` (Python `partialmethod` wrapping): per-class
+    // default kwargs apply underneath explicitly passed options.
+    const clsDefaults = ((this.constructor as unknown as { _wanimDefaultKwargs?: Record<string, unknown> })._wanimDefaultKwargs) ?? {};
+    actualOptions = { ...clsDefaults, ...actualOptions };
     this._typecheck_input(mobject);
     this.mobject = mobject ?? new Mobject();
     this.starting_mobject = new Mobject();
@@ -122,7 +215,7 @@ export class Animation {
     return [this.mobject, this.starting_mobject];
   }
 
-  get_all_families_zipped(): [Mobject, Mobject][] {
+  get_all_families_zipped(): Mobject[][] {
     const first = this.mobject.family_members_with_points();
     const second = this.starting_mobject.family_members_with_points();
     return first.map((mobject, index) => [mobject, second[index] ?? mobject]);
@@ -205,11 +298,18 @@ export class Wait extends Animation {
 }
 
 export class Add extends Animation {
-  constructor(...mobjects: Mobject[]) {
+  constructor(...args: Array<Mobject | AnimationOptions>) {
+    let options: AnimationOptions = {};
+    const last = args[args.length - 1];
+    if (last !== undefined && !(last instanceof Mobject) && typeof last === "object" && !Array.isArray(last)) {
+      options = last as AnimationOptions;
+      args = args.slice(0, -1);
+    }
+    const mobjects = args as Mobject[];
     // NOTE: mirrors Python `mobjects[0] if len(mobjects) == 1 else
-    // Group(*mobjects)`: zero mobjects yields an empty Group (no raise).
+    // Group(*mobjects)`: zero mobjects yields an empty Group.
     const mobject = mobjects.length === 1 ? mobjects[0] : new Group(...mobjects);
-    super(mobject, { run_time: 0, introducer: true });
+    super(mobject, { run_time: 0, introducer: true, ...options });
   }
 
   begin(): void {}
@@ -225,8 +325,6 @@ export function prepare_animation(animation: Animation | Mobject | (() => Animat
   if (animation instanceof Mobject) return new Animation(animation);
   throw new TypeError("Expected an Animation, Mobject, or animation factory.");
 }
-
-export type AnimationClass = new (...args: any[]) => Animation;
 
 export function override_animation(animationClass: AnimationClass): (func: FunctionLike) => FunctionLike {
   function decorator(func: FunctionLike): FunctionLike {

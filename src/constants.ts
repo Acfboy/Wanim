@@ -31,6 +31,7 @@ export const DEFAULT_POINT_DENSITY_1D = 10;
 export const DEFAULT_STROKE_WIDTH = 4;
 export const DEFAULT_ANIMATION_RUN_TIME = 1;
 export const DEFAULT_ANIMATION_LAG_RATIO = 0;
+export const DEFAULT_LAGGED_START_LAG_RATIO = 0.05;
 export const DEFAULT_FONT_SIZE = 48;
 export const SCALE_FACTOR_PER_FONT_POINT = 1 / 960;
 export const PI = Math.PI;

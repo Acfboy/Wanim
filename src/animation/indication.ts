@@ -1,11 +1,12 @@
-import { smooth, type AnimationOptions, type RateFunction } from "./animation.js";
+import { Animation, classDefaultsOf, smooth, type AnimationOptions, type RateFunction } from "./animation.js";
 import { ShowPartial, type ShowPartialOptions } from "./creation.js";
 import { Homotopy } from "./movement.js";
 import { type Mobject } from "../mobject/mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { interpolate, inverse_interpolate } from "../utils/bezier.js";
+import { there_and_back, wiggle } from "../utils/rate_functions.js";
 import { normalize } from "../utils/space_ops.js";
-import { UP } from "../constants.js";
+import { TAU, UP } from "../constants.js";
 
 export class ShowPassingFlash extends ShowPartial {
   time_width: number;
@@ -104,4 +105,62 @@ export function createApplyWave(
 ): ApplyWave {
   const { direction = UP, amplitude = 0.2, wave_func = smooth, time_width = 1, ripples = 1, run_time = 2, ...rest } = options;
   return new ApplyWave(mobject, direction, amplitude, wave_func, time_width, ripples, run_time, rest);
+}
+
+export interface WiggleOptions extends AnimationOptions {
+  scale_value?: number;
+  rotation_angle?: number;
+  n_wiggles?: number;
+  scale_about_point?: readonly number[] | null;
+  rotate_about_point?: readonly number[] | null;
+}
+
+export class Wiggle extends Animation {
+  scale_value: number;
+  rotation_angle: number;
+  n_wiggles: number;
+  scale_about_point: number[] | null;
+  rotate_about_point: number[] | null;
+
+  constructor(mobject: Mobject, options: WiggleOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    const {
+      scale_value = (clsDefaults.scale_value as number | undefined) ?? 1.1,
+      rotation_angle = (clsDefaults.rotation_angle as number | undefined) ?? 0.01 * TAU,
+      n_wiggles = (clsDefaults.n_wiggles as number | undefined) ?? 6,
+      scale_about_point = (clsDefaults.scale_about_point as readonly number[] | null | undefined) ?? null,
+      rotate_about_point = (clsDefaults.rotate_about_point as readonly number[] | null | undefined) ?? null,
+      run_time = (clsDefaults.run_time as number | undefined) ?? 2,
+      ...rest
+    } = options;
+    super(mobject, { ...rest, run_time });
+    this.scale_value = scale_value;
+    this.rotation_angle = rotation_angle;
+    this.n_wiggles = n_wiggles;
+    this.scale_about_point = scale_about_point === null || scale_about_point === undefined ? null : [...scale_about_point];
+    this.rotate_about_point = rotate_about_point === null || rotate_about_point === undefined ? null : [...rotate_about_point];
+  }
+
+  get_scale_about_point(): number[] {
+    if (this.scale_about_point === null) return this.mobject.get_center();
+    return this.scale_about_point;
+  }
+
+  get_rotate_about_point(): number[] {
+    if (this.rotate_about_point === null) return this.mobject.get_center();
+    return this.rotate_about_point;
+  }
+
+  override interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): void {
+    submobject.points = startingSubmobject.points;
+    submobject.scale(
+      interpolate(1, this.scale_value, there_and_back(alpha)) as number,
+      this.get_scale_about_point(),
+    );
+    submobject.rotate(
+      (wiggle as (t: number, wiggles?: number) => number)(alpha, this.n_wiggles) * this.rotation_angle,
+      undefined,
+      this.get_rotate_about_point(),
+    );
+  }
 }

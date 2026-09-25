@@ -210,6 +210,33 @@ export class Mobject {
     (this as unknown as typeof Mobject).set_default(kwargs);
   }
 
+  animation_override_for(animationClass: unknown): FunctionLike | undefined {
+    const fromInstance = this.animation_overrides.get(animationClass);
+    if (fromInstance !== undefined) return fromInstance;
+    const ctor = this.constructor as unknown as { animation_overrides?: Map<unknown, FunctionLike> };
+    return ctor.animation_overrides?.get(animationClass);
+  }
+
+  animationOverrideFor(animationClass: unknown): FunctionLike | undefined {
+    return this.animation_override_for(animationClass);
+  }
+
+  static add_animation_override(animationClass: unknown, overrideFunc: FunctionLike): void {
+    const ctor = this as unknown as { animation_overrides?: Map<unknown, FunctionLike> };
+    if (!ctor.animation_overrides) ctor.animation_overrides = new Map();
+    if (ctor.animation_overrides.has(animationClass)) {
+      throw new MultiAnimationOverrideException(
+        `The animation ${(animationClass as { name?: string }).name} for ` +
+        `${this.name} is overridden by more than one method.`,
+      );
+    }
+    ctor.animation_overrides.set(animationClass, overrideFunc);
+  }
+
+  static addAnimationOverride(animationClass: unknown, overrideFunc: FunctionLike): void {
+    (this as unknown as typeof Mobject).add_animation_override(animationClass, overrideFunc);
+  }
+
   get animate(): _AnimationBuilder {
     return createAnimationBuilder(this);
   }
@@ -1461,15 +1488,23 @@ export class Mobject {
   }
 
   replace(other: Mobject, dim_to_match = 0, stretch = false): this {
-    if (stretch) {
-      this.scale_to_fit_width(other.width);
-      this.scale_to_fit_height(other.height);
-    } else {
-      const currentLength = this.length_over_dim(dim_to_match);
-      const targetLength = other.length_over_dim(dim_to_match);
-      if (currentLength !== 0) this.scale(targetLength / currentLength);
+    if (!other.get_num_points() && !other.submobjects.length) {
+      const error = new Error("Attempting to replace mobject with no points");
+      error.name = "Warning";
+      throw error;
     }
-    return this.shift([other.get_center()[0] - this.get_center()[0], other.get_center()[1] - this.get_center()[1], other.get_center()[2] - this.get_center()[2]]);
+    if (stretch) {
+      this.stretch_to_fit_width(other.width);
+      this.stretch_to_fit_height(other.height);
+    } else {
+      this.rescale_to_fit(
+        other.length_over_dim(dim_to_match),
+        dim_to_match,
+        false,
+      );
+    }
+    this.shift(subtractPoints(other.get_center(), this.get_center(), this.dim));
+    return this;
   }
 
   match_points(other: Mobject, _copy_submobjects = true): this {
