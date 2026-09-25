@@ -29,6 +29,9 @@ export class CoordinateSystem {
 
   c2p(...coords: (number | number[] | NDArray)[]): NDArray { return this.coords_to_point(...coords); }
   point_to_coords(_point: readonly number[]): number[] { throw new Error("CoordinateSystem.point_to_coords must be implemented by a subclass."); }
+  static _origin_shift(_axis_range: readonly number[]): number {
+    throw new Error("CoordinateSystem._origin_shift must be implemented by a subclass.");
+  }
   get_axes(): Mobject[] { throw new Error("CoordinateSystem.get_axes must be implemented by a subclass."); }
   get_axis(index: number): Mobject { return this.get_axes()[index]; }
   get_origin(): NDArray { return this.coords_to_point(0, 0); }
@@ -97,5 +100,11 @@ export class NumberPlane extends CoordinateSystem {
 
 export class Axes extends NumberPlane {
   get_axes(): Mobject[] { return []; }
+
+  static override _origin_shift(axis_range: readonly number[]): number {
+    if ((axis_range[0] ?? 0) > 0) return axis_range[0] ?? 0;
+    if ((axis_range[1] ?? 0) < 0) return axis_range[1] ?? 0;
+    return 0;
+  }
 }
 

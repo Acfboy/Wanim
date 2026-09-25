@@ -1,7 +1,7 @@
 import { array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
-import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray } from "../../utils/arrays.js";
+import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
 import { ORIGIN } from "../../constants.js";
 
 export interface VMobjectOptions extends MobjectOptions {
@@ -155,7 +155,15 @@ export class VMobject extends Mobject {
     return values.length === 0 ? this.stroke_opacity : values[0];
   }
 
-  get_stroke_width(): number { return this.stroke_width; }
+  get_stroke_width(background = false): number {
+    let width: unknown;
+    if (background) width = this.background_stroke_width;
+    else {
+      width = this.stroke_width;
+      if (typeof width === "string") width = Number.parseInt(width, 10);
+    }
+    return Math.max(0.0, Number(width));
+  }
 
   get_color(): ManimColor {
     // Python: `if np.all(self.get_fill_opacities() == 0)` — stroke color is
@@ -329,12 +337,78 @@ export class VMobject extends Mobject {
     return point;
   }
 
+  consider_points_equals_2d(p0: readonly number[], p1: readonly number[]): boolean {
+    const rtol = 1.0e-5;
+    const atol = this.tolerance_for_point_equality;
+    const x0 = p0[0] ?? NaN;
+    const y0 = p0[1] ?? NaN;
+    const x1 = p1[0] ?? NaN;
+    const y1 = p1[1] ?? NaN;
+    if (x0 !== x1) {
+      const x_diff = Math.abs((x0 as number) - (x1 as number));
+      if (!(x_diff <= atol + rtol * Math.abs(x1 as number) && Number.isFinite(x_diff))) return false;
+    }
+    if (y0 === y1) return true;
+    const y_diff = Math.abs((y0 as number) - (y1 as number));
+    return Boolean(y_diff <= atol + rtol * Math.abs(y1 as number) && Number.isFinite(y_diff));
+  }
+
+  get_subpath_split_indices_from_points(points: unknown, n_dims = 3): NDArray {
+    const full = fullRows(points);
+    const nppcc = this.n_points_per_cubic_curve;
+    const n_pts = full.length;
+    if (n_pts < nppcc) return array([]).reshape(0, 2) as NDArray;
+    const boundary_indices: number[] = [];
+    for (let index = nppcc; index < n_pts; index += nppcc) boundary_indices.push(index);
+    if (boundary_indices.length === 0) return array([[0, n_pts]]) as NDArray;
+    const rtol = 1.0e-5;
+    const atol = this.tolerance_for_point_equality;
+    const is_split = boundary_indices.map((boundary) => {
+      const end = full[boundary - 1] ?? [];
+      const start = full[boundary] ?? [];
+      for (let dim = 0; dim < n_dims; dim += 1) {
+        const e = end[dim] ?? NaN;
+        const s = start[dim] ?? NaN;
+        const diff = Math.abs(e - s);
+        const threshold = atol + rtol * Math.abs(s);
+        let close = diff <= threshold;
+        close = close && Number.isFinite(diff);
+        close = close || e === s;
+        if (!close) return true;
+      }
+      return false;
+    });
+    const split_points = [0, ...boundary_indices.filter((_, index) => is_split[index]), n_pts];
+    const ranges: number[][] = [];
+    for (let index = 0; index < split_points.length - 1; index += 1) {
+      ranges.push([split_points[index] ?? 0, split_points[index + 1] ?? 0]);
+    }
+    return array(ranges) as NDArray;
+  }
+
 }
 
 function cloneAttribute(value: unknown): unknown {
   if (isNDArray(value)) return value.copy();
   if (Array.isArray(value)) return value.map(cloneAttribute);
   return value;
+}
+
+function fullRows(value: unknown): number[][] {
+  return nestedRows(value).map((row) => (Array.isArray(row) ? row : [row]).map(numeric));
+}
+
+function callerFunctionName(): string {
+  const stack = new Error().stack ?? "";
+  const lines = stack.split("\n").slice(1).map((line) => line.trim());
+  for (const line of lines) {
+    const match = line.match(/^at (\S+)/);
+    if (!match) continue;
+    const short = (match[1] ?? "").split(".").pop() ?? "";
+    if (short === "callerFunctionName" || short === "_throw_error_if_no_submobjects" || short === "_get_submobjects_with_points" || short === "new" || short === "Error") continue;
+    return short;
+  }
+  return "";
 }
 
 export class VectorizedPoint extends VMobject {
@@ -384,4 +458,41 @@ export function vmobjectFrom(value: unknown, dim = 3): VMobject {
   const result = new VMobject({ dim });
   result.points = pointsFrom(value, dim);
   return result;
+}
+
+export class VDict extends VMobject {
+  submob_dict = new Map<unknown, VMobject>();
+
+  __delitem__(key: unknown): void {
+    if (!this.submob_dict.has(key)) {
+      const error = new Error(toPythonRepr(key));
+      error.name = "KeyError";
+      throw error;
+    }
+    this.submob_dict.delete(key);
+  }
+}
+
+export class CurvesAsSubmobjects extends VGroup {
+  _throw_error_if_no_submobjects(): void {
+    if (this.submobjects.length === 0) {
+      const caller_name = callerFunctionName();
+      throw new Error(
+        `Cannot call CurvesAsSubmobjects. ${caller_name} for a CurvesAsSubmobject with no submobjects`,
+      );
+    }
+  }
+
+  _get_submobjects_with_points(): VMobject[] {
+    const submobjs_with_pts = this.submobjects.filter(
+      (part) => (part as VMobject).get_num_points() > 0,
+    ) as VMobject[];
+    if (submobjs_with_pts.length === 0) {
+      const caller_name = callerFunctionName();
+      throw new Error(
+        `Cannot call CurvesAsSubmobjects. ${caller_name} for a CurvesAsSubmobject whose submobjects have no points`,
+      );
+    }
+    return submobjs_with_pts;
+  }
 }

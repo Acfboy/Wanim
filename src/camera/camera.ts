@@ -1,6 +1,7 @@
-import { array, type NDArray } from "numpy-ts";
+import { array, copyto, type NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
 import { ManimColor, color_to_int_rgba, type ParsableManimColor } from "../utils/color/core.js";
+import { asArray, pointRows } from "../utils/arrays.js";
 import { ORIGIN } from "../constants.js";
 
 export interface CameraOptions {
@@ -96,7 +97,73 @@ export class Camera {
     return this;
   }
 
+  get rgb_max_val(): number {
+    if (this.pixel_array_dtype.startsWith("uint")) {
+      const bits = Number(this.pixel_array_dtype.slice(4)) || 8;
+      return 2 ** bits - 1;
+    }
+    if (this.pixel_array_dtype.startsWith("int")) {
+      const bits = Number(this.pixel_array_dtype.slice(3)) || 8;
+      return 2 ** (bits - 1) - 1;
+    }
+    return 255;
+  }
+
+  convert_pixel_array(pixel_array: unknown): NDArray {
+    const source = asArray(pixel_array).toArray() as unknown[][][];
+    const converted = source.map((row) =>
+      row.map((pixel) =>
+        (Array.isArray(pixel) ? pixel : [pixel]).map((value) => Math.trunc(Number(value) * this.rgb_max_val)),
+      ),
+    );
+    return (array(converted) as NDArray).astype(this.pixel_array_dtype as "uint8") as NDArray;
+  }
+
+  set_pixel_array(pixel_array: unknown, convert_from_floats = false): void {
+    const converted = convert_from_floats ? this.convert_pixel_array(pixel_array) : asArray(pixel_array);
+    if (
+      this.pixel_array !== undefined &&
+      this.pixel_array !== null &&
+      shapesEqual((this.pixel_array as NDArray).shape, (converted as NDArray).shape)
+    ) {
+      copyto(this.pixel_array as never, converted as never);
+    } else {
+      this.pixel_array = (converted as NDArray).copy();
+    }
+  }
+
+  on_screen_pixels(pixel_coords: NDArray | number[][]): boolean[] {
+    const rows = pointRows(pixel_coords, 2);
+    return rows.map((row) => {
+      const x = row[0] ?? 0;
+      const y = row[1] ?? 0;
+      return x >= 0 && x < this.pixel_width && y >= 0 && y < this.pixel_height;
+    });
+  }
+
+  adjusted_thickness(thickness: number): number {
+    const big_sum: number = config.pixel_height + config.pixel_width;
+    const this_sum: number = this.pixel_height + this.pixel_width;
+    const factor = big_sum / this_sum;
+    return 1 + (thickness - 1) * factor;
+  }
+
+  get_thickening_nudges(thickness: number): NDArray {
+    const nudged = Math.trunc(thickness);
+    const range: number[] = [];
+    for (let index = Math.floor(-nudged / 2) + 1; index <= Math.floor(nudged / 2); index += 1) {
+      range.push(index);
+    }
+    const pairs: number[][] = [];
+    for (const first of range) for (const second of range) pairs.push([first, second]);
+    return array(pairs.length > 0 ? pairs : []) as NDArray;
+  }
+
   capture_mobject(_mobject: unknown): void {}
 
   get_image(pixelArray?: unknown): unknown { return pixelArray ?? this.pixel_array; }
+}
+
+function shapesEqual(first: readonly number[], second: readonly number[]): boolean {
+  return first.length === second.length && first.every((value, index) => value === second[index]);
 }

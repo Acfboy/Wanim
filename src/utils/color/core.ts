@@ -120,6 +120,76 @@ export class ManimColor {
     return this.internal;
   }
 
+  get _internal_value(): ColorArray {
+    return this.internal;
+  }
+
+  set _internal_value(value: ColorArray) {
+    if (!isNDArray(value)) {
+      throw new TypeError(`Expected numpy array, got ${typeof value}`);
+    }
+    (this as unknown as { internal: ColorArray }).internal = value;
+  }
+
+  static _internal_from_integer(value: number, alpha: number): ColorArray {
+    const normalized = Math.trunc(value);
+    return array([
+      ((normalized >>> 16) & 0xff) / 255,
+      ((normalized >>> 8) & 0xff) / 255,
+      ((normalized >>> 0) & 0xff) / 255,
+      alpha,
+    ]) as ColorArray;
+  }
+
+  static _internal_from_hex_string(hex_: string, alpha: number): ColorArray {
+    let hex = hex_;
+    if (hex.length === 3 || hex.length === 4) hex = [...hex].map((part) => part + part).join("");
+    if (hex.length === 6) hex += "FF";
+    else if (hex.length === 8) alpha = (Number.parseInt(hex, 16) & 0xff) / 255;
+    else {
+      const error = new Error(
+        "Hex colors must be specified with either 0x or # as prefix and contain 6 or 8 hexadecimal numbers",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    const tmp = Number.parseInt(hex, 16);
+    return array([
+      ((tmp >>> 24) & 0xff) / 255,
+      ((tmp >>> 16) & 0xff) / 255,
+      ((tmp >>> 8) & 0xff) / 255,
+      alpha,
+    ]) as ColorArray;
+  }
+
+  static _internal_from_int_rgb(rgb: readonly number[] | NDArray, alpha = 1): ColorArray {
+    const items = valuesOf(rgb).map(Number);
+    const value = [0, 1, 2, 3].map((index) => (items[index] ?? 0) / 255);
+    value[3] = alpha;
+    return array(value) as ColorArray;
+  }
+
+  static _internal_from_rgb(rgb: readonly number[] | NDArray, alpha = 1): ColorArray {
+    const items = valuesOf(rgb).map(Number);
+    const value = [0, 1, 2, 3].map((index) => items[index] ?? 0);
+    value[3] = alpha;
+    return array(value) as ColorArray;
+  }
+
+  static _internal_from_int_rgba(rgba: readonly number[] | NDArray): ColorArray {
+    return array(valuesOf(rgba).map((item) => Number(item) / 255)) as ColorArray;
+  }
+
+  static _internal_from_rgba(rgba: readonly number[] | NDArray): ColorArray {
+    return array(valuesOf(rgba).map(Number)) as ColorArray;
+  }
+
+  static _internal_from_string(name: string, alpha: number): ColorArray {
+    const named = NAMED_COLORS[name.toUpperCase()];
+    if (named) return array([...named.slice(0, 3), alpha]) as ColorArray;
+    throw new Error(`Color ${name} not found`);
+  }
+
   get internal_space(): ColorArray {
     return this.internal;
   }

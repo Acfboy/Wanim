@@ -65,3 +65,17 @@ export enum RendererType {
   CAIRO = "cairo",
   OPENGL = "opengl",
 }
+
+export enum LineJointType {
+  AUTO = 0,
+  ROUND = 1,
+  BEVEL = 2,
+  MITER = 3,
+}
+
+export enum CapStyleType {
+  AUTO = 0,
+  ROUND = 1,
+  BUTT = 2,
+  SQUARE = 3,
+}
