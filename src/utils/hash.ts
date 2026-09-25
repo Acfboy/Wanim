@@ -328,48 +328,50 @@ export class _CustomEncoder {
     return crc32(_get_json(key, this._memoizer));
   }
 
+  _iter_check_list(lst: unknown[]): unknown[] {
+    const processed: unknown[] = new Array(lst.length);
+    for (let index = 0; index < lst.length; index += 1) {
+      let el = this._memoizer.check_already_processed(lst[index]);
+      if (Array.isArray(el)) {
+        el = this._iter_check_list(el);
+      } else if (el !== null && typeof el === "object" && !Array.isArray(el)) {
+        el = this._iter_check_dict(el as Record<string, unknown>);
+      }
+      processed[index] = el;
+    }
+    return processed;
+  }
+
+  _iter_check_dict(dct: Record<string, unknown>): Record<string, unknown> {
+    const processed: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dct)) {
+      const next = this._memoizer.check_already_processed(value);
+      if (KEYS_TO_FILTER_OUT.has(key) && !(this.include_pixel_array && key === "pixel_array")) {
+        continue;
+      }
+      // We check if the k is of the right format (supported by JSON).
+      // NOTE: JS object keys are always strings, so this only hashes
+      // non-string keys (e.g. from Maps converted upstream); string keys
+      // pass through exactly like Python's str/int/float/bool/None keys
+      // that JSON supports natively.
+      const nextKey: string | number = typeof key !== "string" ? this._key_to_hash(key) : key;
+      if (typeof next === "object" && next !== null && !Array.isArray(next)) {
+        processed[nextKey] = this._iter_check_dict(next as Record<string, unknown>);
+      } else if (Array.isArray(next)) {
+        processed[nextKey] = this._iter_check_list(next);
+      } else {
+        processed[nextKey] = next;
+      }
+    }
+    return processed;
+  }
+
   _cleaned_iterable(iterable: unknown[] | Record<string, unknown>): unknown[] | Record<string, unknown> {
-    const cleanList = (lst: unknown[]): unknown[] => {
-      const processed: unknown[] = new Array(lst.length);
-      for (let index = 0; index < lst.length; index += 1) {
-        let el = this._memoizer.check_already_processed(lst[index]);
-        if (Array.isArray(el)) {
-          el = cleanList(el);
-        } else if (el !== null && typeof el === "object" && !Array.isArray(el)) {
-          el = cleanDict(el as Record<string, unknown>);
-        }
-        processed[index] = el;
-      }
-      return processed;
-    };
-    const cleanDict = (dct: Record<string, unknown>): Record<string, unknown> => {
-      const processed: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(dct)) {
-        const next = this._memoizer.check_already_processed(value);
-        if (KEYS_TO_FILTER_OUT.has(key) && !(this.include_pixel_array && key === "pixel_array")) {
-          continue;
-        }
-        // We check if the k is of the right format (supported by JSON).
-        // NOTE: JS object keys are always strings, so this only hashes
-        // non-string keys (e.g. from Maps converted upstream); string keys
-        // pass through exactly like Python's str/int/float/bool/None keys
-        // that JSON supports natively.
-        const nextKey: string | number = typeof key !== "string" ? this._key_to_hash(key) : key;
-        if (typeof next === "object" && next !== null && !Array.isArray(next)) {
-          processed[nextKey] = cleanDict(next as Record<string, unknown>);
-        } else if (Array.isArray(next)) {
-          processed[nextKey] = cleanList(next);
-        } else {
-          processed[nextKey] = next;
-        }
-      }
-      return processed;
-    };
     if (Array.isArray(iterable)) {
-      return cleanList(iterable);
+      return this._iter_check_list(iterable);
     }
     if (iterable !== null && typeof iterable === "object") {
-      return cleanDict(iterable as Record<string, unknown>);
+      return this._iter_check_dict(iterable as Record<string, unknown>);
     }
     throw new TypeError("'iterable' is neither an iterable nor a dictionary.");
   }

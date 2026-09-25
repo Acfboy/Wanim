@@ -1,4 +1,5 @@
 import { array, type NDArray } from "numpy-ts";
+import { arange } from "./arrays.js";
 
 type Point2D = [number, number];
 
@@ -236,4 +237,99 @@ export class Cell {
   valueOf(): number {
     return this.d;
   }
+}
+
+/** Minimal binary min-heap ordered by Cell.d, mirroring
+ * queue.PriorityQueue (which orders Cells via __lt__, i.e. by d). */
+class CellMinHeap {
+  private items: Cell[] = [];
+
+  size(): number {
+    return this.items.length;
+  }
+
+  push(cell: Cell): void {
+    this.items.push(cell);
+    let index = this.items.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if ((this.items[index]?.d ?? 0) < (this.items[parent]?.d ?? 0)) {
+        [this.items[index], this.items[parent]] = [this.items[parent] as Cell, this.items[index] as Cell];
+        index = parent;
+      } else break;
+    }
+  }
+
+  pop(): Cell | undefined {
+    const top = this.items[0];
+    const last = this.items.pop();
+    if (this.items.length > 0 && last !== undefined) {
+      this.items[0] = last;
+      let index = 0;
+      for (;;) {
+        const left = 2 * index + 1;
+        const right = 2 * index + 2;
+        let smallest = index;
+        if (left < this.items.length && (this.items[left]?.d ?? 0) < (this.items[smallest]?.d ?? 0)) smallest = left;
+        if (right < this.items.length && (this.items[right]?.d ?? 0) < (this.items[smallest]?.d ?? 0)) smallest = right;
+        if (smallest === index) break;
+        [this.items[index], this.items[smallest]] = [this.items[smallest] as Cell, this.items[index] as Cell];
+        index = smallest;
+      }
+    }
+    return top;
+  }
+}
+
+function cellCenter(cell: Cell): [number, number] {
+  const raw = (cell.c as NDArray).toArray() as unknown[];
+  return [Number(raw[0] ?? 0), Number(raw[1] ?? 0)];
+}
+
+export function polylabel(rings: Array<number[][] | NDArray>, precision = 0.01): Cell {
+  const polygon = new Polygon(rings);
+  const flat = polygon.array.toArray() as number[][];
+  if (flat.length === 0) {
+    const error = new Error("zero-size array to reduction operation minimum which has no identity");
+    error.name = "ValueError";
+    throw error;
+  }
+  const xs = flat.map((row) => Number(row[0] ?? 0));
+  const ys = flat.map((row) => Number(row[1] ?? 0));
+  const min_x = Math.min(...xs);
+  const min_y = Math.min(...ys);
+  const max_x = Math.max(...xs);
+  const max_y = Math.max(...ys);
+  const dims = [max_x - min_x, max_y - min_y];
+  const s = Math.min(dims[0] ?? 0, dims[1] ?? 0);
+  const h = s / 2.0;
+
+  // Initial grid: mirrors np.meshgrid(arange(...), arange(...)) corners + h.
+  const queue = new CellMinHeap();
+  for (const gx of arange(min_x, max_x, s)) {
+    for (const gy of arange(min_y, max_y, s)) {
+      queue.push(new Cell([gx + h, gy + h], h, polygon));
+    }
+  }
+
+  // Initial guess.
+  let best = new Cell(polygon.centroid, 0, polygon);
+  const bbox = new Cell([min_x + (dims[0] ?? 0) / 2, min_y + (dims[1] ?? 0) / 2], 0, polygon);
+  if (bbox.d > best.d) best = bbox;
+
+  // While there are cells to consider...
+  const directions = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+  while (queue.size() > 0) {
+    const cell = queue.pop() as Cell;
+    if (cell.d > best.d) best = cell;
+    // If a cell is promising, subdivide!
+    if (cell.p - best.d > precision) {
+      const child_h = cell.h / 2.0;
+      const [cx, cy] = cellCenter(cell);
+      for (const [dx, dy] of directions) {
+        queue.push(new Cell([cx + (dx ?? 0) * child_h, cy + (dy ?? 0) * child_h], child_h, polygon));
+      }
+    }
+  }
+  return best;
 }

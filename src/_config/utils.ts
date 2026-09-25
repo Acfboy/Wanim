@@ -3,7 +3,7 @@ import { QUALITIES, DEFAULT_QUALITY, RendererType, ORIGIN, UP, DOWN, RIGHT, LEFT
 import { ManimColor, BLACK, type ParsableManimColor } from "../utils/color/core.js";
 
 export const MANIM_CONFIG_OPTIONS = [
-  "assets_dir", "background_color", "background_opacity", "custom_folders", "disable_caching", "disable_caching_warning", "dry_run", "encoder_queue_size", "enable_wireframe", "ffmpeg_loglevel", "format", "flush_cache", "frame_height", "frame_rate", "frame_width", "frame_x_radius", "frame_y_radius", "from_animation_number", "images_dir", "input_file", "media_embed", "media_width", "log_dir", "log_to_file", "max_files_cached", "max_inflight_encoders", "media_dir", "movie_file_extension", "notify_outdated_version", "output_file", "partial_movie_dir", "pixel_height", "pixel_width", "plugins", "preview", "progress_bar", "quality", "save_as_gif", "save_sections", "save_last_frame", "save_pngs", "scene_names", "seed", "show_in_file_browser", "tex_dir", "tex_template", "tex_template_file", "text_dir", "upto_animation_number", "renderer", "enable_gui", "gui_location", "use_projection_fill_shaders", "use_projection_stroke_shaders", "verbosity", "video_dir", "sections_dir", "fullscreen", "window_position", "window_size", "window_monitor", "write_all", "write_to_movie", "zero_pad", "force_window", "no_latex_cleanup", "preview_command",
+  "assets_dir", "background_color", "background_opacity", "custom_folders", "disable_caching", "disable_caching_warning", "dry_run", "encoder_queue_size", "enable_wireframe", "ffmpeg_loglevel", "format", "flush_cache", "frame_height", "frame_rate", "frame_width", "frame_x_radius", "frame_y_radius", "from_animation_number", "images_dir", "input_file", "media_embed", "media_width", "log_dir", "log_to_file", "max_files_cached", "max_inflight_encoders", "media_dir", "movie_file_extension", "notify_outdated_version", "output_file", "partial_movie_dir", "pixel_height", "pixel_width", "plugins",   "preview", "progress_bar", "quality", "save_as_gif", "save_sections", "save_last_frame", "save_pngs", "scene_names", "seed", "show_in_file_browser", "tex_dir", "tex_template", "tex_template_file", "text_dir", "transparent", "upto_animation_number", "renderer", "enable_gui", "gui_location", "use_projection_fill_shaders", "use_projection_stroke_shaders", "verbosity", "video_dir", "sections_dir", "fullscreen", "window_position", "window_size", "window_monitor", "write_all", "write_to_movie", "zero_pad", "force_window", "no_latex_cleanup", "preview_command",
 ] as const;
 
 export type ManimConfigKey = (typeof MANIM_CONFIG_OPTIONS)[number] | string;
@@ -57,6 +57,7 @@ const defaults: Record<string, unknown> = {
   tex_template: "",
   tex_template_file: "",
   text_dir: "./media/texts",
+  transparent: false,
   upto_animation_number: -1,
   renderer: RendererType.CAIRO,
   enable_gui: false,
@@ -137,6 +138,23 @@ function formatG(value: number): string {  // NOTE: mirrors Python f"{value:g}":
   return text;
 }
 
+export interface ManimConfigCliArgs {
+  file?: string | { suffix?: string; toString(): string } | null;
+  config_file?: string | null;
+  scene_names?: string[] | null;
+  output_file?: string;
+  from_animation_number?: number[] | null;
+  quality?: string | null;
+  resolution?: number[] | null;
+  frame_rate?: number | null;
+  custom_folders?: boolean;
+  media_dir?: string | null;
+  tex_template?: string | null;
+  write_to_movie?: boolean | null;
+  gui_location?: unknown;
+  [key: string]: unknown;
+}
+
 export class ManimConfig {
   private readonly values: Record<string, unknown>;
   private parserData: ConfigParserData | null = null;
@@ -215,6 +233,7 @@ export class ManimConfig {
     if (key === "sections_dir") { this.sections_dir = value as string; return; }
     if (key === "text_dir") { this.text_dir = value as string; return; }
     if (key === "tex_dir") { this.tex_dir = value as string; return; }
+    if (key === "transparent") { this.transparent = value as boolean; return; }
     if (key === "custom_folders") { this.custom_folders = value as string; return; }
     if (key === "input_file") { this.input_file = value as string; return; }
     if (key === "output_file") { this.output_file = value as string; return; }
@@ -637,6 +656,12 @@ export class ManimConfig {
   set save_as_gif(value: boolean) { this._set_boolean("save_as_gif", value); }
   get save_sections(): boolean { return this.__getitem__("save_sections"); }
   set save_sections(value: boolean) { this._set_boolean("save_sections", value); }
+  // NOTE: minimal boolean storage for the `transparent` CLI flag. Python's
+  // setter additionally resolves the movie file extension
+  // (resolve_movie_file_extension), which is a rendering concern and is not
+  // ported yet.
+  get transparent(): boolean { return this.__getitem__("transparent"); }
+  set transparent(value: boolean) { this._set_boolean("transparent", value); }
   get enable_wireframe(): boolean { return this.__getitem__("enable_wireframe"); }
   set enable_wireframe(value: boolean) { this._set_boolean("enable_wireframe", value); }
   get force_window(): boolean { return this.__getitem__("force_window"); }
@@ -913,6 +938,158 @@ export class ManimConfig {
 
     const quality = getOrFallback(sectionOf("CLI"), "quality", "");
     if (quality) this.quality = _determine_quality(quality);
+
+    return this;
+  }
+
+  digest_args(args: ManimConfigCliArgs): this {
+    // NOTE: mirrors ManimConfig.digest_args (manim/_config/utils.py). The
+    // `args` object stands in for argparse.Namespace (as returned by
+    // main_utils.parse_args()); unknown keys ride along via the index
+    // signature so the hasattr loops below behave like Python's.
+    const file_suffix = typeof args.file === "string"
+      ? (args.file.endsWith(".cfg") ? ".cfg" : "")
+      : (args.file?.suffix ?? "");
+    // if the input file is a config file, parse it properly
+    if (file_suffix === ".cfg") args.config_file = String(args.file);
+
+    // if args.file is `-`, the animation code has to be taken from STDIN, so
+    // the input file path shouldn't be absolute, since that file won't be read.
+    if (args.file !== undefined && args.file !== null && String(args.file) === "-") {
+      this.input_file = String(args.file);
+    }
+
+    // if a config file has been passed, digest it first so that other CLI
+    // flags supersede it
+    if (args.config_file) this.digest_file(args.config_file);
+
+    // read input_file from the args if it wasn't set by the config file
+    if (!this.input_file) {
+      const file_string = String(args.file);
+      this.input_file = file_string.startsWith("/")
+        ? file_string
+        : `${process.cwd()}/${file_string}`;
+    }
+
+    this.scene_names = (args.scene_names ?? []) as string[];
+    this.output_file = String(args.output_file ?? "");
+
+    for (const key of [
+      "notify_outdated_version",
+      "preview",
+      "show_in_file_browser",
+      "write_to_movie",
+      "save_last_frame",
+      "save_pngs",
+      "save_as_gif",
+      "save_sections",
+      "write_all",
+      "disable_caching",
+      "format",
+      "flush_cache",
+      "progress_bar",
+      "transparent",
+      "scene_names",
+      "verbosity",
+      "renderer",
+      "background_color",
+      "enable_gui",
+      "fullscreen",
+      "use_projection_fill_shaders",
+      "use_projection_stroke_shaders",
+      "zero_pad",
+      "enable_wireframe",
+      "force_window",
+      "dry_run",
+      "no_latex_cleanup",
+      "preview_command",
+      "seed",
+      "max_inflight_encoders",
+      "encoder_queue_size",
+    ] as const) {
+      if (Object.prototype.hasOwnProperty.call(args, key)) {
+        const attr = args[key];
+        // if attr is None, then no argument was passed and we should
+        // not change the current config
+        if (attr !== undefined && attr !== null) this.set(key, attr);
+      }
+    }
+
+    for (const key of [
+      "media_dir", // always set this one first
+      "log_dir",
+      "log_to_file", // always set this one last
+    ] as const) {
+      if (Object.prototype.hasOwnProperty.call(args, key)) {
+        const attr = args[key];
+        // if attr is None, then no argument was passed and we should
+        // not change the current config
+        if (attr !== undefined && attr !== null) this.set(key, attr);
+      }
+    }
+
+    if (this.get("save_last_frame")) this.set("write_to_movie", false);
+
+    // Handle the -n flag.
+    const nflag = args.from_animation_number;
+    if (nflag !== undefined && nflag !== null) {
+      this.from_animation_number = nflag[0] ?? 0;
+      if (nflag.length < 2 || nflag[1] === undefined) {
+        console.info(
+          `No end scene number specified in -n option. Rendering from ${nflag[0]} onwards...`,
+        );
+      } else {
+        this.upto_animation_number = nflag[1] as number;
+      }
+    }
+
+    // Handle the quality flags
+    this.quality = _determine_quality((args.quality ?? null) as string | null);
+
+    // Handle the -r flag.
+    const rflag = args.resolution;
+    if (rflag !== undefined && rflag !== null) {
+      this.pixel_width = Number.parseInt(String(rflag[0]), 10);
+      this.pixel_height = Number.parseInt(String(rflag[1]), 10);
+    }
+
+    const fps = args.frame_rate;
+    if (fps !== undefined && fps !== null) this.frame_rate = Number(fps);
+
+    // Handle --custom_folders
+    if (args.custom_folders) {
+      for (const opt of [
+        "media_dir",
+        "video_dir",
+        "sections_dir",
+        "images_dir",
+        "text_dir",
+        "tex_dir",
+        "log_dir",
+        "partial_movie_dir",
+      ] as const) {
+        this.set(opt, this.parserData?.get("custom_folders")?.get(opt) ?? null);
+      }
+      // --media_dir overrides the default.cfg file
+      if (Object.prototype.hasOwnProperty.call(args, "media_dir") && args.media_dir) {
+        this.set("media_dir", args.media_dir);
+      }
+    }
+
+    // Handle --tex_template
+    if (args.tex_template) {
+      throw new Error("TODO: text/tex not ported yet (ManimConfig.digest_args --tex_template needs TexTemplate.from_file)");
+    }
+
+    if (this.renderer === RendererType.OPENGL && args.write_to_movie === null) {
+      // --write_to_movie was not passed on the command line, so don't generate video.
+      this.set("write_to_movie", false);
+    }
+
+    // Handle --gui_location flag.
+    if (args.gui_location !== undefined && args.gui_location !== null) {
+      this.gui_location = args.gui_location;
+    }
 
     return this;
   }

@@ -374,6 +374,34 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  set_background_stroke(options: {
+    color?: ParsableManimColor | null;
+    width?: number;
+    opacity?: number;
+    family?: boolean;
+  } = {}): this {
+    const { color = null, width, opacity, family = true } = options;
+    if (family) {
+      for (const submob of this.submobjects) {
+        (submob as VMobject).set_background_stroke({ color, width, opacity, family });
+      }
+    }
+    this.update_rgbas_array("background_stroke_rgbas", color, opacity ?? null);
+    if (width !== undefined) this.background_stroke_width = width;
+    if (opacity !== undefined) this.background_stroke_opacity = opacity;
+    if (color !== undefined && color !== null) this.background_stroke_color = new ManimColor(color);
+    return this;
+  }
+
+  setBackgroundStroke(options: {
+    color?: ParsableManimColor | null;
+    width?: number;
+    opacity?: number;
+    family?: boolean;
+  } = {}): this {
+    return this.set_background_stroke(options);
+  }
+
   get_fill_rgbas(): NDArray {
     if (this.fill_rgbas !== undefined && this.fill_rgbas !== null) {
       return this.fill_rgbas;
@@ -501,6 +529,40 @@ export class VMobject extends Mobject {
 
   has_new_path_started(): boolean {
     return this.get_num_points() % this.n_points_per_cubic_curve === 1;
+  }
+
+  set_anchors_and_handles(
+    anchors1: number[][] | NDArray,
+    handles1: number[][] | NDArray,
+    handles2: number[][] | NDArray,
+    anchors2: number[][] | NDArray,
+  ): this {
+    const a1 = rows(anchors1, this.dim);
+    const h1 = rows(handles1, this.dim);
+    const h2 = rows(handles2, this.dim);
+    const a2 = rows(anchors2, this.dim);
+    if (!(a1.length === h1.length && h1.length === h2.length && h2.length === a2.length)) {
+      const error = new Error("assert len(anchors1) == len(handles1) == len(handles2) == len(anchors2)");
+      error.name = "AssertionError";
+      throw error;
+    }
+    const nppcc = this.n_points_per_cubic_curve;
+    const total = nppcc * a1.length;
+    const points: number[][] = Array.from({ length: total }, () => new Array(this.dim).fill(0));
+    for (const [index, arr] of [a1, h1, h2, a2].entries()) {
+      for (let k = 0; k < arr.length; k += 1) points[(index + k * nppcc) as number] = [...(arr[k] ?? new Array(this.dim).fill(0))];
+    }
+    this.points = asPoints(points, this.dim);
+    return this;
+  }
+
+  setAnchorsAndHandles(
+    anchors1: number[][] | NDArray,
+    handles1: number[][] | NDArray,
+    handles2: number[][] | NDArray,
+    anchors2: number[][] | NDArray,
+  ): this {
+    return this.set_anchors_and_handles(anchors1, handles1, handles2, anchors2);
   }
 
   append_points(points: unknown): this {
@@ -967,6 +1029,19 @@ export class VMobject extends Mobject {
 
   get_subpaths(): NDArray[] {
     return this.get_subpaths_from_points(this.points);
+  }
+
+  insert_n_curves(n: number): this {
+    let new_path_point: NDArray | null = null;
+    if (this.has_new_path_started()) new_path_point = this.get_last_point();
+    const new_points = this.insert_n_curves_to_point_list(n, this.points);
+    this.set_points(new_points);
+    if (new_path_point !== null) this.append_points(new_path_point);
+    return this;
+  }
+
+  insertNCurves(n: number): this {
+    return this.insert_n_curves(n);
   }
 
   insert_n_curves_to_point_list(n: number, points: number[][] | NDArray): NDArray {

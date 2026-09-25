@@ -4,10 +4,12 @@ import {
   DEFAULT_POINT_DENSITY_2D,
   DEFAULT_STROKE_WIDTH,
   ORIGIN,
+  RIGHT,
+  UP,
 } from "../../constants.js";
 import { interpolate } from "../../utils/bezier.js";
 import { BLACK, ManimColor, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
-import { arange, isNDArray, pointRows } from "../../utils/arrays.js";
+import { arange, isNDArray, linspace, pointRows } from "../../utils/arrays.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
 export interface PMobjectOptions extends MobjectOptions {
@@ -75,6 +77,103 @@ export class PMobject extends Mobject {
     }
     this.rgbas = appendRows(this.rgbas, rgbaRows, 4);
     return this;
+  }
+
+  set_color(color: ParsableManimColor = "PURE_YELLOW", family = true): this {
+    const rgba = pointRows(color_to_rgba(color), 4)[0] ?? [0, 0, 0, 1];
+    const mobs = family ? this.family_members_with_points() : [this];
+    for (const mob of mobs) {
+      const pm = mob as PMobject;
+      const count = pm.rgbas.shape[0] ?? 0;
+      pm.rgbas = array(count > 0 ? Array.from({ length: count }, () => [...rgba]) : []).reshape(count, 4) as NDArray;
+    }
+    this.color = ManimColor.parse(color) as ManimColor;
+    return this;
+  }
+
+  setColor(color: ParsableManimColor = "PURE_YELLOW", family = true): this {
+    return this.set_color(color, family);
+  }
+
+  get_stroke_width(): number {
+    return this.stroke_width;
+  }
+
+  getStrokeWidth(): number {
+    return this.get_stroke_width();
+  }
+
+  set_stroke_width(width: number, family = true): this {
+    const mobs = family ? this.family_members_with_points() : [this];
+    for (const mob of mobs) (mob as PMobject).stroke_width = width;
+    return this;
+  }
+
+  setStrokeWidth(width: number, family = true): this {
+    return this.set_stroke_width(width, family);
+  }
+
+  filter_out(condition: (point: number[]) => boolean): this {
+    for (const mob of this.family_members_with_points()) {
+      const pm = mob as PMobject;
+      const pointRowsValue = pointRows(pm.points, pm.dim);
+      const rgbaRows = pointRows(pm.rgbas, 4);
+      const kept_points = pointRowsValue.filter((point) => !condition(point));
+      const kept_rgbas = rgbaRows.filter((_, index) => !condition(pointRowsValue[index] ?? []));
+      pm.points = array(kept_points.length > 0 ? kept_points : []).reshape(kept_points.length, pm.dim) as NDArray;
+      pm.rgbas = array(kept_rgbas.length > 0 ? kept_rgbas : []).reshape(kept_rgbas.length, 4) as NDArray;
+    }
+    return this;
+  }
+
+  filterOut(condition: (point: number[]) => boolean): this {
+    return this.filter_out(condition);
+  }
+
+  thin_out(factor = 5): this {
+    // NOTE: mirrors Python, which sizes the index range from
+    // self.get_num_points() (not each family member's count).
+    const num_points = this.get_num_points();
+    const indices: number[] = [];
+    for (let index = 0; index < num_points; index += factor) indices.push(index);
+    for (const mob of this.family_members_with_points()) {
+      mob.apply_over_attr_arrays((arr) => {
+        const width = arr.shape.length > 1 ? (arr.shape[arr.shape.length - 1] ?? mob.dim) : mob.dim;
+        const all = pointRows(arr, width);
+        const selected = indices.map((index) => {
+          if (index >= all.length) {
+            const error = new Error(`index ${index} is out of bounds for axis 0 with size ${all.length}`);
+            error.name = "IndexError";
+            throw error;
+          }
+          return all[index] ?? [];
+        });
+        return array(selected.length > 0 ? selected : []).reshape(selected.length, width) as NDArray;
+      });
+    }
+    return this;
+  }
+
+  thinOut(factor = 5): this {
+    return this.thin_out(factor);
+  }
+
+  sort_points(predicate: (point: number[]) => number = (point) => point[0] ?? 0): this {
+    for (const mob of this.family_members_with_points()) {
+      const pointRowsValue = pointRows((mob as PMobject).points, mob.dim);
+      const keys = pointRowsValue.map((point) => predicate(point));
+      const indices = keys.map((_, index) => index).sort((a, b) => (keys[a] ?? 0) - (keys[b] ?? 0));
+      mob.apply_over_attr_arrays((arr) => {
+        const width = arr.shape.length > 1 ? (arr.shape[arr.shape.length - 1] ?? mob.dim) : mob.dim;
+        const all = pointRows(arr, width);
+        return array(indices.length > 0 ? indices.map((index) => all[index] ?? []) : []).reshape(indices.length, width) as NDArray;
+      });
+    }
+    return this;
+  }
+
+  sortPoints(predicate: (point: number[]) => number = (point) => point[0] ?? 0): this {
+    return this.sort_points(predicate);
   }
 
   fade_to(color: ParsableManimColor, alpha: number, family = true): this {
@@ -170,6 +269,63 @@ export class Mobject2D extends PMobject {
     super(rest);
     this.density = density;
     this.epsilon = 1.0 / this.density;
+  }
+}
+
+export interface PointCloudDotOptions extends Mobject1DOptions {
+  center?: number[] | readonly number[] | NDArray;
+  radius?: number;
+  color?: ParsableManimColor;
+}
+
+export class PointCloudDot extends Mobject1D {
+  radius: number;
+
+  constructor(
+    center: number[] | readonly number[] | NDArray = [...ORIGIN],
+    radius = 2.0,
+    stroke_width = 2,
+    density = DEFAULT_POINT_DENSITY_1D,
+    color: ParsableManimColor = "PURE_YELLOW",
+    options: PointCloudDotOptions = {},
+  ) {
+    const { center: _droppedCenter, radius: _droppedRadius, density: _droppedDensity, color: _droppedColor, stroke_width: _droppedStroke, ...rest } = options;
+    void _droppedCenter;
+    void _droppedRadius;
+    void _droppedDensity;
+    void _droppedColor;
+    void _droppedStroke;
+    super({ stroke_width, density, color, ...rest });
+    this.radius = radius;
+    this.epsilon = 1.0 / density;
+    // NOTE: the base Mobject constructor already called generate_points(),
+    // but at that time radius/epsilon were not yet assigned (TS requires
+    // super() first, whereas Python sets them before super().__init__()).
+    // Regenerate now that the fields are available.
+    this.init_points();
+    this.shift(center);
+  }
+
+  init_points(): this {
+    this.reset_points();
+    this.generate_points();
+    return this;
+  }
+
+  generate_points(): this {
+    const rings: number[][] = [];
+    for (const r of arange(this.epsilon, this.radius, this.epsilon)) {
+      const count = Math.trunc((2 * Math.PI * (r + this.epsilon)) / this.epsilon);
+      for (const theta of linspace(0, 2 * Math.PI, count)) {
+        rings.push([
+          r * (Math.cos(theta) * (RIGHT[0] ?? 0) + Math.sin(theta) * (UP[0] ?? 0)),
+          r * (Math.cos(theta) * (RIGHT[1] ?? 0) + Math.sin(theta) * (UP[1] ?? 0)),
+          r * (Math.cos(theta) * (RIGHT[2] ?? 0) + Math.sin(theta) * (UP[2] ?? 0)),
+        ]);
+      }
+    }
+    this.add_points(rings);
+    return this;
   }
 }
 

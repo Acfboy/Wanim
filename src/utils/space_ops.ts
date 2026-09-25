@@ -809,3 +809,24 @@ export function compass_directions(
   });
   return array(rows) as NDArray;
 }
+
+export function regular_vertices(
+  n: number,
+  radius = 1,
+  start_angle: number | null = null,
+): [NDArray, number] {
+  const resolved = start_angle ?? (n % 2 === 0 ? 0 : TAU / 4);
+  const start_vector = rotate_vector(
+    [((RIGHT as unknown as number[])[0] ?? 0) * radius, 0, 0],
+    resolved,
+  );
+  return [compass_directions(n, start_vector), resolved];
+}
+
+export function regularVertices(
+  n: number,
+  radius = 1,
+  start_angle: number | null = null,
+): [NDArray, number] {
+  return regular_vertices(n, radius, start_angle);
+}

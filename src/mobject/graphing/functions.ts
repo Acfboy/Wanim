@@ -1,6 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { config } from "../../_config/utils.js";
+import type { ParsableManimColor } from "../../utils/color/core.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
 export type ParametricFunctionT = (t: number) => number[] | readonly number[] | NDArray;
@@ -59,6 +60,71 @@ export class ParametricFunction extends VMobject {
 
   get_point_from_function(t: number): NDArray {
     return this.function(t);
+  }
+}
+
+export type FunctionGraphFunction = (x: number) => number | number[] | readonly number[] | NDArray;
+
+export interface FunctionGraphOptions extends VMobjectOptions {
+  discontinuities?: number[] | null;
+  use_smoothing?: boolean;
+  use_vectorized?: boolean;
+  scaling?: _ScaleBase;
+  dt?: number;
+}
+
+export class FunctionGraph extends ParametricFunction {
+  x_range: [number, number] | [number, number, number];
+  parametric_function: (t: number) => NDArray;
+
+  constructor(
+    function_: FunctionGraphFunction,
+    x_range: [number, number] | [number, number, number] | null = null,
+    color: ParsableManimColor = "PURE_YELLOW",
+    options: FunctionGraphOptions = {},
+  ) {
+    const resolved_range: [number, number] | [number, number, number] = x_range ?? [
+      -config.frame_x_radius,
+      config.frame_x_radius,
+    ];
+    // NOTE: mirrors Python `lambda t: np.array([t, function(t), 0])`.
+    const parametric_function = (t: number): NDArray =>
+      array([t, function_(t) as number, 0]) as NDArray;
+    // NOTE: Python stores the raw user function as self.function and passes
+    // the wrapped parametric form to ParametricFunction. The TS
+    // ParametricFunction constructor takes an options object (not positional
+    // t_range/color), so forward them as options.
+    const {
+      discontinuities = null,
+      use_smoothing = true,
+      use_vectorized = false,
+      scaling = new LinearBase(),
+      dt = 1e-8,
+      ...rest
+    } = options;
+    super(parametric_function, {
+      t_range: resolved_range,
+      scaling,
+      dt,
+      discontinuities,
+      use_smoothing,
+      use_vectorized,
+      color,
+      ...rest,
+    });
+    this.x_range = resolved_range;
+    this.parametric_function = parametric_function;
+    // NOTE: ParametricFunction.__init__ overwrites self.function with the
+    // wrapped form; restore the raw user function like Python does.
+    this.function = function_ as unknown as (t: number) => NDArray;
+  }
+
+  override get_function(): (t: number) => NDArray {
+    return this.function;
+  }
+
+  override get_point_from_function(x: number): NDArray {
+    return this.parametric_function(x);
   }
 }
 

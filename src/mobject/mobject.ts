@@ -470,6 +470,19 @@ export class Mobject {
     return this.get_critical_point(ORIGIN);
   }
 
+  get_center_of_mass(): number[] {
+    const all = pointRows(this.get_all_points(), this.dim);
+    if (all.length === 0) return Array.from({ length: this.dim }, () => NaN);
+    return Array.from(
+      { length: this.dim },
+      (_, index) => all.reduce((sum, point) => sum + (point[index] ?? 0), 0) / all.length,
+    );
+  }
+
+  getCenterOfMass(): number[] {
+    return this.get_center_of_mass();
+  }
+
   getCenter(): number[] {
     return this.get_center();
   }
@@ -547,10 +560,14 @@ export class Mobject {
     return this;
   }
 
-  shift(vectorValue: readonly number[]): this {
-    const shift = Array.from({ length: this.dim }, (_, index) => Number(vectorValue[index] ?? 0));
+  shift(...vectors: Array<readonly number[] | NDArray>): this {
+    if (vectors.length === 0) {
+      throw new TypeError("shift expected at least 1 argument, got 0");
+    }
+    let total = Array.from({ length: this.dim }, () => 0);
+    for (const vectorValue of vectors) total = addPoints(total, vector(vectorValue, this.dim), this.dim);
     for (const mobject of this.family_members_with_points()) {
-      mobject.points = pointArray(pointRows(mobject.points, this.dim).map((point) => addPoints(point, shift, this.dim)));
+      mobject.points = pointArray(pointRows(mobject.points, this.dim).map((point) => addPoints(point, total, this.dim)));
     }
     return this;
   }
@@ -692,7 +709,12 @@ export class Mobject {
   }
 
   reverse_points(): this {
-    for (const mobject of this.family_members_with_points()) mobject.points = pointArray(pointRows(mobject.points, this.dim).reverse());
+    for (const mobject of this.family_members_with_points()) {
+      mobject.apply_over_attr_arrays((arr) => {
+        const width = arr.shape.length > 1 ? (arr.shape[arr.shape.length - 1] ?? mobject.dim) : mobject.dim;
+        return pointArray([...pointRows(arr, width)].reverse());
+      });
+    }
     return this;
   }
 
@@ -829,6 +851,20 @@ export class Mobject {
     return this.add_background_rectangle_to_submobjects(kwargs);
   }
 
+  add_background_rectangle_to_family_members_with_points(kwargs: Record<string, unknown> = {}): this {
+    const { color = null, opacity = 0.75, ...rest } = kwargs as {
+      color?: ParsableManimColor | null;
+      opacity?: number;
+      [key: string]: unknown;
+    };
+    for (const mob of this.family_members_with_points()) mob.add_background_rectangle(color, opacity, rest);
+    return this;
+  }
+
+  addBackgroundRectangleToFamilyMembersWithPoints(kwargs: Record<string, unknown> = {}): this {
+    return this.add_background_rectangle_to_family_members_with_points(kwargs);
+  }
+
   add_updater(update_function: MobjectUpdater, index: number | null = null, call_updater = false): this {
     if (index === null || index === undefined) this.updaters.push(update_function);
     else this.updaters.splice(index, 0, update_function);
@@ -892,6 +928,15 @@ export class Mobject {
   }
   suspendUpdating(recursive = true): this { return this.suspend_updating(recursive); }
   resumeUpdating(recursive = true): this { return this.resume_updating(recursive); }
+
+  apply_to_family(func: (mobject: Mobject) => void): this {
+    for (const mob of this.family_members_with_points()) func(mob);
+    return this;
+  }
+
+  applyToFamily(func: (mobject: Mobject) => void): this {
+    return this.apply_to_family(func);
+  }
 
   get_array_attrs_with_values(): Record<string, NDArray> {
     const result: Record<string, NDArray> = {};
@@ -1180,6 +1225,14 @@ export class Mobject {
 
   get_all_points(): NDArray {
     return this.get_merged_array("points");
+  }
+
+  get_points_defining_boundary(): NDArray {
+    return this.get_all_points();
+  }
+
+  getPointsDefiningBoundary(): NDArray {
+    return this.get_points_defining_boundary();
   }
 
   nonemptySubmobjects(): Mobject[] {

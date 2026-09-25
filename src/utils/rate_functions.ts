@@ -94,6 +94,38 @@ export const slow_into: RateFunction = unit_interval(((t: number): number => {
   return val;
 }) as RateFunction);
 
+export const rush_into: RateFunction = unit_interval(((t: number, inflection: number = 10.0): number => {
+  return 2 * smooth(t / 2.0, inflection);
+}) as RateFunction);
+
+export const rush_from: RateFunction = unit_interval(((t: number, inflection: number = 10.0): number => {
+  return 2 * smooth(t / 2.0 + 0.5, inflection) - 1;
+}) as RateFunction);
+
+export const double_smooth: RateFunction = unit_interval(((t: number): number => {
+  if (t < 0.5) {
+    return 0.5 * smooth(2 * t);
+  } else {
+    return 0.5 * (1 + smooth(2 * t - 1));
+  }
+}) as RateFunction);
+
+export const there_and_back: RateFunction = zero(((t: number, inflection: number = 10.0): number => {
+  const new_t = t < 0.5 ? 2 * t : 2 * (1 - t);
+  return smooth(new_t, inflection);
+}) as RateFunction);
+
+export const there_and_back_with_pause: RateFunction = zero(((t: number, pause_ratio: number = 1.0 / 3): number => {
+  const a = 2.0 / (1.0 - pause_ratio);
+  if (t < 0.5 - pause_ratio / 2) {
+    return smooth(a * t);
+  } else if (t < 0.5 + pause_ratio / 2) {
+    return 1;
+  } else {
+    return smooth(a - a * t);
+  }
+}) as RateFunction);
+
 export const running_start: RateFunction = unit_interval(((t: number, pull_factor: number = -0.5): number => {
   const t2 = t * t;
   const t3 = t2 * t;
@@ -295,3 +327,15 @@ function ease_out_bounce_raw(t: number): number {
 }
 
 export const ease_out_bounce: RateFunction = unit_interval((ease_out_bounce_raw as unknown as RateFunction));
+
+export const ease_in_bounce: RateFunction = unit_interval(((t: number): number => {
+  return 1 - ease_out_bounce(1 - t);
+}) as RateFunction);
+
+export const ease_in_out_bounce: RateFunction = unit_interval(((t: number): number => {
+  if (t < 0.5) {
+    return (1 - ease_out_bounce(1 - 2 * t)) / 2;
+  } else {
+    return (1 + ease_out_bounce(2 * t - 1)) / 2;
+  }
+}) as RateFunction);

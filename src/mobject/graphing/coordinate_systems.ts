@@ -3,6 +3,17 @@ import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
 import { isNDArray, pointFrom, pointRows } from "../../utils/arrays.js";
 import { update_dict_recursively } from "../../utils/config_ops.js";
+import { SMALL_BUFF, DL } from "../../constants.js";
+import { BLUE_D } from "../../utils/color/index.js";
+import type { ParsableManimColor } from "../../utils/color/core.js";
+
+/** Minimal structural surface a family member must provide for
+ * prepare_for_nonlinear_transform (mirrors VMobject.get_num_curves /
+ * insert_n_curves). */
+interface NonlinearTransformable {
+  get_num_curves(): number;
+  insert_n_curves(n: number): void;
+}
 
 function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]> {
   const length = Math.min(first.length, second.length);
@@ -163,6 +174,25 @@ export class NumberPlane extends CoordinateSystem {
     const transposed = points[0].map((_, col) => points.map((row) => row[col] ?? 0));
     return array(transposed) as NDArray;
   }
+
+  prepare_for_nonlinear_transform(num_inserted_curves = 50): this {
+    // NOTE: Python NumberPlane is a VGroup (Mobject), so
+    // family_members_with_points() always exists there. The TS
+    // CoordinateSystem hierarchy is not Mobject-based yet, so the insertion
+    // pass only runs when the host provides family members.
+    const host = this as unknown as {
+      family_members_with_points?: () => NonlinearTransformable[];
+    };
+    for (const mob of host.family_members_with_points?.() ?? []) {
+      const num_curves = mob.get_num_curves();
+      if (num_inserted_curves > num_curves) mob.insert_n_curves(num_inserted_curves - num_curves);
+    }
+    return this;
+  }
+
+  prepareForNonlinearTransform(num_inserted_curves = 50): this {
+    return this.prepare_for_nonlinear_transform(num_inserted_curves);
+  }
 }
 
 export class Axes extends NumberPlane {
@@ -232,6 +262,129 @@ export class ThreeDAxes extends Axes {
         submob.set_sheen(0.2);
       }
     }
+  }
+}
+
+export type AzimuthUnits = "PI radians" | "TAU radians" | "degrees" | "gradians" | null;
+export type AzimuthDirection = "CW" | "CCW";
+
+export interface PolarPlaneOptions {
+  radius_config?: Record<string, unknown> | null;
+  background_line_style?: Record<string, unknown> | null;
+  faded_line_style?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+export class PolarPlane extends Axes {
+  azimuth_units: AzimuthUnits;
+  azimuth_direction: AzimuthDirection;
+  radius_config: Record<string, unknown>;
+  background_line_style: Record<string, unknown>;
+  azimuth_step: number;
+  faded_line_style: Record<string, unknown> | null;
+  faded_line_ratio: number;
+  make_smooth_after_applying_functions = true;
+  azimuth_offset: number;
+  azimuth_label_buff: number;
+  azimuth_label_font_size: number;
+  azimuth_compact_fraction: boolean;
+  background_lines: unknown = null;
+  faded_lines: unknown = null;
+
+  constructor(
+    radius_max: number | null = null,
+    size: number | null = null,
+    radius_step = 1,
+    azimuth_step: number | null = null,
+    azimuth_units: AzimuthUnits = "PI radians",
+    azimuth_compact_fraction = true,
+    azimuth_offset = 0,
+    azimuth_direction: AzimuthDirection = "CCW",
+    azimuth_label_buff = SMALL_BUFF,
+    azimuth_label_font_size = 24,
+    radius_config: Record<string, unknown> | null = null,
+    background_line_style: Record<string, unknown> | null = null,
+    faded_line_style: Record<string, unknown> | null = null,
+    faded_line_ratio = 1,
+    make_smooth_after_applying_functions = true,
+    options: PolarPlaneOptions = {},
+  ) {
+    const resolved_radius_max = radius_max ?? config.frame_y_radius;
+    super(
+      [-resolved_radius_max, resolved_radius_max, radius_step],
+      [-resolved_radius_max, resolved_radius_max, radius_step],
+      size,
+      size,
+    );
+    void options;
+    if (
+      azimuth_units !== "PI radians" &&
+      azimuth_units !== "TAU radians" &&
+      azimuth_units !== "degrees" &&
+      azimuth_units !== "gradians" &&
+      azimuth_units !== null
+    ) {
+      const error = new Error(
+        "Invalid azimuth units. Expected one of: PI radians, TAU radians, degrees, gradians or None.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    this.azimuth_units = azimuth_units;
+    if (azimuth_direction !== "CW" && azimuth_direction !== "CCW") {
+      const error = new Error("Invalid azimuth units. Expected one of: CW, CCW.");
+      error.name = "ValueError";
+      throw error;
+    }
+    this.azimuth_direction = azimuth_direction;
+    this.radius_config = {
+      stroke_width: 2,
+      include_ticks: false,
+      include_tip: false,
+      line_to_number_buff: SMALL_BUFF,
+      label_direction: [...DL],
+      font_size: 24,
+    };
+    this.background_line_style = {
+      stroke_color: BLUE_D as unknown as ParsableManimColor,
+      stroke_width: 2,
+      stroke_opacity: 1,
+    };
+    this.azimuth_step = azimuth_step ?? (
+      {
+        "PI radians": 20,
+        "TAU radians": 20,
+        degrees: 36,
+        gradians: 40,
+      } as Record<string, number>
+    )[String(azimuth_units)] ?? 1;
+    Axes._update_default_configs(
+      [this.radius_config, this.background_line_style],
+      [radius_config ?? {}, background_line_style ?? {}],
+    );
+    this.faded_line_style = faded_line_style;
+    this.faded_line_ratio = faded_line_ratio;
+    this.make_smooth_after_applying_functions = make_smooth_after_applying_functions;
+    this.azimuth_offset = azimuth_offset;
+    this.azimuth_label_buff = azimuth_label_buff;
+    this.azimuth_label_font_size = azimuth_label_font_size;
+    this.azimuth_compact_fraction = azimuth_compact_fraction;
+    // NOTE: Python calls self._init_background_lines() here (Circle/Line
+    // background construction over the Mobject family). The TS
+    // CoordinateSystem hierarchy is not Mobject-based yet, so background
+    // line construction is deferred until that integration lands;
+    // background_lines/faded_lines stay null.
+  }
+
+  override prepare_for_nonlinear_transform(num_inserted_curves = 50): this {
+    const host = this as unknown as {
+      family_members_with_points?: () => NonlinearTransformable[];
+    };
+    for (const mob of host.family_members_with_points?.() ?? []) {
+      const num_curves = mob.get_num_curves();
+      if (num_inserted_curves > num_curves) mob.insert_n_curves(num_inserted_curves - num_curves);
+    }
+    return this;
   }
 }
 

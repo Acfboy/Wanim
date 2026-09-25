@@ -1,5 +1,5 @@
 import { array, type NDArray } from "numpy-ts";
-import { OUT } from "../constants.js";
+import { OUT, PI } from "../constants.js";
 import { interpolate } from "./bezier.js";
 import { cross, normalize, rotation_matrix } from "./space_ops.js";
 
@@ -149,6 +149,22 @@ export function path_along_arc(
   }
 
   return path;
+}
+
+export function clockwise_path(): PathFuncType {
+  return path_along_arc(-PI);
+}
+
+export function clockwisePath(): PathFuncType {
+  return clockwise_path();
+}
+
+export function counterclockwise_path(): PathFuncType {
+  return path_along_arc(PI);
+}
+
+export function counterclockwisePath(): PathFuncType {
+  return counterclockwise_path();
 }
 
 export function spiral_path(
