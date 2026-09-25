@@ -127,6 +127,10 @@ export function deprecated(
   });
   (deprecate as CallableWithMeta).__qualname__ =
     (func as CallableWithMeta).__qualname__ ?? func.name;
+  // Mirror `decorator.decorate`, which copies __doc__ onto the wrapper before
+  // the deprecation notice is appended (otherwise the original doc is lost).
+  (deprecate as AnyCallable & { __doc__?: string }).__doc__ =
+    (func as AnyCallable & { __doc__?: string }).__doc__ ?? "";
   deprecate_docs(deprecate as AnyCallable);
   return deprecate as AnyCallable;
 }

@@ -413,7 +413,9 @@ export class ManimConfig {
     if (typeof val === "string") {
       this.values[key] = val;
     } else {
-      this.values[key] = String(val);
+      // Mirror Python _set_dir: Path objects become strings, everything else
+      // is stored as-is (e.g. custom_folders may hold a boolean).
+      this.values[key] = typeof val === "boolean" ? val : String(val);
     }
   }
 
