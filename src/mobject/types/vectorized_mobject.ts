@@ -339,6 +339,26 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  override set_opacity(opacity: number, family = true): this {
+    // Python VMobject.set_opacity: set_fill + set_stroke + background set_stroke.
+    // (Python Mobject has no set_opacity; the TS base-class version only tints
+    // Mobject.color, so VMobject must override it. The TS port has no
+    // background flag on set_stroke, so the background opacity is applied
+    // directly to every family member instead.)
+    this.set_fill(undefined, opacity, family);
+    this.set_stroke(undefined, undefined, opacity, family);
+    const members = family ? this.get_family() : [this];
+    for (const member of members) {
+      if (member instanceof VMobject) {
+        member.background_stroke_opacity = opacity;
+        member.init_colors(false);
+      } else {
+        member.set_opacity(opacity, false);
+      }
+    }
+    return this;
+  }
+
   get_stroke_colors(background = false): Array<ManimColor | null> {
     return pointRows(this.get_stroke_rgbas(background), 4).map((rgba) =>
       rgba.some((value) => value !== 0)

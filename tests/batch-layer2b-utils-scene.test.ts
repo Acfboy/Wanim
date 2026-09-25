@@ -455,9 +455,8 @@ describe("integration", () => {
 
   it("Scene.play runs a method animation mutating a VMobject", () => {
     // Exercises Scene.play -> prepare_animation -> begin/finish against a
-    // mobject from this batch. Uses shift (pure point mutation) rather than
-    // set_opacity: VMobject.set_opacity is outside this batch and the TS port
-    // only tints Mobject.color there (a known gap, not asserted here).
+    // mobject from this batch. Uses shift (pure point mutation); opacity
+    // paths are covered by the VMobject.set_opacity ground-truth tests.
     const scene = new Scene();
     const target = new VMobject();
     target.set_points_as_corners([[0, 0, 0], [1, 0, 0]]);

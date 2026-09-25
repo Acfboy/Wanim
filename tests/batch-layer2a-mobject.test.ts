@@ -355,6 +355,30 @@ describe("Mobject.fade", () => {
   });
 });
 
+describe("VMobject.set_opacity", () => {
+  it("sets fill, stroke, and background opacities (Python VMobject parity)", () => {
+    // Python: Square() fill 0.0 / stroke 1.0 / background 1.0 ->
+    // set_opacity(0.25) -> (0.25, 0.25, 0.25); fill rgbas[0] == [1,1,1,0.25].
+    const s = square();
+    expect(s.set_opacity(0.25)).toBe(s);
+    expect(close(s.get_fill_opacity(), 0.25)).toBe(true);
+    expect(close(s.get_stroke_opacity(), 0.25)).toBe(true);
+    expect(close(s.get_stroke_opacity(true), 0.25)).toBe(true);
+    const fillRows = rowsOf(s.get_fill_rgbas());
+    expectVecClose(fillRows[0] ?? [], [1, 1, 1, 0.25]);
+  });
+
+  it("recurses into the family when family=true", () => {
+    // Python: VGroup(g, k).set_opacity(0.5) -> g.fill 0.5, k.background 0.5.
+    const g = square();
+    const k = square();
+    const vg = new VGroup(g, k);
+    vg.set_opacity(0.5);
+    expect(close(g.get_fill_opacity(), 0.5)).toBe(true);
+    expect(close(k.get_stroke_opacity(true), 0.5)).toBe(true);
+  });
+});
+
 describe("Mobject.apply_function_to_submobject_positions", () => {
   it("moves each submobject to func(center)", () => {
     // Python: Group(Dot(), Dot()) shifted by [1,0,0] -> centers [[1,0,0],[1,0,0]]
