@@ -90,7 +90,8 @@ describe("ManimColor.__invert__", () => {
 // ---------------------------------------------------------------------------
 // manim.utils.color.core.{rgb_to_color, rgb_to_hex}
 // Python:
-//   rgb_to_color([1.0,0,0]).to_hex() -> '#FF0000'
+//   rgb_to_color([1.0,0.0,0.0]).to_hex() -> '#FF0000' (all-float list: float path)
+//   rgb_to_color([1.0,0,0]).to_hex() -> '#010000' (mixed int/float: int path!)
 //   rgb_to_color(np.array([255,0,0])).to_hex() -> '#FF0000' (int path)
 //   rgb_to_hex([0.0,1.0,0.0]) -> '#00FF00'
 //   rgb_to_hex(np.array([0,0,255])) -> '#0000FF'
@@ -98,8 +99,9 @@ describe("ManimColor.__invert__", () => {
 // ---------------------------------------------------------------------------
 describe("rgb_to_color / rgb_to_hex", () => {
   it("rgb_to_color handles float and int arrays like Python", () => {
-    // Python: rgb_to_color([1.0,0,0]).to_hex() -> '#FF0000' (float path);
-    //   rgb_to_color(np.array([255,0,0])).to_hex() -> '#FF0000' (int path).
+    // Python: rgb_to_color([1.0,0.0,0.0]).to_hex() -> '#FF0000' (float path);
+    //   rgb_to_color(np.array([255,0,0])).to_hex() -> '#FF0000' (int path);
+    //   rgb_to_color([1.0,0,0]).to_hex() -> '#010000' (mixed list: int path).
     // NOTE (language boundary, also documented on the ManimColor
     // constructor): a plain JS list cannot express "integral float"
     // ([1.0,0,0] is [1,0,0] in JS and takes the int path), so the float
@@ -108,6 +110,8 @@ describe("rgb_to_color / rgb_to_hex", () => {
     expect(rgb_to_color(array([1.0, 0.0, 0.0]) as NDArray).to_hex()).toBe("#FF0000");
     expect(rgb_to_color(array([255, 0, 0], "int64") as NDArray).to_hex()).toBe("#FF0000");
     expect(rgb_to_color(array([0.0, 0.0, 1.0]) as NDArray).to_hex()).toBe("#0000FF");
+    // Python: mixed int/float plain lists take the int path.
+    expect(rgb_to_color([1.0, 0, 0]).to_hex()).toBe("#010000");
   });
   it("rgb_to_hex matches Python including truncation", () => {
     // Python: rgb_to_hex([0.0,1.0,0.0]) -> '#00FF00';
