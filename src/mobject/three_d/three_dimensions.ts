@@ -14,8 +14,19 @@ export class ThreeDVMobject extends VMobject {
   v1!: number;
   v2!: number;
 
-  constructor(options: VMobjectOptions = {}) {
-    super({ shade_in_3d: true, ...options });
+  constructor(shade_in_3d: boolean | VMobjectOptions = true, options: VMobjectOptions = {}) {
+    // Python: __init__(self, shade_in_3d=True, **kwargs). Accept both the
+    // positional boolean and the TS options-object form.
+    let resolved: VMobjectOptions;
+    let shade: boolean;
+    if (typeof shade_in_3d === "object" && shade_in_3d !== null) {
+      resolved = shade_in_3d as VMobjectOptions;
+      shade = (resolved.shade_in_3d as boolean | undefined) ?? true;
+    } else {
+      shade = shade_in_3d as boolean;
+      resolved = options;
+    }
+    super({ ...resolved, shade_in_3d: shade });
   }
 }
 
