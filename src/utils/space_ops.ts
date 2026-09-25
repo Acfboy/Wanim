@@ -1,4 +1,4 @@
-import { array, average, type NDArray } from "numpy-ts";
+import { array, average, matmul, type NDArray } from "numpy-ts";
 import { isNDArray, numeric, type ComplexPoint } from "./arrays.js";
 import { DOWN, OUT, RIGHT, TAU, UP } from "../constants.js";
 
@@ -318,6 +318,22 @@ export function rotation_about_z(angle: number): NDArray {
     [s, c, 0],
     [0, 0, 1],
   ]) as NDArray;
+}
+
+export function rotate_vector(
+  vector: VectorInput,
+  angle: number,
+  axis: VectorInput = OUT,
+): NDArray {
+  let values: NDArray = isNDArray(vector) ? vector as NDArray : array(vector as unknown[]);
+  if ((values.shape[0] ?? 0) > 3) {
+    throw valueError("Vector must have the correct dimensions.");
+  }
+  if (values.shape.length === 1 && (values.shape[0] ?? 0) === 2) {
+    const flat = ((values as NDArray).toArray() as unknown[]).map(numeric);
+    values = array([...flat, 0]) as NDArray;
+  }
+  return matmul(rotation_matrix(angle, axis), values) as NDArray;
 }
 
 function valueError(message: string): Error {

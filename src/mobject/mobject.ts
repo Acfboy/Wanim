@@ -4,6 +4,7 @@ import { DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, MED_SMALL_BUFF, ORIGIN, RIGHT, UP } 
 import { ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../utils/color/core.js";
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
+import { straight_path, type PathFuncType } from "../utils/paths.js";
 import { addPoints, isNDArray, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
 
@@ -132,6 +133,30 @@ function createMobjectProxy(target: Mobject): Mobject {
   });
 }
 
+export type BackgroundRectangleFactory = (
+  mobject: Mobject,
+  color: ParsableManimColor | null | undefined,
+  fill_opacity: number,
+  kwargs: Record<string, unknown>,
+) => Mobject;
+
+let backgroundRectangleFactory: BackgroundRectangleFactory | null = null;
+
+export function setBackgroundRectangleFactory(factory: BackgroundRectangleFactory | null): void {
+  backgroundRectangleFactory = factory;
+}
+
+export interface ImageCapableCamera {
+  capture_mobject(mobject: Mobject): void;
+  get_image(): unknown;
+}
+
+let defaultCameraFactory: (() => ImageCapableCamera) | null = null;
+
+export function setDefaultCameraFactory(factory: (() => ImageCapableCamera) | null): void {
+  defaultCameraFactory = factory;
+}
+
 export class Mobject {
   name: string;
   dim: number;
@@ -145,24 +170,41 @@ export class Mobject {
   points: NDArray;
   saved_state: Mobject | null = null;
   original_id: string;
+  background_rectangle: Mobject | null = null;
   readonly animation_overrides: Map<unknown, FunctionLike> = new Map();
 
   constructor(options: MobjectOptions = {}) {
     const normalized = typeof options === "string" || Array.isArray(options) ? { color: options as ParsableManimColor } : options;
-    this.name = (normalized.name as string | undefined) ?? this.constructor.name;
-    this.dim = (normalized.dim as number | undefined) ?? 3;
-    this.target = (normalized.target as Mobject | null | undefined) ?? null;
-    this.z_index = (normalized.z_index as number | undefined) ?? 0;
-    this.color = new ManimColor((normalized.color as ParsableManimColor | undefined) ?? WHITE);
+    const ctor = this.constructor as unknown as { _wanimDefaultKwargs?: Record<string, unknown> };
+    const defaults = ctor._wanimDefaultKwargs ?? {};
+    const merged: Record<string, unknown> = { ...defaults, ...normalized };
+    this.name = (merged.name as string | undefined) ?? this.constructor.name;
+    this.dim = (merged.dim as number | undefined) ?? 3;
+    this.target = (merged.target as Mobject | null | undefined) ?? null;
+    this.z_index = (merged.z_index as number | undefined) ?? 0;
+    this.color = new ManimColor((merged.color as ParsableManimColor | undefined) ?? WHITE);
     this.points = array([]) as NDArray;
     this.original_id = String(Math.random());
-    for (const [key, value] of Object.entries(normalized)) {
+    for (const [key, value] of Object.entries(merged)) {
       if (!(key in this)) (this as Record<string, unknown>)[key] = value;
     }
     this.reset_points();
     this.generate_points();
     Mobject.prototype.init_colors.call(this);
     return createMobjectProxy(this);
+  }
+
+  static set_default(kwargs: Record<string, unknown> = {}): void {
+    const ctor = this as unknown as { _wanimDefaultKwargs?: Record<string, unknown> };
+    if (Object.keys(kwargs).length > 0) {
+      ctor._wanimDefaultKwargs = { ...(ctor._wanimDefaultKwargs ?? {}), ...kwargs };
+    } else {
+      delete ctor._wanimDefaultKwargs;
+    }
+  }
+
+  static setDefault(kwargs: Record<string, unknown> = {}): void {
+    (this as unknown as typeof Mobject).set_default(kwargs);
   }
 
   get animate(): _AnimationBuilder {
@@ -268,6 +310,30 @@ export class Mobject {
     return this;
   }
 
+  insert(index: number, mobject: Mobject): this {
+    this._assert_valid_submobjects([mobject]);
+    this.submobjects.splice(index, 0, mobject);
+    return this;
+  }
+
+  add_to_back(...mobjects: (Mobject | Iterable<Mobject>)[]): this {
+    const values: Mobject[] = [];
+    for (const item of mobjects) {
+      if (item instanceof Mobject) values.push(item);
+      else if (isIterable(item)) values.push(...item as Iterable<Mobject>);
+      else values.push(item as Mobject);
+    }
+    this._assert_valid_submobjects(values);
+    this.remove(...values);
+    const unique = remove_list_redundancies(values);
+    this.submobjects = [...unique, ...this.submobjects];
+    return this;
+  }
+
+  addToBack(...mobjects: (Mobject | Iterable<Mobject>)[]): this {
+    return this.add_to_back(...mobjects);
+  }
+
   remove(...mobjects: (Mobject | Mobject[])[]): this {
     for (const item of mobjects) {
       const values = Array.isArray(item) ? item : [item];
@@ -280,14 +346,15 @@ export class Mobject {
     return this;
   }
 
-  get_family(): Mobject[] {
-    const result: Mobject[] = [this];
-    for (const child of this.submobjects) result.push(...child.get_family());
-    return result;
+  get_family(_recurse = true): Mobject[] {
+    const subFamilies = this.submobjects.map((child) => child.get_family());
+    const all: Mobject[] = [this];
+    for (const family of subFamilies) all.push(...family);
+    return remove_list_redundancies(all);
   }
 
-  getFamily(): Mobject[] {
-    return this.get_family();
+  getFamily(_recurse = true): Mobject[] {
+    return this.get_family(_recurse);
   }
 
   family_members_with_points(): Mobject[] {
@@ -335,6 +402,19 @@ export class Mobject {
     this.target = null;
     this.target = this.copy();
     return this.target;
+  }
+
+  get_image(camera?: ImageCapableCamera | null): unknown {
+    const cam = camera ?? (defaultCameraFactory !== null ? defaultCameraFactory() : null);
+    if (cam === null || cam === undefined) {
+      throw new Error("TODO: cairo rendering not ported yet (Mobject.get_image needs a Camera with a raster backend)");
+    }
+    cam.capture_mobject(this);
+    return cam.get_image();
+  }
+
+  getImage(camera?: ImageCapableCamera | null): unknown {
+    return this.get_image(camera);
   }
 
   get_center(): number[] {
@@ -514,8 +594,25 @@ export class Mobject {
     return this;
   }
 
-  apply_over_attr_arrays(func: (value: NDArray) => NDArray): this {
-    for (const attr of this.get_array_attrs()) {
+  apply_function_to_position(func: (point: number[]) => number[] | NDArray): this {
+    this.move_to(func(this.get_center()));
+    return this;
+  }
+
+  applyFunctionToPosition(func: (point: number[]) => number[] | NDArray): this {
+    return this.apply_function_to_position(func);
+  }
+
+  apply_function_to_submobject_positions(func: (point: number[]) => number[] | NDArray): this {
+    for (const submob of this.submobjects) submob.apply_function_to_position(func);
+    return this;
+  }
+
+  applyFunctionToSubmobjectPositions(func: (point: number[]) => number[] | NDArray): this {
+    return this.apply_function_to_submobject_positions(func);
+  }
+
+  apply_over_attr_arrays(func: (value: NDArray) => NDArray): this {    for (const attr of this.get_array_attrs()) {
       const current = (this as unknown as Record<string, NDArray>)[attr];
       if (current !== undefined) (this as unknown as Record<string, NDArray>)[attr] = func(current);
     }
@@ -592,13 +689,14 @@ export class Mobject {
     return this;
   }
 
-  set_color(color: ParsableManimColor, family = true): this {
+  set_color(color: ParsableManimColor = "PURE_YELLOW", alpha: unknown = null, family = true): this {
+    void alpha;
     this.color = new ManimColor(color);
-    if (family) for (const submob of this.submobjects) submob.set_color(color, family);
+    if (family) for (const submob of this.submobjects) submob.set_color(color, alpha, family);
     return this;
   }
 
-  setColor(color: ParsableManimColor, family = true): this { return this.set_color(color, family); }
+  setColor(color: ParsableManimColor = "PURE_YELLOW", alpha: unknown = null, family = true): this { return this.set_color(color, alpha, family); }
 
   set_opacity(opacity: number, family = true): this {
     this.color = this.color.opacity(opacity);
@@ -609,19 +707,19 @@ export class Mobject {
   setOpacity(opacity: number, family = true): this { return this.set_opacity(opacity, family); }
 
   set_fill(color?: ParsableManimColor, opacity?: number, family = true): this {
-    if (color !== undefined) this.set_color(color, family);
+    if (color !== undefined) this.set_color(color, null, family);
     if (opacity !== undefined) this.set_opacity(opacity, family);
     return this;
   }
 
   set_stroke(color?: ParsableManimColor, width?: number, opacity?: number, family = true): this {
-    if (color !== undefined) this.set_color(color, family);
+    if (color !== undefined) this.set_color(color, null, family);
     if (opacity !== undefined) this.set_opacity(opacity, family);
     return this;
   }
 
   match_style(other: Mobject, family = true): this {
-    this.set_color(other.get_color(), family);
+    this.set_color(other.get_color(), null, family);
     return this;
   }
 
@@ -633,19 +731,58 @@ export class Mobject {
   }
 
   fade_to(color: ParsableManimColor, alpha: number, family = true): this {
-    if (this.get_num_points() > 0) this.set_color(interpolate_color(this.get_color(), new ManimColor(color), alpha), false);
+    if (this.get_num_points() > 0) this.set_color(interpolate_color(this.get_color(), new ManimColor(color), alpha), null, false);
     if (family) for (const submob of this.submobjects) submob.fade_to(color, alpha);
     return this;
   }
 
-  add_updater(update_function: MobjectUpdater, index?: number, call_updater = false): this {
-    if (index === undefined || index < 0) this.updaters.push(update_function);
+  add_background_rectangle(
+    color?: ParsableManimColor | null,
+    opacity = 0.75,
+    kwargs: Record<string, unknown> = {},
+  ): this {
+    if (backgroundRectangleFactory === null) {
+      throw new Error("TODO: add_background_rectangle needs BackgroundRectangle (manim.mobject.geometry.shape_matchers), not ported yet");
+    }
+    this.background_rectangle = backgroundRectangleFactory(this, color ?? null, opacity, kwargs);
+    this.add_to_back(this.background_rectangle);
+    return this;
+  }
+
+  addBackgroundRectangle(
+    color?: ParsableManimColor | null,
+    opacity = 0.75,
+    kwargs: Record<string, unknown> = {},
+  ): this {
+    return this.add_background_rectangle(color, opacity, kwargs);
+  }
+
+  add_background_rectangle_to_submobjects(kwargs: Record<string, unknown> = {}): this {
+    const { color = null, opacity = 0.75, ...rest } = kwargs as {
+      color?: ParsableManimColor | null;
+      opacity?: number;
+      [key: string]: unknown;
+    };
+    for (const submobject of this.submobjects) submobject.add_background_rectangle(color, opacity, rest);
+    return this;
+  }
+
+  addBackgroundRectangleToSubmobjects(kwargs: Record<string, unknown> = {}): this {
+    return this.add_background_rectangle_to_submobjects(kwargs);
+  }
+
+  add_updater(update_function: MobjectUpdater, index: number | null = null, call_updater = false): this {
+    if (index === null || index === undefined) this.updaters.push(update_function);
     else this.updaters.splice(index, 0, update_function);
     if (call_updater) {
       if (update_function.length >= 2) (update_function as (mobject: Mobject, dt: number) => void)(this, 0);
       else (update_function as (mobject: Mobject) => void)(this);
     }
     return this;
+  }
+
+  addUpdater(update_function: MobjectUpdater, index: number | null = null, call_updater = false): this {
+    return this.add_updater(update_function, index, call_updater);
   }
 
   remove_updater(updateFunction: MobjectUpdater): this {
@@ -663,10 +800,30 @@ export class Mobject {
     return this;
   }
 
-  suspend_updating(): this { this.updating_suspended = true; return this; }
-  resume_updating(): this { this.updating_suspended = false; return this; }
-  suspendUpdating(): this { return this.suspend_updating(); }
-  resumeUpdating(): this { return this.resume_updating(); }
+  clear_updaters(recursive = true): this {
+    this.updaters = [];
+    if (recursive) for (const submob of this.submobjects) submob.clear_updaters();
+    return this;
+  }
+
+  clearUpdaters(recursive = true): this {
+    return this.clear_updaters(recursive);
+  }
+
+  suspend_updating(recursive = true): this {
+    this.updating_suspended = true;
+    if (recursive) for (const submob of this.submobjects) submob.suspend_updating(recursive);
+    return this;
+  }
+
+  resume_updating(recursive = true): this {
+    this.updating_suspended = false;
+    if (recursive) for (const submob of this.submobjects) submob.resume_updating(recursive);
+    this.update(0, recursive);
+    return this;
+  }
+  suspendUpdating(recursive = true): this { return this.suspend_updating(recursive); }
+  resumeUpdating(recursive = true): this { return this.resume_updating(recursive); }
 
   get_array_attrs_with_values(): Record<string, NDArray> {
     const result: Record<string, NDArray> = {};
@@ -820,7 +977,7 @@ export class Mobject {
 
   become(other: Mobject): this {
     this.points = pointsFrom(other.points, this.dim);
-    this.set_color(other.get_color(), false);
+    this.set_color(other.get_color(), null, false);
     this.submobjects = other.submobjects.map((child) => child.copy());
     return this;
   }
@@ -887,15 +1044,56 @@ export class Mobject {
     return this;
   }
 
-  __iter__(): IterableIterator<Mobject> {
-    return this.submobjects[Symbol.iterator]();
+  *__iter__(): IterableIterator<Mobject> {
+    if (this.has_points()) yield this;
+    yield* this.submobjects;
   }
 
-  [Symbol.iterator](): IterableIterator<Mobject> {
-    return this.submobjects[Symbol.iterator]();
+  *[Symbol.iterator](): IterableIterator<Mobject> {
+    yield* this.__iter__();
   }
 
-  __len__(): number { return this.submobjects.length; }
+  __len__(): number { return this.submobjects.length + (this.has_points() ? 1 : 0); }
+
+  split(): Mobject[] {
+    const result: Mobject[] = this.get_num_points() > 0 ? [this] : [];
+    return [...result, ...this.submobjects];
+  }
+
+  nonempty_submobjects(): Mobject[] {
+    return this.submobjects.filter(
+      (submob) => submob.submobjects.length !== 0 || submob.get_num_points() !== 0,
+    );
+  }
+
+  nonemptySubmobjects(): Mobject[] {
+    return this.nonempty_submobjects();
+  }
+
+  shuffle(recursive = false): this {
+    if (recursive) for (const submob of this.submobjects) submob.shuffle(true);
+    // Fisher-Yates, mirroring random.shuffle.
+    for (let index = this.submobjects.length - 1; index > 0; index -= 1) {
+      const other = Math.floor(Math.random() * (index + 1));
+      const temp = this.submobjects[index] as Mobject;
+      this.submobjects[index] = this.submobjects[other] as Mobject;
+      this.submobjects[other] = temp;
+    }
+    return this;
+  }
+
+  invert(recursive = false): this {
+    if (recursive) for (const submob of this.submobjects) submob.invert(true);
+    this.submobjects.reverse();
+    return this;
+  }
+
+  interpolate(mobject1: Mobject, mobject2: Mobject, alpha: number, path_func: PathFuncType | null = null): this {
+    const func = (path_func ?? straight_path()) as PathFuncType;
+    this.points = func(mobject1.points, mobject2.points, alpha);
+    this.interpolate_color(mobject1, mobject2, alpha);
+    return this;
+  }
 
   __getitem__(index: number | { start: number; end: number }): Mobject | Mobject[] {
     if (typeof index === "number") {

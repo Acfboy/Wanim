@@ -1104,7 +1104,7 @@ function uint8Trunc(value: number): number {
   return Math.trunc(value);
 }
 
-export function color_to_int_rgba(color: ParsableManimColor, alpha: number): number[] {
+export function color_to_int_rgba(color: ParsableManimColor, alpha = 1): number[] {
   const values = pointRows(new ManimColor(color).toRgba(), 4)[0] ?? [0, 0, 0, 1];
   return [values[0], values[1], values[2], alpha].map((item) => uint8Trunc(item * 255));
 }

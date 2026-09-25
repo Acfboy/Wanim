@@ -36,6 +36,12 @@ export class CoordinateSystem {
     const [x = 0, y = 0] = this.point_to_coords(point);
     return [Math.sqrt(x ** 2 + y ** 2), Math.atan2(y, x)];
   }
+  pr2pt(radius: number, azimuth: number): NDArray {
+    return this.polar_to_point(radius, azimuth);
+  }
+  pt2pr(point: readonly number[]): [number, number] {
+    return this.point_to_polar(point);
+  }
   point_to_coords(_point: readonly number[]): number[] {
     const error = new Error("CoordinateSystem.point_to_coords must be implemented by a subclass.");
     error.name = "NotImplementedError";

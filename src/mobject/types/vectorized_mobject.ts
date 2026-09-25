@@ -3,6 +3,7 @@ import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
 import { bezier_remap } from "../../utils/bezier.js";
+import { shoelace_direction } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { ORIGIN } from "../../constants.js";
 
@@ -17,6 +18,15 @@ export interface VMobjectOptions extends MobjectOptions {
   background_stroke_color?: ParsableManimColor | null;
   background_stroke_opacity?: number;
   background_stroke_width?: number;
+  sheen_factor?: number;
+  joint_type?: string | null;
+  sheen_direction?: readonly number[];
+  pre_function_handle_to_anchor_scale_factor?: number;
+  make_smooth_after_applying_functions?: boolean;
+  background_image?: string | null;
+  shade_in_3d?: boolean;
+  tolerance_for_point_equality?: number;
+  cap_style?: string;
 }
 
 function rows(value: unknown, dim: number): number[][] {
@@ -95,6 +105,21 @@ export class VMobject extends Mobject {
     this.stroke_opacity = options.stroke_opacity ?? 1;
     this.stroke_width = options.stroke_width ?? 4;
     this.close_new_points = options.close_new_points ?? false;
+    if (options.sheen_factor !== undefined) this.sheen_factor = options.sheen_factor;
+    if (options.joint_type !== undefined && options.joint_type !== null) this.joint_type = options.joint_type;
+    if (options.sheen_direction !== undefined) this.sheen_direction = [...options.sheen_direction];
+    if (options.pre_function_handle_to_anchor_scale_factor !== undefined) {
+      this.pre_function_handle_to_anchor_scale_factor = options.pre_function_handle_to_anchor_scale_factor;
+    }
+    if (options.make_smooth_after_applying_functions !== undefined) {
+      this.make_smooth_after_applying_functions = options.make_smooth_after_applying_functions;
+    }
+    if (options.background_image !== undefined) this.background_image = options.background_image;
+    if (options.shade_in_3d !== undefined) this.shade_in_3d = options.shade_in_3d;
+    if (options.tolerance_for_point_equality !== undefined) {
+      this.tolerance_for_point_equality = options.tolerance_for_point_equality;
+    }
+    if (options.cap_style !== undefined) this.cap_style = options.cap_style;
     if (options.background_stroke_color !== undefined) {
       this.background_stroke_color = options.background_stroke_color === null
         ? null
@@ -331,13 +356,14 @@ export class VMobject extends Mobject {
     return opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color();
   }
 
-  set_color(color: ParsableManimColor, family = true): this {
+  set_color(color: ParsableManimColor, alpha: unknown = null, family = true): this {
+    void alpha;
     this.set_fill(color, undefined, family);
     this.set_stroke(color, undefined, undefined, family);
     return this;
   }
 
-  setColor(color: ParsableManimColor, family = true): this { return this.set_color(color, family); }
+  setColor(color: ParsableManimColor, alpha: unknown = null, family = true): this { return this.set_color(color, alpha, family); }
 
   get_num_curves(): number {
     return Math.floor(this.get_num_points() / this.n_points_per_cubic_curve);
@@ -558,6 +584,47 @@ export class VMobject extends Mobject {
     }
     this.points = asPoints(result.length > 0 ? result : source, this.dim);
     return this;
+  }
+
+  append_vectorized_mobject(vectorized_mobject: VMobject): this {
+    if (this.has_new_path_started()) {
+      // Remove last point, which is starting a new path.
+      const current = rows(this.points, this.dim);
+      this.points = asPoints(current.slice(0, -1), this.dim);
+    }
+    this.append_points(vectorized_mobject.points);
+    return this;
+  }
+
+  appendVectorizedMobject(vectorized_mobject: VMobject): this {
+    return this.append_vectorized_mobject(vectorized_mobject);
+  }
+
+  get_subcurve(a: number, b: number): this {
+    let vmob: this;
+    if (this.is_closed() && a > b) {
+      vmob = this.copy();
+      vmob.pointwise_become_partial(this, a, 1);
+      const vmob2 = this.copy();
+      vmob2.pointwise_become_partial(this, 0, b);
+      vmob.append_vectorized_mobject(vmob2);
+    } else {
+      vmob = this.copy();
+      vmob.pointwise_become_partial(this, a, b);
+    }
+    return vmob;
+  }
+
+  getSubcurve(a: number, b: number): this {
+    return this.get_subcurve(a, b);
+  }
+
+  get_direction(): "CW" | "CCW" {
+    return shoelace_direction(this.get_start_anchors()) as "CW" | "CCW";
+  }
+
+  getDirection(): "CW" | "CCW" {
+    return this.get_direction();
   }
 
   get_point_mobject(center?: readonly number[]): VectorizedPoint {

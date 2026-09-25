@@ -3,7 +3,7 @@ import { config } from "../_config/utils.js";
 import { ManimColor, color_to_int_rgba, type ParsableManimColor } from "../utils/color/core.js";
 import { asArray, pointRows } from "../utils/arrays.js";
 import { ORIGIN } from "../constants.js";
-import { Mobject } from "../mobject/mobject.js";
+import { Mobject, setDefaultCameraFactory } from "../mobject/mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { PMobject } from "../mobject/types/point_cloud_mobject.js";
 import { AbstractImageMobject } from "../mobject/types/image_mobject.js";
@@ -640,3 +640,8 @@ function group_consecutive<T, K>(items: T[], key: (item: T) => K): Array<[K, T[]
 function shapesEqual(first: readonly number[], second: readonly number[]): boolean {
   return first.length === second.length && first.every((value, index) => value === second[index]);
 }
+
+// Lets Mobject.get_image() with no explicit camera mirror Python's
+// `Camera().capture_mobject(self)` once this module is loaded. The import
+// direction stays camera -> mobject, so no module cycle is introduced.
+setDefaultCameraFactory(() => new Camera());

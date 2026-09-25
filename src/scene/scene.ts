@@ -177,6 +177,14 @@ export class Scene {
     for (const func of this.updaters) func(dt);
   }
 
+  add_updater(func: (dt: number) => void): void {
+    this.updaters.push(func);
+  }
+
+  remove_updater(func: (dt: number) => void): void {
+    this.updaters = this.updaters.filter((candidate) => candidate !== func);
+  }
+
   get_time_progression(
     run_time: number,
     description: string,

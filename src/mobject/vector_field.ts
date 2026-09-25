@@ -7,7 +7,7 @@ import { AnimationGroup } from "../animation/composition.js";
 import { Create, ShowPartial } from "../animation/creation.js";
 import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, color_to_rgb, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
 import { inverse_interpolate } from "../utils/bezier.js";
-import { addPoints, arange, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
+import { addPoints, arange, linspace, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
 import { clip as _clip } from "../utils/simple_functions.js";
 import { config } from "../_config/utils.js";
 import { OUT, RIGHT, UP } from "../constants.js";
@@ -107,6 +107,48 @@ export class VectorField extends VGroup {
   nudge_submobjects(dt = 1, substeps = 1, pointwise = false): this {
     for (const mobject of this.submobjects) this.nudge(mobject, dt, substeps, pointwise);
     return this;
+  }
+
+  get_colored_background_image(sampling_rate = 5): NDArray {
+    if (this.single_color) {
+      const error = new Error(
+        "There is no point in generating an image if the vector field uses a single color.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    const pos_to_rgb = this.pos_to_rgb;
+    if (!pos_to_rgb) {
+      const error = new Error(
+        "There is no point in generating an image if the vector field uses a single color.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    const pixel_height = config.pixel_height as number;
+    const pixel_width = config.pixel_width as number;
+    const frame_width = config.frame_width as number;
+    const frame_height = config.frame_height as number;
+    const ph = Math.trunc(pixel_height / sampling_rate);
+    const pw = Math.trunc(pixel_width / sampling_rate);
+    const x_array = linspace(-frame_width / 2, frame_width / 2, pw);
+    const y_array = linspace(frame_height / 2, -frame_height / 2, ph);
+    const rows: number[][][] = [];
+    for (let row = 0; row < ph; row += 1) {
+      const line: number[][] = [];
+      for (let column = 0; column < pw; column += 1) {
+        const rgb = pos_to_rgb([x_array[column] ?? 0, y_array[row] ?? 0, 0]);
+        line.push(rgb.map((channel) => Math.max(0, Math.min(255, Math.trunc(channel * 255)))));
+      }
+      rows.push(line);
+    }
+    // NOTE: Python returns a PIL Image; the TypeScript runtime has no image
+    // object, so the uint8 (ph, pw, 3) array backing that image is returned.
+    return array(rows.length > 0 ? rows : [[]]).astype("uint8") as NDArray;
+  }
+
+  getColoredBackgroundImage(sampling_rate = 5): NDArray {
+    return this.get_colored_background_image(sampling_rate);
   }
 
   get_vectorized_rgba_gradient_function(
