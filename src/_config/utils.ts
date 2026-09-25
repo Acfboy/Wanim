@@ -708,8 +708,15 @@ export class ManimConfig {
       error.name = "ValueError";
       throw error;
     };
-    const getInt = (sectionName: string, key: string): number => {
-      const raw = getRequired(sectionName, key);
+    const getInt = (sectionName: string, key: string): number | null => {
+      const section = sectionOf(sectionName);
+      const raw = section.get(key);
+      if (raw === undefined) {
+        // NOTE: mirrors SectionProxy.getint, whose default fallback is None:
+        // a missing option yields None (assigned as-is below; e.g. seed=None
+        // is ignored by the seed setter), it does NOT raise.
+        return null;
+      }
       if (!/^[+-]?\d+$/.test(raw.trim())) {
         const error = new Error(`invalid literal for int() with base 10: '${raw}'`);
         error.name = "ValueError";
@@ -717,14 +724,13 @@ export class ManimConfig {
       }
       return Number.parseInt(raw.trim(), 10);
     };
-    const getFloat = (sectionName: string, key: string, fallback?: number): number => {
+    const getFloat = (sectionName: string, key: string, fallback?: number): number | null => {
       const section = sectionOf(sectionName);
       const raw = section.get(key);
       if (raw === undefined) {
+        // NOTE: same SectionProxy fallback=None reasoning as getInt above.
         if (fallback !== undefined) return fallback;
-        const error = new Error(`No option '${key}' in section: '${sectionName}'`);
-        error.name = "NoOptionError";
-        throw error;
+        return null;
       }
       const value = Number(raw);
       if (Number.isNaN(value)) {

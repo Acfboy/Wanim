@@ -134,6 +134,15 @@ export function bezier(points: number[][] | number[][][] | NDArray): BezierFn {
   };
 }
 
+function alphaValues(alpha: NDArray): number[] {
+  // NOTE: a 1-D alpha array holds one alpha per element (numpy broadcasting),
+  // but rowsOf would wrap it as a single row; unwrap it elementwise instead.
+  if (isNDArray(alpha) && (alpha as NDArray).shape.length === 1) {
+    return ((alpha as NDArray).toArray() as unknown[]).map(numeric);
+  }
+  return rowsOf(alpha as NDArray, 1).map((row) => row[0] ?? 0);
+}
+
 export function interpolate(
   start: number | number[] | NDArray,
   end: number | number[] | NDArray,
@@ -141,7 +150,7 @@ export function interpolate(
 ): number | NDArray {
   if (typeof start === "number" && typeof end === "number") {
     if (typeof alpha === "number") return (1 - alpha) * start + alpha * end;
-    const alphas = rowsOf(alpha as NDArray, 1).map((row) => row[0] ?? 0);
+    const alphas = alphaValues(alpha as NDArray);
     return array(
       alphas.map((a) => (1 - a) * (start as number) + a * (end as number)),
     ) as NDArray;
@@ -163,7 +172,7 @@ export function interpolate(
     });
     return array(result.length === 1 ? result[0] : result) as NDArray;
   }
-  const alphas = rowsOf(alpha, 1).map((row) => row[0] ?? 0);
+  const alphas = alphaValues(alpha);
   const count = Math.max(startRows.length, endRows.length, alphas.length);
   const result = Array.from({ length: count }, (_, i) => {
     const row = startRows[startRows.length === 1 ? 0 : i] ?? [];
@@ -184,6 +193,24 @@ export function inverse_interpolate(
 ): number | NDArray {
   if (typeof start === "number" && typeof end === "number" && typeof value === "number") {
     return (value - start) / (end - start);
+  }
+  if (typeof start === "number" && typeof end === "number") {
+    // NOTE: Python broadcasts scalar (start, end) over an array value:
+    // (value - start) / (end - start), preserving the value's shape
+    // (e.g. shape (2,) stays (2,), not (2, 3)). Mirror that here instead of
+    // routing scalars through the point-row path below.
+    const lo = start;
+    const hi = end;
+    const mapScalar = (item: unknown): unknown =>
+      Array.isArray(item)
+        ? item.map(mapScalar)
+        : (numeric(item) - lo) / (hi - lo);
+    const raw: unknown = isNDArray(value)
+      ? ((value as NDArray).toArray() as unknown)
+      : value;
+    const mapped = mapScalar(raw);
+    if (typeof mapped === "number") return mapped;
+    return array(mapped as number | number[]) as NDArray;
   }
   const startRows = rowsOf(start as number[] | NDArray);
   const endRows = rowsOf(end as number[] | NDArray);
