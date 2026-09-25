@@ -1,5 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { linspace, pointRows } from "../../utils/arrays.js";
+import { LEFT, RIGHT } from "../../constants.js";
+import { normalize } from "../../utils/space_ops.js";
 import { Mobject } from "../mobject.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 
@@ -162,11 +164,63 @@ export class Torus {
   }
 }
 
+export type Line3DEndpoint = Mobject | number[] | readonly number[] | NDArray;
+
+function flatPoint(value: NDArray): number[] {
+  const raw = value.toArray() as unknown;
+  const items = (Array.isArray(raw) ? raw : [raw]) as unknown[];
+  const out: number[] = [];
+  const walk = (item: unknown): void => {
+    if (Array.isArray(item)) {
+      for (const sub of item) walk(sub);
+      return;
+    }
+    out.push(Number(item));
+  };
+  for (const item of items) walk(item);
+  return out;
+}
+
 export class Line3D {
   thickness: number;
+  resolution: [number, number];
+  vect!: number[];
+  length!: number;
+  direction!: number[];
+  start!: NDArray;
+  end!: NDArray;
 
-  constructor(thickness = 0.02) {
+  constructor(
+    start: Line3DEndpoint = [...LEFT],
+    end: Line3DEndpoint = [...RIGHT],
+    thickness = 0.02,
+    resolution: number | [number, number] = 24,
+  ) {
     this.thickness = thickness;
+    this.resolution = typeof resolution === "number" ? [2, resolution] : [...resolution] as [number, number];
+    this.set_start_and_end_attrs(start, end);
+  }
+
+  set_start_and_end_attrs(start: Line3DEndpoint, end: Line3DEndpoint): this {
+    const rough_start = flatPoint(this.pointify(start));
+    const rough_end = flatPoint(this.pointify(end));
+    this.vect = rough_end.map((value, index) => value - (rough_start[index] ?? 0));
+    this.length = Math.hypot(...this.vect);
+    this.direction = normalize(this.vect);
+    // NOTE: Python also rebuilds Cylinder geometry here (super().__init__
+    // with height/radius/direction) and shifts to the midpoint; the TS port
+    // is a lightweight stub that only tracks the endpoint attributes.
+    this.start = this.pointify(start, this.direction);
+    this.end = this.pointify(end, this.direction.map((value) => -value));
+    return this;
+  }
+
+  get_start(): NDArray {
+    return this.start;
+  }
+
+  get_end(): NDArray {
+    return this.end;
   }
 
   pointify(mob_or_point: Mobject | number[] | readonly number[] | NDArray, direction?: number[] | readonly number[]): NDArray {

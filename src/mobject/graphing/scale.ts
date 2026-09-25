@@ -1,4 +1,4 @@
-import { divide, log, type NDArray } from "numpy-ts";
+import { array, divide, log, type NDArray } from "numpy-ts";
 import { isNDArray, numeric } from "../../utils/arrays.js";
 
 function valueError(message: string): Error {
@@ -63,8 +63,12 @@ export class LogBase extends _ScaleBase {
     this.custom_labels = custom_labels;
   }
 
-  override function(value: number): number {
-    return this.base ** value;
+  override function(value: number | NDArray): number | NDArray {
+    if (isNDArray(value)) {
+      const mapped = mapDeep((value as NDArray).toArray(), (item) => this.base ** numeric(item));
+      return array(mapped as number | number[]) as NDArray;
+    }
+    return this.base ** numeric(value);
   }
 
   override inverse_function(value: number | NDArray): number | NDArray {
@@ -86,6 +90,19 @@ export class LogBase extends _ScaleBase {
     }
     return Math.log(scalar) / Math.log(this.base);
   }
+
+  override get_custom_labels(
+    _val_range: Iterable<number>,
+    _unit_decimal_places = 0,
+    ..._base_config: unknown[]
+  ): unknown[] {
+    throw new Error("TODO: text/tex not ported yet");
+  }
+}
+
+function mapDeep(value: unknown, fn: (item: unknown) => number): unknown {
+  if (Array.isArray(value)) return (value as unknown[]).map((item) => mapDeep(item, fn));
+  return fn(value);
 }
 
 function flattenNumbers(value: unknown): number[] {

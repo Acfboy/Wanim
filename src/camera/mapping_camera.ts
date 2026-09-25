@@ -48,6 +48,12 @@ export class OldMultiCamera extends Camera {
 
   set_pixel_array(pixel_array: unknown, convert_from_floats = false): void {
     super.set_pixel_array(pixel_array, convert_from_floats);
+    // NOTE: mirrors the init_background guard below. Python assigns
+    // self.shifted_cameras before super().__init__() (which calls reset()
+    // -> set_pixel_array); JS cannot touch `this` before super(), so the
+    // construction-time reset() runs with shifted_cameras still undefined
+    // and slice forwarding is skipped until the constructor assigns it.
+    if (this.shifted_cameras === undefined) return;
     const source = toVoxels(pixel_array);
     for (const shifted_camera of this.shifted_cameras) {
       const sub = source
