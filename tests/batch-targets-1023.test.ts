@@ -23,9 +23,9 @@
 //    identity + equal content + presence of a string original_id, not exact.
 //  - Mobject.match_points: Python has an unused copy_submobjects=True param;
 //    TS omits it (added back as optional no-op for API compat here).
-//  - Mobject.show/save_image need a cairo Camera backend (not ported); both
-//    Python and TS raise without one. TS throws a TODO error; tests assert
-//    that it throws rather than rendering.
+//  - Mobject.show/save_image need a cairo Camera backend (not ported);
+//    Python renders via a default Camera, TS get_image throws a TODO error;
+//    tests assert that it throws rather than rendering.
 //  - StreamLines.end_animation inner closures (hide_and_wait,
 //    finish_updater_cycle) are not exported; they are tested through the
 //    public end_animation() return value (AnimationGroup of Successions with
@@ -65,6 +65,8 @@ import {
   ManimColor,
 } from "../src/utils/color/core.js";
 import { pointRows } from "../src/utils/arrays.js";
+import { Succession } from "../src/animation/composition.js";
+import { ease_out_sine } from "../src/utils/rate_functions.js";
 
 function close(a: number, b: number, tol = 1e-9): boolean {
   if (Object.is(a, b)) return true;
@@ -159,21 +161,51 @@ describe("StreamLines.end_animation.finish_updater_cycle", () => {
     expect(sl.flow_animation).toBeNull();
   });
 
-  it("finish_updater_cycle semantics: time += dt*flow_speed, clamp at run_time", () => {
-    // Python inner: line.time += dt * self.flow_speed;
-    // line.anim.interpolate(min(line.time / line.anim.run_time, 1)); at
-    // alpha==1 the line's anim mobject is removed and anim.finish() runs.
-    // The TS port inlines the same formula; verify the arithmetic the port
-    // must implement (dt = 1/frame_rate, clamp at 1).
-    const dt = 1 / 60;
-    const flow_speed = 1.5;
-    let time = 0.4;
-    const run_time = 2.0;
-    time += dt * flow_speed;
-    const alpha = Math.min(time / run_time, 1);
-    expect(close(alpha, (0.4 + dt * flow_speed) / run_time, 1e-12)).toBe(true);
-    // Clamp: overshoot saturates at 1.
-    expect(Math.min((run_time + 5) / run_time, 1)).toBe(1);
+  it("finish_updater_cycle wiring: Succession run_times follow the Python formulas", () => {
+    // Python end_animation per stream line (virtual_time=0.5, flow_speed=1,
+    // time_width=0.3):
+    //   max_run_time = virtual_time / flow_speed (= 0.5)
+    //   creation_run_time = max_run_time / (1 + time_width)
+    //                       * ease_out_sine(0.001) * 1000
+    //   time <= 0: Succession(UpdateFromAlphaFunc(hide_and_wait,
+    //              run_time=-time/flow_speed), Create(creation_run_time))
+    //   time >  0: Succession(UpdateFromAlphaFunc(finish_updater_cycle,
+    //              run_time=max_run_time - time/flow_speed),
+    //              Create(creation_run_time))
+    // warm_up=False leaves all line.time in [0, virtual_time) so every line
+    // takes the finish_updater_cycle branch; warm_up=True negates the times
+    // so every line takes the hide_and_wait branch.
+    const expectedCreation =
+      (0.5 / 1 / (1 + 0.3)) * (ease_out_sine(0.001) as number) * 1000;
+    // Python ground truth: ease_out_sine(0.001)*1000 == 1.570795680830879,
+    // so creation_run_time == 0.5/1.3*1.570795680830879 == 0.6041521849349534.
+    expect(close(expectedCreation, 0.6041521849349534, 1e-9)).toBe(true);
+
+    for (const warmUp of [false, true]) {
+      const sl2 = new StreamLines((p: number[]) => [p[1] ?? 0, -(p[0] ?? 0), 0], {
+        x_range: [-1, 1],
+        y_range: [-1, 1],
+        n_repeats: 1,
+        virtual_time: 0.5,
+      });
+      sl2.start_animation(warmUp, 1, 0.3);
+      const times = sl2.stream_lines.map(
+        (line) => (line as unknown as { time: number }).time,
+      );
+      if (warmUp) expect(times.every((t) => t <= 0)).toBe(true);
+      else expect(times.every((t) => t >= 0)).toBe(true);
+      const group2 = sl2.end_animation();
+      expect(group2.animations.length).toBe(sl2.stream_lines.length);
+      for (let i = 0; i < times.length; i += 1) {
+        const succession = group2.animations[i] as Succession;
+        const legs = succession.animations;
+        expect(legs.length).toBe(2);
+        const t = times[i] ?? 0;
+        const expectedFirst = t <= 0 ? -t / 1 : 0.5 / 1 - t / 1;
+        expect(close(legs[0]?.run_time ?? NaN, expectedFirst, 1e-9)).toBe(true);
+        expect(close(legs[1]?.run_time ?? NaN, expectedCreation, 1e-9)).toBe(true);
+      }
+    }
   });
 });
 
@@ -204,7 +236,8 @@ describe("Mobject.__deepcopy__", () => {
 
 describe("Mobject.show/save_image", () => {
   it("throw without a raster backend (cairo not ported)", () => {
-    // Python: get_image needs a Camera; TS get_image throws
+    // Python get_image builds a default Camera and renders via cairo; the TS
+    // port has no raster backend yet so get_image throws
     // "TODO: cairo rendering not ported yet". show/save_image delegate.
     const m = new Mobject();
     expect(() => m.show()).toThrowError(/cairo rendering not ported/);
