@@ -258,6 +258,57 @@ export function shoelace(x_y: number[][] | NDArray): number {
   return total;
 }
 
+export function rotation_matrix(
+  angle: number,
+  axis: VectorInput,
+  homogeneous = false,
+): NDArray {
+  const flat = toRows(axis).rows[0] ?? [0, 0, 0];
+  const norm = Math.hypot(flat[0] ?? 0, flat[1] ?? 0, flat[2] ?? 0);
+  let rotation: number[][];
+  if (norm === 0) {
+    rotation = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+  } else {
+    const kx = (flat[0] ?? 0) / norm;
+    const ky = (flat[1] ?? 0) / norm;
+    const kz = (flat[2] ?? 0) / norm;
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const oneMinusC = 1 - c;
+    rotation = [
+      [
+        c + kx * kx * oneMinusC,
+        kx * ky * oneMinusC - kz * s,
+        kx * kz * oneMinusC + ky * s,
+      ],
+      [
+        ky * kx * oneMinusC + kz * s,
+        c + ky * ky * oneMinusC,
+        ky * kz * oneMinusC - kx * s,
+      ],
+      [
+        kz * kx * oneMinusC - ky * s,
+        kz * ky * oneMinusC + kx * s,
+        c + kz * kz * oneMinusC,
+      ],
+    ];
+  }
+  if (!homogeneous) {
+    return array(rotation) as NDArray;
+  }
+  const homogeneousMatrix = [
+    [rotation[0]?.[0] ?? 0, rotation[0]?.[1] ?? 0, rotation[0]?.[2] ?? 0, 0],
+    [rotation[1]?.[0] ?? 0, rotation[1]?.[1] ?? 0, rotation[1]?.[2] ?? 0, 0],
+    [rotation[2]?.[0] ?? 0, rotation[2]?.[1] ?? 0, rotation[2]?.[2] ?? 0, 0],
+    [0, 0, 0, 1],
+  ];
+  return array(homogeneousMatrix) as NDArray;
+}
+
 export function rotation_about_z(angle: number): NDArray {
   const c = Math.cos(angle);
   const s = Math.sin(angle);

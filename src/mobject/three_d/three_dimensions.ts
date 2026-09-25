@@ -1,7 +1,8 @@
 import { array, type NDArray } from "numpy-ts";
-import { linspace, pointRows } from "../../utils/arrays.js";
+import { isNDArray, linspace, pointRows } from "../../utils/arrays.js";
 import { LEFT, RIGHT } from "../../constants.js";
 import { normalize } from "../../utils/space_ops.js";
+import type { ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 
@@ -183,6 +184,7 @@ function flatPoint(value: NDArray): number[] {
 
 export class Line3D {
   thickness: number;
+  color: ParsableManimColor | null;
   resolution: [number, number];
   vect!: number[];
   length!: number;
@@ -194,9 +196,14 @@ export class Line3D {
     start: Line3DEndpoint = [...LEFT],
     end: Line3DEndpoint = [...RIGHT],
     thickness = 0.02,
+    color: ParsableManimColor | null = null,
     resolution: number | [number, number] = 24,
   ) {
     this.thickness = thickness;
+    // NOTE: color is accepted (same position as Python's __init__) and stored,
+    // but applying it to geometry awaits the Cylinder port, which needs the
+    // cairo renderer (out of scope for the interpreter target).
+    this.color = color;
     this.resolution = typeof resolution === "number" ? [2, resolution] : [...resolution] as [number, number];
     this.set_start_and_end_attrs(start, end);
   }
@@ -230,6 +237,9 @@ export class Line3D {
       const boundary = (mob as unknown as { get_boundary_point: (d: unknown) => number[] }).get_boundary_point(direction);
       return array([...boundary]) as NDArray;
     }
+    // Python accepts any array-like (plain sequences and np.ndarray alike)
+    // and returns np.array(...) preserving shape; mirror that with a copy.
+    if (isNDArray(mob_or_point)) return (mob_or_point as NDArray).copy();
     return array([...(mob_or_point as readonly number[])].map(Number)) as NDArray;
   }
 }

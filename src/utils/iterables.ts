@@ -239,8 +239,14 @@ export function remove_list_redundancies<T>(lst: readonly T[] | string | Iterabl
 }
 
 export function adjacent_n_tuples<T>(objects: readonly T[] | Iterable<T>, n: number): T[][] {
+  // Python builds `zip(*(... for k in range(n)))` with no iterables when
+  // n <= 0, so plain `zip()` yields nothing (verified against manim 0.21.0:
+  // negative n returns []).
+  if (n <= 0) return [];
+  if (!Array.isArray(objects) && !isIterableObject(objects)) {
+    throw new TypeError(`'${typeName(objects)}' object is not subscriptable`);
+  }
   const items = Array.isArray(objects) ? [...objects] : Array.from(objects);
-  if (n === 0) return [];
   const result: T[][] = [];
   for (let index = 0; index < items.length; index += 1) {
     const group: T[] = [];
@@ -270,6 +276,14 @@ export function resize_with_interpolation(nparray: unknown, length: number): NDA
     return Array.from({ length: width }, (_, c) => (1 - a) * (rows[lh]?.[c] ?? 0) + a * (rows[rh]?.[c] ?? 0));
   });
   return array(flat ? out.map((row) => row[0]) : out) as NDArray;
+}
+
+function typeName(value: unknown): string {
+  if (value === null || value === undefined) return "NoneType";
+  if (typeof value === "number") return Number.isInteger(value) ? "int" : "float";
+  if (typeof value === "string") return "str";
+  if (typeof value === "boolean") return "bool";
+  return typeof value;
 }
 
 function isNDArrayLike(value: unknown): boolean {

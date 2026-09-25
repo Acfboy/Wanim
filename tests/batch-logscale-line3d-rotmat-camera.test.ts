@@ -3,7 +3,7 @@ import { array } from "numpy-ts";
 import { LogBase } from "../src/mobject/graphing/scale.js";
 import { Line3D } from "../src/mobject/three_d/three_dimensions.js";
 import { rotation_matrix } from "../src/utils/space_ops.js";
-import { adjacent_pairs } from "../src/utils/iterables.js";
+import { adjacent_n_tuples, adjacent_pairs } from "../src/utils/iterables.js";
 import { Camera } from "../src/camera/camera.js";
 import { Mobject } from "../src/mobject/mobject.js";
 import { VMobject } from "../src/mobject/types/vectorized_mobject.js";
@@ -152,6 +152,22 @@ describe("Line3D constructor + get_start/get_end", () => {
     expect(line.thickness).toBe(0.05);
     expect(line.resolution).toEqual([2, 24]);
   });
+  it("accepts NDArray endpoints like np.array inputs", () => {
+    // Python: Line3D(start=np.array([0,0,0]), end=np.array([2,2,2]))
+    // (the docstring example passes np arrays).
+    const line = new Line3D(array([0, 0, 0]), array([2, 2, 2]));
+    expectClose(line.get_start(), [0, 0, 0]);
+    expectClose(line.get_end(), [2, 2, 2]);
+    expectClose(line.vect, [2, 2, 2]);
+  });
+  it("takes color in the Python 4th position without shifting resolution", () => {
+    // Python signature: (start, end, thickness, color, resolution).
+    const line = new Line3D([0, 0, 0], [1, 0, 0], 0.02, "#FF0000");
+    expect(line.color).toBe("#FF0000");
+    expect(line.resolution).toEqual([2, 24]);
+    const line2 = new Line3D([0, 0, 0], [1, 0, 0], 0.02, null, 12);
+    expect(line2.resolution).toEqual([2, 12]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -250,6 +266,17 @@ describe("adjacent_pairs", () => {
     // Python: list(adjacent_pairs([(1,2),(3,4)])) ==
     //   [((1,2),(3,4)),((3,4),(1,2))].
     expect(adjacent_pairs([[1, 2], [3, 4]])).toEqual([[[1, 2], [3, 4]], [[3, 4], [1, 2]]]);
+  });
+  it("returns [] for non-positive n like bare zip()", () => {
+    // Python: list(adjacent_n_tuples([1,2,3], -1)) == [].
+    expect(adjacent_n_tuples([1, 2, 3], -1)).toEqual([]);
+    expect(adjacent_n_tuples([1, 2, 3], 0)).toEqual([]);
+  });
+  it("raises TypeError for non-iterables", () => {
+    // Python: adjacent_n_tuples(None, 2) / (123, 2) raise TypeError
+    // ("'NoneType'/'int' object is not subscriptable").
+    expect(() => adjacent_pairs(null as unknown as [])).toThrow(TypeError);
+    expect(() => adjacent_pairs(123 as unknown as [])).toThrow(TypeError);
   });
 });
 
