@@ -156,6 +156,19 @@ export class SVGMobject extends VMobject {
   generate_mobject(): this {
     throw new Error("TODO: text/tex not ported yet");
   }
+
+  move_into_position(): this {
+    if (this.should_center) {
+      this.center();
+    }
+    if (this.svg_height !== null && this.svg_height !== undefined) {
+      this.set({ height: this.svg_height });
+    }
+    if (this.svg_width !== null && this.svg_width !== undefined) {
+      this.set({ width: this.svg_width });
+    }
+    return this;
+  }
 }
 
 function get_config_renderer(): RendererType {

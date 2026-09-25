@@ -66,7 +66,6 @@ function pilNotPorted(): Error {
 
 export class Camera {
   background_image: string | null;
-  frame_center: readonly number[];
   image_mode: string;
   n_channels: number;
   pixel_array_dtype: string;
@@ -76,8 +75,6 @@ export class Camera {
   pixel_array!: NDArray;
   pixel_height: number;
   pixel_width: number;
-  frame_height: number;
-  frame_width: number;
   frame_rate: number;
   max_allowable_norm: number;
   canvas: unknown = null;
@@ -86,6 +83,12 @@ export class Camera {
   display_funcs: Array<[Function, DisplayHandler]> = [];
   protected _background_color: ManimColor;
   protected _background_opacity: number;
+  // NOTE: frame geometry is exposed via accessors (not plain fields) so
+  // that MovingCamera can override them with frame-backed properties,
+  // mirroring the Python @property definitions.
+  private _frame_center!: readonly number[];
+  private _frame_height = 0;
+  private _frame_width = 0;
 
   constructor(options: CameraOptions = {}) {
     this.background_image = options.background_image ?? null;
@@ -114,6 +117,30 @@ export class Camera {
   __deepcopy__(_memo?: unknown): Camera {
     this.canvas = null;
     return Object.assign(Object.create(Object.getPrototypeOf(this)), this);
+  }
+
+  get frame_center(): readonly number[] {
+    return this._frame_center;
+  }
+
+  set frame_center(value: readonly number[]) {
+    this._frame_center = value;
+  }
+
+  get frame_height(): number {
+    return this._frame_height;
+  }
+
+  set frame_height(value: number) {
+    this._frame_height = value;
+  }
+
+  get frame_width(): number {
+    return this._frame_width;
+  }
+
+  set frame_width(value: number) {
+    this._frame_width = value;
   }
 
   get background_color(): ManimColor {

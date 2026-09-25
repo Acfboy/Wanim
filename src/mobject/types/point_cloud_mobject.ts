@@ -8,7 +8,7 @@ import {
   UP,
 } from "../../constants.js";
 import { interpolate } from "../../utils/bezier.js";
-import { BLACK, ManimColor, color_gradient, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLACK, ManimColor, WHITE, color_gradient, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { arange, isNDArray, linspace, pointRows } from "../../utils/arrays.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
@@ -106,6 +106,30 @@ export class PMobject extends Mobject {
 
   setColorByGradient(...colors: ParsableManimColor[]): this {
     return this.set_color_by_gradient(...colors);
+  }
+
+  set_colors_by_radial_gradient(
+    center?: number[] | readonly number[] | NDArray | null,
+    radius = 1,
+    inner_color: ParsableManimColor = WHITE,
+    outer_color: ParsableManimColor = BLACK,
+  ): this {
+    const [start_rgba, end_rgba] = [inner_color, outer_color].map((color) => color_to_rgba(color));
+    const resolved_center = center === undefined || center === null ? this.get_center() : center;
+    for (const mob of this.family_members_with_points()) {
+      const center_rows = pointRows(resolved_center, this.dim);
+      const center_row = center_rows[0] ?? [0, 0, 0];
+      const point_rows = pointRows(this.points, this.dim);
+      const alphas = point_rows.map((point) => {
+        const distances = point.map((value, index) => Math.abs(value - (center_row[index] ?? 0)));
+        return Math.hypot(...distances) / radius;
+      });
+      const start_rows = pointRows(start_rgba, 4)[0] ?? [0, 0, 0, 1];
+      const end_rows = pointRows(end_rgba, 4)[0] ?? [0, 0, 0, 1];
+      const blended = alphas.map((alpha) => start_rows.map((value, index) => value * (1 - alpha) + (end_rows[index] ?? 0) * alpha));
+      (mob as PMobject).rgbas = array(blended.length > 0 ? blended : []).reshape(blended.length, 4) as NDArray;
+    }
+    return this;
   }
 
   get_stroke_width(): number {

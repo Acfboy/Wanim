@@ -1,7 +1,8 @@
 import { array, concatenate, type NDArray } from "numpy-ts";
 import { MethodWithArgs } from "../data_structures.js";
-import { DEFAULT_MOBJECT_TO_EDGE_BUFFER, DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, DL, LEFT, MED_SMALL_BUFF, ORIGIN, RIGHT, UP } from "../constants.js";
-import { ManimColor, WHITE, color_gradient, interpolate_color, type ParsableManimColor } from "../utils/color/core.js";
+import { DEFAULT_MOBJECT_TO_EDGE_BUFFER, DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, DL, DOWN, IN, LEFT, MED_SMALL_BUFF, ORIGIN, OUT, RIGHT, TAU, UP } from "../constants.js";
+import { BLACK, ManimColor, WHITE, color_gradient, interpolate_color, type ParsableManimColor } from "../utils/color/core.js";
+import { angle_between_vectors, cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
@@ -549,23 +550,216 @@ export class Mobject {
   stretch_to_fit_height(value: number): this { return this.rescale_to_fit(value, 1, true); }
   stretch_to_fit_depth(value: number): this { return this.rescale_to_fit(value, 2, true); }
 
-  rescale_to_fit(value: number, dim: number, stretch = false, aboutPoint?: readonly number[], aboutEdge?: readonly number[]): this {
+  rescale_to_fit(value: number, dim: number, stretch = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
     const current = this.length_over_dim(dim);
     if (current === 0) return this;
     if (stretch) {
-      this.stretch(value / current, dim, aboutPoint, aboutEdge);
+      this.stretch(value / current, dim, about_point ?? undefined, about_edge ?? undefined);
     } else {
-      this.scale(value / current, aboutPoint);
+      this.scale(value / current, about_point ?? undefined, about_edge ?? undefined);
     }
     return this;
   }
 
-  scale(scalar: number, aboutPoint?: readonly number[]): this {
-    const center = aboutPoint ? vector(aboutPoint, this.dim) : this.get_center();
-    for (const mobject of this.family_members_with_points()) {
-      const rows = pointRows(mobject.points, this.dim).map((point) => addPoints(scalePoint(subtractPoints(point, center, this.dim), scalar, this.dim), center, this.dim));
-      mobject.points = pointArray(rows);
+  shift_onto_screen(options: { buff?: number } = {}): this {
+    const buff = options.buff ?? DEFAULT_MOBJECT_TO_EDGE_BUFFER;
+    const space_lengths = [Number(config.get("frame_x_radius") ?? 7.111111111111111), Number(config.get("frame_y_radius") ?? 4)];
+    for (const vect of [UP, DOWN, LEFT, RIGHT] as const) {
+      const abs_vect = [...vect].map((value) => Math.abs(value));
+      let dim = 0;
+      for (let index = 1; index < abs_vect.length; index += 1) {
+        if ((abs_vect[index] ?? 0) > (abs_vect[dim] ?? 0)) dim = index;
+      }
+      const max_val = (space_lengths[dim] ?? 0) - buff;
+      const edge_center = this.get_edge_center(vect);
+      const dot = edge_center.reduce((sum, value, index) => sum + value * ((vect as readonly number[])[index] ?? 0), 0);
+      if (dot > max_val) {
+        this.to_edge(vect, buff);
+      }
     }
+    return this;
+  }
+
+  is_off_screen(): boolean {
+    if ((this.get_left()[0] ?? 0) > Number(config.get("frame_x_radius") ?? 7.111111111111111)) {
+      return true;
+    }
+    if ((this.get_right()[0] ?? 0) < -Number(config.get("frame_x_radius") ?? 7.111111111111111)) {
+      return true;
+    }
+    if ((this.get_bottom()[1] ?? 0) > Number(config.get("frame_y_radius") ?? 4)) {
+      return true;
+    }
+    const rv: boolean = (this.get_top()[1] ?? 0) < -Number(config.get("frame_y_radius") ?? 4);
+    return rv;
+  }
+
+  space_out_submobjects(factor = 1.5, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    this.scale(factor, about_point ?? undefined, about_edge ?? undefined);
+    for (const submob of this.submobjects) {
+      submob.scale(1.0 / factor);
+    }
+    return this;
+  }
+
+  put_start_and_end_on(start: readonly number[] | NDArray, end: readonly number[] | NDArray): this {
+    const [current_start, current_end] = this.get_start_and_end();
+    const current_vector = subtractPoints(current_end, current_start, this.dim);
+    if (current_vector.every((value) => value === 0)) {
+      console.warn(
+        "put_start_and_end_on has been called on a closed loop or zero-length mobject. " +
+        `${this.constructor.name} will be shifted to start point instead.`,
+      );
+      this.shift(subtractPoints(vector(start, this.dim), current_start, this.dim));
+      return this;
+    }
+    const target_vector = subtractPoints(vector(end, this.dim), vector(start, this.dim), this.dim);
+    const cross_product = cross(current_vector, target_vector);
+    const axis = norm(cross_product) !== 0
+      ? normalize(cross_product)
+      : [...OUT];
+    this.scale(
+      norm(target_vector) / norm(current_vector),
+      current_start,
+    );
+    this.rotate(
+      angle_between_vectors(current_vector, target_vector),
+      axis,
+      current_start,
+    );
+    this.shift(subtractPoints(vector(start, this.dim), current_start, this.dim));
+    return this;
+  }
+
+  get_zenith(): number[] { return this.get_edge_center(OUT); }
+  get_nadir(): number[] { return this.get_edge_center(IN); }
+
+  match_dim_size(mobject: Mobject, dim: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    return this.rescale_to_fit(mobject.length_over_dim(dim), dim, false, about_point ?? undefined, about_edge ?? undefined);
+  }
+
+  match_width(mobject: Mobject, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    return this.match_dim_size(mobject, 0, about_point ?? undefined, about_edge ?? undefined);
+  }
+
+  match_height(mobject: Mobject, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    return this.match_dim_size(mobject, 1, about_point ?? undefined, about_edge ?? undefined);
+  }
+
+  match_depth(mobject: Mobject, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    return this.match_dim_size(mobject, 2, about_point ?? undefined, about_edge ?? undefined);
+  }
+
+  match_coord(mobject: Mobject, dim: number, direction: readonly number[] | NDArray = ORIGIN): this {
+    return this.set_coord(
+      mobject.get_coord(dim, direction),
+      dim,
+      direction,
+    );
+  }
+
+  match_x(mobject: Mobject, direction: readonly number[] | NDArray = ORIGIN): this {
+    return this.match_coord(mobject, 0, direction);
+  }
+
+  match_y(mobject: Mobject, direction: readonly number[] | NDArray = ORIGIN): this {
+    return this.match_coord(mobject, 1, direction);
+  }
+
+  match_z(mobject: Mobject, direction: readonly number[] | NDArray = ORIGIN): this {
+    return this.match_coord(mobject, 2, direction);
+  }
+
+  align_to(mobject_or_point: Mobject | readonly number[] | NDArray, direction: readonly number[] | NDArray = ORIGIN): this {
+    let point: number[];
+    if (mobject_or_point instanceof Mobject) {
+      point = mobject_or_point.get_critical_point(direction);
+    } else {
+      point = vector(mobject_or_point, this.dim);
+    }
+    const direction_values = vector(direction, this.dim);
+    for (let dim = 0; dim < this.dim; dim += 1) {
+      if ((direction_values[dim] ?? 0) !== 0) {
+        this.set_coord(point[dim] ?? 0, dim, direction);
+      }
+    }
+    return this;
+  }
+
+  set_colors_by_radial_gradient(
+    center?: readonly number[] | NDArray | null,
+    radius = 1,
+    inner_color: ParsableManimColor = WHITE,
+    outer_color: ParsableManimColor = BLACK,
+  ): this {
+    this.set_submobject_colors_by_radial_gradient(
+      center,
+      radius,
+      inner_color,
+      outer_color,
+    );
+    return this;
+  }
+
+  set_submobject_colors_by_radial_gradient(
+    center?: readonly number[] | NDArray | null,
+    radius = 1,
+    inner_color: ParsableManimColor = WHITE,
+    outer_color: ParsableManimColor = BLACK,
+  ): this {
+    const resolved_center = center === undefined || center === null
+      ? this.get_center()
+      : vector(center, this.dim);
+    for (const mob of this.family_members_with_points()) {
+      let t = norm(subtractPoints(mob.get_center(), resolved_center, this.dim)) / radius;
+      t = Math.min(t, 1);
+      const mob_color = interpolate_color(
+        new ManimColor(inner_color), new ManimColor(outer_color), t,
+      );
+      mob.set_color(mob_color, null, false);
+    }
+    return this;
+  }
+
+  sort(point_to_num_func: ((point: number[]) => number) | null = null, submob_func: ((mobject: Mobject) => number) | null = null): this {
+    const point_func = point_to_num_func ?? ((point: number[]): number => point[0] ?? 0);
+    let key_func = submob_func;
+    if (key_func === null || key_func === undefined) {
+      key_func = (m: Mobject): number => point_func(m.get_center());
+    }
+    const resolved = key_func;
+    this.submobjects.sort((a, b) => {
+      const key_a = resolved(a);
+      const key_b = resolved(b);
+      if (key_a < key_b) return -1;
+      if (key_a > key_b) return 1;
+      return 0;
+    });
+    return this;
+  }
+
+  arrange_submobjects(...args: unknown[]): this {
+    const [direction, buff, center] = args as [readonly number[] | undefined, number | undefined, boolean | undefined];
+    return this.arrange(direction ?? RIGHT, buff ?? DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, center ?? true);
+  }
+
+  sort_submobjects(...args: unknown[]): this {
+    const [point_to_num_func, submob_func] = args as [((point: number[]) => number) | null | undefined, ((mobject: Mobject) => number) | null | undefined];
+    return this.sort(point_to_num_func ?? null, submob_func ?? null);
+  }
+
+  set_z_index_by_z_Point3D(): this {
+    const z_coord = this.get_center()[this.get_center().length - 1] ?? 0;
+    this.set_z_index(z_coord);
+    return this;
+  }
+
+  scale(scale_factor: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    this.apply_points_function_about_point(
+      (points) => pointArray(pointRows(points, this.dim).map((point) => point.map((value) => value * scale_factor))),
+      about_point ?? undefined,
+      about_edge ?? undefined,
+    );
     return this;
   }
 
@@ -632,35 +826,36 @@ export class Mobject {
     return this.align_on_border(edge, buff);
   }
 
-  rotate(angle: number, axis: readonly number[] = [0, 0, 1], aboutPoint?: readonly number[]): this {
-    const length = norm(axis);
-    if (length === 0) return this;
-    const unit = scalePoint(axis, 1 / length, 3);
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const dot = unit[0] * unit[0] + unit[1] * unit[1] + unit[2] * unit[2];
-    const center = aboutPoint ? vector(aboutPoint, this.dim) : this.get_center();
-    for (const mobject of this.family_members_with_points()) {
-      const rotated = pointRows(mobject.points, this.dim).map((point) => {
-        const x = point[0] - center[0];
-        const y = point[1] - center[1];
-        const z = (point[2] ?? 0) - (center[2] ?? 0);
-        const crossX = unit[1] * z - unit[2] * y;
-        const crossY = unit[2] * x - unit[0] * z;
-        const crossZ = unit[0] * y - unit[1] * x;
-        const factor = (1 - cos) / dot;
-        return [
-          center[0] + x * cos + crossX * sin + unit[0] * factor * (unit[0] * x + unit[1] * y + unit[2] * z),
-          center[1] + y * cos + crossY * sin + unit[1] * factor * (unit[0] * x + unit[1] * y + unit[2] * z),
-          center[2] + z * cos + crossZ * sin + unit[2] * factor * (unit[0] * x + unit[1] * y + unit[2] * z),
-        ].slice(0, this.dim);
-      });
-      mobject.points = pointArray(rotated);
-    }
+  rotate(angle: number, axis: readonly number[] | NDArray = [...OUT], about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    const rot_matrix = pointRows(rotation_matrix(angle, axis), 3);
+    this.apply_points_function_about_point(
+      (points) => pointArray(
+        pointRows(points, this.dim).map((point) =>
+          rot_matrix.map((row) => point.reduce((sum, value, index) => sum + value * (row[index] ?? 0), 0)).slice(0, this.dim),
+        ),
+      ),
+      about_point ?? undefined,
+      about_edge ?? undefined,
+    );
     return this;
   }
 
-  stretch(factor: number, dim: number, aboutPoint?: readonly number[], aboutEdge?: readonly number[]): this {
+  rotate_about_origin(angle: number, axis: readonly number[] | NDArray = [...OUT]): this {
+    return this.rotate(angle, axis, [...ORIGIN]);
+  }
+
+  flip(axis: readonly number[] | NDArray = [...UP], about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    return this.rotate(
+      TAU / 2, axis, about_point ?? undefined, about_edge ?? undefined,
+    );
+  }
+
+  pose_at_angle(about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    this.rotate(TAU / 14, addPoints([...RIGHT], [...UP], 3), about_point ?? undefined, about_edge ?? undefined);
+    return this;
+  }
+
+  stretch(factor: number, dim: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
     const func = (points: NDArray): NDArray => {
       const rows = pointRows(points, this.dim).map((point) => {
         const scaled = [...point];
@@ -669,15 +864,19 @@ export class Mobject {
       });
       return pointArray(rows);
     };
-    this.apply_points_function_about_point(func, aboutPoint, aboutEdge);
+    this.apply_points_function_about_point(func, about_point ?? undefined, about_edge ?? undefined);
     return this;
   }
 
-  apply_function(func: (point: number[]) => number[] | NDArray, aboutPoint?: readonly number[], aboutEdge?: readonly number[]): this {
-    let about_point: readonly number[] | undefined = aboutPoint;
-    const about_edge: readonly number[] | undefined = aboutEdge;
-    if (about_point === undefined && about_edge === undefined) {
-      about_point = ORIGIN;
+  stretch_about_point(factor: number, dim: number, point: readonly number[] | NDArray): this {
+    return this.stretch(factor, dim, point);
+  }
+
+  apply_function(func: (point: number[]) => number[] | NDArray, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    let resolved_point: readonly number[] | NDArray | undefined = about_point ?? undefined;
+    const resolved_edge: readonly number[] | NDArray | undefined = about_edge ?? undefined;
+    if (resolved_point === undefined && resolved_edge === undefined) {
+      resolved_point = ORIGIN;
     }
     const multi_mapping_function = (points: NDArray): NDArray => {
       return pointArray(
@@ -686,14 +885,44 @@ export class Mobject {
     };
     this.apply_points_function_about_point(
       multi_mapping_function,
-      about_point,
-      about_edge,
+      resolved_point,
+      resolved_edge,
     );
     return this;
   }
 
-  apply_points_function_about_point(func: (points: NDArray) => NDArray, aboutPoint?: readonly number[], aboutEdge?: readonly number[]): this {
-    const center = aboutPoint ? vector(aboutPoint, this.dim) : this.get_critical_point(aboutEdge ?? ORIGIN);
+  apply_matrix(matrix: number[][] | NDArray, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    // Default to applying matrix about the origin, not mobjects center
+    let resolved_point: readonly number[] | NDArray | undefined = about_point ?? undefined;
+    const resolved_edge: readonly number[] | NDArray | undefined = about_edge ?? undefined;
+    if (resolved_point === undefined && resolved_edge === undefined) {
+      resolved_point = ORIGIN;
+    }
+    const matrix_rows: number[][] = isNDArray(matrix)
+      ? pointRows(matrix, (matrix as NDArray).shape[1] ?? this.dim)
+      : (matrix as number[][]).map((row) => [...row].map(Number));
+    const full_matrix: number[][] = Array.from({ length: this.dim }, (_, row) =>
+      Array.from({ length: this.dim }, (_, col) => (row === col ? 1 : 0)),
+    );
+    for (let row = 0; row < Math.min(this.dim, matrix_rows.length); row += 1) {
+      for (let col = 0; col < Math.min(this.dim, matrix_rows[row]?.length ?? 0); col += 1) {
+        (full_matrix[row] as number[])[col] = matrix_rows[row]?.[col] ?? 0;
+      }
+    }
+    this.apply_points_function_about_point(
+      (points) => pointArray(
+        pointRows(points, this.dim).map((point) =>
+          full_matrix.map((_, row) => point.reduce((sum, value, col) => sum + value * ((full_matrix[row] as number[])[col] ?? 0), 0)),
+        ),
+      ),
+      resolved_point,
+      resolved_edge,
+    );
+    return this;
+  }
+
+  apply_points_function_about_point(func: (points: NDArray) => NDArray, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    const center = about_point !== undefined && about_point !== null ? vector(about_point, this.dim) : this.get_critical_point(about_edge ?? ORIGIN);
     for (const mobject of this.family_members_with_points()) {
       const centered = pointRows(mobject.points, this.dim).map((point) => subtractPoints(point, center, this.dim));
       const result = pointRows(func(pointArray(centered)), this.dim);

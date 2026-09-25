@@ -5,7 +5,8 @@ import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtract
 import { bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
-import { ORIGIN, OUT, UL } from "../../constants.js";
+import { ORIGIN, OUT, RendererType, UL } from "../../constants.js";
+import { config } from "../../_config/utils.js";
 
 export interface VMobjectOptions extends MobjectOptions {
   fill_color?: ParsableManimColor;
@@ -230,6 +231,70 @@ export class VMobject extends Mobject {
 
   rotateSheenDirection(angle: number, axis: number[] | readonly number[] | NDArray = [...OUT], family = true): this {
     return this.rotate_sheen_direction(angle, axis, family);
+  }
+
+  override scale(
+    scale_factor: number,
+    // NOTE: Python distinguishes these keyword-only args
+    // (scale_stroke vs about_point/about_edge). TS callers pass them
+    // positionally, so the second slot accepts either a scale_stroke flag
+    // or an about_point (mirroring Mobject.scale's positional convention).
+    scale_stroke_or_about_point: boolean | readonly number[] | NDArray | null = false,
+    about_point?: readonly number[] | NDArray | null,
+    about_edge?: readonly number[] | NDArray | null,
+  ): this {
+    let scale_stroke = false;
+    let resolved_about_point = about_point;
+    let resolved_about_edge = about_edge;
+    if (typeof scale_stroke_or_about_point === "boolean") {
+      scale_stroke = scale_stroke_or_about_point;
+    } else if (scale_stroke_or_about_point !== undefined && scale_stroke_or_about_point !== null) {
+      resolved_about_point = scale_stroke_or_about_point;
+    }
+    if (scale_stroke) {
+      for (const mob of this.get_family()) {
+        if (mob instanceof VMobject) {
+          mob.set_stroke(
+            undefined,
+            Math.abs(scale_factor) * mob.get_stroke_width(),
+            undefined,
+            false,
+          );
+          mob.set_background_stroke({
+            width: Math.abs(scale_factor) * mob.get_stroke_width(true),
+            family: false,
+          });
+        }
+      }
+    }
+    super.scale(scale_factor, resolved_about_point ?? undefined, resolved_about_edge ?? undefined);
+    return this;
+  }
+
+  override rotate(
+    angle: number,
+    axis: readonly number[] | NDArray = [...OUT],
+    about_point?: readonly number[] | NDArray | null,
+    about_edge?: readonly number[] | NDArray | null,
+  ): this {
+    this.rotate_sheen_direction(angle, axis);
+    super.rotate(angle, axis, about_point ?? undefined, about_edge ?? undefined);
+    return this;
+  }
+
+  override apply_function(
+    function_: (point: number[]) => number[] | NDArray,
+    about_point?: readonly number[] | NDArray | null,
+    about_edge?: readonly number[] | NDArray | null,
+  ): this {
+    const factor = this.pre_function_handle_to_anchor_scale_factor;
+    this.scale_handle_to_anchor_distances(factor);
+    super.apply_function(function_);
+    this.scale_handle_to_anchor_distances(1.0 / factor);
+    if (this.make_smooth_after_applying_functions) {
+      this.make_smooth();
+    }
+    return this;
   }
 
   set_shade_in_3d(value = true, z_index_as_group = false): this {
@@ -1808,5 +1873,163 @@ export class CurvesAsSubmobjects extends VGroup {
       );
     }
     return submobjs_with_pts;
+  }
+}
+
+function interpClamped(x: number, xp: number[], fp: number[]): number {
+  if (xp.length === 0) return 0;
+  if (x <= (xp[0] ?? 0)) return fp[0] ?? 0;
+  const last = xp.length - 1;
+  if (x >= (xp[last] ?? 0)) return fp[last] ?? 0;
+  for (let index = 0; index < last; index += 1) {
+    const left = xp[index] ?? 0;
+    const right = xp[index + 1] ?? 0;
+    if (x >= left && x <= right) {
+      const t = right === left ? 0 : (x - left) / (right - left);
+      return (fp[index] ?? 0) * (1 - t) + (fp[index + 1] ?? 0) * t;
+    }
+  }
+  return fp[last] ?? 0;
+}
+
+export interface DashedVMobjectOptions extends VMobjectOptions {
+  num_dashes?: number;
+  dashed_ratio?: number;
+  dash_offset?: number;
+  equal_lengths?: boolean;
+}
+
+export class DashedVMobject extends VMobject {
+  dashed_ratio: number;
+  num_dashes: number;
+
+  constructor(
+    vmobject: VMobject,
+    num_dashes = 15,
+    dashed_ratio = 0.5,
+    dash_offset = 0,
+    color: ParsableManimColor = WHITE,
+    equal_lengths = true,
+    options: DashedVMobjectOptions = {},
+  ) {
+    const {
+      num_dashes: numDashesOption,
+      dashed_ratio: dashedRatioOption,
+      dash_offset: dashOffsetOption,
+      equal_lengths: equalLengthsOption,
+      ...rest
+    } = options;
+    super({ color, ...rest });
+    this.dashed_ratio = dashedRatioOption ?? dashed_ratio;
+    this.num_dashes = numDashesOption ?? num_dashes;
+    const resolved_offset = dashOffsetOption ?? dash_offset;
+    const resolved_equal_lengths = equalLengthsOption ?? equal_lengths;
+
+    // Work on a copy to avoid mutating the caller's mobject (e.g. removing tips).
+    const base_vmobject = vmobject;
+    const working = base_vmobject.copy() as VMobject;
+
+    // TipableVMobject instances (Arrow, Vector, etc.) carry tips as submobjects.
+    // When dashing such objects, each subcurve would otherwise include its own
+    // tip, leading to many overlapping arrowheads. Pop tips from the working
+    // copy and re-attach them only once after the dashes are created.
+    let tips: VMobject | null = null;
+    const maybe_pop_tips = (working as unknown as { pop_tips?: () => VGroup }).pop_tips;
+    if (typeof maybe_pop_tips === "function") {
+      const popped_tips = maybe_pop_tips.call(working);
+      if (popped_tips.submobjects.length > 0) {
+        tips = popped_tips;
+      }
+    }
+
+    const r = this.dashed_ratio;
+    const n = this.num_dashes;
+    if (n > 0) {
+      // Assuming total length is 1
+      const dash_len = r / n;
+      let void_len: number;
+      if (working.is_closed()) {
+        void_len = (1 - r) / n;
+      } else {
+        void_len = n === 1 ? 1 - r : (1 - r) / (n - 1);
+      }
+
+      const period = dash_len + void_len;
+      const phase_shift = (resolved_offset % 1) * period;
+
+      let pattern_len: number;
+      if (working.is_closed()) {
+        // closed curves have equal amount of dashes and voids
+        pattern_len = 1;
+      } else {
+        // open curves start and end with a dash, so the whole dash pattern with the last void is longer
+        pattern_len = 1 + void_len;
+      }
+
+      const dash_starts = Array.from({ length: n }, (_, i) => (((i * period + phase_shift) % pattern_len + pattern_len) % pattern_len));
+      const dash_ends = Array.from({ length: n }, (_, i) => (((i * period + dash_len + phase_shift) % pattern_len + pattern_len) % pattern_len));
+
+      // closed shapes can handle overflow at the 0-point
+      // open shapes need special treatment for it
+      if (!working.is_closed()) {
+        // due to phase shift being [0...1] range, always the last dash element needs attention for overflow
+        // if an entire dash moves out of the shape end:
+        if ((dash_ends[dash_ends.length - 1] ?? 0) > 1 && (dash_starts[dash_starts.length - 1] ?? 0) > 1) {
+          // remove the last element since it is out-of-bounds
+          dash_ends.pop();
+          dash_starts.pop();
+        } else if ((dash_ends[dash_ends.length - 1] ?? 0) < dash_len) {
+          // if it overflowed
+          if ((dash_starts[dash_starts.length - 1] ?? 0) < 1) {
+            // if the beginning of the piece is still in range
+            dash_starts.push(0);
+            dash_ends.push(dash_ends[dash_ends.length - 1] ?? 0);
+            dash_ends[dash_ends.length - 2] = 1;
+          } else {
+            dash_starts[dash_starts.length - 1] = 0;
+          }
+        } else if ((dash_starts[dash_starts.length - 1] ?? 0) > 1 - dash_len) {
+          dash_ends[dash_ends.length - 1] = 1;
+        }
+      }
+
+      if (resolved_equal_lengths) {
+        // calculate the entire length by adding up short line-pieces
+        let norms: number[] = [0];
+        for (let k = 0; k < working.get_num_curves(); k += 1) {
+          const pieces = ((nestedRows(working.get_nth_curve_length_pieces(k))[0] ?? []) as unknown[]).map(Number);
+          norms = [...norms, ...pieces];
+        }
+        // add up length-pieces in array form
+        const length_vals: number[] = [];
+        let running = 0;
+        for (const value of norms) {
+          running += value;
+          length_vals.push(running);
+        }
+        const ref_points = linspace(0, 1, length_vals.length);
+        const curve_length = length_vals[length_vals.length - 1] ?? 0;
+        this.add(
+          ...dash_starts.map((start, i) => working.get_subcurve(
+            interpClamped((start ?? 0) * curve_length, length_vals, ref_points),
+            interpClamped((dash_ends[i] ?? 0) * curve_length, length_vals, ref_points),
+          )),
+        );
+      } else {
+        this.add(
+          ...dash_starts.map((start, i) => working.get_subcurve(start ?? 0, dash_ends[i] ?? 0)),
+        );
+      }
+    }
+    // Family is already taken care of by get_subcurve implementation
+    if (config.renderer === RendererType.OPENGL) {
+      this.match_style(base_vmobject, false);
+    } else {
+      this.match_style(base_vmobject, false);
+    }
+
+    if (tips !== null) {
+      this.add(...tips.submobjects);
+    }
   }
 }

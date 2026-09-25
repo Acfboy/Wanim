@@ -1,5 +1,5 @@
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
-import { isNDArray, pointRows } from "../../utils/arrays.js";
+import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { regular_vertices } from "../../utils/space_ops.js";
 import { TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
 import { BLUE, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
@@ -168,6 +168,22 @@ function gcd(a: number, b: number): number {
   return x;
 }
 
+export interface RegularPolygonOptions extends RegularPolygramOptions {}
+
+export class RegularPolygon extends RegularPolygram {
+  constructor(n = 6, options: RegularPolygonOptions = {}) {
+    super(n, { density: 1, ...options });
+  }
+}
+
+export interface TriangleOptions extends RegularPolygonOptions {}
+
+export class Triangle extends RegularPolygon {
+  constructor(options: TriangleOptions = {}) {
+    super(3, options);
+  }
+}
+
 export interface RectangleOptions extends PolygramOptions {
   color?: ParsableManimColor;
   height?: number;
@@ -216,5 +232,26 @@ export class RoundedRectangle extends Rectangle {
     super(rest);
     this.corner_radius = corner_radius;
     this.round_corners(this.corner_radius);
+  }
+}
+
+export interface SquareOptions extends RectangleOptions {
+  side_length?: number;
+}
+
+export class Square extends Rectangle {
+  constructor(side_length = 2.0, options: SquareOptions = {}) {
+    const { side_length: sideLengthOption, ...rest } = options;
+    const resolved = sideLengthOption ?? side_length;
+    super({ height: resolved, width: resolved, ...rest });
+  }
+
+  get side_length(): number {
+    const vertices = this.get_vertices();
+    return norm(subtractPoints(vertices[0] ?? [0, 0, 0], vertices[1] ?? [0, 0, 0], 3));
+  }
+
+  set side_length(value: number) {
+    this.scale(value / this.side_length);
   }
 }

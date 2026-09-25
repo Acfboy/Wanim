@@ -1,10 +1,13 @@
 import { array, type NDArray } from "numpy-ts";
-import { isNDArray, linspace, pointRows } from "../../utils/arrays.js";
-import { LEFT, RIGHT } from "../../constants.js";
+import { isNDArray, linspace, norm, pointRows } from "../../utils/arrays.js";
+import { IN, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, X_AXIS, Y_AXIS, Z_AXIS } from "../../constants.js";
+import { config } from "../../_config/utils.js";
+import { RendererType } from "../../constants.js";
 import { normalize } from "../../utils/space_ops.js";
 import { BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
-import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { VGroup, VectorizedPoint, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { Circle } from "../geometry/arc.js";
 
 export class ThreeDVMobject extends VMobject {
   u_index!: number;
@@ -218,36 +221,281 @@ export class Sphere extends Surface {
   }
 }
 
-export class Cone {
-  theta: number;
+function conePoint(u: number, v: number, theta: number): SurfacePoint {
+  const r = u;
+  const phi = v;
+  return point3([
+    r * Math.sin(theta) * Math.cos(phi),
+    r * Math.sin(theta) * Math.sin(phi),
+    r * Math.cos(theta),
+  ]);
+}
 
-  constructor(theta = 0.5) {
+export interface ConeOptions {
+  resolution?: number | [number, number];
+  fill_color?: ParsableManimColor;
+  fill_opacity?: number;
+  stroke_color?: ParsableManimColor;
+  stroke_width?: number;
+  should_make_jagged?: boolean;
+  surface_piece_config?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export class Cone extends Surface {
+  direction: number[];
+  theta: number;
+  new_height: number;
+  base_circle!: Circle;
+  start_point!: VectorizedPoint;
+  end_point!: VectorizedPoint;
+  protected _current_theta = 0;
+  protected _current_phi = 0;
+
+  constructor(
+    base_radius = 1,
+    height = 1,
+    direction: readonly number[] | NDArray = [...Z_AXIS],
+    show_base = false,
+    v_range: [number, number] = [0, TAU],
+    u_min = 0,
+    checkerboard_colors: Iterable<ParsableManimColor> | false = false,
+    options: ConeOptions = {},
+  ) {
+    // NOTE: Python assigns direction/theta before super().__init__() so the
+    // bound self.func sees them. TS requires super() first; the closure
+    // below captures the locals instead (identical values).
+    const theta = PI - Math.atan(base_radius / height);
+    const u_range: [number, number] = [u_min, Math.sqrt(base_radius ** 2 + height ** 2)];
+    super(
+      (u: number, v: number) => conePoint(u, v, theta),
+      u_range,
+      v_range,
+      options.resolution ?? 32,
+      options.surface_piece_config ?? {},
+      options.fill_color ?? BLUE_D,
+      options.fill_opacity ?? 1.0,
+      checkerboard_colors,
+      options.stroke_color ?? LIGHT_GREY,
+      options.stroke_width ?? 0.5,
+      options.should_make_jagged ?? false,
+    );
+    this.direction = [...(pointRows(direction, 3)[0] ?? [0, 0, 1])];
     this.theta = theta;
+    // used for rotations
+    this.new_height = height;
+    this._current_theta = 0;
+    this._current_phi = 0;
+    this.base_circle = new Circle(base_radius, {
+      color: this.fill_color,
+      fill_opacity: this.fill_opacity,
+      stroke_width: 0,
+    });
+    this.base_circle.shift([0, 0, -height]);
+    this._set_start_and_end_attributes(direction);
+    if (show_base) {
+      this.add(this.base_circle);
+    }
+    this._rotate_to_direction();
   }
 
-  func(u: number, v: number): SurfacePoint {
-    const r = u;
-    const phi = v;
-    return point3([
-      r * Math.sin(this.theta) * Math.cos(phi),
-      r * Math.sin(this.theta) * Math.sin(phi),
-      r * Math.cos(this.theta),
-    ]);
+  override func(u: number, v: number): SurfacePoint | number[] {
+    return conePoint(u, v, this.theta);
+  }
+
+  get_start(): number[] {
+    return this.start_point.get_center();
+  }
+
+  get_end(): number[] {
+    return this.end_point.get_center();
+  }
+
+  _rotate_to_direction(): void {
+    const [x = 0, y = 0, z = 0] = pointRows(this.direction, 3)[0] ?? [0, 0, 0];
+
+    const r = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
+    const theta = r > 0 ? Math.acos(z / r) : 0;
+
+    let phi: number;
+    if (x === 0) {
+      if (y === 0) {
+        // along the z axis
+        phi = 0;
+      } else {
+        phi = Math.atan(Infinity);
+        if (y < 0) {
+          phi += PI;
+        }
+      }
+    } else {
+      phi = Math.atan(y / x);
+    }
+    if (x < 0) {
+      phi += PI;
+    }
+
+    // Undo old rotation (in reverse order)
+    this.rotate(-this._current_phi, [...Z_AXIS], ORIGIN);
+    this.rotate(-this._current_theta, [...Y_AXIS], [0, 0, 0]);
+
+    // Do new rotation
+    this.rotate(theta, [...Y_AXIS], [0, 0, 0]);
+    this.rotate(phi, [...Z_AXIS], [0, 0, 0]);
+
+    // Store values
+    this._current_theta = theta;
+    this._current_phi = phi;
+  }
+
+  set_direction(direction: readonly number[] | NDArray): this {
+    this.direction = [...(pointRows(direction, 3)[0] ?? [0, 0, 1])];
+    this._rotate_to_direction();
+    return this;
+  }
+
+  _set_start_and_end_attributes(direction: readonly number[] | NDArray): void {
+    const direction_row = pointRows(direction, 3)[0] ?? [0, 0, 1];
+    const scale = norm(direction_row);
+    const normalized_direction = direction_row.map((value) => value * scale);
+
+    const start = this.base_circle.get_center();
+    const end = start.map((value, index) => value + (normalized_direction[index] ?? 0) * this.new_height);
+    this.start_point = new VectorizedPoint(start);
+    this.end_point = new VectorizedPoint(end);
+    this.add(this.start_point, this.end_point);
   }
 }
 
-export class Cylinder {
-  radius: number;
+function cylinderPoint(u: number, v: number, radius: number): SurfacePoint {
+  const height = u;
+  const phi = v;
+  const r = radius;
+  return point3([r * Math.cos(phi), r * Math.sin(phi), height]);
+}
 
-  constructor(radius = 1) {
+export interface CylinderOptions extends ConeOptions {}
+
+export class Cylinder extends Surface {
+  direction!: readonly number[] | NDArray;
+  radius: number;
+  protected _height: number;
+  base_top!: Circle;
+  base_bottom!: Circle;
+  protected _current_theta = 0;
+  protected _current_phi = 0;
+
+  constructor(
+    radius = 1,
+    height = 2,
+    direction: readonly number[] | NDArray = [...Z_AXIS],
+    v_range: [number, number] = [0, TAU],
+    show_ends = true,
+    resolution: number | [number, number] = [24, 24],
+    options: CylinderOptions = {},
+  ) {
+    // NOTE: same super()-first constraint as Cone (see above); the closure
+    // captures the radius/height params.
+    super(
+      (u: number, v: number) => cylinderPoint(u, v, radius),
+      [-height / 2, height / 2],
+      v_range,
+      resolution,
+      options.surface_piece_config ?? {},
+      options.fill_color ?? BLUE_D,
+      options.fill_opacity ?? 1.0,
+      false,
+      options.stroke_color ?? LIGHT_GREY,
+      options.stroke_width ?? 0.5,
+      options.should_make_jagged ?? false,
+    );
+    this._height = height;
     this.radius = radius;
+    if (show_ends) {
+      this.add_bases();
+    }
+    this._current_phi = 0;
+    this._current_theta = 0;
+    this.set_direction(direction);
   }
 
-  func(u: number, v: number): SurfacePoint {
-    const height = u;
-    const phi = v;
-    const r = this.radius;
-    return point3([r * Math.cos(phi), r * Math.sin(phi), height]);
+  override func(u: number, v: number): SurfacePoint | number[] {
+    return cylinderPoint(u, v, this.radius);
+  }
+
+  add_bases(): this {
+    let color: ParsableManimColor;
+    let opacity: number;
+    if (config.renderer === RendererType.OPENGL) {
+      color = this.color;
+      opacity = this.fill_opacity;
+    } else {
+      color = this.fill_color;
+      opacity = this.fill_opacity;
+    }
+
+    this.base_top = new Circle(this.radius, {
+      color,
+      fill_opacity: opacity,
+      shade_in_3d: true,
+      stroke_width: 0,
+    });
+    this.base_top.shift([0, 0, -(this.u_range[1] ?? 0)]);
+    this.base_bottom = new Circle(this.radius, {
+      color,
+      fill_opacity: opacity,
+      shade_in_3d: true,
+      stroke_width: 0,
+    });
+    this.base_bottom.shift([0, 0, -(this.u_range[0] ?? 0)]);
+    this.add(this.base_top, this.base_bottom);
+    return this;
+  }
+
+  _rotate_to_direction(): void {
+    const [x = 0, y = 0, z = 0] = pointRows(this.direction, 3)[0] ?? [0, 0, 0];
+
+    const r = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
+    const theta = r > 0 ? Math.acos(z / r) : 0;
+
+    let phi: number;
+    if (x === 0) {
+      if (y === 0) {
+        // along the z axis
+        phi = 0;
+      } else {
+        // along the x axis
+        phi = Math.atan(Infinity);
+        if (y < 0) {
+          phi += PI;
+        }
+      }
+    } else {
+      phi = Math.atan(y / x);
+    }
+    if (x < 0) {
+      phi += PI;
+    }
+
+    // undo old rotation (in reverse direction)
+    this.rotate(-this._current_phi, [...Z_AXIS], [0, 0, 0]);
+    this.rotate(-this._current_theta, [...Y_AXIS], [0, 0, 0]);
+
+    // do new rotation
+    this.rotate(theta, [...Y_AXIS], [0, 0, 0]);
+    this.rotate(phi, [...Z_AXIS], [0, 0, 0]);
+
+    // store new values
+    this._current_theta = theta;
+    this._current_phi = phi;
+  }
+
+  set_direction(direction: readonly number[] | NDArray): this {
+    // if get_norm(direction) is get_norm(self.direction):
+    //     pass
+    this.direction = direction;
+    this._rotate_to_direction();
+    return this;
   }
 }
 

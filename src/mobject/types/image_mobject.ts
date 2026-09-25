@@ -1,5 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
-import { isNDArray, numeric, pointRows } from "../../utils/arrays.js";
+import { DOWN, LEFT, RIGHT, UP } from "../../constants.js";
+import { config } from "../../_config/utils.js";
+import { addPoints, isNDArray, numeric, pointRows } from "../../utils/arrays.js";
 import { ManimColor, YELLOW_C, color_to_int_rgb, type ParsableManimColor } from "../../utils/color/core.js";
 import { change_to_rgba_array, get_full_raster_image_path } from "../../utils/images.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
@@ -55,8 +57,7 @@ export class AbstractImageMobject extends Mobject {
     throw error;
   }
 
-  set_resampling_algorithm(resampling_algorithm: number): this {
-    if (!Object.values(RESAMPLING_ALGORITHMS).includes(resampling_algorithm)) {
+  set_resampling_algorithm(resampling_algorithm: number): this {    if (!Object.values(RESAMPLING_ALGORITHMS).includes(resampling_algorithm)) {
       const error = new Error(
         "resampling_algorithm has to be an int, one of the values defined in " +
           "RESAMPLING_ALGORITHMS or a Pillow resampling filter constant. " +
@@ -67,6 +68,35 @@ export class AbstractImageMobject extends Mobject {
       throw error;
     }
     this.resampling_algorithm = resampling_algorithm;
+    return this;
+  }
+
+  reset_points(): this {
+    // NOTE: the base Mobject constructor calls reset_points() before this
+    // class assigns pixel_array (TS requires super() first, whereas Python
+    // assigns it beforehand). Treat that early call as a plain point reset;
+    // ImageMobject's constructor re-runs reset_points() once ready.
+    if (!("pixel_array" in this) || (this as unknown as { pixel_array?: unknown }).pixel_array === undefined) {
+      return super.reset_points();
+    }
+    this.points = array([
+      addPoints([...UP], [...LEFT], this.dim),
+      addPoints([...UP], [...RIGHT], this.dim),
+      addPoints([...DOWN], [...LEFT], this.dim),
+      addPoints([...DOWN], [...RIGHT], this.dim),
+    ]) as NDArray;
+    this.center();
+    const shape = this.get_pixel_array().shape;
+    const h = shape[0] ?? 0;
+    const w = shape[1] ?? 0;
+    let height: number;
+    if (this.scale_to_resolution) {
+      height = (h / this.scale_to_resolution) * Number(config.frame_height);
+    } else {
+      height = 3; // this is the case for ImageMobjectFromCamera
+    }
+    this.stretch_to_fit_height(height);
+    this.stretch_to_fit_width(height * (w / h));
     return this;
   }
 }
@@ -163,6 +193,10 @@ export class ImageMobject extends AbstractImageMobject {
     this.pixel_array = converted;
     this.orig_alpha_pixel_array = alphaChannel(this.pixel_array);
     if (opacity !== 1) this.set_opacity(opacity);
+    // NOTE: the base Mobject constructor already called reset_points(),
+    // but pixel_array was not assigned yet (see reset_points guard above).
+    // Regenerate now that geometry inputs are available.
+    this.reset_points();
   }
 
   get_pixel_array(): NDArray {

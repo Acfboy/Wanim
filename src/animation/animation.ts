@@ -17,6 +17,7 @@ export interface AnimationOptions {
   suspend_mobject_updating?: boolean;
   introducer?: boolean;
   _on_finish?: (scene: any) => void;
+  use_override?: boolean;
   [key: string]: unknown;
 }
 
@@ -60,7 +61,7 @@ export class Animation {
     this.lag_ratio = actualOptions.lag_ratio ?? DEFAULT_ANIMATION_LAG_RATIO;
     this.on_finish = actualOptions._on_finish ?? (() => undefined);
     for (const [key, value] of Object.entries(actualOptions)) {
-      if (!["mobject", "run_time", "lag_ratio", "rate_func", "reverse_rate_function", "name", "remover", "introducer", "suspend_mobject_updating", "_on_finish"].includes(key)) (this as unknown as Record<string, unknown>)[key] = value;
+      if (!["mobject", "run_time", "lag_ratio", "rate_func", "reverse_rate_function", "name", "remover", "introducer", "suspend_mobject_updating", "_on_finish", "use_override"].includes(key)) (this as unknown as Record<string, unknown>)[key] = value;
     }
   }
 

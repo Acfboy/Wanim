@@ -117,11 +117,8 @@ describe("LogBase.inverse_function", () => {
 describe("Cone.func / Cylinder.func / Torus.func", () => {
   // Python Cone(base_radius=0.5, height=1): theta = pi - atan(0.5);
   //   func(1.0, 0.0) == [0.4472135954999581, 0.0, -0.8944271909999159].
-  // NOTE: the TS Cone stores theta directly (constructor differs from Python's
-  // base_radius/height form, which is out of this batch); func's formula is identical.
   it("Cone.func matches Python given the same theta", () => {
-    const theta = Math.PI - Math.atan(0.5 / 1);
-    expectClose(new Cone(theta).func(1.0, 0.0), [0.4472135954999581, 0.0, -0.8944271909999159]);
+    expectClose(new Cone(0.5, 1).func(1.0, 0.0), [0.4472135954999581, 0.0, -0.8944271909999159]);
   });
   it("Cylinder.func matches Python", () => {
     // Python Cylinder(radius=2).func(1.5, pi/2) == [~0, 2.0, 1.5].

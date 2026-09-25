@@ -1,7 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
 import { DEFAULT_ARROW_TIP_LENGTH } from "../../constants.js";
-import { isNDArray, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
 import { normalize } from "../../utils/space_ops.js";
 import { VGroup } from "../types/vectorized_mobject.js";
@@ -167,5 +167,19 @@ export class NumberLine extends VGroup {
 
   pointToNumber(point: number[] | number[][] | NDArray): number | NDArray {
     return this.point_to_number(point);
+  }
+
+  p2n(point: number[] | number[][] | NDArray): number | NDArray {
+    return this.point_to_number(point);
+  }
+
+  get_unit_size(): number {
+    // NOTE: Python calls self.get_length() (Line.get_length); this port's
+    // NumberLine extends VGroup (not Line), so the length is computed
+    // inline from the endpoints instead.
+    const [start, end] = this.get_start_and_end();
+    const length = norm(subtractPoints(end, start, this.dim));
+    const val: number = length / ((this.x_range[1] ?? 0) - (this.x_range[0] ?? 0));
+    return val;
   }
 }

@@ -1,8 +1,9 @@
 import { array, type NDArray } from "numpy-ts";
-import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, ORIGIN, OUT, RIGHT, TAU, UP } from "../../constants.js";
-import { linspace, isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, ORIGIN, OUT, PI, RIGHT, TAU, UP } from "../../constants.js";
+import { linspace, isNDArray, norm, pointAt, pointRows, subtractPoints } from "../../utils/arrays.js";
 import {
   angle_of_vector,
+  cartesian_to_spherical,
   line_intersection,
   perpendicular_bisector,
   rotate_vector,
@@ -10,6 +11,25 @@ import {
 import { BLUE, RED, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import type { Mobject } from "../mobject.js";
+import type { ArrowTip } from "./tips.js";
+
+/** Constructor type for arrow tip classes (first two params follow the
+ * Python convention: fill_opacity, stroke_width; the rest via options). */
+export type TipConstructor = new (
+  fill_opacity?: number,
+  stroke_width?: number,
+  options?: Record<string, unknown>,
+) => ArrowTip;
+
+let default_tip_shape: TipConstructor | null = null;
+
+/** Registers the default tip shape used by get_unpositioned_tip when no
+ * explicit tip_shape is given. Called by the tips module on load (kept as
+ * a registry rather than a static import to avoid a module cycle:
+ * tips.js imports Circle from this module). */
+export function set_default_tip_shape(ctor: TipConstructor): void {
+  default_tip_shape = ctor;
+}
 
 export interface TipableVMobjectOptions extends VMobjectOptions {
   tip_length?: number;
@@ -21,6 +41,9 @@ export class TipableVMobject extends VMobject {
   tip_length: number;
   normal_vector: readonly number[] | NDArray;
   tip_style: Record<string, unknown>;
+  tip?: ArrowTip;
+  start_tip?: ArrowTip;
+  _init_positioning_axis?: number[];
 
   constructor(options: TipableVMobjectOptions = {}) {
     const {
@@ -35,8 +58,194 @@ export class TipableVMobject extends VMobject {
     this.tip_style = tip_style ?? {};
   }
 
+  add_tip(
+    tip?: ArrowTip | null,
+    tip_shape?: TipConstructor | null,
+    tip_length?: number | null,
+    tip_width?: number | null,
+    at_start = false,
+  ): this {
+    let resolved = tip ?? null;
+    if (resolved === null || resolved === undefined) {
+      resolved = this.create_tip(tip_shape ?? null, tip_length ?? null, tip_width ?? null, at_start);
+    } else {
+      this.position_tip(resolved, at_start);
+    }
+    this.reset_endpoints_based_on_tip(resolved, at_start);
+    this.assign_tip_attr(resolved, at_start);
+    this.add(resolved);
+    return this;
+  }
+
+  create_tip(
+    tip_shape?: TipConstructor | null,
+    tip_length?: number | null,
+    tip_width?: number | null,
+    at_start = false,
+  ): ArrowTip {
+    const tip = this.get_unpositioned_tip(tip_shape ?? null, tip_length ?? null, tip_width ?? null);
+    this.position_tip(tip, at_start);
+    return tip;
+  }
+
+  get_unpositioned_tip(
+    tip_shape?: TipConstructor | null,
+    tip_length?: number | null,
+    tip_width?: number | null,
+  ): ArrowTip {
+    let shape = tip_shape ?? null;
+    if (shape === null || shape === undefined) {
+      if (default_tip_shape === null) {
+        throw new Error("TODO: default tip shape (ArrowTriangleFilledTip) requires importing the geometry/tips module, not ported yet in this context");
+      }
+      shape = default_tip_shape;
+    }
+    const style: Record<string, unknown> = {};
+    // NOTE: mirrors Python's special case: ArrowTriangleFilledTip gets a
+    // width derived from the default tip length. The class-name check
+    // stands in for Python's `tip_shape is ArrowTriangleFilledTip`.
+    if (shape.name === "ArrowTriangleFilledTip") {
+      style["width"] = tip_width ?? this.get_default_tip_length();
+    }
+    const resolved_length = tip_length ?? this.get_default_tip_length();
+    const color = this.get_color();
+    style["fill_color"] = color;
+    style["stroke_color"] = color;
+    Object.assign(style, this.tip_style);
+    const tip = new shape(undefined, undefined, {
+      length: resolved_length,
+      ...style,
+    });
+    return tip;
+  }
+
+  position_tip(tip: ArrowTip, at_start = false): ArrowTip {
+    // Last two control points, defining both the end, and the tangency direction
+    let anchor: number[];
+    let handle: number[];
+    if (at_start) {
+      anchor = this.get_start();
+      handle = this.get_first_handle();
+    } else {
+      handle = this.get_last_handle();
+      anchor = this.get_end();
+    }
+    const angles = cartesian_to_spherical(subtractPoints(handle, anchor, this.dim));
+    // Rotates the tip along the azimuthal
+    tip.rotate((angles[1] ?? 0) - PI - tip.tip_angle);
+    if (!("_init_positioning_axis" in this) || this._init_positioning_axis === undefined) {
+      // Obtains the perpendicular of the tip
+      const axis = [
+        Math.sin(angles[1] ?? 0),
+        -Math.cos(angles[1] ?? 0),
+        0,
+      ];
+      // Rotates the tip along the vertical wrt the axis
+      tip.rotate(-(angles[2] ?? 0) + PI / 2, axis);
+      this._init_positioning_axis = axis;
+    }
+    const tip_point = pointRows(tip.tip_point, this.dim)[0] ?? [0, 0, 0];
+    tip.shift(subtractPoints(anchor, tip_point, this.dim));
+    return tip;
+  }
+
+  reset_endpoints_based_on_tip(tip: ArrowTip, at_start: boolean): this {
+    if (this.get_length() === 0) {
+      // Zero length, put_start_and_end_on wouldn't work
+      return this;
+    }
+    if (at_start) {
+      this.put_start_and_end_on(pointRows(tip.base, this.dim)[0] ?? [0, 0, 0], this.get_end());
+    } else {
+      this.put_start_and_end_on(this.get_start(), pointRows(tip.base, this.dim)[0] ?? [0, 0, 0]);
+    }
+    return this;
+  }
+
+  assign_tip_attr(tip: ArrowTip, at_start: boolean): this {
+    if (at_start) {
+      this.start_tip = tip;
+    } else {
+      this.tip = tip;
+    }
+    return this;
+  }
+
+  has_tip(): boolean {
+    return this.tip !== undefined && this.submobjects.includes(this.tip);
+  }
+
+  has_start_tip(): boolean {
+    return this.start_tip !== undefined && this.submobjects.includes(this.start_tip);
+  }
+
+  pop_tips(): import("../mobject.js").Group {
+    const [start, end] = this.get_start_and_end();
+    const GroupClass = this.get_group_class();
+    const result = new GroupClass();
+    if (this.has_tip()) {
+      result.add(this.tip as ArrowTip);
+      this.remove(this.tip as ArrowTip);
+    }
+    if (this.has_start_tip()) {
+      result.add(this.start_tip as ArrowTip);
+      this.remove(this.start_tip as ArrowTip);
+    }
+    if (result.submobjects.length > 0) {
+      this.put_start_and_end_on(start, end);
+    }
+    return result;
+  }
+
+  get_tips(): import("../mobject.js").Group {
+    const GroupClass = this.get_group_class();
+    const result = new GroupClass();
+    if (this.tip !== undefined) {
+      result.add(this.tip);
+    }
+    if (this.start_tip !== undefined) {
+      result.add(this.start_tip);
+    }
+    return result;
+  }
+
+  get_tip(): VMobject {
+    const tips = this.get_tips();
+    if (tips.__len__() === 0) {
+      throw new Error("tip not found");
+    } else {
+      const tip: VMobject = tips.submobjects[0] as VMobject;
+      return tip;
+    }
+  }
+
   get_default_tip_length(): number {
     return this.tip_length;
+  }
+
+  get_first_handle(): number[] {
+    return pointAt(this.points, 1, this.dim);
+  }
+
+  get_last_handle(): number[] {
+    const all = pointRows(this.points, this.dim);
+    return [...(all[all.length - 2] ?? [0, 0, 0])];
+  }
+
+  override get_end(): number[] {
+    if (this.has_tip()) {
+      return (this.tip as ArrowTip).get_start();
+    } else {
+      return super.get_end();
+    }
+  }
+
+  override get_start(): number[] {
+    if (this.has_start_tip()) {
+      return (this.start_tip as ArrowTip).get_start();
+    } else {
+      return super.get_start();
+    }
   }
 
   get_length(): number {
@@ -409,7 +618,6 @@ export interface AnnulusOptions extends CircleOptions {
   stroke_width?: number;
   mark_paths_closed?: boolean;
 }
-
 export class Annulus extends Circle {
   inner_radius: number;
   outer_radius: number;
@@ -463,5 +671,19 @@ export class Annulus extends Circle {
   override init_points(): this {
     this.generate_points();
     return this;
+  }
+}
+
+export interface EllipseOptions extends CircleOptions {
+  width?: number;
+  height?: number;
+}
+
+export class Ellipse extends Circle {
+  constructor(width = 2, height = 1, options: EllipseOptions = {}) {
+    const { width: widthOption, height: heightOption, ...rest } = options;
+    super(null, rest);
+    this.stretch_to_fit_width(widthOption ?? width);
+    this.stretch_to_fit_height(heightOption ?? height);
   }
 }
