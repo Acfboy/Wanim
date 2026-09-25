@@ -797,3 +797,15 @@ export function get_unit_normal(
   // no need to check if the norm of cp is 0.
   return cp.map((value) => value / cp_norm);
 }
+
+export function compass_directions(
+  n = 4,
+  start_vect: VectorInput = [...(RIGHT as unknown as number[])],
+): NDArray {
+  const angle = TAU / n;
+  const rows = Array.from({ length: n }, (_, k) => {
+    const rotated = rotate_vector(start_vect, k * angle);
+    return ((rotated as NDArray).toArray() as unknown[]).map(numeric);
+  });
+  return array(rows) as NDArray;
+}

@@ -1121,6 +1121,10 @@ export function rgb_to_color(rgb: number[] | readonly number[] | NDArray): Manim
   return ManimColor.from_rgb([...pointRows(rgb, 3)[0]]);
 }
 
+export function rgba_to_color(rgba: number[] | readonly number[] | NDArray): ManimColor {
+  return ManimColor.from_rgba(rgba as number[] | readonly number[] | ColorArray);
+}
+
 function uint8Trunc(value: number): number {
   // Mirrors numpy `.astype(int)` truncation toward zero used by
   // ManimColor.to_int_rgba_with_alpha: no modulo-256 wrapping.

@@ -181,6 +181,18 @@ export class VMobject extends Mobject {
     return [...this.sheen_direction];
   }
 
+  set_sheen_direction(direction: number[] | readonly number[] | NDArray, family = true): this {
+    const direction_copy = [...pointRows(direction, this.dim)[0] ?? []];
+    if (family) {
+      for (const submob of this.get_family()) {
+        (submob as VMobject).sheen_direction = [...direction_copy];
+      }
+    } else {
+      this.sheen_direction = [...direction_copy];
+    }
+    return this;
+  }
+
   getSheenDirection(): number[] {
     return this.get_sheen_direction();
   }

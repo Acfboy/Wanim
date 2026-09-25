@@ -43,6 +43,19 @@ export const BOLD = "BOLD";
 export const SHIFT_VALUE = 65505;
 export const CTRL_VALUE = 65507;
 
+// Messages (mirrors manim.constants message strings verbatim).
+export const SCENE_NOT_FOUND_MESSAGE = `
+   {} is not in the script
+`;
+export const CHOOSE_NUMBER_MESSAGE = `
+Choose number corresponding to desired scene/arguments.
+(Use comma separated list for multiple entries or use "*" to select all scenes.)
+Choice(s): `;
+export const INVALID_NUMBER_MESSAGE = "Invalid scene numbers have been specified. Aborting.";
+export const NO_SCENE_MESSAGE = `
+   There are no scenes inside that module
+`;
+
 export const DEFAULT_QUALITY = "high_quality";
 
 export interface QualityDict {

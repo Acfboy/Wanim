@@ -207,18 +207,20 @@ export class _Memoizer {
     this._keep_alive = new Map<number, unknown>();
   }
 
-  check_already_processed_decorator(is_method = false): (func: (obj: unknown) => unknown) => (obj: unknown) => unknown {
+  check_already_processed_decorator(is_method = false): (func: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown {
     const self = this;
-    return function layer(func: (obj: unknown) => unknown): (obj: unknown) => unknown {
+    return function layer(func: (...args: unknown[]) => unknown): (...args: unknown[]) => unknown {
       if (is_method) {
-        return function (obj: unknown): unknown {
+        return function (obj_self: unknown, obj: unknown): unknown {
           return self._handle_already_processed(obj, (value: unknown) =>
-            (func as unknown as (selfArg: unknown, objArg: unknown) => unknown)(self, value),
+            (func as unknown as (selfArg: unknown, objArg: unknown) => unknown)(obj_self, value),
           );
         };
       }
       return function (obj: unknown): unknown {
-        return self._handle_already_processed(obj, func);
+        return self._handle_already_processed(obj, (value: unknown) =>
+          (func as (...args: unknown[]) => unknown)(value),
+        );
       };
     };
   }

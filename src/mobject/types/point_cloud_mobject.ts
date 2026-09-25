@@ -3,9 +3,10 @@ import {
   DEFAULT_POINT_DENSITY_1D,
   DEFAULT_POINT_DENSITY_2D,
   DEFAULT_STROKE_WIDTH,
+  ORIGIN,
 } from "../../constants.js";
 import { interpolate } from "../../utils/bezier.js";
-import { ManimColor, color_to_rgba, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLACK, ManimColor, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { arange, isNDArray, pointRows } from "../../utils/arrays.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
@@ -26,13 +27,6 @@ function toRows(value: unknown, width: number): number[][] {
 function appendRows(current: NDArray, extra: number[][], width: number): NDArray {
   const base = pointRows(current, width);
   return array([...base, ...extra]) as NDArray;
-}
-
-export function rgba_to_color(rgba: number[] | readonly number[] | NDArray): ManimColor {
-  const values = Array.isArray(rgba)
-    ? [...rgba].map(Number)
-    : pointRows(rgba, 4)[0] ?? [0, 0, 0, 1];
-  return ManimColor.from_rgba(values);
 }
 
 export class PMobject extends Mobject {
@@ -176,5 +170,45 @@ export class Mobject2D extends PMobject {
     super(rest);
     this.density = density;
     this.epsilon = 1.0 / this.density;
+  }
+}
+
+export interface PointOptions extends PMobjectOptions {
+  location?: number[] | readonly number[] | NDArray;
+}
+
+export class Point extends PMobject {
+  location: number[] | readonly number[] | NDArray;
+
+  constructor(
+    location: number[] | readonly number[] | NDArray = [...ORIGIN],
+    color: ParsableManimColor = BLACK,
+    options: PointOptions = {},
+  ) {
+    // NOTE: Python sets self.location BEFORE super().__init__() so that the
+    // generate_points() call inside the base constructor already sees it. TS
+    // cannot assign fields before super(), so the location is forwarded
+    // through options (the Mobject constructor merges unknown keys onto the
+    // instance) and assigned again below to survive field initialization.
+    const { location: _dropped, ...rest } = options;
+    void _dropped;
+    super({ color, ...rest, location } as PMobjectOptions);
+    this.location = location;
+    this.init_points();
+  }
+
+  init_points(): this {
+    this.reset_points();
+    this.generate_points();
+    this.set_points(toRows(this.location, this.dim));
+    return this;
+  }
+
+  generate_points(): this {
+    // NOTE: runs once inside the base constructor before the location
+    // assignment above; fall back to ORIGIN there (reset by init_points()).
+    const loc = this.location ?? ORIGIN;
+    this.add_points(toRows(loc, this.dim));
+    return this;
   }
 }
