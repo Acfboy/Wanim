@@ -557,50 +557,52 @@ describe("Scene.next_section", () => {
 //   scene_selection_callback         -> config.scene_names=(value,); queue.put(Rerun("gui"))
 // ---------------------------------------------------------------------------
 describe("Scene interactive_embed / pygui nested callbacks", () => {
-  it("embedded_method queues MethodWithArgs(method, args, kwargs)", () => {
+  it("get_embedded_method returns a closure queueing MethodWithArgs(method, args, kwargs)", () => {
     const scene = new Scene();
-    const queue: Array<{ put: (a: unknown) => void }> = [{ put: (a: unknown) => scene.queue.push(a as never) }];
-    const method = scene.play;
-    const embedded_method = (...args: unknown[]) => {
-      queue[0]!.put(new MethodWithArgs(method as never, [...args], {}));
-    };
-    embedded_method();
+    const embedded_play = scene.get_embedded_method("play");
+    embedded_play();
     expect(scene.queue).toHaveLength(1);
-    expect(scene.queue[0]).toBeInstanceOf(MethodWithArgs);
+    const queued = scene.queue[0] as MethodWithArgs;
+    expect(queued).toBeInstanceOf(MethodWithArgs);
+    expect(queued.method).toBe(scene.play);
+    expect(queued.args).toEqual([]);
+    expect(queued.kwargs).toEqual({});
   });
-  it("embedded_rerun queues SceneInteractRerun('keyboard')", () => {
+  it("embedded_method forwards call args into MethodWithArgs", () => {
     const scene = new Scene();
-    const embedded_rerun = (..._args: unknown[]) => {
-      scene.queue.push(new SceneInteractRerun("keyboard"));
-    };
+    const embedded_wait = scene.get_embedded_method("wait");
+    embedded_wait(2);
+    const queued = scene.queue[0] as MethodWithArgs;
+    expect(queued.method).toBe(scene.wait);
+    expect(queued.args).toEqual([2]);
+  });
+  it("create_embedded_rerun queues SceneInteractRerun('keyboard') and exits the shell", () => {
+    const scene = new Scene();
+    let exited = 0;
+    const embedded_rerun = scene.create_embedded_rerun({ exiter: () => { exited += 1; } });
     embedded_rerun();
     expect(scene.queue).toHaveLength(1);
     expect((scene.queue[0] as SceneInteractRerun).sender).toBe("keyboard");
+    expect(exited).toBe(1);
   });
-  it("rerun_callback queues SceneInteractRerun('gui')", () => {
+  it("create_rerun_callback queues SceneInteractRerun('gui')", () => {
     const scene = new Scene();
-    const rerun_callback = (_sender: unknown, _data: unknown): void => {
-      scene.queue.push(new SceneInteractRerun("gui"));
-    };
-    rerun_callback(null, null);
+    scene.create_rerun_callback()(null, null);
     expect((scene.queue[0] as SceneInteractRerun).sender).toBe("gui");
   });
-  it("continue_callback queues SceneInteractContinue('gui')", () => {
+  it("create_continue_callback queues SceneInteractContinue('gui')", () => {
     const scene = new Scene();
-    const continue_callback = (_sender: unknown, _data: unknown): void => {
-      scene.queue.push(new SceneInteractContinue("gui"));
-    };
-    continue_callback(null, null);
+    scene.create_continue_callback()(null, null);
     expect((scene.queue[0] as SceneInteractContinue).sender).toBe("gui");
   });
-  it("scene_selection_callback sets scene_names and queues a gui rerun", () => {
+  it("create_scene_selection_callback sets scene_names and queues a gui rerun", () => {
     const scene = new Scene();
-    const scene_selection_callback = (sender: { get_value?: () => string } | string, _data: unknown): void => {
-      const selected = typeof sender === "string" ? sender : sender.get_value?.() ?? "";
-      (scene as unknown as { config_names: string[] }).config_names = [selected];
-      scene.queue.push(new SceneInteractRerun("gui"));
-    };
-    scene_selection_callback({ get_value: () => "MyScene" }, null);
+    scene.create_scene_selection_callback()({ get_value: () => "MyScene" }, null);
+    expect((scene.queue[0] as SceneInteractRerun).sender).toBe("gui");
+  });
+  it("create_scene_selection_callback accepts a plain string sender", () => {
+    const scene = new Scene();
+    scene.create_scene_selection_callback()("OtherScene", null);
     expect((scene.queue[0] as SceneInteractRerun).sender).toBe("gui");
   });
 });

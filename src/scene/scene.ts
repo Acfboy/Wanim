@@ -262,6 +262,77 @@ export class Scene {
     return true;
   }
 
+  /**
+   * Mirrors the nested `get_embedded_method(method_name)` factory inside
+   * `interactive_embed`: returns a closure pushing
+   * `MethodWithArgs(method, args, kwargs)` onto this scene's queue.
+   * Extracted as a method so the closure body is directly testable
+   * (it would otherwise be hidden inside `interactive_embed`, which
+   * requires an IPython/OpenGL session).
+   */
+  get_embedded_method(methodName: string): (...args: unknown[]) => void {
+    const method = (this as unknown as Record<string, (...args: unknown[]) => void>)[methodName];
+    const embedded_method = (...args: unknown[]): void => {
+      // NOTE: mirrors Python's MethodWithArgs(method, args, kwargs); the
+      // TS interactive shell has no **kwargs channel, so kwargs is {}.
+      this.queue.push(new MethodWithArgs(method, [...args], {}));
+    };
+    return embedded_method;
+  }
+
+  /**
+   * Mirrors the nested `embedded_rerun(*args, **kwargs)` inside
+   * `interactive_embed.ipython`: queues `SceneInteractRerun("keyboard")`
+   * and exits the embedded shell.
+   */
+  create_embedded_rerun(shell: { exiter: () => void }): (...args: unknown[]) => void {
+    const embedded_rerun = (..._args: unknown[]): void => {
+      this.queue.push(new SceneInteractRerun("keyboard"));
+      shell.exiter();
+    };
+    return embedded_rerun;
+  }
+
+  /**
+   * Mirrors the nested `rerun_callback(sender, data)` inside
+   * `_configure_pygui`: queues `SceneInteractRerun("gui")`.
+   */
+  create_rerun_callback(): (sender: unknown, data: unknown) => void {
+    const rerun_callback = (_sender: unknown, _data: unknown): void => {
+      this.queue.push(new SceneInteractRerun("gui"));
+    };
+    return rerun_callback;
+  }
+
+  /**
+   * Mirrors the nested `continue_callback(sender, data)` inside
+   * `_configure_pygui`: queues `SceneInteractContinue("gui")`.
+   */
+  create_continue_callback(): (sender: unknown, data: unknown) => void {
+    const continue_callback = (_sender: unknown, _data: unknown): void => {
+      this.queue.push(new SceneInteractContinue("gui"));
+    };
+    return continue_callback;
+  }
+
+  /**
+   * Mirrors the nested `scene_selection_callback(sender, data)` inside
+   * `_configure_pygui`: sets `config.scene_names` to the selected scene
+   * and queues `SceneInteractRerun("gui")`. Python reads the selection
+   * via `dpg.get_value(sender)`; the TS port accepts either a plain
+   * string or a `{ get_value() }` handle since DearPyGUI is unavailable.
+   */
+  create_scene_selection_callback(): (sender: { get_value?: () => string } | string, data: unknown) => void {
+    const scene_selection_callback = (sender: { get_value?: () => string } | string, _data: unknown): void => {
+      const selected = typeof sender === "string"
+        ? sender
+        : sender.get_value?.() ?? "";
+      config.scene_names = [selected];
+      this.queue.push(new SceneInteractRerun("gui"));
+    };
+    return scene_selection_callback;
+  }
+
   interactive_embed(): void {
     if (!this.check_interactive_embed_is_valid()) return;
     this.interactive_mode = true;
@@ -283,10 +354,7 @@ export class Scene {
       load_module_into_namespace({}, namespace);
       load_module_into_namespace({}, namespace);
 
-      const embedded_rerun = (..._args: unknown[]): void => {
-        this.queue.push(new SceneInteractRerun("keyboard"));
-        shell.exiter();
-      };
+      const embedded_rerun = this.create_embedded_rerun(shell);
       namespace["rerun"] = embedded_rerun;
 
       shell.call({ local_ns: namespace });
@@ -295,13 +363,7 @@ export class Scene {
     void ipython;
 
     const get_embedded_method = (methodName: string): ((...args: unknown[]) => void) => {
-      const method = (this as unknown as Record<string, (...args: unknown[]) => void>)[methodName];
-      const embedded_method = (...args: unknown[]): void => {
-        // NOTE: mirrors Python's MethodWithArgs(method, args, kwargs); the
-        // TS interactive shell has no **kwargs channel, so kwargs is {}.
-        this.queue.push(new MethodWithArgs(method, [...args], {}));
-      };
-      return embedded_method;
+      return this.get_embedded_method(methodName);
     };
     void get_embedded_method;
     console.warn("interactive_embed requires an IPython terminal session, which is not available in the TypeScript runtime.");
@@ -311,21 +373,11 @@ export class Scene {
     // NOTE: DearPyGUI has no TypeScript equivalent; only the queue/config
     // behavior of the GUI callbacks is ported. The window construction itself
     // is out of scope for the interpreter target.
-    const rerun_callback = (_sender: unknown, _data: unknown): void => {
-      this.queue.push(new SceneInteractRerun("gui"));
-    };
+    const rerun_callback = this.create_rerun_callback();
 
-    const continue_callback = (_sender: unknown, _data: unknown): void => {
-      this.queue.push(new SceneInteractContinue("gui"));
-    };
+    const continue_callback = this.create_continue_callback();
 
-    const scene_selection_callback = (sender: { get_value?: () => string } | string, _data: unknown): void => {
-      const selected = typeof sender === "string"
-        ? sender
-        : sender.get_value?.() ?? "";
-      config.scene_names = [selected];
-      this.queue.push(new SceneInteractRerun("gui"));
-    };
+    const scene_selection_callback = this.create_scene_selection_callback();
     void rerun_callback;
     void continue_callback;
     void scene_selection_callback;
