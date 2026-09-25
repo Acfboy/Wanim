@@ -42,8 +42,10 @@ export class VectorField extends VGroup {
   max_color_scheme_value: number;
   colors: ParsableManimColor[];
   rgbs: number[][];
-  pos_to_rgb: (position: number[] | NDArray) => number[];
-  pos_to_color: (position: number[] | NDArray) => ManimColor;
+  // NOTE: mirrors Python, where pos_to_rgb/pos_to_color only exist on
+  // multi-color fields (single-color fields have neither attribute).
+  pos_to_rgb?: (position: number[] | NDArray) => number[];
+  pos_to_color?: (position: number[] | NDArray) => ManimColor;
   submob_movement_updater: MobjectUpdater | null = null;
 
   constructor(func: VectorFunction, color: ParsableManimColor | VectorFieldOptions | null = {}, color_scheme?: ColorScheme | null, min_color_scheme_value = 0, max_color_scheme_value = 2, colors: ParsableManimColor[] = DEFAULT_SCALAR_FIELD_COLORS) {
@@ -59,7 +61,7 @@ export class VectorField extends VGroup {
       this.single_color = false;
       this.color_scheme = options.color_scheme ?? default_color_scheme;
       this.rgbs = this.colors.map((color) => pointRows(new ManimColor(color).toRgb(), 3)[0] ?? [0, 0, 0]);
-      this.pos_to_rgb = (position) => {
+      const pos_to_rgb = (position: number[] | NDArray): number[] => {
         const value = this.color_scheme(vectorOf(this.func(position)));
         const clipped = _clip(value, this.min_color_scheme_value, this.max_color_scheme_value);
         let alpha = (clipped - this.min_color_scheme_value) / (this.max_color_scheme_value - this.min_color_scheme_value);
@@ -69,14 +71,13 @@ export class VectorField extends VGroup {
         alpha %= 1;
         return interpolateRgb(first, second, alpha);
       };
-      this.pos_to_color = (position) => rgb_to_color(this.pos_to_rgb(position));
+      this.pos_to_rgb = pos_to_rgb;
+      this.pos_to_color = (position) => rgb_to_color(pos_to_rgb(position));
     } else {
       this.single_color = true;
       this.color_scheme = options.color_scheme ?? default_color_scheme;
       this.color = new ManimColor(options.color);
       this.rgbs = [];
-      this.pos_to_rgb = () => pointRows(this.color.toRgb(), 3)[0] ?? [0, 0, 0];
-      this.pos_to_color = () => this.color;
     }
   }
 

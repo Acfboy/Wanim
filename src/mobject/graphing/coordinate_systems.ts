@@ -61,6 +61,19 @@ function axisPosition(value: number, range: number[], length: number): number {
   return centered;
 }
 
+function axisValue(value: number, range: number[], length: number): number {
+  // Algebraic inverse of axisPosition above: undo the edge shift applied
+  // when the whole range is strictly positive/negative, then invert the
+  // linear map from [min, max] onto [-length/2, length/2].
+  const min = Number(range[0]);
+  const max = Number(range[1]);
+  let centered = Number(value);
+  if (min > 0) centered -= length / 2;
+  else if (max < 0) centered += length / 2;
+  const alpha = length === 0 ? 0 : (centered + length / 2) / length;
+  return min + alpha * (max - min);
+}
+
 function coordinateRows(value: number | number[] | NDArray): number[][] {
   if (isNDArray(value)) return pointRows(value, 3);
   if (Array.isArray(value)) {
@@ -83,6 +96,19 @@ function axisValues(value: number | number[] | NDArray): number[] {
 }
 
 export class NumberPlane extends CoordinateSystem {
+  point_to_coords(point: readonly number[]): number[] {
+    // Mirrors Axes.point_to_coords for the linear mapping implemented by
+    // coords_to_point above (Python resolves this through NumberLine axes;
+    // the observable result is the algebraic inverse of the linear map).
+    const values = [...point].map(Number);
+    const xLength = this.x_length ?? Math.round(config.frame_width) - 2;
+    const yLength = this.y_length ?? Math.round(config.frame_height) - 2;
+    return [
+      axisValue(values[0] ?? 0, this.x_range, xLength),
+      axisValue(values[1] ?? 0, this.y_range, yLength),
+    ];
+  }
+
   coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
     if (coords.length === 0) return array([0, 0, 0]) as NDArray;
     const xLength = this.x_length ?? Math.round(config.frame_width) - 2;

@@ -334,19 +334,23 @@ export class VMobject extends Mobject {
   }
 
   set_points_as_corners(points: unknown): this {
+    // Mirrors Python set_points_as_corners via set_anchors_and_handles with
+    // _bezier_t_values: every segment contributes 4 points
+    // (anchor, handle@1/3, handle@2/3, anchor), so joint anchors are
+    // duplicated and n corners yield 4*(n-1) points.
     const corners = rows(points, this.dim);
     const result: number[][] = [];
     if (corners.length === 0) {
       this.points = array([]) as NDArray;
       return this;
     }
-    result.push(corners[0]);
     for (let index = 1; index < corners.length; index += 1) {
-      const start = corners[index - 1];
-      const end = corners[index];
+      const start = corners[index - 1] ?? new Array(this.dim).fill(0);
+      const end = corners[index] ?? [...start];
+      result.push([...start]);
       result.push(addPoints(start, scalePoint(subtractPoints(end, start, this.dim), 1 / 3, this.dim), this.dim));
       result.push(addPoints(start, scalePoint(subtractPoints(end, start, this.dim), 2 / 3, this.dim), this.dim));
-      result.push(end);
+      result.push([...end]);
     }
     this.points = asPoints(result, this.dim);
     return this;
