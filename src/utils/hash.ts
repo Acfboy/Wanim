@@ -142,13 +142,29 @@ function stringHash32(value: string): number {
 
 let nextObjectId = 1;
 const objectIds = new WeakMap<object, number>();
+const primitiveIds = new Map<unknown, number>();
 
-function identityOf(value: object): number {
-  let id = objectIds.get(value);
+function identityOf(value: unknown): number {
+  // NOTE: mirrors Python's id()/hash() membership keys. Objects and
+  // functions use identity (WeakMap); primitives that reach the memoizer
+  // (notably null, which Python memoizes by hash so repeats become "AP")
+  // are keyed by value via SameValueZero, matching hash() constancy
+  // (e.g. all Nones share one key, NaN equals NaN).
+  if (value !== null && (typeof value === "object" || typeof value === "function")) {
+    const target = value as object;
+    let id = objectIds.get(target);
+    if (id === undefined) {
+      id = nextObjectId;
+      nextObjectId += 1;
+      objectIds.set(target, id);
+    }
+    return id;
+  }
+  let id = primitiveIds.get(value);
   if (id === undefined) {
     id = nextObjectId;
     nextObjectId += 1;
-    objectIds.set(value, id);
+    primitiveIds.set(value, id);
   }
   return id;
 }
@@ -218,16 +234,24 @@ export class _Memoizer {
 
   _handle_already_processed(obj: unknown, default_function: (value: unknown) => unknown): unknown {
     if (
-      (typeof obj === "number" || typeof obj === "string" || typeof obj === "boolean") &&
+      (typeof obj === "number" ||
+        typeof obj === "string" ||
+        typeof obj === "boolean" ||
+        typeof obj === "bigint") &&
       obj !== (_Memoizer.ALREADY_PROCESSED_PLACEHOLDER as unknown)
     ) {
       return obj;
     }
-    try {
-      return this._return(obj, hashOf, default_function);
-    } catch {
-      // Fall back to identity-based membership when hashing fails.
-    }
+    // NOTE: mirrors Python's `isinstance(obj, Hashable)` branch. In Python,
+    // list/dict/set/ndarray are unhashable and fall through to the id()-based
+    // branch, and default object hashing is id-based too, so identity covers
+    // every non-primitive uniformly. A JSON/hash-based key would wrongly
+    // collapse distinct-but-equal arrays (Python processes each list
+    // separately). Deviation: Python memoizes equal *tuples* by value, but
+    // JS cannot distinguish tuples from lists, so repeated equal tuples are
+    // processed twice instead of yielding "AP" (safe direction: missed
+    // dedups only bloat output, while false "AP"s would corrupt data).
+    // True (identity) cycles are still detected.
     return this._return(obj, (value: unknown) => identityOf(value as object), default_function);
   }
 

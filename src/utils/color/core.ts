@@ -282,6 +282,20 @@ export class ManimColor {
     rgba: number[] | readonly number[] | ColorArray,
   ): ManimColor {
     const ctor = this;
+    // NOTE: Python decides int-vs-float via `all(isinstance(x, float))`, so
+    // [0.5, 0.25, 1.0, 0.5] takes the float path. In JS, integral floats
+    // like 1.0 arrive as integers and the constructor would misroute such
+    // input to the int (1/255) path. Since a 4-component rgba with every
+    // value inside [0, 1] is overwhelmingly float data (int callers use the
+    // 0-255 range with some component > 1), route that case directly through
+    // the float path. Deviation: all-integer input within [0, 1] (e.g.
+    // [0, 0, 0, 1]) is treated as float, whereas Python treats it as int.
+    if (!isNDArray(rgba) && Array.isArray(rgba) && rgba.length === 4) {
+      const items = (rgba as readonly unknown[]).map(Number);
+      if (items.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) {
+        return ctor._from_internal(ManimColor._internal_from_rgba(items));
+      }
+    }
     return new ctor(rgba as unknown as ParsableManimColor);
   }
 
