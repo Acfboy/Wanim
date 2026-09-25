@@ -1180,7 +1180,10 @@ export function average_color(...colors: ParsableManimColor[]): ManimColor {
   const mean_rgb = [0, 1, 2].map(
     (channel) => rgbs.reduce((sum, rgb) => sum + (rgb[channel] ?? 0), 0) / rgbs.length,
   );
-  return rgb_to_color(mean_rgb);
+  // NOTE: Python averages float64 numpy arrays, so from_rgb takes the float
+  // path. A plain JS array would lose that dtype (integral floats like 0.0
+  // arrive as integers and route to the int 1/255 path), so wrap explicitly.
+  return rgb_to_color(array(mean_rgb));
 }
 
 export function random_color(): ManimColor {
@@ -1190,7 +1193,9 @@ export function random_color(): ManimColor {
 export function random_bright_color(): ManimColor {
   const curr_rgb = pointRows(color_to_rgb(random_color()), 3)[0] ?? [0, 0, 0];
   const new_rgb = curr_rgb.map((value) => 0.5 * (value + 1));
-  return rgb_to_color(new_rgb);
+  // NOTE: see average_color: Python's `0.5 * (rgb + ones(3))` is a float64
+  // numpy array, so wrap to keep from_rgb on the float path.
+  return rgb_to_color(array(new_rgb));
 }
 
 export function get_shaded_rgb(
