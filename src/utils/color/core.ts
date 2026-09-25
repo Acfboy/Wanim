@@ -2,7 +2,29 @@ import { array, NDArray } from "numpy-ts";
 import { isNDArray, nestedRows, pointRows } from "../arrays.js";
 
 export type ColorArray = NDArray<"float64">;
-export type ParsableManimColor = ManimColor | string | number | number[] | readonly number[] | NDArray;
+export type ParsableManimColor =
+  | ManimColor
+  | string
+  | number
+  | boolean
+  | bigint
+  | number[]
+  | readonly number[]
+  | NDArray
+  | { get_hex: () => string }
+  | { getHex: () => string };
+
+const re_hex = /((?<=#)|(?<=0x))[A-F0-9]{3,8}/i;
+
+function valueError(message: string): Error {
+  const error = new Error(message);
+  error.name = "ValueError";
+  return error;
+}
+
+function typeError(message: string): Error {
+  return new TypeError(message);
+}
 
 const NAMED_COLORS: Record<string, [number, number, number]> = {
   BLACK: [0, 0, 0],
@@ -129,55 +151,186 @@ export class ManimColor {
     if (value === null || value === undefined) {
       this.internal = array([0, 0, 0, alpha]) as ColorArray;
     } else if (value instanceof ManimColor) {
+      // NOTE: Python shares the underlying array reference here
+      // (self._internal_value = value._internal_value). We copy instead so
+      // that later in-place alpha writes cannot alias another instance.
       this.internal = value.internal.copy() as ColorArray;
-    } else if (typeof value === "number") {
-      const normalized = Math.trunc(value);
-      this.internal = array([
-        ((normalized >> 16) & 255) / 255,
-        ((normalized >> 8) & 255) / 255,
-        (normalized & 255) / 255,
-        alpha,
-      ]) as ColorArray;
+    } else if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
+      // NOTE: Python checks isinstance(value, int) which also matches bool.
+      this.internal = ManimColor._internal_from_integer(Number(value), alpha);
     } else if (typeof value === "string") {
-      const named = NAMED_COLORS[value.toUpperCase()];
-      if (named) this.internal = array([...named, alpha]) as ColorArray;
-      else this.internal = parseHex(value, alpha);
-    } else {
-      const values = valuesOf(value);
-      if (values.length !== 3 && values.length !== 4) {
-        throw new Error(`ManimColor only accepts lists/tuples/arrays of length 3 or 4, not ${values.length}`);
+      // Mirrors Python: first search for a hex payload after #/0x, else
+      // fall back to named-color lookup.
+      const found = value.match(re_hex);
+      if (found !== null) {
+        this.internal = ManimColor._internal_from_hex_string(found[0], alpha);
+      } else {
+        this.internal = ManimColor._internal_from_string(value, alpha);
       }
-      const allFloat = isNDArray(value) || values.every((item) => typeof item === "number" && !Number.isInteger(item));
-      const normalized = allFloat ? values : values.map((item) => item / 255);
-      this.internal = array([
-        normalized[0] ?? 0,
-        normalized[1] ?? 0,
-        normalized[2] ?? 0,
-        values.length === 4 ? normalized[3] : alpha,
-      ]) as ColorArray;
+    } else if (Array.isArray(value) || isNDArray(value)) {
+      const rawItems: unknown[] = isNDArray(value)
+        ? [...((value as NDArray).toArray() as unknown[]).map((item) => item)]
+        : [...(value as readonly unknown[])];
+      const length = rawItems.length;
+      if (length !== 3 && length !== 4) {
+        throw valueError(
+          `ManimColor only accepts lists/tuples/arrays of length 3 or 4, not ${length}`,
+        );
+      }
+      // Mirrors Python `all(isinstance(x, float) for x in value)`: every
+      // element must be a non-integer number to take the float path. Mixed
+      // int/float input takes the int path (everything scaled by 1/255).
+      // NOTE: a Python float like 1.0 arrives in JS as integer 1 and is
+      // therefore treated as int; this boundary is inherently lossy in TS.
+      // For NDArray input the dtype decides instead (numpy float scalars
+      // subclass Python float, int scalars do not); numpy-ts infers float64
+      // for plain array(...) calls, so only explicitly-typed int arrays take
+      // the int path.
+      const dtype = isNDArray(value) ? String((value as NDArray).dtype ?? "") : "";
+      const allFloat = /int|uint|bool/i.test(dtype)
+        ? false
+        : /float|complex/i.test(dtype)
+          ? true
+          : rawItems.every(
+              (item) => typeof item === "number" && !Number.isInteger(item),
+            );
+      if (allFloat) {
+        if (length === 3) {
+          this.internal = ManimColor._internal_from_rgb(rawItems as number[], alpha);
+        } else {
+          this.internal = ManimColor._internal_from_rgba(rawItems as number[]);
+        }
+      } else {
+        if (length === 3) {
+          this.internal = ManimColor._internal_from_int_rgb(rawItems as number[], alpha);
+        } else {
+          this.internal = ManimColor._internal_from_int_rgba(rawItems as number[]);
+        }
+      }
+    } else if (
+      typeof value === "object" &&
+      value !== null &&
+      ((typeof (value as { get_hex?: unknown }).get_hex === "function") ||
+        (typeof (value as { getHex?: unknown }).getHex === "function"))
+    ) {
+      const holder = value as { get_hex?: () => string; getHex?: () => string };
+      const hexSource = typeof holder.get_hex === "function" ? holder.get_hex() : (holder.getHex as () => string)();
+      const found = hexSource.match(re_hex);
+      if (found === null) throw valueError(`Failed to parse a color from ${String(value)}`);
+      this.internal = ManimColor._internal_from_hex_string(found[0], alpha);
+    } else {
+      throw typeError(
+        "ManimColor only accepts int, str, list[int, int, int], " +
+          "list[int, int, int, int], list[float, float, float], " +
+          `list[float, float, float, float], not ${(value as object)?.constructor?.name ?? typeof value}`,
+      );
     }
   }
 
-  static parse(value: ParsableManimColor | readonly ParsableManimColor[] | null | undefined, alpha = 1): ManimColor | ManimColor[] {
-    // NOTE: mirrors Python `is_sequence = isinstance(color, (list, tuple))`:
-    // an empty list is still a sequence (parses to []), while a flat
-    // [r, g, b] numeric triple parses to a single color.
-    if (Array.isArray(value) && (value.length === 0 || typeof value[0] === "string" || (value[0] as unknown) instanceof ManimColor || Array.isArray(value[0]) || isNDArray(value[0]))) {
-      return (value as readonly ParsableManimColor[]).map((item) => new ManimColor(item, alpha));
+  static _construct_from_space(
+    this: typeof ManimColor,
+    space: number[] | readonly number[] | ColorArray,
+  ): ManimColor {
+    if (this === ManimColor) {
+      // Fast plain-RGBA path: bypasses the int/float ambiguity of the
+      // generic constructor (integral floats like 0.0/1.0 arrive in JS as
+      // integers, so routing [0,1,1,1] through the constructor would take
+      // the int-RGB path and scale by 1/255). Python has no such ambiguity
+      // because numpy float scalars subclass Python float.
+      const inst = new ManimColor(null);
+      inst._internal_value = array([...valuesOf(space)].map(Number)) as ColorArray;
+      return inst;
     }
-    return new ManimColor(value as ParsableManimColor | null | undefined, alpha);
+    const ctor = this;
+    return new ctor(space as unknown as ParsableManimColor);
   }
 
-  static from_rgb(rgb: number[] | readonly number[], alpha = 1): ManimColor {
-    return new ManimColor(array([...rgb]) as ColorArray, alpha);
+  static _from_internal(this: typeof ManimColor, value: ColorArray): ManimColor {
+    if (this === ManimColor) {
+      const inst = new ManimColor(null);
+      inst._internal_value = (
+        isNDArray(value) ? (value as ColorArray).copy() : array([...valuesOf(value)].map(Number))
+      ) as ColorArray;
+      return inst;
+    }
+    const ctor = this;
+    return new ctor(value as unknown as ParsableManimColor);
   }
 
-  static from_rgba(rgba: number[] | readonly number[]): ManimColor {
-    return new ManimColor(array([...rgba]) as ColorArray);
+  static parse(
+    this: typeof ManimColor,
+    color: ParsableManimColor | readonly ParsableManimColor[] | null | undefined,
+    alpha = 1,
+  ): ManimColor | ManimColor[] {
+    const ctor = this;
+    const isSequence = Array.isArray(color);
+    if (isSequence) {
+      return (color as readonly ParsableManimColor[]).map((c) =>
+        ctor._from_internal(new ManimColor(c, alpha)._internal_value),
+      );
+    }
+    return ctor._from_internal(
+      new ManimColor(color as ParsableManimColor | null | undefined, alpha)._internal_value,
+    );
   }
 
-  static from_hex(value: string, alpha = 1): ManimColor {
-    return new ManimColor(value, alpha);
+  static from_rgb(
+    this: typeof ManimColor,
+    rgb: number[] | readonly number[] | ColorArray,
+    alpha = 1,
+  ): ManimColor {
+    const ctor = this;
+    return ctor._from_internal(new ManimColor(rgb as unknown as ParsableManimColor, alpha)._internal_value);
+  }
+
+  static from_rgba(
+    this: typeof ManimColor,
+    rgba: number[] | readonly number[] | ColorArray,
+  ): ManimColor {
+    const ctor = this;
+    return new ctor(rgba as unknown as ParsableManimColor);
+  }
+
+  static from_hex(
+    this: typeof ManimColor,
+    hex_str: string,
+    alpha = 1,
+  ): ManimColor {
+    const ctor = this;
+    return ctor._from_internal(new ManimColor(hex_str, alpha)._internal_value);
+  }
+
+  static from_hsv(
+    this: typeof ManimColor,
+    hsv: number[] | readonly number[] | ColorArray,
+    alpha = 1,
+  ): ManimColor {
+    const ctor = this;
+    const items = valuesOf(hsv).map(Number);
+    const rgb = hsvToRgb(items[0] ?? 0, items[1] ?? 0, items[2] ?? 0);
+    // NOTE: colorsys returns Python floats, so the float path applies even
+    // when the values happen to be integral (e.g. [1,0,0]); route directly
+    // through _internal_from_rgb instead of the ambiguity-prone constructor.
+    return ctor._from_internal(ManimColor._internal_from_rgb(rgb, alpha));
+  }
+
+  static from_hsl(
+    this: typeof ManimColor,
+    hsl: number[] | readonly number[] | ColorArray,
+    alpha = 1,
+  ): ManimColor {
+    const ctor = this;
+    const items = valuesOf(hsl).map(Number);
+    const rgb = hlsToRgb(items[0] ?? 0, items[2] ?? 0, items[1] ?? 0);
+    // NOTE: same computed-float reasoning as from_hsv above.
+    return ctor._from_internal(ManimColor._internal_from_rgb(rgb, alpha));
+  }
+
+  static gradient(colors: ManimColor[], _length: number): ManimColor | ManimColor[] {
+    void colors;
+    const error = new Error("NotImplementedError");
+    error.name = "NotImplementedError";
+    throw error;
   }
 
   get internal_value(): ColorArray {
@@ -275,60 +428,304 @@ export class ManimColor {
     return this.internal_space;
   }
 
-  toRgb(): ColorArray {
-    return array((pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1]).slice(0, 3)) as ColorArray;
-  }
-
-  toRgba(): ColorArray {
-    return this.internal.copy() as ColorArray;
-  }
-
-  toRgbaWithAlpha(alpha: number): ColorArray {
-    const values = pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1];
-    return array([values[0], values[1], values[2], alpha]) as ColorArray;
-  }
-
-  toHex(withAlpha = false): string {
-    const values = pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1];
-    let result = `#${[values[0], values[1], values[2]].map((item) => Math.trunc(item * 255).toString(16).padStart(2, "0")).join("")}`;
-    if (withAlpha) result += Math.trunc((values[3] ?? 1) * 255).toString(16).padStart(2, "0");
-    return result.toUpperCase();
+  to_integer(): number {
+    const values = pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1];
+    const raw = new Uint8Array([
+      Math.trunc(values[0] * 255) & 0xff,
+      Math.trunc(values[1] * 255) & 0xff,
+      Math.trunc(values[2] * 255) & 0xff,
+    ]);
+    return raw[0] * 65536 + raw[1] * 256 + raw[2];
   }
 
   toInteger(): number {
-    const values = pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1];
-    return (Math.trunc(values[0] * 255) << 16) | (Math.trunc(values[1] * 255) << 8) | Math.trunc(values[2] * 255);
+    return this.to_integer();
   }
 
-  interpolate(other: ManimColor, alpha: number): ManimColor {
-    const left = pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1];
-    const right = pointRows(other.internal, 4)[0] ?? [0, 0, 0, 1];
-    return new ManimColor(array(left.map((value, index) => value * (1 - alpha) + (right[index] ?? 0) * alpha)) as ColorArray);
+  to_rgb(): ColorArray {
+    return array((pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1]).slice(0, 3)) as ColorArray;
   }
 
-  opacity(opacity: number): ManimColor {
-    return new ManimColor(this.toRgbaWithAlpha(opacity));
+  toRgb(): ColorArray {
+    return this.to_rgb();
+  }
+
+  to_int_rgb(): ColorArray {
+    const values = pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1];
+    return array(values.slice(0, 3).map((item) => Math.trunc(item * 255))) as ColorArray;
+  }
+
+  toIntRgb(): ColorArray {
+    return this.to_int_rgb();
+  }
+
+  to_rgba(): ColorArray {
+    return this._internal_value.copy() as ColorArray;
+  }
+
+  toRgba(): ColorArray {
+    return this.to_rgba();
+  }
+
+  to_int_rgba(): ColorArray {
+    const values = pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1];
+    return array(values.map((item) => Math.trunc(item * 255))) as ColorArray;
+  }
+
+  toIntRgba(): ColorArray {
+    return this.to_int_rgba();
+  }
+
+  to_rgba_with_alpha(alpha: number): ColorArray {
+    const values = pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1];
+    return array([values[0], values[1], values[2], alpha]) as ColorArray;
+  }
+
+  toRgbaWithAlpha(alpha: number): ColorArray {
+    return this.to_rgba_with_alpha(alpha);
+  }
+
+  to_int_rgba_with_alpha(alpha: number): ColorArray {
+    const values = pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1];
+    const scaled = values.map((item) => item * 255);
+    scaled[3] = alpha * 255;
+    return array(scaled.map((item) => Math.trunc(item))) as ColorArray;
+  }
+
+  toIntRgbaWithAlpha(alpha: number): ColorArray {
+    return this.to_int_rgba_with_alpha(alpha);
+  }
+
+  to_hex(withAlpha = false): string {
+    const values = pointRows(this._internal_value, 4)[0] ?? [0, 0, 0, 1];
+    let result = `#${[values[0], values[1], values[2]].map((item) => Math.trunc((item as number) * 255).toString(16).padStart(2, "0")).join("")}`;
+    if (withAlpha) result += Math.trunc(((values[3] ?? 1) as number) * 255).toString(16).padStart(2, "0");
+    return result.toUpperCase();
+  }
+
+  toHex(withAlpha = false): string {
+    return this.to_hex(withAlpha);
+  }
+
+  to_hsv(): ColorArray {
+    const rgb = pointRows(this.to_rgb(), 3)[0] ?? [0, 0, 0];
+    return array(rgbToHsv(rgb[0] ?? 0, rgb[1] ?? 0, rgb[2] ?? 0)) as ColorArray;
+  }
+
+  toHsv(): ColorArray {
+    return this.to_hsv();
+  }
+
+  to_hsl(): ColorArray {
+    const rgb = pointRows(this.to_rgb(), 3)[0] ?? [0, 0, 0];
+    const hls = rgbToHls(rgb[0] ?? 0, rgb[1] ?? 0, rgb[2] ?? 0);
+    return array([hls[0], hls[2], hls[1]]) as ColorArray;
+  }
+
+  toHsl(): ColorArray {
+    return this.to_hsl();
   }
 
   invert(withAlpha = false): ManimColor {
-    const values = pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1];
-    const result = values.map((value, index) => (index === 3 && !withAlpha ? values[3] : 1 - value));
-    return new ManimColor(array(result) as ColorArray);
+    const space = [...spaceOf(this)];
+    if (withAlpha) {
+      const result = space.map((item) => 1 - item);
+      return constructFromSpace(this, result);
+    }
+    const alpha = space[3] ?? 1;
+    const result = space.map((item) => 1 - item);
+    result[result.length - 1] = alpha;
+    return constructFromSpace(this, result);
+  }
+
+  interpolate(other: ManimColor, alpha: number): ManimColor {
+    const left = spaceOf(this);
+    const right = spaceOf(other);
+    const result = left.map((item, index) => item * (1 - alpha) + (right[index] ?? 0) * alpha);
+    return constructFromSpace(this, result);
+  }
+
+  darker(blend = 0.2): ManimColor {
+    const alpha = (spaceOf(this)[3] ?? 1) as number;
+    const black = (this.constructor as typeof ManimColor)._from_internal(BLACK._internal_value);
+    return this.interpolate(black, blend).opacity(alpha);
+  }
+
+  lighter(blend = 0.2): ManimColor {
+    const alpha = (spaceOf(this)[3] ?? 1) as number;
+    const white = (this.constructor as typeof ManimColor)._from_internal(WHITE._internal_value);
+    return this.interpolate(white, blend).opacity(alpha);
+  }
+
+  contrasting(threshold = 0.5, light: ManimColor | null = null, dark: ManimColor | null = null): ManimColor {
+    const rgb = pointRows(this.to_rgb(), 3)[0] ?? [0, 0, 0];
+    const [luminance] = rgbToYiq(rgb[0] ?? 0, rgb[1] ?? 0, rgb[2] ?? 0);
+    const ctor = this.constructor as typeof ManimColor;
+    if ((luminance ?? 0) < threshold) {
+      if (light !== null && light !== undefined) return light;
+      return ctor._from_internal(WHITE._internal_value);
+    }
+    if (dark !== null && dark !== undefined) return dark;
+    return ctor._from_internal(BLACK._internal_value);
+  }
+
+  opacity(opacity: number): ManimColor {
+    const tmp = [...spaceOf(this)];
+    tmp[tmp.length - 1] = opacity;
+    return constructFromSpace(this, tmp);
+  }
+
+  into<T extends ManimColor>(classType: { _from_internal: (value: ColorArray) => T }): T {
+    return classType._from_internal(this._internal_value);
   }
 
   equals(other: ManimColor): boolean {
-    const left = pointRows(this.internal, 4)[0] ?? [];
-    const right = pointRows(other.internal, 4)[0] ?? [];
-    return left.length === right.length && left.every((value, index) => Math.abs(value - (right[index] ?? 0)) < 1e-8);
+    try {
+      return this.__eq__(other);
+    } catch {
+      return false;
+    }
+  }
+
+  __repr__(): string {
+    return `${(this.constructor as typeof ManimColor).name}('${this.to_hex()}')`;
+  }
+
+  __str__(): string {
+    return `${this.to_hex()}`;
   }
 
   toString(): string {
-    return this.toHex();
+    return this.__str__();
   }
 
   toRepr(): string {
-    return `ManimColor('${this.toHex()}')`;
+    return this.__repr__();
   }
+
+  __eq__(other: object): boolean {
+    if (!(other instanceof ManimColor)) {
+      throw typeError(
+        `Cannot compare ${(this.constructor as typeof ManimColor).name} with ${(other as object)?.constructor?.name ?? typeof other}`,
+      );
+    }
+    const left = pointRows(this._internal_value, 4)[0] ?? [];
+    const right = pointRows((other as ManimColor)._internal_value, 4)[0] ?? [];
+    return left.length === right.length && left.every((item, index) => Math.abs(item - (right[index] ?? 0)) <= 1e-8 + 1e-5 * Math.abs(right[index] ?? 0));
+  }
+
+  __add__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => item + other));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => item + (spaceOf(other)[index] ?? 0)));
+  }
+
+  __radd__(other: number | ManimColor): ManimColor {
+    return this.__add__(other);
+  }
+
+  __sub__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => item - other));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => item - (spaceOf(other)[index] ?? 0)));
+  }
+
+  __rsub__(other: number | ManimColor): ManimColor {
+    return this.__sub__(other);
+  }
+
+  __mul__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => item * other));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => item * (spaceOf(other)[index] ?? 0)));
+  }
+
+  __rmul__(other: number | ManimColor): ManimColor {
+    return this.__mul__(other);
+  }
+
+  __truediv__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => item / other));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => item / (spaceOf(other)[index] ?? 0)));
+  }
+
+  __rtruediv__(other: number | ManimColor): ManimColor {
+    return this.__truediv__(other);
+  }
+
+  __floordiv__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => Math.floor(item / other)));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => Math.floor(item / (spaceOf(other)[index] ?? 0))));
+  }
+
+  __rfloordiv__(other: number | ManimColor): ManimColor {
+    return this.__floordiv__(other);
+  }
+
+  __mod__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => pythonMod(item, other)));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => pythonMod(item, spaceOf(other)[index] ?? 0)));
+  }
+
+  __rmod__(other: number | ManimColor): ManimColor {
+    return this.__mod__(other);
+  }
+
+  __pow__(other: number | ManimColor): ManimColor {
+    if (typeof other === "number") return constructFromSpace(this, spaceOf(this).map((item) => item ** other));
+    return constructFromSpace(this, spaceOf(this).map((item, index) => item ** (spaceOf(other)[index] ?? 0)));
+  }
+
+  __rpow__(other: number | ManimColor): ManimColor {
+    return this.__pow__(other);
+  }
+
+  __invert__(): ManimColor {
+    return this.invert();
+  }
+
+  __int__(): number {
+    return this.to_integer();
+  }
+
+  __getitem__(index: number): number {
+    return spaceOf(this)[index] as number;
+  }
+
+  __and__(other: ManimColor): ManimColor {
+    const result = ManimColor._internal_from_integer(this.to_integer() & other.to_integer(), 1);
+    return constructFromSpace(this, [...pointRows(result, 4)[0] ?? [0, 0, 0, 1]]);
+  }
+
+  __or__(other: ManimColor): ManimColor {
+    const result = ManimColor._internal_from_integer(this.to_integer() | other.to_integer(), 1);
+    return constructFromSpace(this, [...pointRows(result, 4)[0] ?? [0, 0, 0, 1]]);
+  }
+
+  __xor__(other: ManimColor): ManimColor {
+    const result = ManimColor._internal_from_integer(this.to_integer() ^ other.to_integer(), 1);
+    return constructFromSpace(this, [...pointRows(result, 4)[0] ?? [0, 0, 0, 1]]);
+  }
+
+  __hash__(): number {
+    const text = this.to_hex(true);
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (Math.imul(31, hash) + text.charCodeAt(index)) | 0;
+    }
+    return hash;
+  }
+}
+
+function spaceOf(color: ManimColor): number[] {
+  return [...(pointRows((color as unknown as { _internal_space: ColorArray })._internal_space, 4)[0] ?? [0, 0, 0, 1])];
+}
+
+function constructFromSpace(owner: ManimColor, space: number[]): ManimColor {
+  const ctor = owner.constructor as typeof ManimColor;
+  return ctor._construct_from_space(space as unknown as ColorArray);
+}
+
+function pythonMod(a: number, b: number): number {
+  if (b === 0) return Number.NaN;
+  return a - Math.floor(a / b) * b;
 }
 
 export function is_sequence(
@@ -361,7 +758,7 @@ function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
   const p = v * (1.0 - s);
   const q = v * (1.0 - s * f);
   const t = v * (1.0 - s * (1.0 - f));
-  switch (i % 6) {
+  switch (((i % 6) + 6) % 6) {
     case 0: return [v, t, p];
     case 1: return [q, v, p];
     case 2: return [p, v, t];
@@ -369,6 +766,49 @@ function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
     case 4: return [t, p, v];
     default: return [v, p, q];
   }
+}
+
+function rgbToHls(r: number, g: number, b: number): [number, number, number] {
+  const maxc = Math.max(r, g, b);
+  const minc = Math.min(r, g, b);
+  const l = (minc + maxc) / 2.0;
+  if (minc === maxc) return [0.0, l, 0.0];
+  let s: number;
+  if (l <= 0.5) s = (maxc - minc) / (maxc + minc);
+  else s = (maxc - minc) / (2.0 - maxc - minc);
+  const rc = (maxc - r) / (maxc - minc);
+  const gc = (maxc - g) / (maxc - minc);
+  const bc = (maxc - b) / (maxc - minc);
+  let h: number;
+  if (r === maxc) h = bc - gc;
+  else if (g === maxc) h = 2.0 + rc - bc;
+  else h = 4.0 + gc - rc;
+  h = (((h / 6.0) % 1.0) + 1.0) % 1.0;
+  return [h, l, s];
+}
+
+function hlsToRgb(h: number, l: number, s: number): [number, number, number] {
+  if (s === 0.0) return [l, l, l];
+  let m2: number;
+  if (l <= 0.5) m2 = l * (1.0 + s);
+  else m2 = l + s - l * s;
+  const m1 = 2.0 * l - m2;
+  return [vFunc(m1, m2, h + 1.0 / 3.0), vFunc(m1, m2, h), vFunc(m1, m2, h - 1.0 / 3.0)];
+}
+
+function vFunc(m1: number, m2: number, h: number): number {
+  const hue = ((h % 1.0) + 1.0) % 1.0;
+  if (hue < 1.0 / 6.0) return m1 + (m2 - m1) * hue * 6.0;
+  if (hue < 0.5) return m2;
+  if (hue < 2.0 / 3.0) return m1 + (m2 - m1) * (2.0 / 3.0 - hue) * 6.0;
+  return m1;
+}
+
+function rgbToYiq(r: number, g: number, b: number): [number, number, number] {
+  const y = 0.3 * r + 0.59 * g + 0.11 * b;
+  const i = 0.74 * (r - y) - 0.27 * (b - y);
+  const q = 0.48 * (r - y) + 0.41 * (b - y);
+  return [y, i, q];
 }
 
 export class HSV extends ManimColor {

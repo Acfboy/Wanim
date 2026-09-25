@@ -49,6 +49,21 @@ export class CoordinateSystem {
   get_axes(): Mobject[] { throw new Error("CoordinateSystem.get_axes must be implemented by a subclass."); }
   get_axis(index: number): Mobject { return this.get_axes()[index]; }
   get_origin(): NDArray { return this.coords_to_point(0, 0); }
+
+  __matmul__(coord: number[] | readonly number[] | NDArray | Mobject): NDArray {
+    let target: unknown = coord;
+    if (target instanceof Mobject) target = target.get_center();
+    const items: number[] = isNDArray(target)
+      ? [...((target as NDArray).toArray() as number[]).map(Number)]
+      : Array.isArray(target)
+        ? (target as unknown[]).map(Number)
+        : [Number(target)];
+    return this.coords_to_point(...items);
+  }
+
+  __rmatmul__(point: number[] | readonly number[] | NDArray): number[] {
+    return this.point_to_coords(point as readonly number[]);
+  }
 }
 
 function axisPosition(value: number, range: number[], length: number): number {
