@@ -1,5 +1,6 @@
 import { array, type NDArray } from "numpy-ts";
 import { isNDArray, numeric } from "../../utils/arrays.js";
+import { ManimColor } from "../../utils/color/core.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
 export interface AbstractImageMobjectOptions extends MobjectOptions {
@@ -70,6 +71,7 @@ export class ImageMobject extends AbstractImageMobject {
   pixel_array: NDArray;
   orig_alpha_pixel_array: number[][];
   stroke_opacity: number;
+  fill_opacity = 1;
 
   constructor(options: ImageMobjectOptions) {
     const { pixel_array, opacity = 1, scale_to_resolution = HIGH_QUALITY_PIXEL_HEIGHT, ...rest } = options;
@@ -79,6 +81,10 @@ export class ImageMobject extends AbstractImageMobject {
     this.orig_alpha_pixel_array = alphaChannel(this.pixel_array);
     this.stroke_opacity = 1;
     if (opacity !== 1) this.set_opacity(opacity);
+  }
+
+  get_pixel_array(): NDArray {
+    return this.pixel_array;
   }
 
   set_opacity(alpha: number): this {
@@ -96,6 +102,13 @@ export class ImageMobject extends AbstractImageMobject {
     this.pixel_array = (array(voxels) as NDArray).astype(this.pixel_array_dtype as "uint8") as NDArray;
     this.stroke_opacity = alpha;
     return this;
+  }
+
+  get_style(): Record<string, unknown> {
+    return {
+      fill_color: new ManimColor(this.color.toRgb()).toHex(),
+      fill_opacity: this.fill_opacity,
+    };
   }
 }
 

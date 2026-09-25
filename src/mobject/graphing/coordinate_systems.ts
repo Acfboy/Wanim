@@ -28,6 +28,14 @@ export class CoordinateSystem {
   }
 
   c2p(...coords: (number | number[] | NDArray)[]): NDArray { return this.coords_to_point(...coords); }
+  p2c(point: readonly number[]): number[] { return this.point_to_coords(point); }
+  polar_to_point(radius: number, azimuth: number): NDArray {
+    return this.coords_to_point(radius * Math.cos(azimuth), radius * Math.sin(azimuth));
+  }
+  point_to_polar(point: readonly number[]): [number, number] {
+    const [x = 0, y = 0] = this.point_to_coords(point);
+    return [Math.sqrt(x ** 2 + y ** 2), Math.atan2(y, x)];
+  }
   point_to_coords(_point: readonly number[]): number[] {
     const error = new Error("CoordinateSystem.point_to_coords must be implemented by a subclass.");
     error.name = "NotImplementedError";

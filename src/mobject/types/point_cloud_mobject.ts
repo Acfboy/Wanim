@@ -23,4 +23,14 @@ export class PMobject extends Mobject {
     this.points = array([]).reshape(0, 3) as NDArray;
     return this;
   }
+
+  get_array_attrs(): string[] {
+    return [...super.get_array_attrs(), "rgbas"];
+  }
+
+  point_from_proportion(alpha: number): NDArray {
+    const index = alpha * (this.get_num_points() - 1);
+    const rows = this.points.toArray() as unknown[][];
+    return array(rows[Math.floor(index)] ?? []) as NDArray;
+  }
 }

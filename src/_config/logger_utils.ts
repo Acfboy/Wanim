@@ -90,6 +90,53 @@ function getMaskedMessage(record: LogRecord): string {
   });
 }
 
+export interface ManimLogger {
+  debug: (...args: unknown[]) => void;
+  info: (...args: unknown[]) => void;
+  warning: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+  level: string;
+}
+
+export interface ManimConsole {
+  print: (...args: unknown[]) => void;
+}
+
+export function make_logger(
+  parser: SectionProxyLike,
+  verbosity: string,
+): [ManimLogger, ManimConsole, ManimConsole] {
+  const theme = parse_theme(parser);
+  void theme;
+  const levelOrder = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+  const active = verbosity.toUpperCase();
+  const activeIndex = levelOrder.indexOf(active);
+
+  const makeConsole = (stderr: boolean): ManimConsole => ({
+    print: (...args: unknown[]): void => {
+      if (stderr) globalThis.console.error(...args);
+      else globalThis.console.log(...args);
+    },
+  });
+  const stdoutConsole = makeConsole(false);
+  const errorConsole = makeConsole(true);
+
+  const enabled = (level: string): boolean => {
+    const index = levelOrder.indexOf(level);
+    return activeIndex === -1 || index >= activeIndex;
+  };
+  const logger: ManimLogger = {
+    level: active,
+    debug: (...args: unknown[]): void => { if (enabled("DEBUG")) stdoutConsole.print(...args); },
+    info: (...args: unknown[]): void => { if (enabled("INFO")) stdoutConsole.print(...args); },
+    warning: (...args: unknown[]): void => { if (enabled("WARNING")) errorConsole.print(...args); },
+    warn: (...args: unknown[]): void => { if (enabled("WARNING")) errorConsole.print(...args); },
+    error: (...args: unknown[]): void => { if (enabled("ERROR")) errorConsole.print(...args); },
+  };
+  return [logger, stdoutConsole, errorConsole];
+}
+
 export function parse_theme(parser: SectionProxyLike): RichTheme | null {
   const theme: RichTheme = {};
   for (const [key, value] of entriesOf(parser)) theme[key.replaceAll("_", ".")] = value;

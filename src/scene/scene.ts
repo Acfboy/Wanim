@@ -3,7 +3,15 @@ import { config } from "../_config/utils.js";
 import { Mobject } from "../mobject/mobject.js";
 import { Animation, prepare_animation } from "../animation/animation.js";
 
-export type SceneInteractAction = SceneInteractRerun | string;
+export type SceneInteractAction = SceneInteractRerun | SceneInteractContinue | string;
+
+export class SceneInteractContinue {
+  sender: string;
+
+  constructor(sender: string) {
+    this.sender = sender;
+  }
+}
 
 export class SceneInteractRerun {
   sender: string;
@@ -29,6 +37,13 @@ export class RerunSceneHandler {
     if (Array.isArray(this.queue)) this.queue.push(action);
     else this.queue.put(action);
   }
+}
+
+export function load_module_into_namespace(
+  module: Record<string, unknown>,
+  namespace: Record<string, unknown>,
+): void {
+  for (const name in module) namespace[name] = (module as Record<string, unknown>)[name];
 }
 
 function formatG(value: number): string {
@@ -83,6 +98,8 @@ export class Scene {
   key_to_function_map: Map<string, () => void> = new Map();
   interactive_mode = false;
   always_update_mobjects: boolean;
+  skip_animation_preview = false;
+  queue: Array<SceneInteractAction> = [];
 
   constructor(renderer: any = null, camera_class: new (...args: any[]) => any = class {}, always_update_mobjects = false) {
     this.renderer = renderer;
@@ -107,6 +124,12 @@ export class Scene {
       const foreground_index = this.foreground_mobjects.indexOf(mobject);
       if (foreground_index >= 0) this.foreground_mobjects.splice(foreground_index, 1);
     }
+    return this;
+  }
+
+  clear(): this {
+    this.mobjects = [];
+    this.foreground_mobjects = [];
     return this;
   }
 
@@ -204,5 +227,72 @@ export class Scene {
   on_key_release(symbol: number, modifiers: number): void {
     void symbol;
     void modifiers;
+  }
+
+  check_interactive_embed_is_valid(): boolean {
+    if (config.get("force_window")) return true;
+    if (this.skip_animation_preview) {
+      console.warn("Disabling interactive embed as 'skip_animation_preview' is enabled");
+      return false;
+    } else if (config.get("write_to_movie")) {
+      console.warn("Disabling interactive embed as 'write_to_movie' is enabled");
+      return false;
+    } else if (config.get("format")) {
+      console.warn(
+        "Disabling interactive embed as '--format' is set as " + config.get("format"),
+      );
+      return false;
+    } else if (!this.renderer?.window) {
+      console.warn("Disabling interactive embed as no window was created");
+      return false;
+    } else if (config.get("dry_run")) {
+      console.warn("Disabling interactive embed as dry_run is enabled");
+      return false;
+    }
+    return true;
+  }
+
+  interactive_embed(): void {
+    if (!this.check_interactive_embed_is_valid()) return;
+    this.interactive_mode = true;
+
+    const ipython = (
+      shell: { exiter: () => void; call: (options: { local_ns: Record<string, unknown> }) => void },
+      namespace: Record<string, unknown>,
+    ): void => {
+      const load_module_into_namespace = (
+        module: Record<string, unknown>,
+        target: Record<string, unknown>,
+      ): void => {
+        for (const name in module) target[name] = module[name];
+      };
+
+      // Mirrors `import manim` / `import manim.opengl` namespace injection.
+      // There is no IPython kernel in the TypeScript runtime, so the
+      // modules resolve to empty namespaces here.
+      load_module_into_namespace({}, namespace);
+      load_module_into_namespace({}, namespace);
+
+      const embedded_rerun = (..._args: unknown[]): void => {
+        this.queue.push(new SceneInteractRerun("keyboard"));
+        shell.exiter();
+      };
+      namespace["rerun"] = embedded_rerun;
+
+      shell.call({ local_ns: namespace });
+      this.queue.push(new SceneInteractContinue("keyboard"));
+    };
+    void ipython;
+
+    const get_embedded_method = (methodName: string): ((...args: unknown[]) => void) => {
+      const method = (this as unknown as Record<string, (...args: unknown[]) => void>)[methodName];
+      const embedded_method = (...args: unknown[]): void => {
+        this.queue.push(`${methodName}(${args.map(String).join(", ")})`);
+        void method;
+      };
+      return embedded_method;
+    };
+    void get_embedded_method;
+    console.warn("interactive_embed requires an IPython terminal session, which is not available in the TypeScript runtime.");
   }
 }

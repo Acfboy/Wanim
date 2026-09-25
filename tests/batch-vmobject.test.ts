@@ -61,7 +61,14 @@ describe("CurvesAsSubmobjects._throw_error_if_no_submobjects", () => {
     expect(String((thrown as Error).message)).toContain("with no submobjects");
   });
   it("does not throw when submobjects exist", () => {
-    const c = new CurvesAsSubmobjects(new VMobject());
+    // Python: CurvesAsSubmobjects(vmobject) splits vmobject's cubic curves
+    // into submobject parts, so a vmobject with one curve yields one part.
+    const source = new VMobject();
+    source.set_points_as_corners([
+      [0, 0, 0],
+      [1, 0, 0],
+    ]);
+    const c = new CurvesAsSubmobjects(source);
     expect(() => c._throw_error_if_no_submobjects()).not.toThrow();
   });
 });
@@ -74,11 +81,13 @@ describe("CurvesAsSubmobjects._get_submobjects_with_points", () => {
       [1, 0, 0],
     ]);
     const empty = new VMobject();
+    // Python: the constructor splits withPts' curves into fresh parts, so
+    // the pointful submobject is a part with the same points, not withPts.
     const c = new CurvesAsSubmobjects(withPts);
     c.add(empty);
     const result = c._get_submobjects_with_points();
     expect(result).toHaveLength(1);
-    expect(result[0]).toBe(withPts);
+    expect(rows2(result[0].points)).toEqual(rows2(withPts.points));
   });
   it("throws when no submobject has points", () => {
     const c = new CurvesAsSubmobjects(new VMobject());

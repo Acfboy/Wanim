@@ -5,7 +5,8 @@ import { CoordinateSystem } from "./graphing/coordinate_systems.js";
 import { Animation, type AnimationOptions, linear } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
 import { Create, ShowPartial } from "../animation/creation.js";
-import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
+import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, color_to_rgb, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
+import { inverse_interpolate } from "../utils/bezier.js";
 import { addPoints, arange, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
 import { clip as _clip } from "../utils/simple_functions.js";
 import { config } from "../_config/utils.js";
@@ -105,6 +106,33 @@ export class VectorField extends VGroup {
   nudge_submobjects(dt = 1, substeps = 1, pointwise = false): this {
     for (const mobject of this.submobjects) this.nudge(mobject, dt, substeps, pointwise);
     return this;
+  }
+
+  get_vectorized_rgba_gradient_function(
+    start: number,
+    end: number,
+    colors: ParsableManimColor[],
+  ): (values: number[] | NDArray, opacity?: number) => NDArray {
+    const rgbs: number[][] = colors.map((color) => pointRows(color_to_rgb(color), 3)[0] ?? [0, 0, 0]);
+
+    const func = (values: number[] | NDArray, opacity = 1.0): NDArray => {
+      const flat: number[] = Array.isArray(values)
+        ? (values as number[]).map(Number)
+        : (pointRows(values, 1).map((row) => row[0] ?? 0));
+      const new_rgbas: number[][] = flat.map((value) => {
+        const alpha = Math.min(1, Math.max(0, inverse_interpolate(start, end, value) as number));
+        const scaled = alpha * (rgbs.length - 1);
+        const index = Math.trunc(scaled);
+        const nextIndex = Math.min(index + 1, rgbs.length - 1);
+        const inter = scaled % 1;
+        const first = rgbs[index] ?? [0, 0, 0];
+        const second = rgbs[nextIndex] ?? first;
+        const rgb = first.map((component, dim) => (1 - inter) * component + inter * (second[dim] ?? 0));
+        return [...rgb, opacity];
+      });
+      return array(new_rgbas.length > 0 ? new_rgbas : [[]]) as NDArray;
+    };
+    return func;
   }
 }
 

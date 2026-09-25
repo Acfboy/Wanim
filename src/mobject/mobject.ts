@@ -535,6 +535,10 @@ export class Mobject {
     return this;
   }
 
+  repeat_submobject(submob: Mobject): Mobject {
+    return submob.copy();
+  }
+
   reverse_points(): this {
     for (const mobject of this.family_members_with_points()) mobject.points = pointArray(pointRows(mobject.points, this.dim).reverse());
     return this;
@@ -549,6 +553,7 @@ export class Mobject {
 
   get_start(): number[] { this.throw_error_if_no_points("get_start"); return pointAt(this.points, 0, this.dim); }
   get_end(): number[] { this.throw_error_if_no_points("get_end"); return pointAt(this.points, pointRows(this.points, this.dim).length - 1, this.dim); }
+  get_midpoint(): NDArray { return this.point_from_proportion(0.5); }
 
   point_from_proportion(alpha: number): NDArray {
     const error = new Error("Please override in a child class.");

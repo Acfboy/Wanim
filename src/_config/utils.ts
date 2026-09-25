@@ -1,4 +1,4 @@
-import { accessSync, constants as fsConstants } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import { QUALITIES, DEFAULT_QUALITY, RendererType, ORIGIN, UP, DOWN, RIGHT, LEFT, IN, OUT, X_AXIS, Y_AXIS, Z_AXIS, UL, UR, DL, DR } from "../constants.js";
 import { ManimColor, BLACK, type ParsableManimColor } from "../utils/color/core.js";
 
@@ -115,10 +115,10 @@ export class ManimConfig {
     if (Object.prototype.hasOwnProperty.call(this.values, key)) return this.values[key];
     if (key === "frame_size") return [this.pixel_width, this.pixel_height];
     if (key === "aspect_ratio") return this.pixel_height === 0 ? 0 : this.pixel_width / this.pixel_height;
-    if (key === "top") return this.frame_y_radius;
-    if (key === "bottom") return -this.frame_y_radius;
-    if (key === "left_side") return -this.frame_x_radius;
-    if (key === "right_side") return this.frame_x_radius;
+    if (key === "top") return this.top;
+    if (key === "bottom") return this.bottom;
+    if (key === "left_side") return this.left_side;
+    if (key === "right_side") return this.right_side;
     if (key === "frame_center") return [0, 0, 0];
     const error = new Error(`'ManimConfig' object has no attribute '${key}'`);
     error.name = "AttributeError";
@@ -205,6 +205,45 @@ export class ManimConfig {
   set frame_y_radius(value: number) {
     this.values.frame_y_radius = value;
     this.values.frame_height = value * 2;
+  }
+
+  get top(): number[] {
+    return [0, this.frame_y_radius, 0];
+  }
+
+  get bottom(): number[] {
+    return [0, -this.frame_y_radius, 0];
+  }
+
+  get left_side(): number[] {
+    return [-this.frame_x_radius, 0, 0];
+  }
+
+  get right_side(): number[] {
+    return [this.frame_x_radius, 0, 0];
+  }
+
+  __contains__(key: unknown): boolean {
+    try {
+      if (typeof key !== "string") {
+        const error = new Error("assert isinstance(key, str)");
+        error.name = "AssertionError";
+        throw error;
+      }
+      this.__getitem__(key);
+      return true;
+    } catch (error) {
+      if ((error as Error).name === "AttributeError") return false;
+      throw error;
+    }
+  }
+
+  __copy__(): ManimConfig {
+    return this.copy();
+  }
+
+  __deepcopy__(_memo?: Record<string, unknown>): ManimConfig {
+    return this.copy();
   }
 
   get renderer(): RendererType {
@@ -484,6 +523,64 @@ export function config_file_paths(): string[] {
     ? `${home}/AppData/Roaming/Manim/manim.cfg`
     : `${home}/.config/manim/manim.cfg`;
   return [libraryWide, userWide, "manim.cfg"];
+}
+
+export type ConfigParserData = Map<string, Map<string, string>>;
+
+function parse_ini_text(text: string): ConfigParserData {
+  const data: ConfigParserData = new Map();
+  let section: Map<string, string> | null = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
+    const sectionMatch = line.match(/^\[(.+)\]$/);
+    if (sectionMatch) {
+      const name = (sectionMatch[1] ?? "").trim();
+      section = new Map();
+      data.set(name, section);
+      continue;
+    }
+    const separator = line.indexOf("=");
+    if (separator === -1 || section === null) continue;
+    const key = line.slice(0, separator).trim();
+    let value = line.slice(separator + 1).trim();
+    const commentHash = value.search(/(^|\s)[#;]/);
+    if (commentHash !== -1) value = value.slice(0, commentHash).trim();
+    section.set(key, value);
+  }
+  return data;
+}
+
+function merge_parser_data(target: ConfigParserData, source: ConfigParserData): void {
+  for (const [section, values] of source) {
+    let existing = target.get(section);
+    if (!existing) {
+      existing = new Map();
+      target.set(section, existing);
+    }
+    for (const [key, value] of values) existing.set(key, value);
+  }
+}
+
+export function make_config_parser(custom_file: string | null = null): ConfigParserData {
+  const [libraryWide, userWide, folderWide] = config_file_paths();
+  let libraryText: string;
+  try {
+    libraryText = readFileSync(libraryWide, { encoding: "utf-8" });
+  } catch {
+    throw new Error(`Could not read required config file: ${libraryWide}`);
+  }
+  const parser: ConfigParserData = parse_ini_text(libraryText);
+  const otherFiles = [userWide, custom_file ?? folderWide];
+  for (const path of otherFiles) {
+    if (!existsSync(path)) continue;
+    try {
+      merge_parser_data(parser, parse_ini_text(readFileSync(path, { encoding: "utf-8" })));
+    } catch {
+      continue;
+    }
+  }
+  return parser;
 }
 
 export function _determine_quality(qual: string | null | undefined): string | null {

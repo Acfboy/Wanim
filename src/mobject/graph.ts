@@ -220,3 +220,63 @@ export function tree_layout(
 }
 
 export const _tree_layout = tree_layout;
+
+export type LayoutName = "circular" | "kamada_kawai" | "multipartite" | "planar" | "random" | "shell" | "spectral" | "spiral" | "spring" | "tree";
+
+function notPortedLayout(name: string): LayoutFunction {
+  return (_graph: NetworkXGraphLike, _scale?: number | number[]) => {
+    throw new Error(`TODO: the "${name}" graph layout is not ported yet`);
+  };
+}
+
+export const _layouts: Record<LayoutName, LayoutFunction> = {
+  circular: notPortedLayout("circular"),
+  kamada_kawai: notPortedLayout("kamada_kawai"),
+  multipartite: notPortedLayout("multipartite"),
+  planar: notPortedLayout("planar"),
+  random: notPortedLayout("random"),
+  shell: notPortedLayout("shell"),
+  spectral: notPortedLayout("spectral"),
+  spiral: notPortedLayout("spiral"),
+  spring: notPortedLayout("spring"),
+  tree: tree_layout as unknown as LayoutFunction,
+};
+
+export function _determine_graph_layout(
+  nx_graph: NetworkXGraphLike,
+  layout: LayoutName | Map<GraphVertex, NDArray> | Record<string, NDArray> | LayoutFunction = "spring",
+  layout_scale: number | number[] = 2,
+  layout_config: Record<string, unknown> | null = null,
+): Map<GraphVertex, NDArray> | Record<string, NDArray> {
+  const config = layout_config ?? {};
+  if (layout instanceof Map || (typeof layout === "object" && layout !== null && !((layout as unknown) instanceof Function) && !(typeof layout === "string"))) {
+    return layout as Map<GraphVertex, NDArray> | Record<string, NDArray>;
+  } else if (typeof layout === "string" && layout in _layouts) {
+    const auto_layout = (_layouts[layout as LayoutName] as unknown as (
+      graph: NetworkXGraphLike,
+      scale?: number | number[],
+      config?: Record<string, unknown>,
+    ) => Map<GraphVertex, NDArray>)(nx_graph, layout_scale, config);
+    if (auto_layout.size === 0) return new Map();
+    const first = auto_layout.values().next().value as NDArray | undefined;
+    if ((config as Record<string, unknown>)["dim"] === 3 || (first?.shape?.[0] ?? 0) === 3) {
+      return auto_layout;
+    } else {
+      const result = new Map<GraphVertex, NDArray>();
+      for (const [key, value] of auto_layout) {
+        const rows = value.toArray() as unknown;
+        const flat = (Array.isArray(rows) ? rows : [rows]).map(Number);
+        result.set(key, array([...flat, 0]) as NDArray);
+      }
+      return result;
+    }
+  } else {
+    try {
+      return (layout as LayoutFunction)(nx_graph, layout_scale);
+    } catch {
+      throw new Error(
+        `The layout '${String(layout)}' is neither a recognized layout, a layout function, nor a vertex placement dictionary.`,
+      );
+    }
+  }
+}

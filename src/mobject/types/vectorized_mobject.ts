@@ -2,6 +2,8 @@ import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
+import { bezier_remap } from "../../utils/bezier.js";
+import { resize_array, stretch_array_to_length } from "../../utils/iterables.js";
 import { ORIGIN } from "../../constants.js";
 
 export interface VMobjectOptions extends MobjectOptions {
@@ -309,6 +311,28 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  add_points_as_corners(points: unknown): this {
+    this.throw_error_if_no_points("add_points_as_corners");
+    const corners = rows(points, this.dim);
+    if (corners.length === 0) return this;
+    const current = rows(this.points, this.dim);
+    const start_corners = [current[current.length - 1] ?? new Array(this.dim).fill(0), ...corners.slice(0, -1)];
+    const end_corners = corners;
+    const trimmed = this.has_new_path_started() ? current.slice(0, -1) : current;
+    const nppcc = this.n_points_per_cubic_curve;
+    const new_points: number[][] = [];
+    for (let k = 0; k < start_corners.length; k += 1) {
+      const start = start_corners[k] ?? new Array(this.dim).fill(0);
+      const end = end_corners[k] ?? [...start];
+      for (let i = 0; i < nppcc; i += 1) {
+        const t = nppcc === 1 ? 0 : i / (nppcc - 1);
+        new_points.push(start.map((value, column) => (1 - t) * value + t * (end[column] ?? 0)));
+      }
+    }
+    this.points = asPoints([...trimmed, ...new_points], this.dim);
+    return this;
+  }
+
   set_points_as_corners(points: unknown): this {
     const corners = rows(points, this.dim);
     const result: number[][] = [];
@@ -359,14 +383,18 @@ export class VMobject extends Mobject {
     return (t: number) => curveValue(points, t, this.dim);
   }
 
-  get_nth_curve_function_with_length(index: number): [(t: number) => number[], number] {
+  get_nth_curve_function_with_length(index: number, sample_points: number | null = null): [(t: number) => number[], number] {
     const curve = this.get_nth_curve_function(index);
     const points = rows(this.points, this.dim).slice(index * this.n_points_per_cubic_curve, index * this.n_points_per_cubic_curve + 4);
-    return [curve, curveLength(points)];
+    return [curve, curveLength(points, sample_points ?? 10)];
   }
 
-  get_curve_functions_with_lengths(): Array<[(t: number) => number[], number]> {
-    return Array.from({ length: this.get_num_curves() }, (_, index) => this.get_nth_curve_function_with_length(index));
+  get_curve_functions_with_lengths(sample_points: number | null = null): Array<[(t: number) => number[], number]> {
+    return Array.from({ length: this.get_num_curves() }, (_, index) => this.get_nth_curve_function_with_length(index, sample_points));
+  }
+
+  get_arc_length(sample_points_per_curve: number | null = null): number {
+    return this.get_curve_functions_with_lengths(sample_points_per_curve).reduce((sum, [, length]) => sum + length, 0);
   }
 
   point_from_proportion(alpha: number): NDArray {
@@ -494,6 +522,167 @@ export class VMobject extends Mobject {
     return array(ranges) as NDArray;
   }
 
+  resize_points(
+    new_length: number,
+    resize_func: (points: NDArray, length: number) => NDArray = resize_array,
+  ): this {
+    if (new_length !== this.get_num_points()) this.points = resize_func(this.points, new_length);
+    return this;
+  }
+
+  is_closed(): boolean {
+    const all = rows(this.points, this.dim);
+    return this.consider_points_equals(all[0] ?? [], all[all.length - 1] ?? []);
+  }
+
+  start_new_path(point: unknown): this {
+    const n_points = this.get_num_points();
+    const nppc = this.n_points_per_curve;
+    const pointRow = pointRows(point, this.dim)[0] ?? new Array(this.dim).fill(0);
+    if (n_points % nppc !== 0) {
+      const anchors = this.get_start_anchors();
+      const last_anchor = anchors[anchors.length - 1] ?? new Array(this.dim).fill(0);
+      const closure: number[][] = Array.from(
+        { length: nppc - (n_points % nppc) },
+        () => [...last_anchor],
+      );
+      this.append_points([...closure, [...pointRow]]);
+    } else {
+      this.append_points([[...pointRow]]);
+    }
+    return this;
+  }
+
+  get_cubic_bezier_tuples(): number[][][] {
+    return this.gen_cubic_bezier_tuples_from_points(this.points);
+  }
+
+  *_gen_subpaths_from_points(
+    points: NDArray,
+    filter_func: (n: number) => boolean,
+  ): Generator<NDArray, void, void> {
+    const all = rows(points, this.dim);
+    const nppcc = this.n_points_per_cubic_curve;
+    const split_points: number[] = [0];
+    for (let n = nppcc; n < all.length; n += nppcc) {
+      if (filter_func(n)) split_points.push(n);
+    }
+    split_points.push(all.length);
+    for (let index = 0; index < split_points.length - 1; index += 1) {
+      const start = split_points[index] ?? 0;
+      const end = split_points[index + 1] ?? 0;
+      if (end - start >= nppcc) yield array(all.slice(start, end)) as NDArray;
+    }
+  }
+
+  get_subpaths_from_points(points: NDArray): NDArray[] {
+    const all = rows(points, this.dim);
+    return [...this._gen_subpaths_from_points(
+      points,
+      (n) => !this.consider_points_equals(all[n - 1] ?? [], all[n] ?? []),
+    )];
+  }
+
+  *gen_subpaths_from_points_2d(points: NDArray): Generator<NDArray, void, void> {
+    const all = rows(points, this.dim);
+    yield* this._gen_subpaths_from_points(
+      points,
+      (n) => !this.consider_points_equals_2d(all[n - 1] ?? [], all[n] ?? []),
+    );
+  }
+
+  get_subpaths(): NDArray[] {
+    return this.get_subpaths_from_points(this.points);
+  }
+
+  insert_n_curves_to_point_list(n: number, points: number[][] | NDArray): NDArray {
+    const all = rows(points, this.dim);
+    if (all.length === 1) {
+      const nppcc = this.n_points_per_cubic_curve;
+      return array(Array.from({ length: nppcc * n }, () => [...(all[0] ?? [])])) as NDArray;
+    }
+    const bezier_tuples = this.gen_cubic_bezier_tuples_from_points(points);
+    const current_number_of_curves = bezier_tuples.length;
+    const new_number_of_curves = current_number_of_curves + n;
+    const new_bezier_tuples = bezier_remap(bezier_tuples, new_number_of_curves);
+    return array(new_bezier_tuples.flat().map((point) => point.slice(0, this.dim))) as NDArray;
+  }
+
+  align_rgbas(vmobject: VMobject): this {
+    const attrs = ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"] as const;
+    for (const attr of attrs) {
+      const first = this[attr];
+      const second = vmobject[attr];
+      if (first.shape[0] > second.shape[0]) {
+        vmobject[attr] = stretch_array_to_length(second, first.shape[0]);
+      } else if (second.shape[0] > first.shape[0]) {
+        this[attr] = stretch_array_to_length(first, second.shape[0]);
+      }
+    }
+    return this;
+  }
+
+  align_points(vmobject: VMobject): this {
+    this.align_rgbas(vmobject);
+    // TODO: This shortcut can be a bit over eager. What if they have the same length, but different subpath lengths?
+    if (this.get_num_points() === vmobject.get_num_points()) return this;
+
+    for (const mob of [this, vmobject]) {
+      // If there are no points, add one to
+      // wherever the "center" is
+      if (mob.has_no_points()) mob.start_new_path(mob.get_center());
+      // If there's only one point, turn it into
+      // a null curve
+      if (mob.has_new_path_started()) mob.add_line_to(mob.get_last_point());
+    }
+
+    // Figure out what the subpaths are
+    const subpaths1 = this.get_subpaths().map((subpath) => rows(subpath, this.dim));
+    const subpaths2 = vmobject.get_subpaths().map((subpath) => rows(subpath, vmobject.dim));
+    const n_subpaths = Math.max(subpaths1.length, subpaths2.length);
+
+    const nppcc = this.n_points_per_cubic_curve;
+
+    const get_nth_subpath = (path_list: number[][][], n: number): number[][] => {
+      if (n >= path_list.length) {
+        // Create a null path at the very end
+        if (path_list.length === 0) {
+          return Array.from({ length: nppcc }, () => new Array(this.dim).fill(0));
+        }
+        const last = path_list[path_list.length - 1];
+        const lastPoint = last?.[last.length - 1] ?? new Array(this.dim).fill(0);
+        return Array.from({ length: nppcc }, () => [...lastPoint]);
+      }
+      let path = [...(path_list[n] ?? [])];
+      // Check for useless points at the end of the path and remove them
+      // https://github.com/ManimCommunity/manim/issues/1959
+      while (path.length > nppcc) {
+        // If the last nppc points are all equal to the preceding point
+        const tail = path.slice(path.length - nppcc);
+        const preceding = path[path.length - nppcc - 1] ?? [];
+        if (tail.every((point) => this.consider_points_equals(point, preceding))) {
+          path = path.slice(0, -nppcc);
+        } else break;
+      }
+      return path;
+    };
+
+    const new_path1: number[][] = [];
+    const new_path2: number[][] = [];
+    for (let n = 0; n < n_subpaths; n += 1) {
+      // For each pair of subpaths, add points until they are the same length
+      const sp1 = get_nth_subpath(subpaths1, n);
+      const sp2 = get_nth_subpath(subpaths2, n);
+      const diff1 = Math.max(0, Math.floor((sp2.length - sp1.length) / nppcc));
+      const diff2 = Math.max(0, Math.floor((sp1.length - sp2.length) / nppcc));
+      new_path1.push(...rows(this.insert_n_curves_to_point_list(diff1, sp1), this.dim));
+      new_path2.push(...rows(vmobject.insert_n_curves_to_point_list(diff2, sp2), vmobject.dim));
+    }
+    this.set_points(new_path1.length > 0 ? new_path1 : array([]).reshape(0, this.dim));
+    vmobject.set_points(new_path2.length > 0 ? new_path2 : array([]).reshape(0, vmobject.dim));
+    return this;
+  }
+
 }
 
 function cloneAttribute(value: unknown): unknown {
@@ -523,6 +712,15 @@ export class VectorizedPoint extends VMobject {
   constructor(point: unknown = ORIGIN, options: VMobjectOptions = {}) {
     super(options);
     this.points = pointsFrom(point, this.dim);
+  }
+
+  get_location(): NDArray {
+    return array(rows(this.points, this.dim)[0] ?? []) as NDArray;
+  }
+
+  set_location(new_loc: unknown): this {
+    this.set_points(array([pointRows(new_loc, this.dim)[0] ?? new Array(this.dim).fill(0)]) as NDArray);
+    return this;
   }
 }
 
@@ -582,6 +780,50 @@ export class VDict extends VMobject {
 }
 
 export class CurvesAsSubmobjects extends VGroup {
+  constructor(vmobject?: VMobject, options: VMobjectOptions = {}) {
+    super();
+    void options;
+    if (vmobject !== undefined) {
+      const tuples = vmobject.get_cubic_bezier_tuples();
+      for (const tup of tuples) {
+        const part = new VMobject();
+        part.set_points(tup);
+        part.match_style(vmobject);
+        this.add(part);
+      }
+    }
+  }
+
+  point_from_proportion(alpha: number): NDArray {
+    if (alpha < 0 || alpha > 1) {
+      const error = new Error(`Alpha ${alpha} not between 0 and 1.`);
+      error.name = "ValueError";
+      throw error;
+    }
+    this._throw_error_if_no_submobjects();
+    const submobjs_with_pts = this._get_submobjects_with_points();
+    if (alpha === 1) {
+      const last = submobjs_with_pts[submobjs_with_pts.length - 1];
+      const lastRows = rows(last.points, last.dim);
+      return array(lastRows[lastRows.length - 1] ?? []) as NDArray;
+    }
+    const submobjs_arc_lengths = submobjs_with_pts.map((part) => part.get_arc_length());
+    const total_length = submobjs_arc_lengths.reduce((sum, length) => sum + length, 0);
+    const target_length = alpha * total_length;
+    let current_length = 0;
+    for (let index = 0; index < submobjs_with_pts.length; index += 1) {
+      const part = submobjs_with_pts[index];
+      const part_length = submobjs_arc_lengths[index] ?? 0;
+      if (current_length + part_length >= target_length) {
+        const residue = (target_length - current_length) / part_length;
+        return part.point_from_proportion(residue);
+      }
+      current_length += part_length;
+    }
+    const error = new Error("Unable to determine a point from the requested proportion.");
+    error.name = "ValueError";
+    throw error;
+  }
   _throw_error_if_no_submobjects(): void {
     if (this.submobjects.length === 0) {
       const caller_name = callerFunctionName();

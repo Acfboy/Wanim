@@ -138,3 +138,23 @@ export class ApplyComplexFunction extends Transform {
     super(mobject, target, options);
   }
 }
+
+export class FadeTransformPieces extends FadeTransform {
+  begin(): void {
+    (this.mobject as Group).submobjects[0]?.align_submobjects((this.mobject as Group).submobjects[1]);
+    super.begin();
+  }
+
+  ghost_to(source: Mobject, target: Mobject): void {
+    const sourceFamily = source.get_family();
+    const targetFamily = target.get_family();
+    if (sourceFamily.length !== targetFamily.length) {
+      const error = new Error(`zip() argument 2 is shorter than argument 1 (strict=True)`);
+      error.name = "ValueError";
+      throw error;
+    }
+    for (let index = 0; index < sourceFamily.length; index += 1) {
+      super.ghost_to(sourceFamily[index], targetFamily[index]);
+    }
+  }
+}

@@ -317,3 +317,80 @@ export function get_quadratic_approximation_of_cubic(
   }
   return array(result) as NDArray;
 }
+
+export function subdivide_bezier(
+  points: number[][] | NDArray,
+  n_divisions: number,
+): number[][] {
+  const rows = rawRows(points as number[] | number[][] | NDArray);
+  if (n_divisions === 1) return rows.map((row) => [...row]);
+  const count = rows.length;
+  const dim = rows[0]?.length ?? 3;
+  if (count <= 4) {
+    const matrix = pointRows(_get_subdivision_matrix(count, n_divisions), count);
+    return matrix.map((matrixRow) =>
+      Array.from({ length: dim }, (_, column) =>
+        matrixRow.reduce((sum, value, index) => sum + value * (rows[index]?.[column] ?? 0), 0),
+      ),
+    );
+  }
+  // Fallback for higher-degree curves: successive splitting.
+  const beziers: number[][][] = Array.from({ length: n_divisions }, () => rows.map((row) => [...row]));
+  const last = beziers[n_divisions - 1];
+  if (last) rows.forEach((row, index) => { last[index] = [...row]; });
+  for (let curve_num = n_divisions - 1; curve_num > 0; curve_num -= 1) {
+    const curr = beziers[curve_num];
+    const prev = beziers[curve_num - 1];
+    if (!curr || !prev) continue;
+    prev[0] = [...(curr[0] ?? [])];
+    const a = (n_divisions - curve_num) / (n_divisions - curve_num + 1);
+    for (let i = 1; i < count; i += 1) {
+      for (let k = 0; k < count - i; k += 1) {
+        const left = curr[k] ?? [];
+        const right = curr[k + 1] ?? [];
+        curr[k] = left.map((value, column) => value + a * ((right[column] ?? 0) - value));
+      }
+      prev[i] = [...(curr[0] ?? [])];
+    }
+  }
+  return beziers.flat();
+}
+
+export function bezier_remap(
+  bezier_tuples: number[][][] | NDArray,
+  new_number_of_curves: number,
+): number[][][] {
+  const tuples: number[][][] = Array.isArray(bezier_tuples)
+    ? (bezier_tuples as number[][][]).map((curve) => curve.map((point) => [...point]))
+    : (() => {
+      const source = bezier_tuples as NDArray;
+      const shape = source.shape;
+      const nested = source.toArray() as unknown;
+      if (shape.length === 3) {
+        return (nested as number[][][]).map((curve) => curve.map((point) => [...point]));
+      }
+      const flat = rawRows(source as unknown as number[] | number[][] | NDArray);
+      const nppc = 4;
+      const result: number[][][] = [];
+      for (let i = 0; i + nppc <= flat.length; i += nppc) result.push(flat.slice(i, i + nppc));
+      return result;
+    })();
+  const current_number_of_curves = tuples.length;
+  const nppc = tuples[0]?.length ?? 4;
+  const dim = tuples[0]?.[0]?.length ?? 3;
+  const repeat_indices: number[] = Array.from(
+    { length: new_number_of_curves },
+    (_, i) => Math.floor((i * current_number_of_curves) / new_number_of_curves),
+  );
+  const split_factors: number[] = new Array(current_number_of_curves).fill(0);
+  for (const index of repeat_indices) split_factors[index] = (split_factors[index] ?? 0) + 1;
+  const result: number[][][] = [];
+  tuples.forEach((curve, curveIndex) => {
+    const sf = split_factors[curveIndex] ?? 0;
+    const subdivided = subdivide_bezier(curve, sf);
+    for (let i = 0; i < sf; i += 1) {
+      result.push(subdivided.slice(i * nppc, i * nppc + nppc).map((point) => point.slice(0, dim)));
+    }
+  });
+  return result;
+}
