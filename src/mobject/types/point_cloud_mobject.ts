@@ -84,7 +84,16 @@ export class PMobject extends Mobject {
   }
 
   fade_to(color: ParsableManimColor, alpha: number, family = true): this {
-    this.rgbas = interpolate(this.rgbas, color_to_rgba(color), alpha) as NDArray;
+    // NOTE: mirrors Python `interpolate(self.rgbas, color_to_rgba(color),
+    // alpha)` elementwise, preserving the (N,4) shape. The shared
+    // bezier.interpolate() truncates rows to width 3 and collapses single
+    // rows to 1-D, so the lerp is done explicitly here.
+    const startRows = pointRows(this.rgbas, 4);
+    const endRow = pointRows(color_to_rgba(color), 4)[0] ?? [0, 0, 0, 1];
+    const out = startRows.map((row) =>
+      row.map((value, index) => (1 - alpha) * value + alpha * (endRow[index] ?? 0)),
+    );
+    this.rgbas = array(out.length > 0 ? out : [[]]).reshape(out.length, 4) as NDArray;
     for (const mob of this.submobjects) (mob as PMobject).fade_to(color, alpha, family);
     return this;
   }

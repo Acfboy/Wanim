@@ -125,7 +125,7 @@ function createMobjectProxy(target: Mobject): Mobject {
           return receiver;
         };
       }
-      if (property === "size" || property === "nodeType" || property === "tagName" || (typeof property === "string" && property.startsWith("@@"))) return undefined;
+      if (property === "size" || property === "nodeType" || property === "tagName" || property === "$$typeof" || property === "toJSON" || (typeof property === "string" && property.startsWith("@@"))) return undefined;
       const error = new Error(`${object.constructor.name} object has no attribute '${String(property)}'`);
       error.name = "AttributeError";
       throw error;
@@ -422,12 +422,13 @@ export class Mobject {
   __deepcopy__(clone_from_id: Map<object, unknown> = new Map()): this {
     if (clone_from_id.has(this)) return clone_from_id.get(this) as this;
     const raw = Object.create(Object.getPrototypeOf(this)) as this;
-    clone_from_id.set(this, raw);
+    const result = createMobjectProxy(raw);
+    clone_from_id.set(this, result);
     for (const [key, value] of Object.entries(this)) {
       (raw as unknown as Record<string, unknown>)[key] = cloneValue(value, clone_from_id);
     }
     raw.original_id = String(Math.random());
-    return createMobjectProxy(raw) as this;
+    return result as this;
   }
 
   generate_target(useDeepcopy = false): Mobject | null {
@@ -1060,7 +1061,7 @@ export class Mobject {
     return this.shift([other.get_center()[0] - this.get_center()[0], other.get_center()[1] - this.get_center()[1], other.get_center()[2] - this.get_center()[2]]);
   }
 
-  match_points(other: Mobject): this {
+  match_points(other: Mobject, _copy_submobjects = true): this {
     for (let index = 0; index < this.get_family().length; index += 1) {
       const source = other.get_family()[index];
       if (source) this.get_family()[index].points = pointsFrom(source.points, this.dim);

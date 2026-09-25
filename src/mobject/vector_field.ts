@@ -178,9 +178,24 @@ export class VectorField extends VGroup {
     const rgbs: number[][] = colors.map((color) => pointRows(color_to_rgb(color), 3)[0] ?? [0, 0, 0]);
 
     const func = (values: number[] | NDArray, opacity = 1.0): NDArray => {
-      const flat: number[] = Array.isArray(values)
-        ? (values as number[]).map(Number)
-        : (pointRows(values, 1).map((row) => row[0] ?? 0));
+      // NOTE: mirrors Python `np.array(values)` flattening: a 1-D array of
+      // N values yields N gradient rows. pointRows(..., 1) would treat a
+      // flat 1-D NDArray as a single row, so flatten NDArrays explicitly.
+      let flat: number[];
+      if (Array.isArray(values)) {
+        flat = (values as number[]).map(Number);
+      } else {
+        const raw = (values as NDArray).toArray() as unknown;
+        flat = [];
+        const walk = (node: unknown): void => {
+          if (Array.isArray(node)) {
+            for (const item of node) walk(item);
+          } else {
+            flat.push(Number(node));
+          }
+        };
+        walk(raw);
+      }
       const new_rgbas: number[][] = flat.map((value) => {
         const alpha = Math.min(1, Math.max(0, inverse_interpolate(start, end, value) as number));
         const scaled = alpha * (rgbs.length - 1);
