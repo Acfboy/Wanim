@@ -100,6 +100,22 @@ export function resize_array(nparray: NDArray, length: number): NDArray {
   return array(flat ? out.map((row) => row[0]) : out) as NDArray;
 }
 
+export function stretch_array_to_length(nparray: NDArray, length: number): NDArray {
+  const raw = nparray.toArray() as unknown;
+  const rowsArray: unknown[] = Array.isArray(raw) ? raw : [];
+  const curr_len = rowsArray.length;
+  if (curr_len > length) {
+    const error = new Error("Trying to stretch array to a length shorter than its own");
+    error.name = "Warning";
+    throw error;
+  }
+  const picked = Array.from(
+    { length },
+    (_, i) => rowsArray[Math.trunc((i / length) * curr_len)] as unknown,
+  );
+  return array(picked as unknown[]) as NDArray;
+}
+
 export function resize_preserving_order(nparray: NDArray, length: number): NDArray {
   const raw = nparray.toArray() as unknown;
   const rowsArray: unknown[] = Array.isArray(raw) ? raw : [];

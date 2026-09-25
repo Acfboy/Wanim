@@ -1,5 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { isNDArray, numeric } from "./arrays.js";
+import { config } from "../_config/utils.js";
+import { seek_full_path_from_defaults } from "./file_ops.js";
 
 type PixelInput = NDArray | number[][] | number[][][] | number[];
 
@@ -48,4 +50,12 @@ export function change_to_rgba_array(image: PixelInput, dtype = "uint8"): NDArra
   // NOT cast the whole array to `dtype` here: astype("uint8") would truncate
   // float pixels (e.g. 0.5 -> 0).
   return array(voxels) as NDArray;
+}
+
+export function get_full_raster_image_path(image_file_name: string): string {
+  return seek_full_path_from_defaults(
+    image_file_name,
+    config.getDir("assets_dir"),
+    [".jpg", ".jpeg", ".png", ".gif", ".ico"],
+  );
 }

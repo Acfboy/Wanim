@@ -1,4 +1,4 @@
-import { average, type NDArray } from "numpy-ts";
+import { array, average, type NDArray } from "numpy-ts";
 import { isNDArray, numeric, type ComplexPoint } from "./arrays.js";
 
 type VectorInput = NDArray | number[] | number[][] | readonly number[];
@@ -256,4 +256,14 @@ export function shoelace(x_y: number[][] | NDArray): number {
     total += ((xs[index + 1] ?? 0) - (xs[index] ?? 0)) * ((ys[index + 1] ?? 0) + (ys[index] ?? 0)) / 2;
   }
   return total;
+}
+
+export function rotation_about_z(angle: number): NDArray {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return array([
+    [c, -s, 0],
+    [s, c, 0],
+    [0, 0, 1],
+  ]) as NDArray;
 }

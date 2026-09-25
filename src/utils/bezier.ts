@@ -63,6 +63,36 @@ export function interpolate(
   return array(result) as NDArray;
 }
 
+export function inverse_interpolate(
+  start: number | number[] | NDArray,
+  end: number | number[] | NDArray,
+  value: number | number[] | NDArray,
+): number | NDArray {
+  if (typeof start === "number" && typeof end === "number" && typeof value === "number") {
+    return (value - start) / (end - start);
+  }
+  const startRows = rowsOf(start as number[] | NDArray);
+  const endRows = rowsOf(end as number[] | NDArray);
+  const valueRows = rowsOf(value as number[] | NDArray);
+  const dim = Math.max(
+    startRows[0]?.length ?? 1,
+    endRows[0]?.length ?? 1,
+    valueRows[0]?.length ?? 1,
+  );
+  const count = Math.max(startRows.length, endRows.length, valueRows.length);
+  const result = Array.from({ length: count }, (_, i) => {
+    const s = startRows[startRows.length === 1 ? 0 : i] ?? [];
+    const e = endRows[endRows.length === 1 ? 0 : i] ?? [];
+    const v = valueRows[valueRows.length === 1 ? 0 : i] ?? [];
+    return Array.from(
+      { length: dim },
+      (_, c) => ((v[c] ?? 0) - (s[c] ?? 0)) / ((e[c] ?? 0) - (s[c] ?? 0)),
+    );
+  });
+  if (result.length === 1 && dim === 1) return result[0]?.[0] ?? NaN;
+  return array(result.length === 1 ? result[0] : result) as NDArray;
+}
+
 export const SUBDIVISION_MATRICES: Array<Map<number, number[][]>> = [
   new Map(),
   new Map(),
