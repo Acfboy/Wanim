@@ -176,6 +176,15 @@ describe("PMobject.set_colors_by_radial_gradient", () => {
     pm.set_colors_by_radial_gradient([0, 0, 0], 1, "#FFFFFF", "#000000");
     expectNums(pm.rgbas, [1, 1, 1, 1, 0, 0, 0, 1]);
   });
+  it("extrapolates (no clamp) for points beyond the radius", () => {
+    // Python: add_points [[0,0,0],[3,0,0]] -> rgbas [[1,1,1,1],[-2,-2,-2,1]]
+    // (Mobject.set_submobject_colors_by_radial_gradient clamps, but the
+    // PMobject override does not).
+    const pm = new PMobject();
+    pm.add_points([[0, 0, 0], [3, 0, 0]]);
+    pm.set_colors_by_radial_gradient([0, 0, 0], 1, "#FFFFFF", "#000000");
+    expectNums(pm.rgbas, [1, 1, 1, 1, -2, -2, -2, 1]);
+  });
 });
 
 // ---------------------------------------------------------------------------
