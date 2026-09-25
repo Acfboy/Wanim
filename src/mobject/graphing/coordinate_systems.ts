@@ -34,7 +34,9 @@ export class CoordinateSystem {
     throw error;
   }
   static _origin_shift(_axis_range: readonly number[]): number {
-    throw new Error("CoordinateSystem._origin_shift must be implemented by a subclass.");
+    const error = new Error("CoordinateSystem._origin_shift must be implemented by a subclass.");
+    error.name = "NotImplementedError";
+    throw error;
   }
   get_axes(): Mobject[] { throw new Error("CoordinateSystem.get_axes must be implemented by a subclass."); }
   get_axis(index: number): Mobject { return this.get_axes()[index]; }

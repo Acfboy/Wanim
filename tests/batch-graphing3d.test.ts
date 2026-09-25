@@ -71,7 +71,14 @@ describe("CoordinateSystem._origin_shift", () => {
     // NOTE: deviation — CPython's abstract stub body is `...` so it returns
     // Ellipsis instead of raising; the TS port throws to mark it abstract.
     // Only the Axes override carries numeric ground truth.
-    expect(() => CoordinateSystem._origin_shift([0, 1])).toThrow();
+    let thrown: unknown;
+    try {
+      CoordinateSystem._origin_shift([0, 1]);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("NotImplementedError");
   });
 });
 

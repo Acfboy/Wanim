@@ -172,6 +172,35 @@ describe("change_to_rgba_array", () => {
     expect([...out.shape]).toEqual([2, 2, 4]);
     expect(nums(out)).toEqual([0, 0, 0, 255, 1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]);
   });
+  it("preserves float pixels (Python keeps the input dtype; only alphas use `dtype`)", () => {
+    // Python: change_to_rgba_array(np.array([[0.0, 0.5], [1.0, 0.25]])) ->
+    //   [[[0,0,0,255],[0.5,0.5,0.5,255]], [[1,1,1,255],[0.25,0.25,0.25,255]]].
+    const out = change_to_rgba_array(
+      array([
+        [0.0, 0.5],
+        [1.0, 0.25],
+      ]),
+    );
+    expect([...out.shape]).toEqual([2, 2, 4]);
+    expectClose(out, [0, 0, 0, 255, 0.5, 0.5, 0.5, 255, 1, 1, 1, 255, 0.25, 0.25, 0.25, 255]);
+  });
+  it("leaves 4-channel input untouched (alpha is not forced to 255)", () => {
+    // Python: change_to_rgba_array(zeros((2,2,4), uint8)) -> all zeros.
+    const out = change_to_rgba_array(
+      array([
+        [
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+        ],
+        [
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+        ],
+      ]),
+    );
+    expect([...out.shape]).toEqual([2, 2, 4]);
+    expect(nums(out)).toEqual(new Array(16).fill(0));
+  });
 });
 
 describe("QuickHull", () => {

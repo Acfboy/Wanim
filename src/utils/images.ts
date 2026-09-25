@@ -4,6 +4,7 @@ import { isNDArray, numeric } from "./arrays.js";
 type PixelInput = NDArray | number[][] | number[][][] | number[];
 
 export function change_to_rgba_array(image: PixelInput, dtype = "uint8"): NDArray {
+  void dtype;
   let voxels: number[][][];
   if (isNDArray(image)) {
     const shape = (image as NDArray).shape;
@@ -41,5 +42,10 @@ export function change_to_rgba_array(image: PixelInput, dtype = "uint8"): NDArra
   if (channels === 3) {
     voxels = voxels.map((row) => row.map((pixel) => [...pixel, 255]));
   }
-  return (array(voxels) as NDArray).astype(dtype as "uint8") as NDArray;
+  // NOTE: Python's change_to_rgba_array only uses `dtype` for the appended
+  // alpha channel (`255 * np.ones(..., dtype=dtype)`) and returns the array
+  // with its original dtype otherwise (float input stays float). So we must
+  // NOT cast the whole array to `dtype` here: astype("uint8") would truncate
+  // float pixels (e.g. 0.5 -> 0).
+  return array(voxels) as NDArray;
 }
