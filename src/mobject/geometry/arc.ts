@@ -1,12 +1,15 @@
 import { array, type NDArray } from "numpy-ts";
-import { DEFAULT_ARROW_TIP_LENGTH, ORIGIN, OUT, RIGHT, TAU, UP } from "../../constants.js";
-import { linspace, isNDArray, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, ORIGIN, OUT, RIGHT, TAU, UP } from "../../constants.js";
+import { linspace, isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
 import {
   angle_of_vector,
   line_intersection,
+  perpendicular_bisector,
   rotate_vector,
 } from "../../utils/space_ops.js";
+import { BLUE, RED, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import type { Mobject } from "../mobject.js";
 
 export interface TipableVMobjectOptions extends VMobjectOptions {
   tip_length?: number;
@@ -34,6 +37,11 @@ export class TipableVMobject extends VMobject {
 
   get_default_tip_length(): number {
     return this.tip_length;
+  }
+
+  get_length(): number {
+    const [start, end] = this.get_start_and_end();
+    return norm(subtractPoints(start, end, this.dim));
   }
 }
 
@@ -172,5 +180,288 @@ export class Arc extends TipableVMobject {
     // NOTE: Python `%` is floored modulo; JS `%` is truncated. Use the
     // floored form so negative angles wrap the same way.
     return (((raw % TAU) + TAU) % TAU);
+  }
+}
+
+export interface CircleOptions extends ArcOptions {
+  radius?: number | null;
+  color?: ParsableManimColor;
+  arc_center?: readonly number[] | NDArray;
+  num_components?: number;
+}
+
+export class Circle extends Arc {
+  constructor(radius: number | null = null, options: CircleOptions = {}) {
+    const {
+      radius: radiusOption,
+      arc_center = [...ORIGIN],
+      num_components = 9,
+      color = RED,
+      ...rest
+    } = options;
+    super(radius ?? radiusOption ?? null, 0, TAU, num_components, arc_center, { color, ...rest });
+  }
+
+  surround(
+    mobject: Mobject,
+    dim_to_match = 0,
+    stretch = false,
+    buffer_factor = 1.2,
+  ): this {
+    // Ignores dim_to_match and stretch; result will always be a circle.
+    this.replace(mobject, dim_to_match, stretch);
+    this.width = Math.sqrt(mobject.width ** 2 + mobject.height ** 2);
+    return this.scale(buffer_factor);
+  }
+
+  point_at_angle(angle: number): NDArray {
+    let proportion = angle / TAU;
+    proportion -= Math.floor(proportion);
+    return this.point_from_proportion(proportion);
+  }
+
+  static from_three_points(
+    p1: readonly number[] | NDArray,
+    p2: readonly number[] | NDArray,
+    p3: readonly number[] | NDArray,
+    options: CircleOptions = {},
+  ): Circle {
+    const a = pointRows(p1, 3)[0] ?? [0, 0, 0];
+    const b = pointRows(p2, 3)[0] ?? [0, 0, 0];
+    const c = pointRows(p3, 3)[0] ?? [0, 0, 0];
+    const center = line_intersection(
+      perpendicular_bisector([a, b]),
+      perpendicular_bisector([b, c]),
+    );
+    const radius = norm(subtractPoints(a, center, 3));
+    return new Circle(radius, options).shift(center);
+  }
+}
+
+export interface DotOptions extends CircleOptions {
+  point?: readonly number[] | NDArray;
+  fill_opacity?: number;
+  stroke_width?: number;
+}
+
+export class Dot extends Circle {
+  constructor(
+    point: readonly number[] | NDArray = [...ORIGIN],
+    radius = DEFAULT_DOT_RADIUS,
+    stroke_width = 0,
+    fill_opacity = 1.0,
+    color: ParsableManimColor = WHITE,
+    options: DotOptions = {},
+  ) {
+    const {
+      point: pointOption,
+      radius: radiusOption,
+      stroke_width: strokeWidthOption,
+      fill_opacity: fillOpacityOption,
+      color: colorOption,
+      ...rest
+    } = options;
+    super(radiusOption ?? radius, {
+      arc_center: pointOption ?? point,
+      stroke_width: strokeWidthOption ?? stroke_width,
+      fill_opacity: fillOpacityOption ?? fill_opacity,
+      color: colorOption ?? color,
+      ...rest,
+    });
+  }
+}
+
+export interface AnnotationDotOptions extends DotOptions {
+  stroke_color?: ParsableManimColor;
+  fill_color?: ParsableManimColor;
+}
+
+export class AnnotationDot extends Dot {
+  constructor(
+    radius = DEFAULT_DOT_RADIUS * 1.3,
+    stroke_width = 5,
+    stroke_color: ParsableManimColor = WHITE,
+    fill_color: ParsableManimColor = BLUE,
+    options: AnnotationDotOptions = {},
+  ) {
+    const {
+      radius: radiusOption,
+      stroke_width: strokeWidthOption,
+      stroke_color: strokeColorOption,
+      fill_color: fillColorOption,
+      ...rest
+    } = options;
+    super(
+      [...ORIGIN],
+      radiusOption ?? radius,
+      strokeWidthOption ?? stroke_width,
+      1.0,
+      WHITE,
+      {
+        stroke_color: strokeColorOption ?? stroke_color,
+        fill_color: fillColorOption ?? fill_color,
+        ...rest,
+      },
+    );
+  }
+}
+
+export interface AnnularSectorOptions extends ArcOptions {
+  inner_radius?: number;
+  outer_radius?: number;
+  angle?: number;
+  start_angle?: number;
+  fill_opacity?: number;
+  stroke_width?: number;
+  color?: ParsableManimColor;
+  arc_center?: readonly number[] | NDArray;
+  num_components?: number;
+}
+
+export class AnnularSector extends Arc {
+  inner_radius: number;
+  outer_radius: number;
+
+  constructor(
+    inner_radius = 1,
+    outer_radius = 2,
+    angle = TAU / 4,
+    start_angle = 0,
+    fill_opacity = 1,
+    stroke_width = 0,
+    color: ParsableManimColor = WHITE,
+    options: AnnularSectorOptions = {},
+  ) {
+    const {
+      inner_radius: innerOption,
+      outer_radius: outerOption,
+      angle: angleOption,
+      start_angle: startAngleOption,
+      fill_opacity: fillOpacityOption,
+      stroke_width: strokeWidthOption,
+      color: colorOption,
+      arc_center = [...ORIGIN],
+      num_components = 9,
+      ...rest
+    } = options;
+    // NOTE: Python assigns inner/outer_radius before super().__init__() so
+    // that generate_points() sees them; TS requires super() first, so the
+    // base-constructor call is guarded as a no-op and fields are assigned
+    // plus points regenerated here.
+    super(null, startAngleOption ?? start_angle, angleOption ?? angle, num_components, arc_center, {
+      fill_opacity: fillOpacityOption ?? fill_opacity,
+      stroke_width: strokeWidthOption ?? stroke_width,
+      color: colorOption ?? color,
+      ...rest,
+    });
+    this.inner_radius = innerOption ?? inner_radius;
+    this.outer_radius = outerOption ?? outer_radius;
+    this.generate_points();
+  }
+
+  override generate_points(): this {
+    // NOTE: the base Mobject/Arc constructors invoke generate_points()
+    // before this class assigns inner_radius/outer_radius (and the
+    // Mobject instance proxy throws on unassigned fields, so a plain
+    // `=== undefined` read is unsafe here). Treat that early call as a
+    // no-op; the constructor regenerates points afterwards.
+    if (!("inner_radius" in this) || !("outer_radius" in this)) return this;
+    if (this.inner_radius === undefined || this.outer_radius === undefined) return this;
+    const inner_arc = new Arc(this.inner_radius, this.start_angle, this.angle, this.num_components, this.arc_center);
+    const outer_arc = new Arc(this.outer_radius, this.start_angle, this.angle, this.num_components, this.arc_center);
+    outer_arc.reverse_points();
+    this.append_points(inner_arc.points);
+    this.add_line_to(pointRows(outer_arc.points, this.dim)[0] ?? [0, 0, 0]);
+    this.append_points(outer_arc.points);
+    this.add_line_to(pointRows(inner_arc.points, this.dim)[0] ?? [0, 0, 0]);
+    return this;
+  }
+
+  override init_points(): this {
+    this.generate_points();
+    return this;
+  }
+}
+
+export interface SectorOptions extends AnnularSectorOptions {
+  radius?: number;
+}
+
+export class Sector extends AnnularSector {
+  constructor(radius = 1, options: SectorOptions = {}) {
+    const {
+      radius: radiusOption,
+      angle = TAU / 4,
+      start_angle = 0,
+      fill_opacity = 1,
+      stroke_width = 0,
+      color = WHITE,
+      ...rest
+    } = options;
+    super(0, radiusOption ?? radius, angle, start_angle, fill_opacity, stroke_width, color, rest);
+  }
+}
+
+export interface AnnulusOptions extends CircleOptions {
+  inner_radius?: number;
+  outer_radius?: number;
+  fill_opacity?: number;
+  stroke_width?: number;
+  mark_paths_closed?: boolean;
+}
+
+export class Annulus extends Circle {
+  inner_radius: number;
+  outer_radius: number;
+  mark_paths_closed: boolean;
+
+  constructor(
+    inner_radius = 1,
+    outer_radius = 2,
+    fill_opacity = 1,
+    stroke_width = 0,
+    color: ParsableManimColor = WHITE,
+    mark_paths_closed = false,
+    options: AnnulusOptions = {},
+  ) {
+    const {
+      inner_radius: innerOption,
+      outer_radius: outerOption,
+      fill_opacity: fillOpacityOption,
+      stroke_width: strokeWidthOption,
+      color: colorOption,
+      mark_paths_closed: markPathsClosedOption,
+      ...rest
+    } = options;
+    super(null, {
+      fill_opacity: fillOpacityOption ?? fill_opacity,
+      stroke_width: strokeWidthOption ?? stroke_width,
+      color: colorOption ?? color,
+      ...rest,
+    });
+    // is this even used?
+    this.mark_paths_closed = markPathsClosedOption ?? mark_paths_closed;
+    this.inner_radius = innerOption ?? inner_radius;
+    this.outer_radius = outerOption ?? outer_radius;
+    this.generate_points();
+  }
+
+  override generate_points(): this {
+    // NOTE: same early-construction guard as AnnularSector (see above).
+    if (!("inner_radius" in this) || !("outer_radius" in this)) return this;
+    if (this.inner_radius === undefined || this.outer_radius === undefined) return this;
+    this.radius = this.outer_radius;
+    const outer_circle = new Circle(this.outer_radius);
+    const inner_circle = new Circle(this.inner_radius);
+    inner_circle.reverse_points();
+    this.append_points(outer_circle.points);
+    this.append_points(inner_circle.points);
+    this.shift(this.arc_center);
+    return this;
+  }
+
+  override init_points(): this {
+    this.generate_points();
+    return this;
   }
 }

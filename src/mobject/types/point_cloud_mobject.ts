@@ -8,7 +8,7 @@ import {
   UP,
 } from "../../constants.js";
 import { interpolate } from "../../utils/bezier.js";
-import { BLACK, ManimColor, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLACK, ManimColor, color_gradient, color_to_rgba, rgba_to_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { arange, isNDArray, linspace, pointRows } from "../../utils/arrays.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
@@ -95,6 +95,19 @@ export class PMobject extends Mobject {
     return this.set_color(color, family);
   }
 
+  set_color_by_gradient(...colors: ParsableManimColor[]): this {
+    const gradient = color_gradient(colors, this.get_num_points());
+    const rows = gradient.map(
+      (color) => pointRows(color_to_rgba(color), 4)[0] ?? [0, 0, 0, 1],
+    );
+    this.rgbas = array(rows.length > 0 ? rows : []).reshape(rows.length, 4) as NDArray;
+    return this;
+  }
+
+  setColorByGradient(...colors: ParsableManimColor[]): this {
+    return this.set_color_by_gradient(...colors);
+  }
+
   get_stroke_width(): number {
     return this.stroke_width;
   }
@@ -176,8 +189,7 @@ export class PMobject extends Mobject {
     return this.sort_points(predicate);
   }
 
-  fade_to(color: ParsableManimColor, alpha: number, family = true): this {
-    // NOTE: mirrors Python `interpolate(self.rgbas, color_to_rgba(color),
+  fade_to(color: ParsableManimColor, alpha: number, family = true): this {    // NOTE: mirrors Python `interpolate(self.rgbas, color_to_rgba(color),
     // alpha)` elementwise, preserving the (N,4) shape. The shared
     // bezier.interpolate() truncates rows to width 3 and collapses single
     // rows to 1-D, so the lerp is done explicitly here.

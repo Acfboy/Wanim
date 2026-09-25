@@ -209,6 +209,16 @@ export class VMobjectFromSVGPath extends VMobject {
 
   generate_points(): this {
     this.handle_commands();
+    if (get_config_renderer() === RendererType.OPENGL) {
+      // NOTE: subdivide_sharp_curves / get_points_without_null_curves live
+      // in another translation batch; only the Cairo path is ported here.
+      if (this.should_subdivide_sharp_curves) {
+        throw new Error("TODO: VMobjectFromSVGPath subdivide_sharp_curves not ported yet");
+      }
+      if (this.should_remove_null_curves) {
+        throw new Error("TODO: VMobjectFromSVGPath get_points_without_null_curves not ported yet");
+      }
+    }
     return this;
   }
 

@@ -1092,7 +1092,10 @@ describe("batch integration", () => {
     expect(updater).not.toBeNull();
     updater?.(vf, 0.5);
     const center = mob.get_center();
-    expectClose(center[0] ?? NaN, 1.0);
+    // NOTE: VMobject.get_center() is anchor-based (get_points_defining_boundary
+    // returns anchors, matching Python), so this 4-point mob is centered at
+    // [0, 0.5, 0] pre-shift and [0.5, 0.5, 0] after the +0.5 x nudge.
+    expectClose(center[0] ?? NaN, 0.5);
     expectClose(center[1] ?? NaN, 0.5);
     vf.stop_submobject_movement();
   });

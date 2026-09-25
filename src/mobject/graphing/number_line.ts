@@ -1,6 +1,9 @@
-import { type NDArray } from "numpy-ts";
+import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
 import { DEFAULT_ARROW_TIP_LENGTH } from "../../constants.js";
+import { isNDArray, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { interpolate } from "../../utils/bezier.js";
+import { normalize } from "../../utils/space_ops.js";
 import { VGroup } from "../types/vectorized_mobject.js";
 import { LinearBase, _ScaleBase } from "./scale.js";
 
@@ -37,6 +40,16 @@ function arange(start: number, stop: number, step: number): number[] {
 // NOTE: minimal port. NumberLine's label/text rendering (Tex, DecimalNumber)
 // is out of scope for the interpreter target; only the pure-computation
 // pieces translated so far are included here.
+function isSinglePoint(point: unknown): boolean {
+  if (isNDArray(point)) {
+    return (point.shape ?? []).length <= 1;
+  }
+  if (Array.isArray(point)) {
+    return point.length === 0 || typeof point[0] === "number";
+  }
+  return true;
+}
+
 export class NumberLine extends VGroup {
   x_range: [number, number, number];
   x_min: number;
@@ -116,8 +129,7 @@ export class NumberLine extends VGroup {
     return (step_str.split(".").pop() ?? "").length;
   }
 
-  get_tick_range(): NDArray {
-    const [x_min, x_max, x_step] = this.x_range;
+  get_tick_range(): NDArray {    const [x_min, x_max, x_step] = this.x_range;
     let max = x_max ?? 0;
     if (!this.include_tip) max += 1e-6;
 
@@ -135,5 +147,25 @@ export class NumberLine extends VGroup {
       tick_range = [...new Set([...x_min_segment, ...x_max_segment])].sort((a, b) => a - b);
     }
     return this.scaling.function(tick_range) as NDArray;
+  }
+
+  point_to_number(point: number[] | number[][] | NDArray): number | NDArray {
+    const [start, end] = this.get_start_and_end();
+    const span = subtractPoints(end, start, this.dim);
+    const unit_vect = normalize(span);
+    const denom = span.reduce((sum, value, index) => sum + value * (unit_vect[index] ?? 0), 0);
+    const rows = pointRows(point, this.dim);
+    const proportions = rows.map((row) => {
+      const diff = subtractPoints(row, start, this.dim);
+      return diff.reduce((sum, value, index) => sum + value * (unit_vect[index] ?? 0), 0) / denom;
+    });
+    if (isSinglePoint(point)) {
+      return interpolate(this.x_min, this.x_max, proportions[0] ?? 0) as number;
+    }
+    return interpolate(this.x_min, this.x_max, array(proportions) as NDArray) as NDArray;
+  }
+
+  pointToNumber(point: number[] | number[][] | NDArray): number | NDArray {
+    return this.point_to_number(point);
   }
 }

@@ -1175,6 +1175,24 @@ export function invert_color(color: ManimColor): ManimColor {
   return color.invert();
 }
 
+export function average_color(...colors: ParsableManimColor[]): ManimColor {
+  const rgbs = colors.map((color) => pointRows(color_to_rgb(color), 3)[0] ?? [0, 0, 0]);
+  const mean_rgb = [0, 1, 2].map(
+    (channel) => rgbs.reduce((sum, rgb) => sum + (rgb[channel] ?? 0), 0) / rgbs.length,
+  );
+  return rgb_to_color(mean_rgb);
+}
+
+export function random_color(): ManimColor {
+  return RandomColorGenerator._random_color();
+}
+
+export function random_bright_color(): ManimColor {
+  const curr_rgb = pointRows(color_to_rgb(random_color()), 3)[0] ?? [0, 0, 0];
+  const new_rgb = curr_rgb.map((value) => 0.5 * (value + 1));
+  return rgb_to_color(new_rgb);
+}
+
 export function get_shaded_rgb(
   rgb: number[] | readonly number[] | ColorArray,
   point: number[] | readonly number[] | ColorArray,

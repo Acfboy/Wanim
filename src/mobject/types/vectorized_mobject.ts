@@ -2,7 +2,7 @@ import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
-import { bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points } from "../../utils/bezier.js";
+import { bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { ORIGIN, OUT, UL } from "../../constants.js";
@@ -56,6 +56,38 @@ function curveLength(points: number[][], samplePoints = 10): number {
 
 function isIterable(value: unknown): value is Iterable<unknown> {
   return value !== null && value !== undefined && typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function";
+}
+
+/** Unwrap a style value that may be a list/array of colors (as returned by
+ * get_style()) down to a single color, mirroring the single-color behavior
+ * of set_fill/set_stroke in this port. */
+export function singleColor(value: ParsableManimColor | ManimColor[] | NDArray | null | undefined): ParsableManimColor | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (entry !== null && entry !== undefined) return entry as ParsableManimColor;
+    }
+    return null;
+  }
+  if (isNDArray(value)) {
+    const flat = (value.toArray() as unknown[]).flat(Infinity) as unknown[];
+    return (flat.find((entry) => entry !== null && entry !== undefined) as ParsableManimColor | undefined) ?? null;
+  }
+  return value;
+}
+
+/** Unwrap a style opacity that may be a list/array of opacities down to a
+ * single number. */
+export function singleOpacity(value: number | number[] | NDArray | null | undefined): number | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "number") return value;
+  if (Array.isArray(value)) {
+    const found = value.find((entry) => entry !== null && entry !== undefined);
+    return found === undefined ? null : Number(found);
+  }
+  const flat = (value.toArray() as unknown[]).flat(Infinity) as unknown[];
+  const found = flat.find((entry) => entry !== null && entry !== undefined);
+  return found === undefined ? null : Number(found);
 }
 
 function interpolateArray(first: unknown, second: unknown, alpha: number): NDArray {
@@ -600,6 +632,111 @@ export class VMobject extends Mobject {
 
   getStyle(simple = false): Record<string, unknown> { return this.get_style(simple); }
 
+  set_style(options: {
+    fill_color?: ParsableManimColor | ManimColor[] | NDArray | null;
+    fill_opacity?: number | number[] | NDArray | null;
+    stroke_color?: ParsableManimColor | ManimColor[] | NDArray | null;
+    stroke_width?: number | null;
+    stroke_opacity?: number | number[] | NDArray | null;
+    background_stroke_color?: ParsableManimColor | ManimColor[] | NDArray | null;
+    background_stroke_width?: number | null;
+    background_stroke_opacity?: number | number[] | NDArray | null;
+    sheen_factor?: number | null;
+    sheen_direction?: number[] | readonly number[] | NDArray | null;
+    background_image?: string | null;
+    family?: boolean;
+  } = {}): this {
+    const {
+      fill_color = null,
+      fill_opacity = null,
+      stroke_color = null,
+      stroke_width = null,
+      stroke_opacity = null,
+      background_stroke_color = null,
+      background_stroke_width = null,
+      background_stroke_opacity = null,
+      sheen_factor = null,
+      sheen_direction = null,
+      background_image = null,
+      family = true,
+    } = options;
+    this.set_fill(
+      singleColor(fill_color) ?? undefined,
+      singleOpacity(fill_opacity) ?? undefined,
+      family,
+    );
+    this.set_stroke(
+      singleColor(stroke_color) ?? undefined,
+      stroke_width ?? undefined,
+      singleOpacity(stroke_opacity) ?? undefined,
+      family,
+    );
+    this.set_background_stroke({
+      color: singleColor(background_stroke_color),
+      width: background_stroke_width ?? undefined,
+      opacity: singleOpacity(background_stroke_opacity) ?? undefined,
+      family,
+    });
+    if (sheen_factor) {
+      this.set_sheen(
+        sheen_factor,
+        sheen_direction ?? undefined,
+        family,
+      );
+    }
+    if (background_image) {
+      this.color_using_background_image(background_image);
+    }
+    return this;
+  }
+
+  setStyle(options: Parameters<VMobject["set_style"]>[0] = {}): this {
+    return this.set_style(options);
+  }
+
+  match_style(vmobject: VMobject, family = true): this {
+    this.set_style({ ...(vmobject.get_style() as Parameters<VMobject["set_style"]>[0]), family: false });
+    if (family) {
+      // Does its best to match up submobject lists, and
+      // match styles accordingly
+      const submobs1 = this.submobjects;
+      const submobs2 = vmobject.submobjects;
+      if (submobs1.length === 0) return this;
+      const second: Mobject[] = submobs2.length === 0 ? [vmobject] : [...submobs2];
+      const [even1, even2] = make_even([...submobs1], second);
+      even1.forEach((sm1, index) => {
+        (sm1 as VMobject).match_style(even2[index] as VMobject);
+      });
+    }
+    return this;
+  }
+
+  matchStyle(vmobject: VMobject, family = true): this {
+    return this.match_style(vmobject, family);
+  }
+
+  color_using_background_image(background_image: string): this {
+    this.background_image = background_image;
+    this.set_color(WHITE);
+    for (const submob of this.submobjects) {
+      (submob as VMobject).color_using_background_image(background_image);
+    }
+    return this;
+  }
+
+  colorUsingBackgroundImage(background_image: string): this {
+    return this.color_using_background_image(background_image);
+  }
+
+  match_background_image(vmobject: VMobject): this {
+    this.color_using_background_image(vmobject.get_background_image() as string);
+    return this;
+  }
+
+  matchBackgroundImage(vmobject: VMobject): this {
+    return this.match_background_image(vmobject);
+  }
+
   get_num_curves(): number {
     return Math.floor(this.get_num_points() / this.n_points_per_cubic_curve);
   }
@@ -908,6 +1045,15 @@ export class VMobject extends Mobject {
     return this.get_nth_curve_length_pieces(n, sample_points);
   }
 
+  get_nth_curve_length(n: number, sample_points: number | null = null): number {
+    const [, length] = this.get_nth_curve_function_with_length(n, sample_points);
+    return length;
+  }
+
+  getNthCurveLength(n: number, sample_points: number | null = null): number {
+    return this.get_nth_curve_length(n, sample_points);
+  }
+
   get_nth_curve_function_with_length(index: number, sample_points: number | null = null): [(t: number) => number[], number] {
     const curve = this.get_nth_curve_function(index);
     // NOTE: mirrors Python `length = np.sum(norms)`: the pieces array is 1D
@@ -965,20 +1111,47 @@ export class VMobject extends Mobject {
       }
       currentLength += length;
     }
-    throw new Error("Unable to determine a point from the requested proportion.");
+    throw new Error("Not sure how you reached here, please file a bug report at https://github.com/ManimCommunity/manim/issues/new/choose");
   }
 
-  proportion_from_point(point: readonly number[]): number {
-    const curves = this.get_curve_functions_with_lengths();
-    const total = curves.reduce((sum, [, length]) => sum + length, 0);
-    if (total === 0) return 0;
-    let current = 0;
-    for (const [curve, length] of curves) {
-      const candidate = curve(1);
-      if (Math.hypot(...candidate.map((value, index) => value - (point[index] ?? 0))) <= Math.hypot(...curve(0).map((value, index) => value - (point[index] ?? 0)))) return (current + length) / total;
-      current += length;
+  proportion_from_point(point: readonly number[] | NDArray): number {
+    this.throw_error_if_no_points("proportion_from_point");
+    // Iterate over each bezier curve that the VMobject is composed of,
+    // checking if the point lies on that curve. If it does not lie on that
+    // curve, add the whole length of the curve to target_length and move
+    // onto the next curve. If the point does lie on the curve, add how far
+    // along the curve the point is to target_length. Then, divide
+    // target_length by the total arc length of the shape to get the
+    // proportion along the VMobject the point is at.
+    const numCurves = this.get_num_curves();
+    const totalLength = this.get_arc_length();
+    let targetLength = 0;
+    for (let n = 0; n < numCurves; n += 1) {
+      const controlPoints = this.get_nth_curve_points(n);
+      const length = this.get_nth_curve_length(n);
+      const proportions = ((nestedRows(
+        proportions_along_bezier_curve_for_point(
+          pointFrom(point, this.dim).toArray() as number[],
+          pointRows(controlPoints, this.dim),
+        ),
+      )[0] ?? []) as unknown[]).map(Number);
+      if (proportions.length > 0) {
+        const proportionAlongNthCurve = Math.max(...proportions);
+        targetLength += length * proportionAlongNthCurve;
+        break;
+      }
+      targetLength += length;
+      if (n === numCurves - 1) {
+        const error = new Error(`Point ${JSON.stringify(point)} does not lie on this curve.`);
+        error.name = "ValueError";
+        throw error;
+      }
     }
-    return 1;
+    return targetLength / totalLength;
+  }
+
+  proportionFromPoint(point: readonly number[] | NDArray): number {
+    return this.proportion_from_point(point);
   }
 
   reverse_direction(): this {

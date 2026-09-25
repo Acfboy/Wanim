@@ -115,8 +115,7 @@ export function get_scene_classes_from_module(module: SceneModule): SceneClass[]
 
 const is_child_scene_outer = is_child_scene;
 
-export function get_scenes_to_render(scene_classes: SceneClass[]): SceneClass[] {
-  if (scene_classes.length === 0) {
+export function get_scenes_to_render(scene_classes: SceneClass[]): SceneClass[] {  if (scene_classes.length === 0) {
     console.error(NO_SCENE_MESSAGE);
     return [];
   }
@@ -194,4 +193,28 @@ export function prompt_user_for_choice(scene_classes: SceneClass[]): SceneClass[
   const selected = parse_scene_choice(scene_classes, user_input);
   config.scene_names = selected.map(sceneDisplayName);
   return selected;
+}
+
+export function scene_classes_from_file(
+  file_path: string,
+  require_single_scene = false,
+  full_list = false,
+): SceneClass | SceneClass[] {
+  const module = get_module(file_path);
+  const all_scene_classes = get_scene_classes_from_module(module);
+  if (full_list) {
+    return all_scene_classes;
+  }
+  const scene_classes_to_render = get_scenes_to_render(all_scene_classes);
+  if (require_single_scene) {
+    if (scene_classes_to_render.length !== 1) {
+      const error = new Error(
+        `AssertionError: expected a single scene, got ${scene_classes_to_render.length}`,
+      );
+      error.name = "AssertionError";
+      throw error;
+    }
+    return scene_classes_to_render[0] as SceneClass;
+  }
+  return scene_classes_to_render;
 }

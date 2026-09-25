@@ -126,6 +126,11 @@ export const there_and_back_with_pause: RateFunction = zero(((t: number, pause_r
   }
 }) as RateFunction);
 
+export const wiggle: RateFunction = zero(((t: number, wiggles: number = 2): number => {
+  const val: number = Math.sin(wiggles * Math.PI * t);
+  return (there_and_back as (t: number) => number)(t) * val;
+}) as RateFunction);
+
 export const running_start: RateFunction = unit_interval(((t: number, pull_factor: number = -0.5): number => {
   const t2 = t * t;
   const t3 = t2 * t;
