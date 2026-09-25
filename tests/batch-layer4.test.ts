@@ -25,9 +25,9 @@
 //    (geometry.shape_matchers, not ported). TS throws a TODO error unless a
 //    factory is registered via setBackgroundRectangleFactory; tests assert
 //    the throw plus the family fan-out through a stub factory.
-//  - AnimationGroup.interpolate: Python clamps sub-alphas into [0, 1] and
-//    skips untouched anims; TS computes unclamped sub-alphas for anims in
-//    the update window. In-range alphas agree; tests stay in range.
+//  - AnimationGroup.interpolate: faithful port of Python -- sub-alphas are
+//    clamped into [0, 1], zero run_time anims get 1 forward / 0 backward,
+//    and only ongoing anims are updated. Covered by lag/clamp tests below.
 //  - QuickHull.initialize picks its starting simplex with an unseeded RNG in
 //    both languages, so hull facet *order* is not asserted -- only the facet
 //    set (triangle: exact count; square: boundary edges after dropping
@@ -916,6 +916,65 @@ describe("AnimationGroup.interpolate", () => {
     g.interpolate(1.0);
     expect(recs[0]?.calls).toEqual([0.5, 1]);
     expect(recs[1]?.calls).toEqual([0.5, 1]);
+  });
+  it("clamps lagged sub-alphas into [0, 1] like Python", () => {
+    // Python: two run_time=1 anims, lag_ratio=0.5 (max_end_time 1.5);
+    // interpolate(1.0) -> [1.0, 1.0] (first sub-alpha 1.5 clamped to 1);
+    // interpolate(0.5) -> [0.75, 0.25].
+    const m = new Mobject();
+    const g = new AnimationGroup(
+      new RecordingAnimation(m, { run_time: 1 }),
+      new RecordingAnimation(m, { run_time: 1 }),
+      { lag_ratio: 0.5 },
+    );
+    g.begin();
+    const recs = g.animations as RecordingAnimation[];
+    recs[0]?.calls.splice(0);
+    recs[1]?.calls.splice(0);
+    g.interpolate(1.0);
+    expect(recs[0]?.calls).toEqual([1]);
+    expect(recs[1]?.calls).toEqual([1]);
+    const g2 = new AnimationGroup(
+      new RecordingAnimation(m, { run_time: 1 }),
+      new RecordingAnimation(m, { run_time: 1 }),
+      { lag_ratio: 0.5 },
+    );
+    g2.begin();
+    const recs2 = g2.animations as RecordingAnimation[];
+    recs2[0]?.calls.splice(0);
+    recs2[1]?.calls.splice(0);
+    g2.interpolate(0.5);
+    expect(recs2[0]?.calls).toEqual([0.75]);
+    expect(recs2[1]?.calls).toEqual([0.25]);
+  });
+  it("gives zero run_time anims sub-alpha 1 and clamps when going back", () => {
+    // Python: run_time=0 + run_time=1 group, interpolate(0.5) -> [1.0, 0.5];
+    // lagged group to 1.0 then back to 0.25 -> [0.375, 0.0].
+    const m = new Mobject();
+    const g = new AnimationGroup(
+      new RecordingAnimation(m, { run_time: 0 }),
+      new RecordingAnimation(m, { run_time: 1 }),
+    );
+    g.begin();
+    const recs = g.animations as RecordingAnimation[];
+    recs[0]?.calls.splice(0);
+    recs[1]?.calls.splice(0);
+    g.interpolate(0.5);
+    expect(recs[0]?.calls).toEqual([1]);
+    expect(recs[1]?.calls).toEqual([0.5]);
+    const lagged = new AnimationGroup(
+      new RecordingAnimation(m, { run_time: 1 }),
+      new RecordingAnimation(m, { run_time: 1 }),
+      { lag_ratio: 0.5 },
+    );
+    lagged.begin();
+    lagged.interpolate(1.0);
+    const lagRecs = lagged.animations as RecordingAnimation[];
+    lagRecs[0]?.calls.splice(0);
+    lagRecs[1]?.calls.splice(0);
+    lagged.interpolate(0.25);
+    expect(lagRecs[0]?.calls).toEqual([0.375]);
+    expect(lagRecs[1]?.calls).toEqual([0]);
   });
 });
 

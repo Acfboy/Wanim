@@ -124,21 +124,37 @@ export class AnimationGroup extends Animation {
   }
 
   interpolate(alpha: number): void {
+    // Faithful port of Python AnimationGroup.interpolate: sub-alphas are
+    // clamped into [0, 1] (forward: >1 -> 1; backward: <0 -> 0), zero
+    // run_time anims get sub-alpha 1 forward / 0 backward, and only
+    // ongoing animations are updated.
     const time = this.rate_func(alpha) * this.max_end_time;
     const backwards = time < this.anim_group_time;
+    const newBegun: boolean[] = [];
+    const newFinished: boolean[] = [];
     for (let index = 0; index < this.anims_with_timings.length; index += 1) {
       const timing = this.anims_with_timings[index];
-      const newBegun = time >= timing.start;
-      const newFinished = time > timing.end;
-      if ((this.anims_begun[index] || newBegun) && (!this.anims_finished[index] || !newFinished)) {
-        this.anims_begun[index] = true;
-        const runTime = timing.end - timing.start;
-        const subAlpha = runTime === 0 ? 1 : (time - timing.start) / runTime;
-        timing.anim.interpolate(this.anims_finished[index] && backwards ? 0 : subAlpha);
-        this.anims_finished[index] = newFinished;
+      newBegun.push(time >= timing.start);
+      newFinished.push(time > timing.end);
+    }
+    for (let index = 0; index < this.anims_with_timings.length; index += 1) {
+      const timing = this.anims_with_timings[index];
+      if ((this.anims_begun[index] || newBegun[index]) && (!this.anims_finished[index] || !newFinished[index])) {
+        let runTime = timing.end - timing.start;
+        const zeroRunTime = runTime === 0;
+        if (zeroRunTime) runTime = 1;
+        let subAlpha = (time - timing.start) / runTime;
+        if (backwards) {
+          if (subAlpha < 0 || zeroRunTime) subAlpha = 0;
+        } else {
+          if (subAlpha > 1 || zeroRunTime) subAlpha = 1;
+        }
+        timing.anim.interpolate(subAlpha);
       }
     }
     this.anim_group_time = time;
+    this.anims_begun = newBegun;
+    this.anims_finished = newFinished;
   }
 }
 
