@@ -217,6 +217,22 @@ export class Cell {
     return this.d >= other.d;
   }
 
+  __lt__(other: Cell): boolean {
+    return this.d < other.d;
+  }
+
+  __gt__(other: Cell): boolean {
+    return this.d > other.d;
+  }
+
+  __le__(other: Cell): boolean {
+    return this.d <= other.d;
+  }
+
+  __ge__(other: Cell): boolean {
+    return this.d >= other.d;
+  }
+
   valueOf(): number {
     return this.d;
   }

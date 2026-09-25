@@ -3,12 +3,14 @@ import { VGroup, VMobject, VectorizedPoint } from "./types/vectorized_mobject.js
 import { Mobject } from "./mobject.js";
 import { CoordinateSystem } from "./graphing/coordinate_systems.js";
 import { Animation, type AnimationOptions, linear } from "../animation/animation.js";
-import { AnimationGroup } from "../animation/composition.js";
+import { AnimationGroup, Succession } from "../animation/composition.js";
+import { UpdateFromAlphaFunc } from "../animation/updaters/update.js";
 import { Create, ShowPartial } from "../animation/creation.js";
 import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, color_to_rgb, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
 import { inverse_interpolate } from "../utils/bezier.js";
 import { addPoints, arange, linspace, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
 import { clip as _clip } from "../utils/simple_functions.js";
+import { ease_out_sine } from "../utils/rate_functions.js";
 import { config } from "../_config/utils.js";
 import { OUT, RIGHT, UP } from "../constants.js";
 
@@ -106,6 +108,23 @@ export class VectorField extends VGroup {
 
   nudge_submobjects(dt = 1, substeps = 1, pointwise = false): this {
     for (const mobject of this.submobjects) this.nudge(mobject, dt, substeps, pointwise);
+    return this;
+  }
+
+  start_submobject_movement(speed = 1, pointwise = false): this {
+    this.stop_submobject_movement();
+    this.submob_movement_updater = (mob: Mobject, dt: number): void => {
+      (mob as VectorField).nudge_submobjects(dt * speed, 1, pointwise);
+    };
+    this.add_updater(this.submob_movement_updater);
+    return this;
+  }
+
+  stop_submobject_movement(): this {
+    if (this.submob_movement_updater !== null) {
+      this.remove_updater(this.submob_movement_updater);
+    }
+    this.submob_movement_updater = null;
     return this;
   }
 
@@ -313,15 +332,60 @@ export class StreamLines extends VectorField {
       error.name = "ValueError";
       throw error;
     }
+    const stream = this;
+    const dt = 1 / (config.frame_rate as number);
+
     function hide_and_wait(mob: Mobject, alpha: number): void {
       if (alpha === 0) mob.set_stroke(undefined, undefined, 0);
       else if (alpha === 1) mob.set_stroke(undefined, undefined, 1);
     }
+
+    function finish_updater_cycle(line: VMobject, alpha: number): void {
+      const state = line as VMobject & { time: number; anim: Animation };
+      state.time += dt * stream.flow_speed;
+      state.anim.interpolate(Math.min(state.time / state.anim.run_time, 1));
+      if (alpha === 1) {
+        stream.remove(state.anim.mobject);
+        state.anim.finish();
+      }
+    }
+
     this.hide_and_wait = hide_and_wait;
-    if (this.flow_animation) this.remove_updater(this.flow_animation as any);
+    const max_run_time = this.virtual_time / this.flow_speed;
+    const creation_rate_func = ease_out_sine;
+    const creation_staring_speed = (creation_rate_func(0.001) as number) * 1000;
+    const creation_run_time =
+      (max_run_time / (1 + this.time_width)) * creation_staring_speed;
+    // creation_run_time is calculated so that the creation animation starts at the same speed
+    // as the regular line flash animation but eases out.
+
+    const animations: Animation[] = [];
+    if (this.flow_animation) this.remove_updater(this.flow_animation as (mob: Mobject, dt: number) => void);
     this.flow_animation = null;
-    const animation = new Animation(this, { run_time: 1 });
-    return new AnimationGroup([animation], { group: this });
+
+    for (const line of this.stream_lines) {
+      const state = line as VMobject & { time: number; anim: Animation };
+      const create = new Create(line, { run_time: creation_run_time, rate_func: creation_rate_func });
+      if (state.time <= 0) {
+        animations.push(
+          new Succession(
+            new UpdateFromAlphaFunc(line, hide_and_wait as (mobject: Mobject, ...args: unknown[]) => void, { run_time: -state.time / this.flow_speed }),
+            create,
+          ),
+        );
+        this.remove(state.anim.mobject);
+        state.anim.finish();
+      } else {
+        const remaining_time = max_run_time - state.time / this.flow_speed;
+        animations.push(
+          new Succession(
+            new UpdateFromAlphaFunc(line, finish_updater_cycle as (mobject: Mobject, ...args: unknown[]) => void, { run_time: remaining_time }),
+            create,
+          ),
+        );
+      }
+    }
+    return new AnimationGroup(...animations);
   }
 }
 

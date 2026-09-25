@@ -72,3 +72,7 @@ export function not_quite_there(
   }
   return result as RateFunction;
 }
+
+export function ease_out_sine(t: number): number {
+  return Math.sin((t * Math.PI) / 2);
+}

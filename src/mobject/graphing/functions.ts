@@ -1,5 +1,6 @@
 import { array, type NDArray } from "numpy-ts";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { config } from "../../_config/utils.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
 export type ParametricFunctionT = (t: number) => number[] | readonly number[] | NDArray;
@@ -58,5 +59,105 @@ export class ParametricFunction extends VMobject {
 
   get_point_from_function(t: number): NDArray {
     return this.function(t);
+  }
+}
+
+export type ImplicitFunctionT = (x: number, y: number) => number;
+
+export interface ImplicitFunctionOptions extends VMobjectOptions {
+  x_range?: number[] | null;
+  y_range?: number[] | null;
+  min_depth?: number;
+  max_quads?: number;
+  use_smoothing?: boolean;
+}
+
+export type IsolineComputer = (fn: (p: [number, number]) => number, pmin: [number, number], pmax: [number, number], min_depth: number, max_quads: number) => number[][][];
+
+let isolineComputer: IsolineComputer | null = null;
+
+export function setIsolineComputer(computer: IsolineComputer | null): void {
+  isolineComputer = computer;
+}
+
+export class ImplicitFunction extends VMobject {
+  function: ImplicitFunctionT;
+  min_depth: number;
+  max_quads: number;
+  use_smoothing: boolean;
+  x_range: number[];
+  y_range: number[];
+  private __constructed = false;
+
+  constructor(func: ImplicitFunctionT, options: ImplicitFunctionOptions = {}) {
+    const {
+      x_range = null,
+      y_range = null,
+      min_depth = 5,
+      max_quads = 1500,
+      use_smoothing = true,
+      ...rest
+    } = options;
+    super(rest);
+    this.function = func;
+    this.min_depth = min_depth;
+    this.max_quads = max_quads;
+    this.use_smoothing = use_smoothing;
+    this.x_range = x_range !== null ? [...x_range] : [
+      -config.frame_width / 2,
+      config.frame_width / 2,
+    ];
+    this.y_range = y_range !== null ? [...y_range] : [
+      -config.frame_height / 2,
+      config.frame_height / 2,
+    ];
+    this.__constructed = true;
+    // The base Mobject constructor already called generate_points(), but at
+    // that time the ranges were not yet assigned (TS requires super() first,
+    // whereas Python sets them before super().__init__()). Regenerate now
+    // that the fields are available so points are populated at construction.
+    // (No-op while no isoline computer is registered; see generate_points.)
+    if (isolineComputer !== null) this.generate_points();
+  }
+
+  generate_points(): this {
+    // Guard: the base Mobject constructor invokes generate_points() before
+    // this class assigns x_range/y_range (TS requires super() first, whereas
+    // Python sets them before super().__init__()). Treat that early call as
+    // a no-op; the constructor regenerates afterwards.
+    if (this.x_range === undefined || this.y_range === undefined) return this;
+    if (isolineComputer === null) {
+      if (!this.__constructed) return this;
+      throw new Error("TODO: ImplicitFunction.generate_points needs the `isosurfaces` plot_isoline routine, not ported yet");
+    }
+    const pmin: [number, number] = [this.x_range[0] ?? 0, this.y_range[0] ?? 0];
+    const pmax: [number, number] = [this.x_range[1] ?? 0, this.y_range[1] ?? 0];
+    const curves = isolineComputer(
+      (u) => this.function(u[0] ?? 0, u[1] ?? 0),
+      pmin,
+      pmax,
+      this.min_depth,
+      this.max_quads,
+    )
+      .filter((curve) => curve.length > 0)
+      .map((curve) => curve.map((point) => [point[0] ?? 0, point[1] ?? 0, 0]));
+    for (const curve of curves) {
+      if (curve.length === 0) continue;
+      this.start_new_path(curve[0]);
+      this.add_points_as_corners(curve.slice(1));
+    }
+    if (this.use_smoothing) {
+      // NOTE: VMobject.make_smooth is translated in a later batch; smooth here once available.
+      // (The Mobject proxy throws AttributeError on missing members, so `in` must guard the access.)
+      if ("make_smooth" in this) {
+        (this as unknown as { make_smooth: () => void }).make_smooth();
+      }
+    }
+    return this;
+  }
+
+  init_points(): this {
+    this.generate_points();
+    return this;
   }
 }

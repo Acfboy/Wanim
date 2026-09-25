@@ -1099,6 +1099,7 @@ export const DARK_GREY = new ManimColor("DARK_GREY");
 export const DARK_GRAY = new ManimColor("DARK_GRAY");
 export const LIGHT_GREY = new ManimColor("LIGHT_GREY");
 export const LIGHT_GRAY = new ManimColor("LIGHT_GRAY");
+export const YELLOW_C = new ManimColor("YELLOW_C");
 
 export function interpolate_color(color1: ManimColor, color2: ManimColor, alpha: number): ManimColor {
   return color1.interpolate(color2, alpha);

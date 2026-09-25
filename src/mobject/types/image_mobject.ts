@@ -1,6 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
-import { isNDArray, numeric } from "../../utils/arrays.js";
-import { ManimColor } from "../../utils/color/core.js";
+import { isNDArray, numeric, pointRows } from "../../utils/arrays.js";
+import { ManimColor, YELLOW_C, color_to_int_rgb, type ParsableManimColor } from "../../utils/color/core.js";
+import { change_to_rgba_array, get_full_raster_image_path } from "../../utils/images.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
 export interface AbstractImageMobjectOptions extends MobjectOptions {
@@ -44,6 +45,16 @@ export class AbstractImageMobject extends Mobject {
     throw error;
   }
 
+  set_color(
+    _color?: ParsableManimColor,
+    _alpha?: number | null,
+    _family?: boolean,
+  ): this {
+    const error = new Error();
+    error.name = "NotImplementedError";
+    throw error;
+  }
+
   set_resampling_algorithm(resampling_algorithm: number): this {
     if (!Object.values(RESAMPLING_ALGORITHMS).includes(resampling_algorithm)) {
       const error = new Error(
@@ -62,29 +73,125 @@ export class AbstractImageMobject extends Mobject {
 
 export interface ImageMobjectOptions extends AbstractImageMobjectOptions {
   pixel_array?: NDArray | number[][][];
+  /** Positional-equivalent: image file path or raw pixel array. */
+  filename_or_array?: string | NDArray | number[][] | number[][][];
+  invert?: boolean;
+  image_mode?: string;
   opacity?: number;
 }
 
 export const HIGH_QUALITY_PIXEL_HEIGHT = 1080;
+
+function isImageMobjectOptions(value: unknown): value is ImageMobjectOptions {
+  if (value === null || typeof value !== "object" || isNDArray(value) || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    "pixel_array" in record ||
+    "filename_or_array" in record ||
+    "scale_to_resolution" in record ||
+    "invert" in record ||
+    "image_mode" in record ||
+    "opacity" in record ||
+    "pixel_array_dtype" in record
+  );
+}
 
 export class ImageMobject extends AbstractImageMobject {
   pixel_array: NDArray;
   orig_alpha_pixel_array: number[][];
   stroke_opacity: number;
   fill_opacity = 1;
+  invert_image: boolean;
+  image_mode: string;
+  path?: string;
 
-  constructor(options: ImageMobjectOptions) {
-    const { pixel_array, opacity = 1, scale_to_resolution = HIGH_QUALITY_PIXEL_HEIGHT, ...rest } = options;
-    super({ ...rest, scale_to_resolution });
-    const source = pixel_array === undefined ? array([]).reshape(0, 0, 4) as NDArray : pixel_array;
-    this.pixel_array = (isNDArray(source) ? source : array(source)) as NDArray;
-    this.orig_alpha_pixel_array = alphaChannel(this.pixel_array);
+  constructor(
+    filename_or_array?: string | NDArray | number[][] | number[][][] | ImageMobjectOptions,
+    scale_to_resolution: number | false = HIGH_QUALITY_PIXEL_HEIGHT,
+    invert = false,
+    image_mode = "RGBA",
+    options: ImageMobjectOptions = {} as ImageMobjectOptions,
+  ) {
+    let source: string | NDArray | number[][] | number[][][] | undefined;
+    let scale: number | false = scale_to_resolution;
+    let invertFlag = invert;
+    let mode = image_mode;
+    let rest: Record<string, unknown> = { ...options };
+    if (isImageMobjectOptions(filename_or_array)) {
+      const opts = filename_or_array as ImageMobjectOptions;
+      const { pixel_array, filename_or_array: fileOrArray, invert: inv, image_mode: im, opacity = 1, scale_to_resolution: s, ...remaining } = opts;
+      source = (pixel_array ?? fileOrArray) as string | NDArray | number[][] | number[][][] | undefined;
+      if (s !== undefined) scale = s;
+      if (inv !== undefined) invertFlag = inv;
+      if (im !== undefined) mode = im;
+      rest = { ...remaining, opacity };
+    } else {
+      source = filename_or_array as string | NDArray | number[][] | number[][][] | undefined;
+    }
+    const opacity = Number((rest as { opacity?: number }).opacity ?? 1);
+    delete (rest as { opacity?: number }).opacity;
+    const pixel_array_dtype = ((rest as { pixel_array_dtype?: string }).pixel_array_dtype ?? "uint8") as string;
+    super({ ...rest, scale_to_resolution: scale, pixel_array_dtype });
+    this.fill_opacity = 1;
     this.stroke_opacity = 1;
+    this.invert_image = invertFlag;
+    this.image_mode = mode;
+    if (typeof source === "string") {
+      const path = get_full_raster_image_path(source);
+      this.path = path;
+      throw new Error(
+        `TODO: ImageMobject file loading not ported yet (resolved path: ${path}); pass a pixel array instead`,
+      );
+    }
+    const raw = (source === undefined ? array([]).reshape(0, 0, 4) : isNDArray(source) ? source : array(source)) as NDArray;
+    this.pixel_array_dtype = pixel_array_dtype;
+    let converted = change_to_rgba_array(raw, this.pixel_array_dtype);
+    if (this.invert_image) {
+      const max = 255;
+      const voxels = (converted.toArray() as unknown[][][]).map((row) =>
+        row.map((pixel) => (pixel as unknown[]).map(numeric)),
+      );
+      for (const row of voxels) {
+        for (const pixel of row) {
+          pixel[0] = max - (pixel[0] ?? 0);
+          pixel[1] = max - (pixel[1] ?? 0);
+          pixel[2] = max - (pixel[2] ?? 0);
+        }
+      }
+      converted = array(voxels) as NDArray;
+    }
+    this.pixel_array = converted;
+    this.orig_alpha_pixel_array = alphaChannel(this.pixel_array);
     if (opacity !== 1) this.set_opacity(opacity);
   }
 
   get_pixel_array(): NDArray {
     return this.pixel_array;
+  }
+
+  set_color(
+    color: ParsableManimColor = YELLOW_C,
+    alpha: number | null = null,
+    family = true,
+  ): this {
+    const rgb = pointRows(color_to_int_rgb(color), 3)[0] ?? [0, 0, 0];
+    const voxels = (this.pixel_array.toArray() as unknown[][][]).map((row) =>
+      row.map((pixel) => [...(pixel as unknown[])].map(numeric)),
+    );
+    for (const row of voxels) {
+      for (const pixel of row) {
+        pixel[0] = rgb[0] ?? 0;
+        pixel[1] = rgb[1] ?? 0;
+        pixel[2] = rgb[2] ?? 0;
+        if (alpha !== null && alpha !== undefined) pixel[3] = Math.trunc(255 * alpha);
+      }
+    }
+    this.pixel_array = array(voxels) as NDArray;
+    for (const submob of this.submobjects) {
+      (submob as ImageMobject).set_color(color, alpha, family);
+    }
+    this.color = new ManimColor(color);
+    return this;
   }
 
   set_opacity(alpha: number): this {
@@ -101,6 +208,12 @@ export class ImageMobject extends AbstractImageMobject {
     }
     this.pixel_array = (array(voxels) as NDArray).astype(this.pixel_array_dtype as "uint8") as NDArray;
     this.stroke_opacity = alpha;
+    return this;
+  }
+
+  fade(darkness = 0.5, family = true): this {
+    this.set_opacity(1 - darkness);
+    super.fade(darkness, family);
     return this;
   }
 

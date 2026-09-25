@@ -141,6 +141,10 @@ export class VMobject extends Mobject {
     return this._assert_valid_submobjects_internal(submobjects, VMobject);
   }
 
+  *__iter__(): IterableIterator<VMobject> {
+    for (const mobject of super.__iter__()) yield mobject as VMobject;
+  }
+
   get n_points_per_curve(): number {
     return this.n_points_per_cubic_curve;
   }
@@ -171,6 +175,14 @@ export class VMobject extends Mobject {
 
   get_sheen_factor(): number {
     return this.sheen_factor;
+  }
+
+  get_sheen_direction(): number[] {
+    return [...this.sheen_direction];
+  }
+
+  getSheenDirection(): number[] {
+    return this.get_sheen_direction();
   }
 
   getSheenFactor(): number {
@@ -585,8 +597,29 @@ export class VMobject extends Mobject {
     return Array.from({ length: this.get_num_curves() }, (_, index) => this.get_nth_curve_function_with_length(index, sample_points));
   }
 
+  *get_curve_functions(): Generator<(t: number) => number[], void, void> {
+    for (let index = 0; index < this.get_num_curves(); index += 1) {
+      yield this.get_nth_curve_function(index);
+    }
+  }
+
+  *getCurveFunctions(): Generator<(t: number) => number[], void, void> {
+    yield* this.get_curve_functions();
+  }
+
   get_arc_length(sample_points_per_curve: number | null = null): number {
     return this.get_curve_functions_with_lengths(sample_points_per_curve).reduce((sum, [, length]) => sum + length, 0);
+  }
+
+  get_points_defining_boundary(): NDArray {
+    // Probably returns all anchors, but this is weird regarding the name of the method.
+    const all: number[][] = [];
+    for (const mobject of this.get_family()) all.push(...(mobject as VMobject).get_anchors());
+    return array(all.length > 0 ? all : []).reshape(all.length, this.dim) as NDArray;
+  }
+
+  getPointsDefiningBoundary(): NDArray {
+    return this.get_points_defining_boundary();
   }
 
   point_from_proportion(alpha: number): NDArray {
@@ -717,6 +750,24 @@ export class VMobject extends Mobject {
 
   getDirection(): "CW" | "CCW" {
     return this.get_direction();
+  }
+
+  force_direction(target_direction: "CW" | "CCW"): this {
+    if (target_direction !== "CW" && target_direction !== "CCW") {
+      const error = new Error('Invalid input for force_direction. Use "CW" or "CCW"');
+      error.name = "ValueError";
+      throw error;
+    }
+    if (this.get_direction() !== target_direction) {
+      // Since we already assured the input is CW or CCW,
+      // and the directions don't match, we just reverse
+      this.reverse_direction();
+    }
+    return this;
+  }
+
+  forceDirection(target_direction: "CW" | "CCW"): this {
+    return this.force_direction(target_direction);
   }
 
   get_point_mobject(center?: readonly number[]): VectorizedPoint {
@@ -1023,7 +1074,87 @@ export function vmobjectFrom(value: unknown, dim = 3): VMobject {
 }
 
 export class VDict extends VMobject {
+  show_keys = false;
   submob_dict = new Map<unknown, VMobject>();
+
+  constructor(
+    mapping_or_iterable: Map<unknown, VMobject> | Record<string, VMobject> | Iterable<[unknown, VMobject]> = {},
+    show_keys = false,
+    options: VMobjectOptions = {},
+  ) {
+    super(options);
+    this.show_keys = show_keys;
+    this.add(mapping_or_iterable);
+  }
+
+  toString(): string {
+    return `${this.constructor.name}(${toPythonRepr([...this.submob_dict])})`;
+  }
+
+  add(
+    mapping_or_iterable: unknown = {},
+    ..._rest: unknown[]
+  ): this {
+    for (const [key, value] of normalizeMapping(mapping_or_iterable as Map<unknown, VMobject> | Record<string, VMobject> | Iterable<[unknown, VMobject]>)) {
+      this.add_key_value_pair(key, value);
+    }
+    return this;
+  }
+
+  remove(key: unknown): this {
+    if (!this.submob_dict.has(key)) {
+      const error = new Error(`The given key '${String(key)}' is not present in the VDict`);
+      error.name = "KeyError";
+      throw error;
+    }
+    super.remove(this.submob_dict.get(key) as VMobject);
+    this.submob_dict.delete(key);
+    return this;
+  }
+
+  get(key: unknown): VMobject {
+    const submob = this.submob_dict.get(key);
+    if (submob === undefined) {
+      const error = new Error(toPythonRepr(key));
+      error.name = "KeyError";
+      throw error;
+    }
+    return submob;
+  }
+
+  set(key: unknown, value: VMobject): void;
+  set(options: Record<string, unknown>): this;
+  set(first: unknown, second?: VMobject): this | void {
+    if (second instanceof VMobject || typeof first !== "object" || first === null || Array.isArray(first)) {
+      this.__setitem__(first, second as VMobject);
+      return;
+    }
+    return super.set(first as Record<string, unknown>);
+  }
+
+  __setitem__(key: unknown, value: VMobject): void {
+    if (this.submob_dict.has(key)) this.remove(key);
+    this.add([[key, value]]);
+  }
+
+  has(key: unknown): boolean {
+    return this.submob_dict.has(key);
+  }
+
+  get_all_submobjects(): VMobject[] {
+    return [...this.submob_dict.values()];
+  }
+
+  add_key_value_pair(key: unknown, value: VMobject): this {
+    this._assert_valid_submobjects([value]);
+    const mob = value;
+    if (this.show_keys) {
+      throw new Error("TODO: text/tex not ported yet");
+    }
+    this.submob_dict.set(key, mob);
+    super.add(value);
+    return this;
+  }
 
   __delitem__(key: unknown): void {
     if (!this.submob_dict.has(key)) {
@@ -1033,6 +1164,21 @@ export class VDict extends VMobject {
     }
     this.submob_dict.delete(key);
   }
+}
+
+function normalizeMapping(
+  mapping: Map<unknown, VMobject> | Record<string, VMobject> | Iterable<[unknown, VMobject]>,
+): Array<[unknown, VMobject]> {
+  if (mapping instanceof Map) return [...mapping.entries()];
+  if (
+    mapping !== null &&
+    typeof mapping === "object" &&
+    Symbol.iterator in (mapping as Record<symbol, unknown>) === false &&
+    !Array.isArray(mapping)
+  ) {
+    return Object.entries(mapping as Record<string, VMobject>);
+  }
+  return [...(mapping as Iterable<[unknown, VMobject]>)];
 }
 
 export class CurvesAsSubmobjects extends VGroup {

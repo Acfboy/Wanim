@@ -7,6 +7,7 @@ import { remove_list_redundancies } from "../utils/iterables.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
 import { addPoints, isNDArray, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
+import { config } from "../_config/utils.js";
 
 export type MobjectUpdater = ((mobject: Mobject) => void) | ((mobject: Mobject, dt: number) => void);
 export type MobjectArray = Mobject[];
@@ -231,6 +232,30 @@ export class Mobject {
     return this.get_updaters();
   }
 
+  get_time_based_updaters(): MobjectUpdater[] {
+    return this.updaters.filter((updater) => updater.length >= 2);
+  }
+
+  getTimeBasedUpdaters(): MobjectUpdater[] {
+    return this.get_time_based_updaters();
+  }
+
+  has_time_based_updater(): boolean {
+    return this.updaters.some((updater) => updater.length >= 2);
+  }
+
+  hasTimeBasedUpdater(): boolean {
+    return this.has_time_based_updater();
+  }
+
+  get_family_updaters(): MobjectUpdater[] {
+    return this.get_family().flatMap((mobject) => mobject.get_updaters());
+  }
+
+  getFamilyUpdaters(): MobjectUpdater[] {
+    return this.get_family_updaters();
+  }
+
   get_color(): ManimColor {
     return this.color;
   }
@@ -394,6 +419,17 @@ export class Mobject {
     return result as this;
   }
 
+  __deepcopy__(clone_from_id: Map<object, unknown> = new Map()): this {
+    if (clone_from_id.has(this)) return clone_from_id.get(this) as this;
+    const raw = Object.create(Object.getPrototypeOf(this)) as this;
+    clone_from_id.set(this, raw);
+    for (const [key, value] of Object.entries(this)) {
+      (raw as unknown as Record<string, unknown>)[key] = cloneValue(value, clone_from_id);
+    }
+    raw.original_id = String(Math.random());
+    return createMobjectProxy(raw) as this;
+  }
+
   generate_target(useDeepcopy = false): Mobject | null {
     this.target = null;
     this.target = this.copy();
@@ -411,6 +447,21 @@ export class Mobject {
 
   getImage(camera?: ImageCapableCamera | null): unknown {
     return this.get_image(camera);
+  }
+
+  show(camera?: ImageCapableCamera | null): void {
+    (this.get_image(camera) as { show(): void }).show();
+  }
+
+  save_image(name: string | null = null): void {
+    const image = this.get_image() as { save(path: string): void };
+    const videoDir = config.get_dir("video_dir") ?? ".";
+    const fileName = `${name ?? String(this.name)}.png`;
+    image.save(`${videoDir}/${fileName}`);
+  }
+
+  saveImage(name: string | null = null): void {
+    this.save_image(name);
   }
 
   get_center(): number[] {
@@ -726,6 +777,15 @@ export class Mobject {
     return this;
   }
 
+  to_original_color(): this {
+    this.set_color(this.color);
+    return this;
+  }
+
+  toOriginalColor(): this {
+    return this.to_original_color();
+  }
+
   fade_to(color: ParsableManimColor, alpha: number, family = true): this {
     if (this.get_num_points() > 0) this.set_color(interpolate_color(this.get_color(), new ManimColor(color), alpha), null, false);
     if (family) for (const submob of this.submobjects) submob.fade_to(color, alpha);
@@ -804,6 +864,16 @@ export class Mobject {
 
   clearUpdaters(recursive = true): this {
     return this.clear_updaters(recursive);
+  }
+
+  match_updaters(other: Mobject): this {
+    this.clear_updaters();
+    for (const updater of other.get_updaters()) this.add_updater(updater);
+    return this;
+  }
+
+  matchUpdaters(other: Mobject): this {
+    return this.match_updaters(other);
   }
 
   suspend_updating(recursive = true): this {
@@ -1124,6 +1194,15 @@ export class Mobject {
       this.submobjects[other] = temp;
     }
     return this;
+  }
+
+  shuffle_submobjects(...args: unknown[]): this {
+    const [recursive = false] = args as [boolean?];
+    return this.shuffle(recursive);
+  }
+
+  shuffleSubmobjects(...args: unknown[]): this {
+    return this.shuffle_submobjects(...args);
   }
 
   invert(recursive = false): this {

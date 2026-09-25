@@ -22,6 +22,8 @@ export interface SampleSpaceOptions extends VMobjectOptions {
 export class SampleSpace extends VMobject {
   default_label_scale_val: number;
   label: string | null = null;
+  horizontal_parts?: VMobject & { braces?: VMobject; labels?: VMobject };
+  vertical_parts?: VMobject & { braces?: VMobject; labels?: VMobject };
 
   constructor(options: SampleSpaceOptions = {}) {
     const {
@@ -53,5 +55,21 @@ export class SampleSpace extends VMobject {
     const remainder = 1.0 - new_p_list.reduce((sum, value) => sum + value, 0);
     if (Math.abs(remainder) > EPSILON) new_p_list.push(remainder);
     return new_p_list;
+  }
+
+  add_braces_and_labels(): this {
+    for (const attr of ["horizontal_parts", "vertical_parts"] as const) {
+      const parts = this[attr] as (VMobject & { braces?: VMobject; labels?: VMobject }) | undefined;
+      if (parts === undefined || parts === null) continue;
+      for (const subattr of ["braces", "labels"] as const) {
+        const sub = (parts as unknown as Record<string, unknown>)[subattr];
+        if (sub !== undefined && sub !== null) this.add(sub as VMobject);
+      }
+    }
+    return this;
+  }
+
+  addBracesAndLabels(): this {
+    return this.add_braces_and_labels();
   }
 }
