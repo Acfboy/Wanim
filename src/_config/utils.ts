@@ -1,4 +1,4 @@
-import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, readFileSync, statSync } from "node:fs";
 import { QUALITIES, DEFAULT_QUALITY, RendererType, ORIGIN, UP, DOWN, RIGHT, LEFT, IN, OUT, X_AXIS, Y_AXIS, Z_AXIS, UL, UR, DL, DR } from "../constants.js";
 import { ManimColor, BLACK, type ParsableManimColor } from "../utils/color/core.js";
 
@@ -564,6 +564,32 @@ export class ManimConfig {
     } else {
       this.values["tex_template_file"] = val;
     }
+  }
+
+  get tex_template(): unknown {
+    throw new Error("TODO: text/tex not ported yet");
+  }
+
+  set tex_template(_val: unknown) {
+    throw new Error("TODO: text/tex not ported yet");
+  }
+
+  digest_file(filename: string): this {
+    let isFile = false;
+    try {
+      isFile = existsSync(filename) && statSync(filename).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) {
+      const error = new Error(
+        `[Errno 2] Error: --config_file could not find a valid config file: '${filename}'`,
+      );
+      (error as unknown as Record<string, unknown>)["errno"] = 2;
+      error.name = "FileNotFoundError";
+      throw error;
+    }
+    return this.digest_parser(make_config_parser(filename));
   }
 
   get pixel_height(): number { return this.__getitem__("pixel_height"); }

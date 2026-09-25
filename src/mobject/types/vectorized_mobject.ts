@@ -243,6 +243,46 @@ export class VMobject extends Mobject {
     return array(rows) as NDArray;
   }
 
+  update_rgbas_array(
+    array_name: string,
+    color: ParsableManimColor | Iterable<ManimColor> | null = null,
+    opacity: number | Iterable<number> | null = null,
+  ): this {
+    let rgbas = this.generate_rgbas_array(color, opacity as number & Iterable<number>);
+    const record = this as unknown as Record<string, unknown>;
+    if (!(array_name in this) || record[array_name] === undefined) {
+      record[array_name] = rgbas;
+      return this;
+    }
+    // Match up current rgbas array with the newly calculated one. 99% of
+    // the time they'll be the same.
+    let curr_rgbas = record[array_name] as NDArray;
+    const curr_len = curr_rgbas.shape[0] ?? 0;
+    const new_len = rgbas.shape[0] ?? 0;
+    if (curr_len < new_len) {
+      curr_rgbas = stretch_array_to_length(curr_rgbas, new_len);
+      record[array_name] = curr_rgbas;
+    } else if (new_len < curr_len) {
+      rgbas = stretch_array_to_length(rgbas, curr_len);
+    }
+    const curr_rows = pointRows(curr_rgbas, 4);
+    const new_rows = pointRows(rgbas, 4);
+    // Only update rgb if color was not None, and only update alpha channel
+    // if opacity was passed in.
+    if (color !== null && color !== undefined) {
+      for (let index = 0; index < curr_rows.length; index += 1) {
+        (curr_rows[index] as number[]).splice(0, 3, ...((new_rows[index] ?? [0, 0, 0]).slice(0, 3)));
+      }
+    }
+    if (opacity !== null && opacity !== undefined) {
+      for (let index = 0; index < curr_rows.length; index += 1) {
+        (curr_rows[index] as number[])[3] = new_rows[index]?.[3] ?? 0;
+      }
+    }
+    record[array_name] = array(curr_rows) as NDArray;
+    return this;
+  }
+
   init_colors(propagate_colors = true): this {
     if (!this.fill_color) this.fill_color = new ManimColor(WHITE);
     if (!this.stroke_color) this.stroke_color = new ManimColor(WHITE);
@@ -297,13 +337,11 @@ export class VMobject extends Mobject {
   }
 
   get_fill_color(): ManimColor {
-    const first = pointRows(this.fill_rgbas, 4)[0];
-    return first ? new ManimColor(array(first.slice(0, 3)) as any) : this.fill_color;
+    return (this.get_fill_colors()[0] ?? null) as ManimColor;
   }
 
-  get_stroke_color(): ManimColor {
-    const first = pointRows(this.stroke_rgbas, 4)[0];
-    return first ? new ManimColor(array(first.slice(0, 3)) as any) : this.stroke_color;
+  get_stroke_color(background = false): ManimColor | null {
+    return this.get_stroke_colors(background)[0] ?? null;
   }
 
   get_fill_opacity(): number {
@@ -388,7 +426,7 @@ export class VMobject extends Mobject {
     // used only when *every* fill opacity is zero (np.all([]) is True, so an
     // empty fill array also yields the stroke color).
     const opacities = pointRows(this.fill_rgbas, 4).map((row) => row[3] ?? 0);
-    return opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color();
+    return (opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color()) as ManimColor;
   }
 
   set_color(color: ParsableManimColor, alpha: unknown = null, family = true): this {

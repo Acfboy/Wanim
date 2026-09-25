@@ -2,6 +2,7 @@ import { array, type NDArray } from "numpy-ts";
 import { RendererType } from "../../constants.js";
 import { get_quadratic_approximation_of_cubic } from "../../utils/bezier.js";
 import { hash_obj } from "../../utils/iterables.js";
+import { get_full_vector_image_path } from "../../utils/images.js";
 import { pointRows } from "../../utils/arrays.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 
@@ -114,6 +115,15 @@ export class SVGMobject extends VMobject {
 
   init_svg_mobject(_use_svg_cache: boolean): this {
     throw new Error("TODO: text/tex not ported yet");
+  }
+
+  get_file_path(): string {
+    if (this.file_name === null || this.file_name === undefined) {
+      const error = new Error("Must specify file for SVGMobject");
+      error.name = "ValueError";
+      throw error;
+    }
+    return get_full_vector_image_path(this.file_name);
   }
 
   modify_xml_tree(element_tree: SVGXmlTree): SVGXmlTree {

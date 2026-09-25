@@ -2,6 +2,12 @@ import { array, type NDArray } from "numpy-ts";
 import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
 import { isNDArray, pointFrom, pointRows } from "../../utils/arrays.js";
+import { update_dict_recursively } from "../../utils/config_ops.js";
+
+function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]> {
+  const length = Math.min(first.length, second.length);
+  return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
+}
 
 export class CoordinateSystem {
   dimension: number;
@@ -161,6 +167,17 @@ export class NumberPlane extends CoordinateSystem {
 
 export class Axes extends NumberPlane {
   get_axes(): Mobject[] { return []; }
+
+  static _update_default_configs(
+    default_configs: Array<Record<string, unknown>>,
+    passed_configs: Array<Record<string, unknown>>,
+  ): void {
+    for (const [default_config, passed_config] of zipPairs(default_configs, passed_configs)) {
+      if (passed_config !== null && passed_config !== undefined) {
+        update_dict_recursively(default_config, passed_config);
+      }
+    }
+  }
 
   static override _origin_shift(axis_range: readonly number[]): number {
     if ((axis_range[0] ?? 0) > 0) return axis_range[0] ?? 0;

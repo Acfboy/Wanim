@@ -1,3 +1,5 @@
+import { DTYPE_TO_DESCR, NDArray } from "numpy-ts";
+
 const constants = [
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -14,7 +16,10 @@ function rightRotate(value: number, amount: number): number {
 }
 
 export function sha256Hex(value: string): string {
-  const bytes = new TextEncoder().encode(value);
+  return sha256Bytes(new TextEncoder().encode(value));
+}
+
+export function sha256Bytes(bytes: Uint8Array): string {
   const bitLength = bytes.length * 8;
   const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
   const data = new Uint8Array(paddedLength);
@@ -264,6 +269,9 @@ export class _CustomEncoder {
         nonlocals: {},
       } as Record<string, unknown>);
     }
+    if (obj instanceof NDArray) {
+      return _hash_ndarray(obj);
+    }
     if (obj !== null && typeof obj === "object" && "shape" in obj && "toArray" in obj) {
       const ndarray = obj as { toArray: () => unknown };
       const raw = ndarray.toArray();
@@ -290,6 +298,10 @@ export class _CustomEncoder {
     return String((obj as object)?.constructor?.name ?? typeof obj);
   }
 
+  _key_to_hash(key: unknown): number {
+    return crc32(_get_json(key, this._memoizer));
+  }
+
   _cleaned_iterable(iterable: unknown[] | Record<string, unknown>): unknown[] | Record<string, unknown> {
     const cleanList = (lst: unknown[]): unknown[] => {
       const processed: unknown[] = new Array(lst.length);
@@ -311,7 +323,12 @@ export class _CustomEncoder {
         if (KEYS_TO_FILTER_OUT.has(key) && !(this.include_pixel_array && key === "pixel_array")) {
           continue;
         }
-        const nextKey: string = key;
+        // We check if the k is of the right format (supported by JSON).
+        // NOTE: JS object keys are always strings, so this only hashes
+        // non-string keys (e.g. from Maps converted upstream); string keys
+        // pass through exactly like Python's str/int/float/bool/None keys
+        // that JSON supports natively.
+        const nextKey: string | number = typeof key !== "string" ? this._key_to_hash(key) : key;
         if (typeof next === "object" && next !== null && !Array.isArray(next)) {
           processed[nextKey] = cleanDict(next as Record<string, unknown>);
         } else if (Array.isArray(next)) {
@@ -397,6 +414,43 @@ export function _get_json(
   include_pixel_array = false,
 ): string {
   return new _CustomEncoder(memoizer, include_pixel_array).encode(obj);
+}
+
+const CRC32_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+export function crc32(value: string | Uint8Array): number {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = CRC32_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pythonShapeRepr(shape: readonly number[]): string {
+  if (shape.length === 0) return "()";
+  const inner = [...shape].join(", ");
+  return shape.length === 1 ? `(${inner},)` : `(${inner})`;
+}
+
+export function _hash_ndarray(arr: NDArray): string {
+  const dtype = String((arr as unknown as { dtype?: unknown }).dtype ?? "float64");
+  // Mirrors `_canonical_dtype_descriptor(array.dtype)`: the canonical
+  // little-endian numpy descriptor string (e.g. "<f8"). numpy-ts has no
+  // structured/object dtypes, so only the flat branch applies; native
+  // TypedArray bytes are little-endian on all supported platforms, matching
+  // `dtype.newbyteorder("<")` + `ascontiguousarray` on such machines.
+  const descr = (DTYPE_TO_DESCR as Record<string, string>)[dtype] ?? dtype;
+  const descriptor = _canonical_dtype_descriptor(descr);
+  const digest = sha256Bytes(new Uint8Array(arr.tobytes()));
+  const encoded_descriptor = JSON.stringify(descriptor);
+  return `NDARRAY:${encoded_descriptor}:${pythonShapeRepr(arr.shape ?? [])}:${digest}`;
 }
 
 export function get_json(obj: unknown, include_pixel_array = false): string {

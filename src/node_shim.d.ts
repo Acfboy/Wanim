@@ -12,6 +12,7 @@ declare module "node:fs" {
     mtimeMs: number;
     atimeMs: number;
     isDirectory(): boolean;
+    isFile(): boolean;
   }
   export function statSync(path: string): Stats;
   export function utimesSync(path: string, atime: Date, mtime: Date): void;

@@ -1,4 +1,4 @@
-import { array, type NDArray } from "numpy-ts";
+import { array, concatenate, type NDArray } from "numpy-ts";
 import { MethodWithArgs } from "../data_structures.js";
 import { DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, MED_SMALL_BUFF, ORIGIN, RIGHT, UP } from "../constants.js";
 import { ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../utils/color/core.js";
@@ -334,14 +334,10 @@ export class Mobject {
     return this.add_to_back(...mobjects);
   }
 
-  remove(...mobjects: (Mobject | Mobject[])[]): this {
-    for (const item of mobjects) {
-      const values = Array.isArray(item) ? item : [item];
-      for (const mobject of values) {
-        const index = this.submobjects.indexOf(mobject);
-        if (index >= 0) this.submobjects.splice(index, 1);
-        for (const child of [...this.submobjects]) child.remove(mobject);
-      }
+  remove(...mobjects: Mobject[]): this {
+    for (const mobject of mobjects) {
+      const index = this.submobjects.indexOf(mobject);
+      if (index >= 0) this.submobjects.splice(index, 1);
     }
     return this;
   }
@@ -1064,6 +1060,54 @@ export class Mobject {
     return this.submobjects.filter(
       (submob) => submob.submobjects.length !== 0 || submob.get_num_points() !== 0,
     );
+  }
+
+  reduce_across_dimension(
+    reduce_func: (values: Iterable<number>) => number,
+    dim: number,
+  ): number | null {
+    if (!(dim >= 0 && dim <= 2)) {
+      throw new Error(`AssertionError: dim ${dim} is not in [0, 2]`);
+    }
+    if (this.submobjects.length === 0 && this.get_num_points() === 0) {
+      // If we have no points and no submobjects, return None.
+      return null;
+    }
+
+    // If we do not have points (but do have submobjects) use only the
+    // points from those.
+    let rv: number | null;
+    if (this.get_num_points() === 0) {
+      rv = null;
+    } else {
+      // Otherwise, be sure to include our own points.
+      rv = reduce_func(
+        pointRows(this.points, this.dim).map((point) => point[dim] ?? 0),
+      );
+    }
+    // Recursively ask submobjects (if any) for the biggest/smallest
+    // dimension they have and compare it to the return value.
+    for (const mobj of this.submobjects) {
+      const value = mobj.reduce_across_dimension(reduce_func, dim);
+      if (rv === null) {
+        rv = value;
+      } else if (value !== null) {
+        rv = reduce_func([value, rv]);
+      }
+    }
+    return rv;
+  }
+
+  get_merged_array(array_attr: string): NDArray {
+    let result = (this as unknown as Record<string, NDArray>)[array_attr];
+    for (const submob of this.submobjects) {
+      result = concatenate([result, submob.get_merged_array(array_attr)], 0) as NDArray;
+    }
+    return result;
+  }
+
+  get_all_points(): NDArray {
+    return this.get_merged_array("points");
   }
 
   nonemptySubmobjects(): Mobject[] {

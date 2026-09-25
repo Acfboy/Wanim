@@ -40,6 +40,87 @@ export class ValueTracker extends Mobject {
     this.set_value(this.get_value() + d_value);
     return this;
   }
+
+  __bool__(): boolean {
+    return Boolean(this.get_value());
+  }
+
+  __floordiv__(d_value: number): ValueTracker {
+    if (d_value === 0) {
+      const error = new Error("float floor division by zero");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    return new ValueTracker(Math.floor(this.get_value() / d_value));
+  }
+
+  __ifloordiv__(d_value: number): this {
+    if (d_value === 0) {
+      const error = new Error("float floor division by zero");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    this.set_value(Math.floor(this.get_value() / d_value));
+    return this;
+  }
+
+  __mod__(d_value: number): ValueTracker {
+    if (d_value === 0) {
+      const error = new Error("float modulo");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    const value = this.get_value();
+    return new ValueTracker(value - Math.floor(value / d_value) * d_value);
+  }
+
+  __imod__(d_value: number): this {
+    if (d_value === 0) {
+      const error = new Error("float modulo");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    const value = this.get_value();
+    this.set_value(value - Math.floor(value / d_value) * d_value);
+    return this;
+  }
+
+  __mul__(d_value: number): ValueTracker {
+    return new ValueTracker(this.get_value() * d_value);
+  }
+
+  __imul__(d_value: number): this {
+    this.set_value(this.get_value() * d_value);
+    return this;
+  }
+
+  __pow__(d_value: number): ValueTracker {
+    return new ValueTracker(this.get_value() ** d_value);
+  }
+
+  __ipow__(d_value: number): this {
+    this.set_value(this.get_value() ** d_value);
+    return this;
+  }
+
+  __truediv__(d_value: number): ValueTracker {
+    if (d_value === 0) {
+      const error = new Error("float division by zero");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    return new ValueTracker(this.get_value() / d_value);
+  }
+
+  __itruediv__(d_value: number): this {
+    if (d_value === 0) {
+      const error = new Error("float division by zero");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    this.set_value(this.get_value() / d_value);
+    return this;
+  }
 }
 
 export class ComplexValueTracker extends ValueTracker {

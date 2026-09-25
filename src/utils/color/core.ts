@@ -1094,6 +1094,14 @@ export function color_to_rgb(color: ParsableManimColor): ColorArray {
   return new ManimColor(color).toRgb();
 }
 
+export function color_to_rgba(color: ParsableManimColor, alpha = 1): ColorArray {
+  return new ManimColor(color).to_rgba_with_alpha(alpha);
+}
+
+export function color_to_int_rgb(color: ParsableManimColor): ColorArray {
+  return new ManimColor(color).to_int_rgb();
+}
+
 export function rgb_to_color(rgb: number[] | readonly number[] | NDArray): ManimColor {
   return ManimColor.from_rgb([...pointRows(rgb, 3)[0]]);
 }
@@ -1107,6 +1115,10 @@ function uint8Trunc(value: number): number {
 export function color_to_int_rgba(color: ParsableManimColor, alpha = 1): number[] {
   const values = pointRows(new ManimColor(color).toRgba(), 4)[0] ?? [0, 0, 0, 1];
   return [values[0], values[1], values[2], alpha].map((item) => uint8Trunc(item * 255));
+}
+
+export function hex_to_rgb(hex_code: string): ColorArray {
+  return new ManimColor(hex_code).to_rgb();
 }
 
 export function color_gradient(referenceColors: readonly ParsableManimColor[], lengthOfOutput: number): ManimColor[] {

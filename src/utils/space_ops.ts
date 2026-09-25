@@ -1,6 +1,7 @@
 import { array, average, matmul, type NDArray } from "numpy-ts";
 import { isNDArray, numeric, type ComplexPoint } from "./arrays.js";
-import { DOWN, OUT, RIGHT, TAU, UP } from "../constants.js";
+import { DOWN, OUT, PI, RIGHT, TAU, UP } from "../constants.js";
+import { adjacent_pairs } from "./iterables.js";
 
 type VectorInput = NDArray | number[] | number[][] | readonly number[];
 
@@ -376,6 +377,35 @@ export function rotation_matrix_transpose_from_quaternion(
   );
 }
 
+export function rotation_matrix_from_quaternion(quat: Quaternion): NDArray {
+  const rows = rotation_matrix_transpose_from_quaternion(quat);
+  return array(transposeRows(rows)) as NDArray;
+}
+
+export function rotation_matrix_transpose(
+  angle: number,
+  axis: VectorInput,
+): NDArray {
+  const flat = toRows(axis).rows[0] ?? [0, 0, 0];
+  if ((flat[0] ?? 0) === 0 && (flat[1] ?? 0) === 0) {
+    const sign = (flat[2] ?? 0) > 0 ? 1 : (flat[2] ?? 0) < 0 ? -1 : 0;
+    return transposeNDArray(rotation_about_z(angle * sign));
+  }
+  return transposeNDArray(rotation_matrix(angle, axis));
+}
+
+function transposeRows(rows: number[][]): number[][] {
+  if (rows.length === 0) return [];
+  const cols = Math.max(...rows.map((row) => row.length));
+  return Array.from({ length: cols }, (_, j) => rows.map((row) => row[j] ?? 0));
+}
+
+function transposeNDArray(matrix: NDArray): NDArray {
+  const raw = (matrix as NDArray).toArray() as unknown[][];
+  const rows = raw.map((row) => (Array.isArray(row) ? row : [row]).map(numeric));
+  return array(transposeRows(rows)) as NDArray;
+}
+
 export function z_to_vector(vector: VectorInput): NDArray {
   const axis_z = normalize(vector as number[] | readonly number[] | NDArray);
   let axis_y = normalize(cross(axis_z, [...RIGHT]));
@@ -480,6 +510,246 @@ export function find_intersection(
 
 export function shoelace_direction(x_y: number[][] | NDArray): string {
   return shoelace(x_y) > 0 ? "CW" : "CCW";
+}
+
+export function get_winding_number(points: Array<number[] | readonly number[] | NDArray>): number {
+  let total_angle = 0;
+  for (const pair of adjacent_pairs(points)) {
+    const [p1, p2] = pair as [number[] | readonly number[] | NDArray, number[] | readonly number[] | NDArray];
+    const d_angle_raw = Number(angle_of_vector(p2)) - Number(angle_of_vector(p1));
+    // NOTE: Python `%` is floored modulo; JS `%` is truncated. Use the
+    // floored form so negative deltas wrap the same way.
+    const d_angle = (((d_angle_raw + PI) % TAU) + TAU) % TAU - PI;
+    total_angle += d_angle;
+  }
+  return total_angle / TAU;
+}
+
+export function earclip_triangulation(verts: number[][] | NDArray, ring_ends: number[]): number[] {
+  const vertRows = toRows(verts as VectorInput).rows;
+  // First, connect all the rings so that the polygon with holes is instead
+  // treated as a (very convex) polygon with one edge. Do this by drawing
+  // connections between rings close to each other.
+  // NOTE: mirrors `zip([0, *ring_ends], ring_ends)`: ring k spans from the
+  // previous end (or 0) to ring_ends[k].
+  const rings: number[][] = ring_ends.map((e1, k) => {
+    const e0 = k === 0 ? 0 : (ring_ends[k - 1] ?? 0);
+    const ring: number[] = [];
+    for (let i = e0; i < e1; i += 1) ring.push(i);
+    return ring;
+  });
+  const attached_rings = rings.slice(0, 1);
+  const detached_rings = rings.slice(1);
+  const loop_connections = new Map<number, number>();
+
+  while (detached_rings.length > 0) {
+    const groups = [attached_rings, detached_rings].map((ring_group) =>
+      ring_group.flat().filter((i) => !loop_connections.has(i)),
+    );
+    const i_range = groups[0] ?? [];
+    const j_range = groups[1] ?? [];
+    // Closest point on the attached rings to an estimated midpoint of the
+    // detached rings.
+    const tmp_j_vert = midpoint(
+      vertRows[j_range[0] ?? 0] ?? [],
+      vertRows[j_range[Math.floor(j_range.length / 2)] ?? 0] ?? [],
+    );
+    let i = i_range[0] ?? 0;
+    let best = Infinity;
+    for (const candidate of i_range) {
+      const d = norm_squared(
+        (vertRows[candidate] ?? []).map((v, k) => v - (tmp_j_vert[k] ?? 0)),
+      );
+      if (d < best) {
+        best = d;
+        i = candidate;
+      }
+    }
+    // Closest point of the detached rings to the aforementioned point of
+    // the attached rings.
+    let j = j_range[0] ?? 0;
+    best = Infinity;
+    for (const candidate of j_range) {
+      const d = norm_squared(
+        (vertRows[candidate] ?? []).map((v, k) => v - ((vertRows[i] ?? [])[k] ?? 0)),
+      );
+      if (d < best) {
+        best = d;
+        j = candidate;
+      }
+    }
+    // Recalculate i based on new j.
+    i = i_range[0] ?? 0;
+    best = Infinity;
+    for (const candidate of i_range) {
+      const d = norm_squared(
+        (vertRows[candidate] ?? []).map((v, k) => v - ((vertRows[j] ?? [])[k] ?? 0)),
+      );
+      if (d < best) {
+        best = d;
+        i = candidate;
+      }
+    }
+
+    // Remember to connect the polygon at these points.
+    loop_connections.set(i, j);
+    loop_connections.set(j, i);
+
+    // Move the ring which j belongs to from the detached list to the
+    // attached list.
+    const new_ring_index = detached_rings.findIndex(
+      (ring) => ring.length > 0 && (ring[0] ?? 0) <= j && j <= (ring[ring.length - 1] ?? -1),
+    );
+    if (new_ring_index !== -1) {
+      const [new_ring] = detached_rings.splice(new_ring_index, 1);
+      if (new_ring !== undefined) attached_rings.push(new_ring);
+    } else {
+      throw new Error("Could not find a ring to attach");
+    }
+  }
+
+  // Setup linked list.
+  const after: number[] = [];
+  let end0 = 0;
+  for (const end1 of ring_ends) {
+    for (let k = end0 + 1; k < end1; k += 1) after.push(k);
+    after.push(end0);
+    end0 = end1;
+  }
+
+  // Find an ordering of indices walking around the polygon.
+  const indices: number[] = [];
+  let i = 0;
+  for (let step = 0; step < vertRows.length + ring_ends.length - 1; step += 1) {
+    if (loop_connections.has(i)) {
+      const j = loop_connections.get(i) ?? 0;
+      indices.push(i, j);
+      i = after[j] ?? 0;
+    } else {
+      indices.push(i);
+      i = after[i] ?? 0;
+    }
+    if (i === 0) break;
+  }
+
+  const flat2d = indices.map((index) => [
+    vertRows[index]?.[0] ?? 0,
+    vertRows[index]?.[1] ?? 0,
+  ]);
+  const meta_indices = earcut_single_ring(flat2d);
+  return meta_indices.map((mi) => indices[mi] ?? 0);
+}
+
+/**
+ * Local ear-clipping triangulation of a single polygon ring (no holes).
+ * Stand-in for `mapbox_earcut.triangulate_float32(verts, [len])`, which the
+ * Python implementation delegates to after merging hole-bridges itself.
+ * Returns a flat list of indices (triples) into the input vertex list.
+ *
+ * NOTE: the merged ring contains duplicated bridge vertices lying exactly
+ * on bridge edges. Like earcut, the in-triangle test below is strict about
+ * the interior (points on an edge do not block an ear) so those duplicates
+ * cannot deadlock the clip loop.
+ */
+function earcut_single_ring(verts2d: number[][]): number[] {
+  // Drop consecutive duplicates (including a duplicated closing vertex).
+  const pts: number[][] = [];
+  for (const p of verts2d) {
+    const last = pts[pts.length - 1];
+    if (last === undefined || last[0] !== p[0] || last[1] !== p[1]) pts.push(p);
+  }
+  if (pts.length > 1) {
+    const first = pts[0] ?? [0, 0];
+    const last = pts[pts.length - 1] ?? [0, 0];
+    if (first[0] === last[0] && first[1] === last[1]) pts.pop();
+  }
+  const n = pts.length;
+  if (n < 3) return [];
+  // Signed area to determine orientation.
+  let area = 0;
+  for (let k = 0; k < n; k += 1) {
+    const [x1 = 0, y1 = 0] = pts[k] ?? [];
+    const [x2 = 0, y2 = 0] = pts[(k + 1) % n] ?? [];
+    area += x1 * y2 - x2 * y1;
+  }
+  const ccw = area > 0;
+  // Doubly-linked ring over the surviving vertices.
+  const prev = pts.map((_, k) => (k - 1 + n) % n);
+  const next = pts.map((_, k) => (k + 1) % n);
+  const alive = new Array(n).fill(true);
+  let remaining = n;
+
+  const cross2 = (a: number[], b: number[], c: number[]): number =>
+    ((b[0] ?? 0) - (a[0] ?? 0)) * ((c[1] ?? 0) - (a[1] ?? 0)) -
+    ((b[1] ?? 0) - (a[1] ?? 0)) * ((c[0] ?? 0) - (a[0] ?? 0));
+
+  const pointInTriangleStrict = (p: number[], a: number[], b: number[], c: number[]): boolean => {
+    const eps = 1e-12;
+    const d1 = cross2(p, a, b);
+    const d2 = cross2(p, b, c);
+    const d3 = cross2(p, c, a);
+    const pos = (d1 > eps ? 1 : 0) + (d2 > eps ? 1 : 0) + (d3 > eps ? 1 : 0);
+    const neg = (d1 < -eps ? 1 : 0) + (d2 < -eps ? 1 : 0) + (d3 < -eps ? 1 : 0);
+    return pos === 3 || neg === 3;
+  };
+
+  const isEar = (k: number): boolean => {
+    const a = pts[prev[k] ?? 0] ?? [0, 0];
+    const b = pts[k] ?? [0, 0];
+    const c = pts[next[k] ?? 0] ?? [0, 0];
+    const turn = cross2(a, b, c);
+    if (ccw ? turn <= 0 : turn >= 0) return false;
+    for (let m = 0; m < n; m += 1) {
+      if (!alive[m] || m === prev[k] || m === k || m === next[k]) continue;
+      if (pointInTriangleStrict(pts[m] ?? [0, 0], a, b, c)) return false;
+    }
+    return true;
+  };
+
+  const result: number[] = [];
+  let cursor = 0;
+  let guard = 0;
+  while (remaining > 3 && guard < n * n * 2) {
+    guard += 1;
+    if (!alive[cursor]) {
+      cursor = next[cursor] ?? 0;
+      continue;
+    }
+    if (isEar(cursor)) {
+      result.push(prev[cursor] ?? 0, cursor, next[cursor] ?? 0);
+      alive[cursor] = false;
+      remaining -= 1;
+      const p = prev[cursor] ?? 0;
+      const q = next[cursor] ?? 0;
+      next[p] = q;
+      prev[q] = p;
+      cursor = p;
+    } else {
+      cursor = next[cursor] ?? 0;
+    }
+  }
+  const rest: number[] = [];
+  for (let k = 0; k < n; k += 1) if (alive[k]) rest.push(k);
+  if (rest.length === 3) result.push(rest[0] ?? 0, rest[1] ?? 0, rest[2] ?? 0);
+  return result;
+}
+
+export function perpendicular_bisector(
+  line: Array<number[] | readonly number[] | NDArray>,
+  norm_vector: number[] | readonly number[] | NDArray = OUT,
+): number[][] {
+  const [p1 = [0, 0, 0], p2 = [0, 0, 0]] = line;
+  const a = toRows(p1 as VectorInput).rows[0] ?? [];
+  const b = toRows(p2 as VectorInput).rows[0] ?? [];
+  const direction = cross(
+    a.map((v, k) => v - (b[k] ?? 0)),
+    toRows(norm_vector as VectorInput).rows[0] ?? [],
+  );
+  const m = midpoint(a, b);
+  return [
+    m.map((v, k) => v + (direction[k] ?? 0)),
+    m.map((v, k) => v - (direction[k] ?? 0)),
+  ];
 }
 
 export function get_unit_normal(

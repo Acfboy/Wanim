@@ -145,6 +145,19 @@ export class AnimationGroup extends Animation {
 export class Succession extends AnimationGroup {
   active_index = 0;
   active_animation: Animation | null = null;
+  scene: unknown = null;
+
+  override _setup_scene(scene: any): void {
+    if (scene === null || scene === undefined) return;
+    if (this.is_introducer()) {
+      for (const animation of this.animations) {
+        if (!animation.is_introducer() && animation.mobject !== null && animation.mobject !== undefined) {
+          scene.add(animation.mobject);
+        }
+      }
+    }
+    this.scene = scene;
+  }
 
   begin(): void {
     if (this.animations.length === 0) {

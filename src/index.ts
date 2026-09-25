@@ -14,10 +14,15 @@ export {
   complex_to_R3,
   cross,
   cross2d,
+  earclip_triangulation,
+  get_winding_number,
   norm_squared,
   normalize_along_axis,
+  perpendicular_bisector,
   quaternion_conjugate,
   quaternion_mult,
+  rotation_matrix_from_quaternion,
+  rotation_matrix_transpose,
   shoelace,
 } from "./utils/space_ops.js";
 // NOTE: ./utils/arrays.js also exports `normalize` (element-wise, no

@@ -204,6 +204,24 @@ export class Wait extends Animation {
   interpolate(_alpha: number): void {}
 }
 
+export class Add extends Animation {
+  constructor(...mobjects: Mobject[]) {
+    // NOTE: mirrors Python `mobjects[0]`, which raises IndexError when no
+    // mobjects are given.
+    if (mobjects.length === 0) {
+      throw new Error("Add() missing 1 required positional argument");
+    }
+    const mobject = mobjects.length === 1 ? mobjects[0] : new Group(...mobjects);
+    super(mobject, { run_time: 0, introducer: true });
+  }
+
+  begin(): void {}
+  finish(): void {}
+  clean_up_from_scene(_scene: any): void {}
+  update_mobjects(_dt: number): void {}
+  interpolate(_alpha: number): void {}
+}
+
 export function prepare_animation(animation: Animation | Mobject | (() => Animation)): Animation {
   if (animation instanceof Animation) return animation;
   if (typeof animation === "function") return animation();

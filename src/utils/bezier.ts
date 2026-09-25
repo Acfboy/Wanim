@@ -892,3 +892,12 @@ export function bezier_remap(
   });
   return result;
 }
+
+export function point_lies_on_bezier(
+  point: number[] | NDArray,
+  control_points: number[][] | NDArray,
+  round_to = 1e-6,
+): boolean {
+  const roots = proportions_along_bezier_curve_for_point(point, control_points, round_to);
+  return (roots.toArray() as unknown[]).length > 0;
+}

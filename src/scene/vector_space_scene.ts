@@ -1,10 +1,26 @@
 import { array, type NDArray } from "numpy-ts";
 import { Scene } from "./scene.js";
 import { matrixRows, pointFrom, transposeMatrix } from "../utils/arrays.js";
+import { update_dict_recursively } from "../utils/config_ops.js";
 
 export { CoordinateSystem } from "../mobject/graphing/coordinate_systems.js";
 
 export class LinearTransformationScene extends Scene {
+  static update_default_configs(
+    default_configs: Iterable<Record<string, unknown>>,
+    passed_configs: Iterable<Record<string, unknown> | null | undefined>,
+  ): void {
+    const defaults = [...default_configs];
+    const passed = [...passed_configs];
+    const length = Math.min(defaults.length, passed.length);
+    for (let index = 0; index < length; index += 1) {
+      const passed_config = passed[index];
+      if (passed_config !== null && passed_config !== undefined) {
+        update_dict_recursively(defaults[index] as Record<string, unknown>, passed_config);
+      }
+    }
+  }
+
   get_matrix_transformation(matrix: unknown): (point: number[] | NDArray) => NDArray {
     return this.get_transposed_matrix_transformation(transposeMatrix(matrixRows(matrix)));
   }
