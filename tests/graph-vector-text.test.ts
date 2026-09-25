@@ -180,7 +180,10 @@ describe("StreamLines", () => {
     const hideAndWait = stream.hide_and_wait;
     expect(hideAndWait).toBeTypeOf("function");
 
-    stream.stroke_opacity = 0.4;
+    // NOTE: opacity must go through set_stroke (direct field assignment does
+    // not update the rgbas arrays in python either: get_stroke_opacity reads
+    // stroke_rgbas[:, 3][0], so a bare `stream.stroke_opacity = x` is stale).
+    stream.set_stroke(undefined, undefined, 0.4);
     hideAndWait?.(stream, 0.5);
     expect(stream.get_stroke_opacity()).toBe(0.4);
     hideAndWait?.(stream, 0);

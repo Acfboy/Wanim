@@ -33,17 +33,22 @@ function comb(n: number, k: number): number {
     error.name = "ValueError";
     throw error;
   }
-  if (k < 0 || n < 0 || k > n) {
+  if (k < 0 || n < 0) {
     const error = new Error(`n must be a non-negative integer and k must satisfy 0 <= k <= n, got n=${n}, k=${k}`);
     error.name = "ValueError";
     throw error;
   }
+  // NOTE: mirrors math.comb, which returns 0 (rather than raising) when k > n.
+  if (k > n) return 0;
+  // NOTE: math.comb is exact (bigint); use BigInt so large coefficients
+  // round-trip to the same double python reports, e.g. choose(100, 50).
   const small = Math.min(k, n - k);
-  let result = 1;
+  let result = 1n;
+  const bigN = BigInt(n);
   for (let i = 1; i <= small; i += 1) {
-    result = (result * (n - small + i)) / i;
+    result = (result * (bigN - BigInt(small) + BigInt(i))) / BigInt(i);
   }
-  return Math.round(result);
+  return Number(result);
 }
 
 export function sigmoid(x: number): number {

@@ -176,10 +176,12 @@ export class VMobject extends Mobject {
   init_colors(propagate_colors = true): this {
     if (!this.fill_color) this.fill_color = new ManimColor(WHITE);
     if (!this.stroke_color) this.stroke_color = new ManimColor(WHITE);
-    const pointCount = this.get_num_points();
-    this.fill_rgbas = array(pointCount > 0 ? Array.from({ length: pointCount }, () => [...this.fill_color.toRgb().toArray() as number[], this.fill_opacity]) : []) as NDArray;
-    this.stroke_rgbas = array(pointCount > 0 ? Array.from({ length: pointCount }, () => [...this.stroke_color.toRgb().toArray() as number[], this.stroke_opacity]) : []) as NDArray;
-    this.background_stroke_rgbas = array(pointCount > 0 ? Array.from({ length: pointCount }, () => [0, 0, 0, this.background_stroke_opacity]) : []) as NDArray;
+    // NOTE: mirrors Python generate_rgbas_array, which always yields at least
+    // one row even when the mobject has no points yet.
+    const pointCount = Math.max(1, this.get_num_points());
+    this.fill_rgbas = array(Array.from({ length: pointCount }, () => [...this.fill_color.toRgb().toArray() as number[], this.fill_opacity])) as NDArray;
+    this.stroke_rgbas = array(Array.from({ length: pointCount }, () => [...this.stroke_color.toRgb().toArray() as number[], this.stroke_opacity])) as NDArray;
+    this.background_stroke_rgbas = array(Array.from({ length: pointCount }, () => [0, 0, 0, this.background_stroke_opacity])) as NDArray;
     if (!propagate_colors) for (const submob of this.submobjects) (submob as VMobject).init_colors(false);
     return this;
   }

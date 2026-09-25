@@ -159,7 +159,10 @@ export class ManimColor {
   }
 
   static parse(value: ParsableManimColor | readonly ParsableManimColor[] | null | undefined, alpha = 1): ManimColor | ManimColor[] {
-    if (Array.isArray(value) && value.length > 0 && (typeof value[0] === "string" || (value[0] as unknown) instanceof ManimColor || Array.isArray(value[0]) || isNDArray(value[0]))) {
+    // NOTE: mirrors Python `is_sequence = isinstance(color, (list, tuple))`:
+    // an empty list is still a sequence (parses to []), while a flat
+    // [r, g, b] numeric triple parses to a single color.
+    if (Array.isArray(value) && (value.length === 0 || typeof value[0] === "string" || (value[0] as unknown) instanceof ManimColor || Array.isArray(value[0]) || isNDArray(value[0]))) {
       return (value as readonly ParsableManimColor[]).map((item) => new ManimColor(item, alpha));
     }
     return new ManimColor(value as ParsableManimColor | null | undefined, alpha);

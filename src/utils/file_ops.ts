@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, extname, join, parse } from "node:path";
+import { dirname, extname, join, parse, resolve } from "node:path";
 import { platform } from "node:os";
 import { config } from "../_config/utils.js";
 
@@ -110,4 +110,25 @@ export function add_import_statement(file: string): void {
   const import_line = "from manim import *";
   const content = readFileSync(file, { encoding: "utf-8" });
   writeFileSync(file, `${import_line}\n${content}`, { encoding: "utf-8" });
+}
+
+export function guarantee_existence(path: string): string {
+  mkdirSync(path, { recursive: true });
+  const resolved = resolve(path);
+  if (!existsSync(resolved)) {
+    const error = new Error(`No such file or directory: '${resolved}'`);
+    error.name = "OSError";
+    throw error;
+  }
+  return resolved;
+}
+
+export function add_extension_if_not_present(file_name: string, extension: string): string {
+  if (extname(file_name) !== extension) return file_name + extension;
+  return file_name;
+}
+
+export function modify_atime(file_path: string): void {
+  const mtime = statSync(file_path).mtime;
+  utimesSync(file_path, new Date(), mtime);
 }

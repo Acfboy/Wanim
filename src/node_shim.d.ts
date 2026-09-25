@@ -5,6 +5,15 @@ declare module "node:fs" {
   export function readdirSync(path: string): string[];
   export function unlinkSync(path: string): void;
   export function accessSync(path: string, mode?: number): void;
+  export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
+  export interface Stats {
+    mtime: Date;
+    mtimeMs: number;
+    atimeMs: number;
+    isDirectory(): boolean;
+  }
+  export function statSync(path: string): Stats;
+  export function utimesSync(path: string, atime: Date, mtime: Date): void;
   export const constants: { R_OK: number; W_OK: number; X_OK: number; F_OK: number };
 }
 

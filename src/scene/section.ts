@@ -39,9 +39,11 @@ export class Section {
 
   get_dict(sections_dir: string): Record<string, unknown> {
     if (this.video === null) {
-      throw new Error(
+      const error = new Error(
         `Section '${this.name}' cannot be exported as dict, it does not have a video path assigned to it`,
       );
+      error.name = "ValueError";
+      throw error;
     }
     // NOTE (interpreter scope): video probing / media export is out of scope;
     // get_video_metadata is a TODO stub and throws until it is ported.
