@@ -128,6 +128,9 @@ export class ManimColor {
     if (!isNDArray(value)) {
       throw new TypeError(`Expected numpy array, got ${typeof value}`);
     }
+    if ((value as NDArray).shape[0] !== 4) {
+      throw new TypeError("Array must have exactly 4 values.");
+    }
     (this as unknown as { internal: ColorArray }).internal = value;
   }
 

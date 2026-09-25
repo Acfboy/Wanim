@@ -69,7 +69,7 @@ export class ImageMobject extends AbstractImageMobject {
         }
       }
     }
-    this.pixel_array = array(voxels) as NDArray;
+    this.pixel_array = (array(voxels) as NDArray).astype(this.pixel_array_dtype as "uint8") as NDArray;
     this.stroke_opacity = alpha;
     return this;
   }
