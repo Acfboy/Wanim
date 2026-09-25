@@ -1,11 +1,11 @@
 import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
-import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows } from "../../utils/arrays.js";
+import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
 import { bezier_remap, integer_interpolate, partial_bezier_points } from "../../utils/bezier.js";
-import { shoelace_direction } from "../../utils/space_ops.js";
+import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
-import { ORIGIN, UL } from "../../constants.js";
+import { ORIGIN, OUT, UL } from "../../constants.js";
 
 export interface VMobjectOptions extends MobjectOptions {
   fill_color?: ParsableManimColor;
@@ -179,6 +179,39 @@ export class VMobject extends Mobject {
 
   get_sheen_direction(): number[] {
     return [...this.sheen_direction];
+  }
+
+  rotate_sheen_direction(angle: number, axis: number[] | readonly number[] | NDArray = [...OUT], family = true): this {
+    if (family) {
+      for (const submob of this.get_family()) {
+        (submob as VMobject).sheen_direction = [
+          ...(rows(rotate_vector((submob as VMobject).sheen_direction, angle, axis), this.dim)[0] ?? []),
+        ];
+      }
+    } else {
+      this.sheen_direction = [
+        ...(rows(rotate_vector(this.sheen_direction, angle, axis), this.dim)[0] ?? []),
+      ];
+    }
+    return this;
+  }
+
+  rotateSheenDirection(angle: number, axis: number[] | readonly number[] | NDArray = [...OUT], family = true): this {
+    return this.rotate_sheen_direction(angle, axis, family);
+  }
+
+  set_shade_in_3d(value = true, z_index_as_group = false): this {
+    for (const submob of this.get_family()) {
+      (submob as VMobject).shade_in_3d = value;
+      if (z_index_as_group) {
+        submob.z_index_group = this;
+      }
+    }
+    return this;
+  }
+
+  setShadeIn3d(value = true, z_index_as_group = false): this {
+    return this.set_shade_in_3d(value, z_index_as_group);
   }
 
   set_sheen_direction(direction: number[] | readonly number[] | NDArray, family = true): this {
@@ -597,6 +630,28 @@ export class VMobject extends Mobject {
     const start = index * this.n_points_per_cubic_curve;
     const points = rows(this.points, this.dim).slice(start, start + 4);
     return (t: number) => curveValue(points, t, this.dim);
+  }
+
+  get_nth_curve_length_pieces(n: number, sample_points: number | null = null): NDArray {
+    if (!(n < this.get_num_curves())) {
+      const error = new Error("assert n < self.get_num_curves()");
+      error.name = "AssertionError";
+      throw error;
+    }
+    const count = sample_points ?? 10;
+    const curve = this.get_nth_curve_function(n);
+    const points = linspace(0, 1, count).map((alpha) => curve(alpha));
+    const norms: number[] = [];
+    for (let index = 1; index < points.length; index += 1) {
+      const current = points[index] ?? [];
+      const previous = points[index - 1] ?? [];
+      norms.push(Math.hypot(...current.map((value, component) => value - (previous[component] ?? 0))));
+    }
+    return array(norms) as NDArray;
+  }
+
+  getNthCurveLengthPieces(n: number, sample_points: number | null = null): NDArray {
+    return this.get_nth_curve_length_pieces(n, sample_points);
   }
 
   get_nth_curve_function_with_length(index: number, sample_points: number | null = null): [(t: number) => number[], number] {
@@ -1027,10 +1082,62 @@ function callerFunctionName(): string {
   return "";
 }
 
+export interface VectorizedPointOptions extends VMobjectOptions {
+  artificial_width?: number;
+  artificial_height?: number;
+}
+
 export class VectorizedPoint extends VMobject {
-  constructor(point: unknown = ORIGIN, options: VMobjectOptions = {}) {
-    super(options);
-    this.points = pointsFrom(point, this.dim);
+  artificial_width = 0.01;
+  artificial_height = 0.01;
+
+  constructor(
+    location: unknown = ORIGIN,
+    color: ParsableManimColor | VectorizedPointOptions = BLACK,
+    fill_opacity = 0,
+    stroke_width = 0,
+    artificial_width = 0.01,
+    artificial_height = 0.01,
+    options: VectorizedPointOptions = {},
+  ) {
+    // NOTE: Python assigns artificial_width/height before super().__init__;
+    // TS forbids `this` access before super(), so the field defaults above
+    // (identical values) cover any reads during construction, and the
+    // parameters are applied immediately after.
+    let extra: VectorizedPointOptions = options;
+    let resolvedColor: ParsableManimColor = BLACK;
+    if (
+      color !== null &&
+      typeof color === "object" &&
+      !(color instanceof ManimColor) &&
+      !isNDArray(color) &&
+      !Array.isArray(color)
+    ) {
+      extra = { ...(color as VectorizedPointOptions), ...options };
+    } else {
+      resolvedColor = color as ParsableManimColor;
+    }
+    super({
+      color: resolvedColor,
+      fill_opacity,
+      stroke_width,
+      ...extra,
+    });
+    this.artificial_width = extra.artificial_width ?? artificial_width;
+    this.artificial_height = extra.artificial_height ?? artificial_height;
+    this.set_points(
+      array([pointRows(location, this.dim)[0] ?? new Array(this.dim).fill(0)]) as NDArray,
+    );
+  }
+
+  // NOTE: Python installs these getters on the Cairo or OpenGL base class
+  // depending on config.renderer; the TS port always uses the Cairo behavior.
+  override get width(): number {
+    return this.artificial_width;
+  }
+
+  override get height(): number {
+    return this.artificial_height;
   }
 
   get_location(): NDArray {

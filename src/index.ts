@@ -57,6 +57,7 @@ export * from "./mobject/geometry/boolean_ops.js";
 export * from "./mobject/three_d/three_dimensions.js";
 export * from "./mobject/three_d/polyhedra.js";
 export * from "./scene/scene.js";
+export * from "./scene/three_d_scene.js";
 export * from "./scene/vector_space_scene.js";
 export * from "./animation/animation.js";
 export * from "./animation/composition.js";

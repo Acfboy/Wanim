@@ -163,6 +163,7 @@ export class Mobject {
   dim: number;
   target: Mobject | null;
   z_index: number;
+  z_index_group: Mobject | null = null;
   point_hash: string | null = null;
   submobjects: Mobject[] = [];
   updaters: MobjectUpdater[] = [];

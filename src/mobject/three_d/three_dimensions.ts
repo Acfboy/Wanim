@@ -4,7 +4,20 @@ import { LEFT, RIGHT } from "../../constants.js";
 import { normalize } from "../../utils/space_ops.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
-import { VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+
+export class ThreeDVMobject extends VMobject {
+  u_index!: number;
+  v_index!: number;
+  u1!: number;
+  u2!: number;
+  v1!: number;
+  v2!: number;
+
+  constructor(options: VMobjectOptions = {}) {
+    super({ shade_in_3d: true, ...options });
+  }
+}
 
 export type SurfacePoint = NDArray;
 
