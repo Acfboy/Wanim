@@ -118,23 +118,6 @@ const NAMED_COLORS: Record<string, [number, number, number]> = {
   YELLOW_E: [0.9098039215686274, 0.7568627450980392, 0.10980392156862745],
 };
 
-function clamp(value: number, min = 0, max = 1): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function parseHex(value: string, alpha: number): ColorArray {
-  const match = value.match(/(?:#|0x)([0-9a-f]{3,8})$/i);
-  if (!match) throw new Error(`Color ${value} not found`);
-  let hex = match[1];
-  if (hex.length === 3 || hex.length === 4) hex = [...hex].map((part) => part + part).join("");
-  if (hex.length === 6) hex += "FF";
-  if (hex.length !== 8) throw new Error("Hex colors must contain 6 or 8 hexadecimal numbers");
-  const number = Number.parseInt(hex, 16);
-  const values = [(number >>> 24) & 255, (number >>> 16) & 255, (number >>> 8) & 255, number & 255].map((part) => part / 255);
-  values[3] = alpha;
-  return array(values) as ColorArray;
-}
-
 function valuesOf(value: unknown): number[] {
   if (isNDArray(value)) {
     const rows = nestedRows(value);
@@ -156,8 +139,19 @@ export class ManimColor {
       // that later in-place alpha writes cannot alias another instance.
       this.internal = value.internal.copy() as ColorArray;
     } else if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
+      // NOTE: Python checks isinstance(value, int) which matches bool but
+      // rejects float scalars (e.g. ManimColor(3.5) raises TypeError).
+      // Mirror that: non-integer numbers are rejected instead of truncated.
+      const numeric = Number(value);
+      if (!Number.isInteger(numeric)) {
+        throw typeError(
+          "ManimColor only accepts int, str, list[int, int, int], " +
+            "list[int, int, int, int], list[float, float, float], " +
+            "list[float, float, float, float], not float",
+        );
+      }
       // NOTE: Python checks isinstance(value, int) which also matches bool.
-      this.internal = ManimColor._internal_from_integer(Number(value), alpha);
+      this.internal = ManimColor._internal_from_integer(numeric, alpha);
     } else if (typeof value === "string") {
       // Mirrors Python: first search for a hex payload after #/0x, else
       // fall back to named-color lookup.
@@ -1104,15 +1098,15 @@ export function rgb_to_color(rgb: number[] | readonly number[] | NDArray): Manim
   return ManimColor.from_rgb([...pointRows(rgb, 3)[0]]);
 }
 
-function uint8(value: number): number {
-  const converted = Math.trunc(value);
-  const wrapped = converted % 256;
-  return wrapped < 0 ? wrapped + 256 : wrapped;
+function uint8Trunc(value: number): number {
+  // Mirrors numpy `.astype(int)` truncation toward zero used by
+  // ManimColor.to_int_rgba_with_alpha: no modulo-256 wrapping.
+  return Math.trunc(value);
 }
 
 export function color_to_int_rgba(color: ParsableManimColor, alpha: number): number[] {
   const values = pointRows(new ManimColor(color).toRgba(), 4)[0] ?? [0, 0, 0, 1];
-  return [values[0], values[1], values[2], alpha].map((item) => uint8(item * 255));
+  return [values[0], values[1], values[2], alpha].map((item) => uint8Trunc(item * 255));
 }
 
 export function color_gradient(referenceColors: readonly ParsableManimColor[], lengthOfOutput: number): ManimColor[] {
@@ -1125,7 +1119,10 @@ export function color_gradient(referenceColors: readonly ParsableManimColor[], l
   for (let index = 0; index < lengthOfOutput; index += 1) {
     const alpha = lengthOfOutput === 1 ? 0 : index / (lengthOfOutput - 1);
     const scaled = alpha * (colors.length - 1);
-    const lower = Math.min(colors.length - 2, Math.floor(scaled));
+    // Mirrors Python: floors[-1] = num_colors - 2 and alphas_mod1[-1] = 1, so
+    // the final output is always the last reference color (this also governs
+    // the lengthOfOutput === 1 case with more than 2 reference colors).
+    const lower = index === lengthOfOutput - 1 ? colors.length - 2 : Math.min(colors.length - 2, Math.floor(scaled));
     const fraction = index === lengthOfOutput - 1 ? 1 : scaled - lower;
     result.push(new ManimColor(array(rgbs[lower].map((value, channel) => value * (1 - fraction) + rgbs[lower + 1][channel] * fraction)) as ColorArray));
   }
@@ -1134,8 +1131,4 @@ export function color_gradient(referenceColors: readonly ParsableManimColor[], l
 
 export function invert_color(color: ManimColor): ManimColor {
   return color.invert();
-}
-
-export function with_alpha(color: ManimColor, alpha: number): ManimColor {
-  return color.opacity(clamp(alpha));
 }
