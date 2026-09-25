@@ -206,11 +206,8 @@ export class Wait extends Animation {
 
 export class Add extends Animation {
   constructor(...mobjects: Mobject[]) {
-    // NOTE: mirrors Python `mobjects[0]`, which raises IndexError when no
-    // mobjects are given.
-    if (mobjects.length === 0) {
-      throw new Error("Add() missing 1 required positional argument");
-    }
+    // NOTE: mirrors Python `mobjects[0] if len(mobjects) == 1 else
+    // Group(*mobjects)`: zero mobjects yields an empty Group (no raise).
     const mobject = mobjects.length === 1 ? mobjects[0] : new Group(...mobjects);
     super(mobject, { run_time: 0, introducer: true });
   }

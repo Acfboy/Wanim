@@ -1100,6 +1100,15 @@ describe("Wait/Add clean_up_from_scene", () => {
     new Add(new Mobject()).clean_up_from_scene(scene as never);
     expect(scene.mobjects).toHaveLength(0);
   });
+
+  it("Add() with no mobjects yields an empty Group like Python", () => {
+    // Python: Add().mobject is an empty Group (mobjects[0] branch is
+    // skipped, Group() is built instead — no raise).
+    const a = new Add();
+    expect(a.mobject).toBeInstanceOf(Group);
+    expect((a.mobject as Mobject).submobjects).toHaveLength(0);
+    expect(a.is_introducer()).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
