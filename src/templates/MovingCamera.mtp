@@ -1,0 +1,6 @@
+from manim import *
+
+
+class Scene(Scene):
+    def construct(self):
+        pass
