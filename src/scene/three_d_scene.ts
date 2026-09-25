@@ -5,6 +5,10 @@ import { Transform } from "../animation/transform.js";
 import { Camera } from "../camera/camera.js";
 import { Mobject } from "../mobject/mobject.js";
 import { ValueTracker } from "../mobject/value_tracker.js";
+import { ThreeDAxes } from "../mobject/graphing/coordinate_systems.js";
+import { Sphere } from "../mobject/three_d/three_dimensions.js";
+import { VGroup, VMobject, VectorizedPoint } from "../mobject/types/vectorized_mobject.js";
+import { merge_dicts_recursively } from "../utils/config_ops.js";
 import { Scene } from "./scene.js";
 
 export interface ThreeDSceneOptions {
@@ -141,19 +145,19 @@ export class ThreeDScene extends Scene {
     const phiOrigin: number = origin_phi ?? this.renderer.camera.phi_tracker.get_value();
 
     const val_tracker_theta = new ValueTracker(0);
-    const update_theta = (m: unknown, dt: number): void => {
+    const update_theta = (m: unknown, dt: number): unknown => {
       val_tracker_theta.increment_value(dt * rate);
       const val_for_left_right = 0.2 * Math.sin(val_tracker_theta.get_value());
-      (m as ValueTracker).set_value(thetaOrigin + val_for_left_right);
+      return (m as ValueTracker).set_value(thetaOrigin + val_for_left_right);
     };
     this.renderer.camera.theta_tracker.add_updater(update_theta);
     this.add(this.renderer.camera.theta_tracker);
 
     const val_tracker_phi = new ValueTracker(0);
-    const update_phi = (m: unknown, dt: number): void => {
+    const update_phi = (m: unknown, dt: number): unknown => {
       val_tracker_phi.increment_value(dt * rate);
       const val_for_up_down = 0.1 * Math.cos(val_tracker_phi.get_value()) - 0.1;
-      (m as ValueTracker).set_value(phiOrigin + val_for_up_down);
+      return (m as ValueTracker).set_value(phiOrigin + val_for_up_down);
     };
     this.renderer.camera.phi_tracker.add_updater(update_phi);
     this.add(this.renderer.camera.phi_tracker);
@@ -325,6 +329,139 @@ export class ThreeDScene extends Scene {
       merged.focal_distance ?? null,
       null,
       merged as Record<string, unknown>,
+    );
+  }
+}
+
+export interface SpecialThreeDSceneOptions {
+  camera_class?: new (...args: any[]) => any;
+  [key: string]: unknown;
+}
+
+export class SpecialThreeDScene extends ThreeDScene {
+  cut_axes_at_radius: boolean;
+  camera_config: Record<string, unknown>;
+  three_d_axes_config: Record<string, unknown>;
+  sphere_config: Record<string, unknown>;
+  default_angled_camera_position: Record<string, number>;
+  low_quality_config: Record<string, unknown>;
+
+  constructor(
+    cut_axes_at_radius = true,
+    camera_config: Record<string, unknown> = { should_apply_shading: true, exponential_projection: true },
+    three_d_axes_config: Record<string, unknown> = {
+      num_axis_pieces: 1,
+      axis_config: {
+        unit_size: 2,
+        tick_frequency: 1,
+        numbers_with_elongated_ticks: [0, 1, 2],
+        stroke_width: 2,
+      },
+    },
+    sphere_config: Record<string, unknown> = { radius: 2, resolution: [24, 48] },
+    default_angled_camera_position: Record<string, number> = {
+      phi: 70 * DEGREES,
+      theta: -110 * DEGREES,
+    },
+    low_quality_config: Record<string, unknown> = {
+      camera_config: { should_apply_shading: false },
+      three_d_axes_config: { num_axis_pieces: 1 },
+      sphere_config: { resolution: [12, 24] },
+    },
+    options: SpecialThreeDSceneOptions = {},
+  ) {
+    const { camera_class, ...kwargs } = options;
+    void camera_class;
+    // NOTE: Python picks _config = {} when the renderer's pixel_width matches
+    // the global config (otherwise the low-quality overrides for `-l`
+    // extracts). The TS renderer always uses the global config width, so the
+    // standard config applies; the low-quality branch binds once a renderer
+    // with its own camera_config lands.
+    const merged = merge_dicts_recursively({}, kwargs as Record<string, unknown>);
+    super(undefined as unknown as new (...args: any[]) => any, null, null, merged as unknown as Record<string, unknown> & { renderer?: unknown });
+    this.cut_axes_at_radius = cut_axes_at_radius;
+    this.camera_config = camera_config;
+    this.three_d_axes_config = three_d_axes_config;
+    this.sphere_config = sphere_config;
+    this.default_angled_camera_position = default_angled_camera_position;
+    this.low_quality_config = low_quality_config;
+  }
+
+  get_axes(): ThreeDAxes {
+    // NOTE: the TS ThreeDAxes port accepts no axis-config options yet, so
+    // the stored three_d_axes_config is kept for API compatibility and the
+    // axes are built with defaults; the piece-cutting below goes through
+    // `any` so it binds once Axes exposes get_start/number_to_point.
+    const axes = new ThreeDAxes() as unknown as ThreeDAxes;
+    const axesAny = axes as unknown as {
+      submobjects?: Array<Record<string, any>>;
+      [Symbol.iterator]?: () => Iterator<Record<string, any>>;
+    };
+    // NOTE: Python iterates the axes VGroup itself (`for axis in self`).
+    // The TS CoordinateSystem hierarchy is not Mobject-based yet, so this
+    // resolves the members through either protocol and processes zero or
+    // more axes; it binds fully once Axes gains submobjects/iteration.
+    const members: Array<Record<string, any>> = typeof axesAny[Symbol.iterator] === "function"
+      ? [...(axesAny as unknown as Iterable<Record<string, any>>)]
+      : (axesAny.submobjects ?? []);
+    for (const axis of members) {
+      if (this.cut_axes_at_radius) {
+        const p0 = axis.get_start();
+        const p1 = axis.number_to_point(-1);
+        const p2 = axis.number_to_point(1);
+        const p3 = axis.get_end();
+        // NOTE: Line (manim.mobject.geometry.line) is not ported yet; each
+        // piece is a straight 2-point VMobject segment, which matches Line's
+        // point geometry for the axis-cut purpose.
+        const pairs: Array<[unknown, unknown]> = [[p0, p1], [p1, p2], [p2, p3]];
+        const new_pieces = new VGroup(
+          ...(pairs.map(([start, end]) => {
+            const seg = new VMobject();
+            seg.set_points_as_corners([start as number[], end as number[]]);
+            return seg;
+          }) as VMobject[]),
+        );
+        for (const piece of new_pieces.submobjects) {
+          (piece as unknown as { shade_in_3d: boolean }).shade_in_3d = true;
+        }
+        (new_pieces as unknown as { match_style: (other: unknown) => void }).match_style(axis.pieces);
+        axis.pieces.submobjects = new_pieces.submobjects;
+      }
+      for (const tick of (axis.tick_marks ?? []) as Array<Record<string, any>>) {
+        tick.add(new VectorizedPoint(((tick.get_center() as number[]) ?? []).map((v) => 1.5 * v)));
+      }
+    }
+    return axes as unknown as ThreeDAxes;
+  }
+
+  get_sphere(kwargs: Record<string, unknown> = {}): Sphere {
+    const merged = merge_dicts_recursively(this.sphere_config, kwargs) as {
+      radius?: number;
+      resolution?: number | [number, number];
+      center?: readonly number[];
+      u_range?: [number, number];
+      v_range?: [number, number];
+    };
+    return new Sphere(
+      (merged.center as readonly number[] | undefined) ?? [0, 0, 0],
+      merged.radius ?? 2,
+      (merged.resolution as number | [number, number] | undefined) ?? [24, 48],
+      merged.u_range,
+      merged.v_range,
+    );
+  }
+
+  get_default_camera_position(): Record<string, number> {
+    return this.default_angled_camera_position;
+  }
+
+  set_camera_to_default_position(): void {
+    this.set_camera_orientation(
+      this.default_angled_camera_position["phi"] ?? null,
+      this.default_angled_camera_position["theta"] ?? null,
+      this.default_angled_camera_position["gamma"] ?? null,
+      (this.default_angled_camera_position as Record<string, number>)["zoom"] ?? null,
+      (this.default_angled_camera_position as Record<string, number>)["focal_distance"] ?? null,
     );
   }
 }

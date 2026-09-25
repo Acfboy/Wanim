@@ -3,16 +3,81 @@ import { Animation, type AnimationOptions, linear } from "./animation.js";
 import { Mobject, Group } from "../mobject/mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { identityMatrix, matrixRows, pointFrom, pointRows, pointsFrom } from "../utils/arrays.js";
-import { ORIGIN } from "../constants.js";
+import { path_along_arc, path_along_circles, type PathFuncType } from "../utils/paths.js";
+import { ORIGIN, OUT } from "../constants.js";
+
+export interface TransformOptions extends AnimationOptions {
+  path_func?: PathFuncType | null;
+  path_arc?: number;
+  path_arc_axis?: number[] | readonly number[] | NDArray;
+  path_arc_centers?: unknown;
+  replace_mobject_with_target_in_scene?: boolean;
+}
 
 export class Transform extends Animation {
   target_mobject: Mobject;
+  path_arc_axis!: number[] | readonly number[] | NDArray;
+  path_arc_centers!: unknown;
+  private _path_arc!: number;
+  private _path_func!: PathFuncType;
+  replace_mobject_with_target_in_scene: boolean;
 
-  constructor(mobject: Mobject, targetMobject?: Mobject | AnimationOptions, options: AnimationOptions = {}) {
-    const actualOptions = targetMobject instanceof Mobject || targetMobject === undefined ? options : targetMobject;
+  constructor(mobject: Mobject, targetMobject?: Mobject | TransformOptions, options: TransformOptions = {}) {
+    const actualOptions = targetMobject instanceof Mobject || targetMobject === undefined ? options : (targetMobject as TransformOptions);
     const actualTarget = targetMobject instanceof Mobject ? targetMobject : mobject.copy();
     super(mobject, actualOptions);
+    this.path_arc_axis = (actualOptions.path_arc_axis as number[] | readonly number[] | NDArray) ?? [...OUT];
+    this.path_arc_centers = actualOptions.path_arc_centers ?? null;
+    this.replace_mobject_with_target_in_scene = actualOptions.replace_mobject_with_target_in_scene ?? false;
+    // NOTE: mirrors Python __init__ order: axis/centers first, then the
+    // path_arc setter (which builds _path_func from axis), then path_func.
+    this.path_arc = actualOptions.path_arc ?? 0;
+    const pathFunc = actualOptions.path_func ?? null;
+    if (pathFunc !== null && pathFunc !== undefined) {
+      this.path_func = pathFunc;
+    } else if (this.path_arc_centers !== null && this.path_arc_centers !== undefined) {
+      this.path_func = path_along_circles(
+        this._path_arc,
+        this.path_arc_centers as never,
+        this.path_arc_axis as never,
+      );
+    }
     this.target_mobject = actualTarget;
+  }
+
+  get path_arc(): number {
+    return this._path_arc;
+  }
+
+  set path_arc(pathArc: number) {
+    this._path_arc = pathArc;
+    this._path_func = path_along_arc(pathArc, this.path_arc_axis as never);
+  }
+
+  get path_func(): PathFuncType {
+    return this._path_func;
+  }
+
+  set path_func(pathFunc: PathFuncType | null | undefined) {
+    if (pathFunc !== null && pathFunc !== undefined) {
+      this._path_func = pathFunc;
+    }
+  }
+
+  get pathArc(): number {
+    return this.path_arc;
+  }
+
+  set pathArc(value: number) {
+    this.path_arc = value;
+  }
+
+  get pathFunc(): PathFuncType {
+    return this.path_func;
+  }
+
+  set pathFunc(value: PathFuncType | null | undefined) {
+    this.path_func = value;
   }
 
   create_target(): Mobject {
@@ -20,9 +85,10 @@ export class Transform extends Animation {
   }
 
   interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): void {
-    const targetPoints = pointRows(this.target_mobject.points, submobject.dim);
-    const startPoints = pointRows(startingSubmobject.points, submobject.dim);
-    submobject.points = pointsFrom(startPoints.map((point, index) => point.map((value, component) => value * (1 - alpha) + (targetPoints[index]?.[component] ?? value) * alpha)), submobject.dim);
+    // NOTE: mirrors Python `submobject.interpolate(starting, target_copy,
+    // alpha, self.path_func)`; the TS Animation base tracks no target_copy,
+    // so the (aligned) target_mobject points are used directly.
+    submobject.interpolate(startingSubmobject, this.target_mobject, alpha, this.path_func);
   }
 
   get_all_mobjects(): Mobject[] {

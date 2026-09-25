@@ -2,7 +2,7 @@ import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
-import { bezier_remap, integer_interpolate, partial_bezier_points } from "../../utils/bezier.js";
+import { bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { ORIGIN, OUT, UL } from "../../constants.js";
@@ -549,14 +549,56 @@ export class VMobject extends Mobject {
     return (opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color()) as ManimColor;
   }
 
-  set_color(color: ParsableManimColor, alpha: unknown = null, family = true): this {
-    void alpha;
+  set_color(color: ParsableManimColor, family?: boolean): this;
+  set_color(color: ParsableManimColor, alpha?: unknown, family?: boolean): this;
+  set_color(color: ParsableManimColor, familyOrAlpha: unknown = true, familyMaybe?: boolean): this {
+    // Python: set_color(self, color, family=True) -> set_fill + set_stroke.
+    // The extra `alpha` parameter exists only for compatibility with
+    // Mobject.set_color(color, alpha, family), which forwards positionally
+    // to submobjects that may be VMobjects: set_color(c, null, family).
+    let family = true;
+    if (familyMaybe !== undefined) {
+      family = familyMaybe;
+    } else if (typeof familyOrAlpha === "boolean") {
+      family = familyOrAlpha;
+    } else {
+      family = true;
+    }
     this.set_fill(color, undefined, family);
     this.set_stroke(color, undefined, undefined, family);
     return this;
   }
 
-  setColor(color: ParsableManimColor, alpha: unknown = null, family = true): this { return this.set_color(color, alpha, family); }
+  setColor(color: ParsableManimColor, family?: boolean): this;
+  setColor(color: ParsableManimColor, alpha?: unknown, family?: boolean): this;
+  setColor(color: ParsableManimColor, familyOrAlpha: unknown = true, familyMaybe?: boolean): this {
+    return this.set_color(color, familyOrAlpha as boolean, familyMaybe as boolean);
+  }
+
+  get_style(simple = false): Record<string, unknown> {
+    const ret: Record<string, unknown> = {
+      stroke_opacity: this.get_stroke_opacity(),
+      stroke_width: this.get_stroke_width(),
+    };
+    if (simple) {
+      ret["fill_color"] = this.get_fill_color();
+      ret["fill_opacity"] = this.get_fill_opacity();
+      ret["stroke_color"] = this.get_stroke_color();
+    } else {
+      ret["fill_color"] = this.get_fill_colors();
+      ret["fill_opacity"] = this.get_fill_opacities();
+      ret["stroke_color"] = this.get_stroke_colors();
+      ret["background_stroke_color"] = this.get_stroke_colors(true);
+      ret["background_stroke_width"] = this.get_stroke_width(true);
+      ret["background_stroke_opacity"] = this.get_stroke_opacity(true);
+      ret["sheen_factor"] = this.get_sheen_factor();
+      ret["sheen_direction"] = this.get_sheen_direction();
+      ret["background_image"] = this.get_background_image();
+    }
+    return ret;
+  }
+
+  getStyle(simple = false): Record<string, unknown> { return this.get_style(simple); }
 
   get_num_curves(): number {
     return Math.floor(this.get_num_points() / this.n_points_per_cubic_curve);
@@ -671,6 +713,121 @@ export class VMobject extends Mobject {
     return this.set_points_as_corners(points);
   }
 
+  clear_points(): this {
+    this.points = asPoints([], this.dim);
+    return this;
+  }
+
+  clearPoints(): this {
+    return this.clear_points();
+  }
+
+  get_anchors_and_handles(): [number[][], number[][], number[][], number[][]] {
+    const nppcc = this.n_points_per_cubic_curve;
+    const all = rows(this.points, this.dim);
+    const out: [number[][], number[][], number[][], number[][]] = [[], [], [], []];
+    for (let i = 0; i < nppcc; i += 1) {
+      const part: number[][] = [];
+      for (let index = i; index < all.length; index += nppcc) {
+        part.push([...(all[index] ?? new Array(this.dim).fill(0))]);
+      }
+      out[i] = part;
+    }
+    return out;
+  }
+
+  getAnchorsAndHandles(): [number[][], number[][], number[][], number[][]] {
+    return this.get_anchors_and_handles();
+  }
+
+  change_anchor_mode(mode: "jagged" | "smooth"): this {
+    if (mode !== "jagged" && mode !== "smooth") {
+      const error = new Error('mode must be either "jagged" or "smooth"');
+      error.name = "AssertionError";
+      throw error;
+    }
+    const nppcc = this.n_points_per_cubic_curve;
+    for (const submob of this.family_members_with_points()) {
+      const vmob = submob as VMobject;
+      const subpaths = vmob.get_subpaths();
+      vmob.clear_points();
+      for (const subpath of subpaths) {
+        const subpathRows = rows(subpath, this.dim);
+        const stepped: number[][] = [];
+        for (let index = 0; index < subpathRows.length; index += nppcc) {
+          stepped.push([...(subpathRows[index] ?? new Array(this.dim).fill(0))]);
+        }
+        stepped.push([...(subpathRows[subpathRows.length - 1] ?? new Array(this.dim).fill(0))]);
+        const anchors = stepped;
+        let h1: number[][];
+        let h2: number[][];
+        if (mode === "smooth") {
+          const [h1arr, h2arr] = get_smooth_cubic_bezier_handle_points(anchors);
+          h1 = pointRows(h1arr, this.dim);
+          h2 = pointRows(h2arr, this.dim);
+        } else {
+          const a1 = anchors.slice(0, -1);
+          const a2 = anchors.slice(1);
+          h1 = pointRows(interpolate(array(a1) as NDArray, array(a2) as NDArray, 1.0 / 3) as NDArray, this.dim);
+          h2 = pointRows(interpolate(array(a1) as NDArray, array(a2) as NDArray, 2.0 / 3) as NDArray, this.dim);
+        }
+        const newSubpath = subpathRows.map((row) => [...row]);
+        let h1Index = 0;
+        for (let index = 1; index < newSubpath.length; index += nppcc) {
+          newSubpath[index] = [...(h1[h1Index] ?? new Array(this.dim).fill(0))];
+          h1Index += 1;
+        }
+        let h2Index = 0;
+        for (let index = 2; index < newSubpath.length; index += nppcc) {
+          newSubpath[index] = [...(h2[h2Index] ?? new Array(this.dim).fill(0))];
+          h2Index += 1;
+        }
+        vmob.append_points(newSubpath);
+      }
+    }
+    return this;
+  }
+
+  changeAnchorMode(mode: "jagged" | "smooth"): this {
+    return this.change_anchor_mode(mode);
+  }
+
+  make_smooth(): this {
+    return this.change_anchor_mode("smooth");
+  }
+
+  makeSmooth(): this {
+    return this.make_smooth();
+  }
+
+  make_jagged(): this {
+    return this.change_anchor_mode("jagged");
+  }
+
+  makeJagged(): this {
+    return this.make_jagged();
+  }
+
+  scale_handle_to_anchor_distances(factor: number): this {
+    for (const submob of this.family_members_with_points()) {
+      const vmob = submob as VMobject;
+      if (vmob.get_num_points() < this.n_points_per_cubic_curve) {
+        continue;
+      }
+      const [a1, h1, h2, a2] = vmob.get_anchors_and_handles();
+      const a1ToH1 = h1.map((row, index) => subtractPoints(row, a1[index] ?? row, this.dim));
+      const a2ToH2 = h2.map((row, index) => subtractPoints(row, a2[index] ?? row, this.dim));
+      const newH1 = a1.map((row, index) => addPoints(row, scalePoint(a1ToH1[index] ?? new Array(this.dim).fill(0), factor, this.dim), this.dim));
+      const newH2 = a2.map((row, index) => addPoints(row, scalePoint(a2ToH2[index] ?? new Array(this.dim).fill(0), factor, this.dim), this.dim));
+      vmob.set_anchors_and_handles(a1, newH1, newH2, a2);
+    }
+    return this;
+  }
+
+  scaleHandleToAnchorDistances(factor: number): this {
+    return this.scale_handle_to_anchor_distances(factor);
+  }
+
   get_start_anchors(): number[][] {
     const result: number[][] = [];
     for (let index = 0; index < this.get_num_points(); index += this.n_points_per_cubic_curve) {
@@ -753,8 +910,11 @@ export class VMobject extends Mobject {
 
   get_nth_curve_function_with_length(index: number, sample_points: number | null = null): [(t: number) => number[], number] {
     const curve = this.get_nth_curve_function(index);
-    const points = rows(this.points, this.dim).slice(index * this.n_points_per_cubic_curve, index * this.n_points_per_cubic_curve + 4);
-    return [curve, curveLength(points, sample_points ?? 10)];
+    // NOTE: mirrors Python `length = np.sum(norms)`: the pieces array is 1D
+    // with shape (count - 1,), so nestedRows yields a single flat row.
+    const flat = (nestedRows(this.get_nth_curve_length_pieces(index, sample_points))[0] ?? []) as unknown[];
+    const length = (flat as number[]).reduce((sum, value) => sum + Number(value), 0);
+    return [curve, length];
   }
 
   get_curve_functions_with_lengths(sample_points: number | null = null): Array<[(t: number) => number[], number]> {

@@ -27,6 +27,7 @@ export {
   invert_color,
   is_sequence,
   rgb_to_color,
+  rgb_to_hex,
   rgba_to_color,
 } from "./core.js";
 export type { ColorArray, ParsableManimColor } from "./core.js";

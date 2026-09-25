@@ -331,6 +331,45 @@ export class Scene {
     }
   }
 
+  on_mouse_scroll(point: number[] | readonly number[] | NDArray, offset: number[] | readonly number[] | NDArray): void {
+    // NOTE: Python asserts isinstance(self.camera, OpenGLCamera); the
+    // OpenGL renderer/camera is not ported yet and `camera` is `any`, so
+    // the check is omitted and behavior binds to the real camera once it
+    // lands.
+    if (!config.use_projection_stroke_shaders) {
+      const off = vec3(offset);
+      const factor = 1 + Math.atan(-2.1 * (off[1] ?? 0));
+      this.camera.scale(factor, this.camera_target);
+    }
+    this.mouse_scroll_orbit_controls(point, offset);
+  }
+
+  on_mouse_drag(
+    point: number[] | readonly number[] | NDArray,
+    d_point: number[] | readonly number[] | NDArray,
+    buttons: number,
+    modifiers: number,
+  ): void {
+    // NOTE: same OpenGLCamera note as on_mouse_scroll.
+    const target = vec3(point);
+    const delta = vec3(d_point);
+    this.mouse_drag_point.move_to(target);
+    if (buttons === 1) {
+      this.camera.increment_theta(-(delta[0] ?? 0));
+      this.camera.increment_phi(delta[1] ?? 0);
+    } else if (buttons === 4) {
+      const camera_x_axis = mat44Column(this.camera.model_matrix as NDArray, 0);
+      const horizontal_shift_vector = camera_x_axis.map((value) => -(delta[0] ?? 0) * value);
+      const outCross = cross([...OUT], camera_x_axis);
+      const vertical_shift_vector = outCross.map((value) => -(delta[1] ?? 0) * value);
+      const total_shift_vector = horizontal_shift_vector.map(
+        (value, index) => value + (vertical_shift_vector[index] ?? 0),
+      );
+      this.camera.shift(total_shift_vector.map((value) => 1.1 * value));
+    }
+    this.mouse_drag_orbit_controls(point, d_point, buttons, modifiers);
+  }
+
   on_key_press(symbol: number, modifiers: number): void {
     void modifiers;
     let char: string;

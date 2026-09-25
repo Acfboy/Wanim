@@ -1118,11 +1118,22 @@ export function color_to_int_rgb(color: ParsableManimColor): ColorArray {
 }
 
 export function rgb_to_color(rgb: number[] | readonly number[] | NDArray): ManimColor {
-  return ManimColor.from_rgb([...pointRows(rgb, 3)[0]]);
+  // NOTE: mirrors Python `ManimColor.from_rgb(rgb)` exactly: the input is
+  // passed through untouched so NDArray dtype decides the int-vs-float path
+  // (float64 [1,0,0] is red, not near-black). Do NOT round-trip through
+  // pointRows here -- that would stringify dtypes into plain JS integers
+  // and misroute float arrays into the int (1/255) path.
+  return ManimColor.from_rgb(rgb as number[] | readonly number[] | ColorArray);
 }
 
 export function rgba_to_color(rgba: number[] | readonly number[] | NDArray): ManimColor {
   return ManimColor.from_rgba(rgba as number[] | readonly number[] | ColorArray);
+}
+
+export function rgb_to_hex(rgb: number[] | readonly number[] | NDArray): string {
+  // NOTE: mirrors Python `ManimColor.from_rgb(rgb).to_hex()`; see the
+  // rgb_to_color note about preserving NDArray dtype.
+  return ManimColor.from_rgb(rgb as number[] | readonly number[] | ColorArray).to_hex();
 }
 
 function uint8Trunc(value: number): number {

@@ -245,17 +245,23 @@ export class ThreeDAxes extends Axes {
     this.shaded_axes = shaded_axes;
   }
 
+  *[Symbol.iterator](): Iterator<ShadedAxis> {
+    // NOTE: mirrors Python `for axis in self` (ThreeDAxes is a VGroup of
+    // axes); the TS port tracks the axes in `shaded_axes` until the Axes
+    // hierarchy becomes Mobject-based.
+    yield* this.shaded_axes;
+  }
+
   _set_axis_shading(): void {
     const make_func = (axis: ShadedAxis): (() => [unknown, unknown]) => {
       const vect = this.light_source;
-      const negated = vect.map((value) => -value);
       return (): [unknown, unknown] => [
-        axis.get_edge_center(negated),
+        axis.get_edge_center(vect.map((value) => -value)),
         axis.get_edge_center(vect),
       ];
     };
 
-    for (const axis of this.shaded_axes) {
+    for (const axis of this) {
       for (const submob of axis.family_members_with_points()) {
         submob.get_gradient_start_and_end_points = make_func(axis);
         submob.get_unit_normal = (_point: unknown): number[] => [1, 1, 1];

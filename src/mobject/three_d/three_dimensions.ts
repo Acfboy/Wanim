@@ -2,7 +2,7 @@ import { array, type NDArray } from "numpy-ts";
 import { isNDArray, linspace, pointRows } from "../../utils/arrays.js";
 import { LEFT, RIGHT } from "../../constants.js";
 import { normalize } from "../../utils/space_ops.js";
-import type { ParsableManimColor } from "../../utils/color/core.js";
+import { BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 
@@ -42,6 +42,10 @@ export class Surface extends VGroup {
   u_range: [number, number];
   v_range: [number, number];
   resolution: number | [number, number];
+  surface_piece_config: Record<string, unknown>;
+  checkerboard_colors: ManimColor[] | false;
+  should_make_jagged: boolean;
+  list_of_faces: ThreeDVMobject[] = [];
   protected _func: SurfaceFunc;
 
   constructor(
@@ -49,36 +53,62 @@ export class Surface extends VGroup {
     u_range: [number, number] = [0, 1],
     v_range: [number, number] = [0, 1],
     resolution: number | [number, number] = 32,
+    surface_piece_config: Record<string, unknown> = {},
+    fill_color: ParsableManimColor = BLUE_D,
+    fill_opacity = 1.0,
+    checkerboard_colors: Iterable<ParsableManimColor> | false = [BLUE_D, BLUE_E],
+    stroke_color: ParsableManimColor = LIGHT_GREY,
+    stroke_width = 0.5,
+    should_make_jagged = false,
+    pre_function_handle_to_anchor_scale_factor = 0.00001,
+    options: Record<string, unknown> = {},
   ) {
     super();
+    void options;
     this.u_range = u_range;
     this.v_range = v_range;
+    this.surface_piece_config = surface_piece_config;
     this.resolution = resolution;
+    if (checkerboard_colors === false) {
+      this.checkerboard_colors = false;
+    } else {
+      this.checkerboard_colors = [...checkerboard_colors].map((c) => new ManimColor(c));
+    }
+    this.should_make_jagged = should_make_jagged;
+    this.pre_function_handle_to_anchor_scale_factor = pre_function_handle_to_anchor_scale_factor;
+    this.list_of_faces = [];
     this._func = func;
-    this._setup_in_uv_space();
+    this._setup_in_uv_space(fill_color, fill_opacity, stroke_color, stroke_width);
     const captured = this._func;
     this.apply_function((p: number[]): number[] => {
       const out = captured(p[0] ?? 0, p[1] ?? 0);
       return pointRows(out, 3)[0] ?? [0, 0, 0];
     });
-    // NOTE: checkerboard fill colors, stroke styling, ThreeDVMobject shading
-    // and make_jagged depend on not-yet-translated pieces; they set visual
-    // style only and do not affect the surface point geometry built above.
+    if (this.should_make_jagged) {
+      this.make_jagged();
+    }
   }
 
   func(u: number, v: number): SurfacePoint | number[] {
     return this._func(u, v);
   }
 
-  _setup_in_uv_space(): void {
+  _setup_in_uv_space(
+    fill_color: ParsableManimColor = BLUE_D,
+    fill_opacity = 1.0,
+    stroke_color: ParsableManimColor = LIGHT_GREY,
+    stroke_width = 0.5,
+  ): void {
     const [u_values, v_values] = this._get_u_values_and_v_values();
+    const faces = new VGroup();
+    this.list_of_faces = [];
     for (let i = 0; i < u_values.length - 1; i += 1) {
       for (let j = 0; j < v_values.length - 1; j += 1) {
         const u1 = u_values[i] ?? 0;
         const u2 = u_values[i + 1] ?? 0;
         const v1 = v_values[j] ?? 0;
         const v2 = v_values[j + 1] ?? 0;
-        const face = new VMobject();
+        const face = new ThreeDVMobject();
         face.set_points_as_corners([
           [u1, v1, 0],
           [u2, v1, 0],
@@ -86,9 +116,58 @@ export class Surface extends VGroup {
           [u1, v2, 0],
           [u1, v1, 0],
         ]);
-        this.add(face);
+        face.u_index = i;
+        face.v_index = j;
+        face.u1 = u1;
+        face.u2 = u2;
+        face.v1 = v1;
+        face.v2 = v2;
+        faces.add(face);
+        this.list_of_faces.push(face);
       }
     }
+    faces.set_fill(fill_color, fill_opacity);
+    (faces as unknown as { set_stroke: (color?: unknown, width?: number, opacity?: number) => void }).set_stroke(
+      stroke_color,
+      stroke_width,
+      undefined,
+    );
+    // NOTE: set_stroke(color, width) keeps the current stroke opacity.
+    this.add(...faces.submobjects);
+    if (this.checkerboard_colors) {
+      this.set_fill_by_checkerboard(...this.checkerboard_colors);
+    }
+  }
+
+  set_fill_by_checkerboard(
+    ...args: Array<ParsableManimColor | { opacity?: number | null }>
+  ): this {
+    let opacity: number | null | undefined = null;
+    let colors = [...args] as ParsableManimColor[];
+    const last = args[args.length - 1];
+    if (
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !(last instanceof ManimColor) &&
+      !isNDArray(last) &&
+      "opacity" in (last as Record<string, unknown>)
+    ) {
+      opacity = (last as { opacity?: number | null }).opacity ?? null;
+      colors = (args.slice(0, -1) as ParsableManimColor[]);
+    }
+    const n_colors = colors.length;
+    for (const face of this.list_of_faces) {
+      const c_index = (face.u_index + face.v_index) % n_colors;
+      face.set_fill(colors[c_index], opacity ?? undefined);
+    }
+    return this;
+  }
+
+  setFillByCheckerboard(
+    ...args: Array<ParsableManimColor | { opacity?: number | null }>
+  ): this {
+    return this.set_fill_by_checkerboard(...args);
   }
 
   _get_u_values_and_v_values(): [number[], number[]] {
