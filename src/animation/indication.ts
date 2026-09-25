@@ -4,6 +4,7 @@ import { Homotopy } from "./movement.js";
 import { type Mobject } from "../mobject/mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { interpolate, inverse_interpolate } from "../utils/bezier.js";
+import { cloneNumericArray } from "../utils/arrays.js";
 import { there_and_back, wiggle } from "../utils/rate_functions.js";
 import { normalize } from "../utils/space_ops.js";
 import { TAU, UP } from "../constants.js";
@@ -152,7 +153,9 @@ export class Wiggle extends Animation {
   }
 
   override interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): void {
-    submobject.points = startingSubmobject.points;
+    // Mirrors Python `submobject.points[:, :] = starting_submobject.points`
+    // (value copy into distinct storage, never a reference alias).
+    submobject.points = cloneNumericArray(startingSubmobject.points);
     submobject.scale(
       interpolate(1, this.scale_value, there_and_back(alpha)) as number,
       this.get_scale_about_point(),
