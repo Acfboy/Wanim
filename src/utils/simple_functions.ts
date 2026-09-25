@@ -29,8 +29,10 @@ export function choose(n: number, k: number): number {
 
 function comb(n: number, k: number): number {
   if (!Number.isInteger(n) || !Number.isInteger(k)) {
+    // NOTE: mirrors math.comb, which raises TypeError for non-integers
+    // ("'float' object cannot be interpreted as an integer").
     const error = new Error("n and k must be integers");
-    error.name = "ValueError";
+    error.name = "TypeError";
     throw error;
   }
   if (k < 0 || n < 0) {

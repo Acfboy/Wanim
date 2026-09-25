@@ -270,6 +270,11 @@ export class ManimColor {
     return this.internal;
   }
 
+  // NOTE: python exposes this as `_internal_space`; keep both spellings.
+  get _internal_space(): ColorArray {
+    return this.internal_space;
+  }
+
   toRgb(): ColorArray {
     return array((pointRows(this.internal, 4)[0] ?? [0, 0, 0, 1]).slice(0, 3)) as ColorArray;
   }
@@ -460,6 +465,10 @@ export class HSV extends ManimColor {
 
   override get internal_space(): ColorArray {
     return this.hsvValues;
+  }
+
+  override get _internal_space(): ColorArray {
+    return this.internal_space;
   }
 
   override get _internal_value(): ColorArray {

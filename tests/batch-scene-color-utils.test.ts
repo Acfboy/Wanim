@@ -163,9 +163,12 @@ describe("choose", () => {
     expect(choose(0, 5)).toBe(0);
   });
 
-  it("raises ValueError for negative inputs", () => {
+  it("raises ValueError for negative inputs, TypeError for non-integers", () => {
     expectErrorName(() => choose(-1, 2), "ValueError");
     expectErrorName(() => choose(5, -1), "ValueError");
+    // python ground truth: math.comb raises TypeError for floats
+    expectErrorName(() => choose(5.5, 2), "TypeError");
+    expectErrorName(() => choose(5, 2.5), "TypeError");
   });
 });
 
@@ -282,17 +285,13 @@ describe("VMobject rgbas getters", () => {
     expect(rowsOf(vm.get_stroke_rgbas(true))).toEqual([[0, 0, 0, 0]]);
   });
 
-  it("background flag selects background_stroke_rgbas", () => {
+  it("background flag selects background_stroke_rgbas (python: [[0,0,0,1]])", () => {
     const vm = new VMobject();
     vm.set_points([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]]);
     // NOTE: python only resizes rgbas arrays on set_fill/set_stroke calls, so
     // without styling the background array keeps its 1 init row; the TS port
-    // matches that shape. Alpha differs by a known default gap (python
-    // background_stroke_opacity defaults to 1.0, TS to 0), so only rgb is
-    // asserted here.
-    const bg = rowsOf(vm.get_stroke_rgbas(true));
-    expect(bg).toHaveLength(1);
-    expect(bg[0]!.slice(0, 3)).toEqual([0, 0, 0]);
+    // matches that shape. background_stroke_opacity defaults to 1.0 in both.
+    expect(rowsOf(vm.get_stroke_rgbas(true))).toEqual([[0, 0, 0, 1]]);
   });
 });
 
@@ -737,8 +736,12 @@ describe("number line / axes statics", () => {
     expect(NumberLine._decimal_places_from_step(0.01)).toBe(2);
     expect(NumberLine._decimal_places_from_step(0.30000000000000004)).toBe(17);
     expect(NumberLine._decimal_places_from_step(1e-7)).toBe(0);
-    // NOTE: str(1e-5) is '1e-05' in python (no dot -> 0) but '0.00001' in JS
-    // (5 decimals); tiny sci-notation steps diverge, so they are not asserted.
+    // python str() uses scientific notation below 1e-4: '1e-05' has no dot
+    expect(NumberLine._decimal_places_from_step(1e-5)).toBe(0);
+    // ...but a mantissa dot still counts: str(1.5e-5) == '1.5e-05' -> '5e-05'
+    expect(NumberLine._decimal_places_from_step(1.5e-5)).toBe(5);
+    // NOTE: JS cannot distinguish int 2 from float 2.0 (python str(2.0) ==
+    // '2.0' -> 1); integer-valued inputs keep the int behaviour (0).
   });
 
   it("Axes._origin_shift compensates for axes missing zero (python: [1,-1,0,0])", () => {

@@ -67,7 +67,7 @@ export class VMobject extends Mobject {
   stroke_opacity: number;
   stroke_width: number;
   background_stroke_color: ManimColor | null = null;
-  background_stroke_opacity = 0;
+  background_stroke_opacity = 1;
   background_stroke_width = 0;
   sheen_factor = 0;
   sheen_direction: number[] = [0, 0, 0];
@@ -93,6 +93,17 @@ export class VMobject extends Mobject {
     this.stroke_opacity = options.stroke_opacity ?? 1;
     this.stroke_width = options.stroke_width ?? 4;
     this.close_new_points = options.close_new_points ?? false;
+    if (options.background_stroke_color !== undefined) {
+      this.background_stroke_color = options.background_stroke_color === null
+        ? null
+        : new ManimColor(options.background_stroke_color);
+    }
+    if (options.background_stroke_opacity !== undefined) {
+      this.background_stroke_opacity = options.background_stroke_opacity;
+    }
+    if (options.background_stroke_width !== undefined) {
+      this.background_stroke_width = options.background_stroke_width;
+    }
     this.fill_rgbas = array([]) as NDArray;
     this.stroke_rgbas = array([]) as NDArray;
     this.background_stroke_rgbas = array([]) as NDArray;
