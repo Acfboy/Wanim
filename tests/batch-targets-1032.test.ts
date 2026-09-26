@@ -102,11 +102,16 @@ describe("CoordinateSystem.get_axis_labels", () => {
     );
   });
 
-  it("Axes has no latex-free override (D2: needs MathTex/Text)", () => {
-    // NOTE: Python Axes.get_axis_labels -> get_x_axis_label -> MathTex,
-    // which requires a LaTeX install (FileNotFoundError in this env).
+  it("Axes override exists; unwired axes hit the empty-axes gap", () => {
+    // NOTE (updated): Axes.get_axis_labels has since been ported (it groups
+    // get_x_axis_label/get_y_axis_label into axis_labels; str labels need
+    // MathTex -> text/tex TODO, VMobject labels are positioned verbatim —
+    // see batch-targets-2124-layers21-24.test.ts). The TS Axes hierarchy
+    // still ships an empty `axes` group until the NumberLine integration
+    // lands, so an unwired Axes raises IndexError here, not
+    // NotImplementedError.
     expect(() => makeAxes().get_axis_labels()).toThrowError(
-      expect.objectContaining({ name: "NotImplementedError" }),
+      expect.objectContaining({ name: "IndexError" }),
     );
   });
 });
