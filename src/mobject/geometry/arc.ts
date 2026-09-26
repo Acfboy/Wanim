@@ -884,6 +884,31 @@ export class CurvedArrow extends ArcBetweenPoints {
   }
 }
 
+export interface CurvedDoubleArrowOptions extends CurvedArrowOptions {
+  tip_shape_start?: TipConstructor | null;
+  tip_shape_end?: TipConstructor | null;
+}
+
+export class CurvedDoubleArrow extends CurvedArrow {
+  constructor(
+    start_point: readonly number[] | NDArray,
+    end_point: readonly number[] | NDArray,
+    options: CurvedDoubleArrowOptions = {},
+  ) {
+    // NOTE: mirrors Python exactly: a `tip_shape_end` entry is renamed to
+    // `tip_shape` (the end tip), while `tip_shape_start` (defaulting to
+    // ArrowTriangleFilledTip via the registry) becomes the start tip.
+    const {
+      tip_shape_end = null,
+      tip_shape_start = null,
+      tip_shape = null,
+      ...rest
+    } = options;
+    super(start_point, end_point, { tip_shape: tip_shape_end ?? tip_shape, ...rest });
+    this.add_tip(null, tip_shape_start, null, null, true);
+  }
+}
+
 export interface CubicBezierOptions extends VMobjectOptions {}
 
 export class CubicBezier extends VMobject {

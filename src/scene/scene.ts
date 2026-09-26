@@ -375,7 +375,29 @@ export class Scene {
   }
 
   add(...mobjects: Mobject[]): this {
-    for (const mobject of mobjects) if (!this.mobjects.includes(mobject)) this.mobjects.push(mobject);
+    // NOTE: mirrors Python Scene.add. The OpenGL branch splits Object3D
+    // meshes from mobjects; the OpenGL renderer (and Object3D) is not
+    // ported, so every argument is treated as a mobject there (same
+    // limitation as remove() below documents).
+    if (config.renderer === RendererType.OPENGL) {
+      const new_mobjects = [...mobjects];
+      this.remove(...new_mobjects);
+      this.mobjects.push(...new_mobjects);
+      return this;
+    }
+    const new_and_foreground_mobjects: Mobject[] = [
+      ...mobjects,
+      ...this.foreground_mobjects,
+    ];
+    this.restructure_mobjects(new_and_foreground_mobjects);
+    this.mobjects.push(...new_and_foreground_mobjects);
+    if (this.moving_mobjects.length > 0) {
+      this.restructure_mobjects(
+        new_and_foreground_mobjects,
+        "moving_mobjects",
+      );
+      this.moving_mobjects.push(...new_and_foreground_mobjects);
+    }
     return this;
   }
 

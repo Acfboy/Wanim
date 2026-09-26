@@ -528,3 +528,22 @@ export class NumberLine extends VGroup {
     throw new Error("TODO: text/tex not ported yet (NumberLine._create_label_tex needs a label_constructor)");
   }
 }
+
+export class UnitInterval extends NumberLine {
+  constructor(
+    unit_size = 10,
+    numbers_with_elongated_ticks: Iterable<number> | null = null,
+    decimal_number_config: Record<string, unknown> | null = null,
+    options: ConstructorParameters<typeof NumberLine>[0] = {},
+  ) {
+    const resolved_ticks = numbers_with_elongated_ticks ?? [0, 1];
+    const resolved_decimal = decimal_number_config ?? { num_decimal_places: 1 };
+    super({
+      ...options,
+      x_range: [0, 1, 0.1],
+      unit_size,
+      numbers_with_elongated_ticks: resolved_ticks,
+      decimal_number_config: resolved_decimal,
+    });
+  }
+}

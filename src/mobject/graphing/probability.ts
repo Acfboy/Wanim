@@ -317,4 +317,28 @@ export class BarChart extends Axes {
   _update_colors(): void {
     this.bars.set_color_by_gradient(...this.bar_colors);
   }
+
+  _create_bar(bar_number: number, value: number): Rectangle {
+    // bar measurements relative to the axis
+
+    // distance from between the y-axis and the top of the bar
+    const top_point = pointRows(this.c2p(0, value), 3)[0] ?? [0, 0, 0];
+    const base_point = pointRows(this.c2p(0, 0), 3)[0] ?? [0, 0, 0];
+    const bar_h = Math.abs((top_point[1] ?? 0) - (base_point[1] ?? 0));
+    // width of the bar
+    const width_point = pointRows(this.c2p(this.bar_width, 0), 3)[0] ?? [0, 0, 0];
+    const bar_w = (width_point[0] ?? 0) - (base_point[0] ?? 0);
+
+    const bar = new Rectangle({
+      height: bar_h,
+      width: bar_w,
+      stroke_width: this.bar_stroke_width,
+      fill_opacity: this.bar_fill_opacity,
+    });
+
+    const pos = value >= 0 ? [...UP] : [...DOWN];
+    const anchor = pointRows(this.c2p(bar_number + 0.5, 0), 3)[0] ?? [0, 0, 0];
+    bar.next_to(anchor, pos, 0);
+    return bar;
+  }
 }

@@ -2,8 +2,8 @@ import { array, type NDArray } from "numpy-ts";
 import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
 import { arange, isNDArray, linspace, numeric, pointFrom, pointRows, type ComplexPoint } from "../../utils/arrays.js";
-import { update_dict_recursively } from "../../utils/config_ops.js";
-import { MED_SMALL_BUFF, SMALL_BUFF, DL, DOWN, ORIGIN, PI, RIGHT, UP, UR, TAU, RendererType } from "../../constants.js";
+import { update_dict_recursively, merge_dicts_recursively } from "../../utils/config_ops.js";
+import { MED_SMALL_BUFF, SMALL_BUFF, DEGREES, DL, DOWN, LEFT, ORIGIN, PI, RIGHT, UP, UR, TAU, RendererType } from "../../constants.js";
 import { BLUE_D } from "../../utils/color/index.js";
 import { BLACK, BLUE, GREEN, WHITE } from "../../utils/color/core.js";
 import { color_gradient, interpolate_color, invert_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
@@ -1163,10 +1163,68 @@ export class NumberPlane extends CoordinateSystem {
 
 export class Axes extends NumberPlane {
   // NOTE: Python Axes.__init__ builds self.axes as a VGroup of NumberLine
-  // axes (plus x_axis/y_axis/z_axis shortcuts). That construction is part of
-  // a later batch; the field exists here so get_axes() has its faithful
-  // target to return.
+  // axes (plus x_axis/y_axis shortcuts) and shifts the group so the
+  // lines-center maps to the origin. The TS CoordinateSystem hierarchy is
+  // not Mobject-based yet, so no NumberLine axes are constructed here;
+  // the config-merging logic (the observable part of __init__) is ported
+  // faithfully and `axes` stays an empty VGroup until the NumberLine
+  // integration lands (same limitation as get_axes/point_to_coords note).
   axes: VGroup = new VGroup();
+  axis_config: Record<string, unknown> = {};
+  x_axis_config: Record<string, unknown> = {};
+  y_axis_config: Record<string, unknown> = {};
+
+  constructor(
+    x_range: number[] | null = null,
+    y_range: number[] | null = null,
+    x_length: number | null = null,
+    y_length: number | null = null,
+    axis_config: Record<string, unknown> | null = null,
+    x_axis_config: Record<string, unknown> | null = null,
+    y_axis_config: Record<string, unknown> | null = null,
+    tips = true,
+  ) {
+    super(
+      x_range,
+      y_range,
+      x_length ?? Math.round(config.frame_width) - 2,
+      y_length ?? Math.round(config.frame_height) - 2,
+    );
+
+    this.axis_config = {
+      include_tip: tips,
+      numbers_to_exclude: [0],
+    };
+    this.x_axis_config = {};
+    this.y_axis_config = {
+      rotation: 90 * DEGREES,
+      label_direction: [...LEFT],
+    };
+
+    Axes._update_default_configs(
+      [this.axis_config, this.x_axis_config, this.y_axis_config],
+      [axis_config, x_axis_config, y_axis_config],
+    );
+
+    this.x_axis_config = merge_dicts_recursively(
+      this.axis_config,
+      this.x_axis_config,
+    );
+    this.y_axis_config = merge_dicts_recursively(
+      this.axis_config,
+      this.y_axis_config,
+    );
+
+    // excluding the origin tick removes a tick at the 0-point of the axis
+    // This is desired for LinearBase because the 0 point is always the x-axis
+    // For non-LinearBase, the "0-point" does not have this quality, so it must be included.
+    const xScaling = this.x_axis_config["scaling"] as _ScaleBase | undefined | null;
+    this.x_axis_config["exclude_origin_tick"] =
+      xScaling === null || xScaling === undefined || xScaling instanceof LinearBase;
+    const yScaling = this.y_axis_config["scaling"] as _ScaleBase | undefined | null;
+    this.y_axis_config["exclude_origin_tick"] =
+      yScaling === null || yScaling === undefined || yScaling instanceof LinearBase;
+  }
 
   override point_to_coords(point: readonly number[]): number[] {
     // Mirrors Python Axes.point_to_coords: one number per axis via
@@ -1218,7 +1276,7 @@ export class Axes extends NumberPlane {
 
   static _update_default_configs(
     default_configs: Array<Record<string, unknown>>,
-    passed_configs: Array<Record<string, unknown>>,
+    passed_configs: Array<Record<string, unknown> | null | undefined>,
   ): void {
     for (const [default_config, passed_config] of zipPairs(default_configs, passed_configs)) {
       if (passed_config !== null && passed_config !== undefined) {

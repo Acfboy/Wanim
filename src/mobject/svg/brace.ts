@@ -395,3 +395,31 @@ export class BraceLabel extends VMobject {
     return this;
   }
 }
+
+export interface BraceTextOptions extends BraceLabelOptions {}
+
+/** Brace with a Text (rather than MathTex) label.
+ *
+ * NOTE (text/tex out of scope): Python defaults `label_constructor` to
+ * `Text`, which needs the text-rendering pipeline that is not ported. A
+ * caller-supplied constructor returning a VMobject works faithfully;
+ * otherwise construction throws `TODO: text/tex not ported yet`.
+ */
+export class BraceText extends BraceLabel {
+  constructor(
+    obj: Mobject,
+    text: string | string[] | VMobject,
+    label_constructor: unknown = null,
+    options: BraceTextOptions = {},
+  ) {
+    if (label_constructor === null || label_constructor === undefined) {
+      const fromOptions = (options as BraceLabelOptions).label_constructor;
+      if (fromOptions === null || fromOptions === undefined) {
+        throw new Error("TODO: text/tex not ported yet (BraceText needs Text)");
+      }
+      super(obj, text, [...DOWN], fromOptions, DEFAULT_FONT_SIZE, 0.2, null, options);
+      return;
+    }
+    super(obj, text, [...DOWN], label_constructor, DEFAULT_FONT_SIZE, 0.2, null, options);
+  }
+}

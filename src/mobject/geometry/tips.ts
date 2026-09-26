@@ -4,6 +4,7 @@ import { angle_of_vector } from "../../utils/space_ops.js";
 import { DEFAULT_ARROW_TIP_LENGTH, PI } from "../../constants.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Circle } from "./arc.js";
+import { Square } from "./polygram.js";
 import { Triangle } from "./polygram.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
 
@@ -204,6 +205,78 @@ export class ArrowCircleTip extends Circle {
 
 export class ArrowCircleFilledTip extends ArrowCircleTip {
   constructor(fill_opacity = 1, stroke_width = 0, options: ArrowCircleTipOptions = {}) {
+    const {
+      fill_opacity: fillOpacityOption,
+      stroke_width: strokeWidthOption,
+      ...rest
+    } = options;
+    super(fillOpacityOption ?? fill_opacity, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
+  }
+}
+
+export interface ArrowSquareTipOptions extends VMobjectOptions {
+  fill_opacity?: number;
+  stroke_width?: number;
+  length?: number;
+  start_angle?: number;
+}
+
+export class ArrowSquareTip extends Square {
+  start_angle: number;
+
+  constructor(
+    fill_opacity = 0,
+    stroke_width = 3,
+    length: number = DEFAULT_ARROW_TIP_LENGTH,
+    start_angle: number = PI,
+    options: ArrowSquareTipOptions = {},
+  ) {
+    const {
+      fill_opacity: fillOpacityOption,
+      stroke_width: strokeWidthOption,
+      length: lengthOption,
+      start_angle: startAngleOption,
+      color: colorOption,
+      ...rest
+    } = options;
+    const resolved_length = lengthOption ?? length;
+    super(resolved_length, {
+      color: colorOption ?? undefined,
+      fill_opacity: fillOpacityOption ?? fill_opacity,
+      stroke_width: strokeWidthOption ?? stroke_width,
+      ...rest,
+    });
+    // NOTE: mirrors Python, which assigns self.start_angle before
+    // Square.__init__() runs. The value is not read during construction,
+    // so assigning after super() is behaviorally identical.
+    this.start_angle = startAngleOption ?? start_angle;
+    this.width = resolved_length;
+    this.stretch_to_fit_height(resolved_length);
+  }
+
+  get base(): NDArray {
+    return tipBase(this);
+  }
+
+  get tip_point(): NDArray {
+    return tipPoint(this);
+  }
+
+  get vector(): number[] {
+    return tipVector(this);
+  }
+
+  get tip_angle(): number {
+    return tipAngle(this);
+  }
+
+  get length(): number {
+    return tipLength(this);
+  }
+}
+
+export class ArrowSquareFilledTip extends ArrowSquareTip {
+  constructor(fill_opacity = 1, stroke_width = 0, options: ArrowSquareTipOptions = {}) {
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
