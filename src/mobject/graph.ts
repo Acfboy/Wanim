@@ -520,8 +520,12 @@ export class GenericGraph extends VMobject {
 
   getItem(key: GraphVertex | GraphEdge): Mobject {
     if (this.vertices.has(key as GraphVertex)) return this.vertices.get(key as GraphVertex) as Mobject;
-    const edge = this.edges.get(edgeKey(...(key as GraphEdge)));
-    if (edge) return edge;
+    // NOTE: mirrors Python `elif k in self.edges` (False for anything that
+    // is not an edge tuple) instead of spreading arbitrary keys into edgeKey.
+    if (Array.isArray(key) && key.length === 2) {
+      const edge = this.edges.get(edgeKey(key[0] as GraphVertex, key[1] as GraphVertex));
+      if (edge) return edge;
+    }
     const error = new Error(`Could not find ${String(key)} in vertices or edges`);
     error.name = "ValueError";
     throw error;

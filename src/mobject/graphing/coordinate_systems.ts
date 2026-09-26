@@ -1286,6 +1286,23 @@ export class NumberPlane extends CoordinateSystem {
     return new Arrow(this.coords_to_point(0, 0), this.coords_to_point(...coords), kwargs as never);
   }
 
+  override get_x_unit_size(): number {
+    // NOTE: mirrors Python `get_x_axis().get_unit_size()` (a NumberLine of
+    // length x_length over x_range, i.e. x_length / span). The TS hierarchy
+    // is not Mobject-based yet (get_axes throws), so the ratio is computed
+    // directly; a null length selects the unit-sized mapping (unit size 1,
+    // matching Python's unscaled NumberLine axes).
+    if (this.x_length === null || this.x_length === undefined) return 1;
+    const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
+    return span === 0 ? 0 : this.x_length / span;
+  }
+
+  override get_y_unit_size(): number {
+    if (this.y_length === null || this.y_length === undefined) return 1;
+    const span = (this.y_range[1] ?? 0) - (this.y_range[0] ?? 0);
+    return span === 0 ? 0 : this.y_length / span;
+  }
+
   point_to_coords(point: readonly number[]): number[] {
     // Mirrors Axes.point_to_coords for the linear mapping implemented by
     // coords_to_point above (Python resolves this through NumberLine axes;
@@ -2361,11 +2378,53 @@ export class PolarPlane extends Axes {
 }
 
 /** TS stand-in for Python's `float | complex`: a real number, a
- * `{ re, im }` pair (mirroring `complex(x, y)`), or a `[re, im]` tuple. */
-export type ComplexNumberLike = number | ComplexPoint | readonly [number, number];
+ * `{ re, im }` pair (mirroring `complex(x, y)`), a `[re, im]` tuple, or a
+ * string parsed like Python's `complex()` (e.g. '1+2j', '3j', '2'). */
+export type ComplexNumberLike = number | string | ComplexPoint | readonly [number, number];
+
+function parseComplexString(text: string): ComplexPoint {
+  // Mirrors Python `complex(text)`: optional whitespace, an optional real
+  // part, and an optional imaginary part suffixed with j/J.
+  const s = text.replace(/\s+/g, "");
+  const fail = (): never => {
+    const error = new Error(`complex() arg is a malformed string: ${text}`);
+    error.name = "ValueError";
+    throw error;
+  };
+  if (s.length === 0) fail();
+  const body = (s as string).endsWith("j") || (s as string).endsWith("J")
+    ? (s as string).slice(0, -1)
+    : null;
+  const parseFloatPart = (part: string): number => {
+    if (part === "" || part === "+" || part === "-") return part === "-" ? -1 : 1;
+    const value = Number(part);
+    if (!Number.isFinite(value)) fail();
+    return value;
+  };
+  if (body === null) {
+    const value = Number(s as string);
+    if (!Number.isFinite(value)) fail();
+    return { re: value, im: 0 };
+  }
+  // Split body into real/imaginary at the last interior +/- that is not part
+  // of an exponent (mirrors how Python tokenizes '1e-3+2j').
+  let split = -1;
+  for (let i = (body as string).length - 1; i > 0; i -= 1) {
+    const ch = (body as string)[i];
+    if ((ch === "+" || ch === "-") && (body as string)[i - 1]?.toLowerCase() !== "e") {
+      split = i;
+      break;
+    }
+  }
+  if (split === -1) return { re: 0, im: parseFloatPart(body as string) };
+  const re = Number((body as string).slice(0, split));
+  if (!Number.isFinite(re)) fail();
+  return { re, im: parseFloatPart((body as string).slice(split)) };
+}
 
 function toComplexPoint(value: ComplexNumberLike): ComplexPoint {
   if (typeof value === "number") return { re: value, im: 0 };
+  if (typeof value === "string") return parseComplexString(value);
   if (Array.isArray(value)) {
     const pair = value as readonly number[];
     return { re: pair[0] ?? 0, im: pair[1] ?? 0 };
