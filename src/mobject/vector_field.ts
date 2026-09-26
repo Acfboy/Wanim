@@ -88,7 +88,10 @@ export class VectorField extends VGroup {
   }
 
   fit_to_coordinate_system(coordinateSystem: CoordinateSystem): this {
-    this.apply_function((position) => vectorOf(coordinateSystem.coords_to_point(position)));
+    // NOTE: mirrors Python `apply_function(lambda pos:
+    // coordinate_system.coords_to_point(*pos))` — the point components are
+    // spread as separate coordinate arguments.
+    this.apply_function((position) => vectorOf(coordinateSystem.coords_to_point(...position)));
     return this;
   }
 

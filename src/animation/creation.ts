@@ -506,9 +506,11 @@ export class TypeWithCursor extends AddTextLetterByLetter {
 export interface UntypeWithCursorOptions extends TypeWithCursorOptions {}
 
 export class UntypeWithCursor extends TypeWithCursor {
-  constructor(text: Mobject, cursor: Mobject, options: UntypeWithCursorOptions = {}) {
+  constructor(text: Mobject, cursor: Mobject | null = null, options: UntypeWithCursorOptions = {}) {
     const clsDefaults = classDefaultsOf(new.target);
-    super(text, cursor, {
+    // NOTE: mirrors Python `cursor: VMobject | None = None` — a null cursor
+    // is stored as-is and fails in begin(), exactly like Python.
+    super(text, cursor as Mobject, {
       time_per_char: (clsDefaults.time_per_char as number | undefined) ?? 0.1,
       reverse_rate_function: (clsDefaults.reverse_rate_function as boolean | undefined) ?? true,
       introducer: (clsDefaults.introducer as boolean | undefined) ?? false,

@@ -27,11 +27,19 @@ export class ScreenRectangle extends Rectangle {
   }
 }
 
-export interface FullScreenRectangleOptions extends RectangleOptions {}
+export interface FullScreenRectangleOptions extends RectangleOptions {
+  aspect_ratio?: number;
+}
 
 export class FullScreenRectangle extends ScreenRectangle {
   constructor(options: FullScreenRectangleOptions = {}) {
-    super(16.0 / 9.0, 4, options);
+    // NOTE: mirrors Python `super().__init__(**kwargs); self.height =
+    // config["frame_height"]` — kwargs (e.g. aspect_ratio) are forwarded to
+    // ScreenRectangle, then height is scaled to the configured frame height
+    // (uniform scale, so the aspect ratio is preserved).
+    const { aspect_ratio = 16.0 / 9.0, height: _ignoredHeight = 4, ...rest } = options;
+    void _ignoredHeight;
+    super(aspect_ratio, 4, rest);
     this.height = Number(config.frame_height);
   }
 }
