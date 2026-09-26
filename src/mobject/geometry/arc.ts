@@ -3,6 +3,7 @@ import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, LEFT, ORIGIN, OUT, PI, RI
 import { linspace, isNDArray, norm, pointAt, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { adjacent_pairs } from "../../utils/iterables.js";
 import {
+  angle_between_vectors,
   angle_of_vector,
   cartesian_to_spherical,
   line_intersection,
@@ -13,6 +14,9 @@ import { BLUE, RED, WHITE, type ParsableManimColor } from "../../utils/color/cor
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import type { Mobject } from "../mobject.js";
 import type { ArrowTip } from "./tips.js";
+// NOTE: type-only import (erased at compile time): line.js imports Arc from
+// this module at runtime, so a runtime import here would cycle.
+import type { Line } from "./line.js";
 
 /** Constructor type for arrow tip classes (first two params follow the
  * Python convention: fill_opacity, stroke_width; the rest via options). */
@@ -766,6 +770,84 @@ export class ArcBetweenPoints extends Arc {
         this.radius = Infinity;
       }
     }
+  }
+}
+
+export interface TangentialArcOptions extends ArcBetweenPointsOptions {
+  angle?: number;
+}
+
+export class TangentialArc extends ArcBetweenPoints {
+  line1: Line;
+  line2: Line;
+
+  constructor(
+    line1: Line,
+    line2: Line,
+    radius: number,
+    corner: readonly [number, number] | readonly number[] = [1, 1],
+    options: TangentialArcOptions = {},
+  ) {
+    const { angle = TAU / 4, ...rest } = options;
+    const intersection_point = line_intersection(
+      [line1.get_start(), line1.get_end()],
+      [line2.get_start(), line2.get_end()],
+    );
+    const [s1 = 1, s2 = 1] = [...corner];
+    // Get unit vector for specified directions
+    const line1_unit = line1.get_unit_vector();
+    const line2_unit = line2.get_unit_vector();
+    const unit_vector1 = line1_unit.map((value) => (s1 ?? 1) * value);
+    const unit_vector2 = line2_unit.map((value) => (s2 ?? 1) * value);
+    const corner_angle = angle_between_vectors(unit_vector1, unit_vector2);
+    const tangent_point_distance = radius / Math.tan(corner_angle / 2);
+    // tangent points
+    const tangent_point1 = intersection_point.map(
+      (value, index) => value + tangent_point_distance * (unit_vector1[index] ?? 0),
+    );
+    const tangent_point2 = intersection_point.map(
+      (value, index) => value + tangent_point_distance * (unit_vector2[index] ?? 0),
+    );
+    const cross_product =
+      (unit_vector1[0] ?? 0) * (unit_vector2[1] ?? 0) -
+      (unit_vector1[1] ?? 0) * (unit_vector2[0] ?? 0);
+    // Determine start and end points based on orientation
+    let start_point: number[];
+    let end_point: number[];
+    if (cross_product < 0) {
+      // Counterclockwise orientation - standard order
+      start_point = tangent_point1;
+      end_point = tangent_point2;
+    } else {
+      // Clockwise orientation - reverse the points
+      start_point = tangent_point2;
+      end_point = tangent_point1;
+    }
+    super(start_point, end_point, angle, radius, rest);
+    this.line1 = line1;
+    this.line2 = line2;
+  }
+}
+
+export interface CurvedArrowOptions extends ArcBetweenPointsOptions {
+  angle?: number;
+  radius?: number | null;
+  tip_shape?: TipConstructor | null;
+}
+
+export class CurvedArrow extends ArcBetweenPoints {
+  constructor(
+    start_point: readonly number[] | NDArray,
+    end_point: readonly number[] | NDArray,
+    options: CurvedArrowOptions = {},
+  ) {
+    // NOTE: Python pops tip_shape with default ArrowTriangleFilledTip; the
+    // tips module registers that class as the default tip shape (see
+    // set_default_tip_shape), so a null shape here resolves to it exactly
+    // where Python would use it explicitly.
+    const { tip_shape = null, angle = TAU / 4, radius = null, ...rest } = options;
+    super(start_point, end_point, angle, radius, rest);
+    this.add_tip(null, tip_shape);
   }
 }
 

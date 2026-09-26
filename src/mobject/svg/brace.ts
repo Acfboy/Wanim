@@ -1,5 +1,6 @@
 import type { NDArray } from "numpy-ts";
 import {
+  DEFAULT_FONT_SIZE,
   DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
   DOWN,
   LEFT,
@@ -10,7 +11,16 @@ import {
 } from "../../constants.js";
 import { BLACK, type ParsableManimColor } from "../../utils/color/core.js";
 import { addPoints, pointAt, pointRows, subtractPoints } from "../../utils/arrays.js";
-import { Mobject } from "../mobject.js";
+// NOTE (import order matters at runtime): mobject-land modules must evaluate
+// before the animation modules below, because mobject.js and animation.js
+// import each other and only the mobject-first direction avoids a TDZ error
+// (same pre-existing cycle as documented in ../table.ts).
+import { Group, Mobject } from "../mobject.js";
+import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import type { Animation } from "../../animation/animation.js";
+import { AnimationGroup } from "../../animation/composition.js";
+import { FadeIn } from "../../animation/fading.js";
+import { GrowFromCenter } from "../../animation/growing.js";
 import { Arc } from "../geometry/arc.js";
 import { Line } from "../geometry/line.js";
 import {
@@ -223,5 +233,165 @@ export class ArcBrace extends Brace {
       return { re: magnitude * Math.cos(im), im: magnitude * Math.sin(im) };
     });
     this.shift(resolved_arc.get_arc_center());
+  }
+}
+
+export interface BraceLabelOptions extends VMobjectOptions {
+  brace_direction?: readonly number[] | NDArray;
+  label_constructor?: unknown;
+  font_size?: number;
+  buff?: number;
+  brace_config?: BraceOptions | null;
+}
+
+function isBraceLabelKwargs(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    !(value instanceof VMobject) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+export class BraceLabel extends VMobject {
+  label_constructor: unknown;
+  brace_direction: readonly number[] | NDArray;
+  brace!: Brace;
+  label!: VMobject;
+
+  constructor(
+    obj: Mobject,
+    text: string | string[] | VMobject,
+    brace_direction: readonly number[] | NDArray = [...DOWN],
+    label_constructor: unknown = null,
+    font_size = DEFAULT_FONT_SIZE,
+    buff = 0.2,
+    brace_config: BraceOptions | null = null,
+    options: BraceLabelOptions = {},
+  ) {
+    // NOTE: Python's label_constructor defaults to MathTex, which needs the
+    // text/LaTeX pipeline that is out of scope for this port; it is stored
+    // opaquely (null until set) and only invoked when label mobjects must be
+    // constructed (throwing a marked TODO for raw strings without one).
+    const {
+      brace_direction: directionOption,
+      label_constructor: constructorOption,
+      font_size: fontSizeOption,
+      buff: buffOption,
+      brace_config: braceConfigOption,
+      ...rest
+    } = options;
+    super(rest);
+    this.label_constructor = constructorOption ?? label_constructor;
+    this.brace_direction = directionOption ?? brace_direction;
+    const resolved_buff = buffOption ?? buff;
+    const resolved_config = braceConfigOption ?? brace_config ?? {};
+    const resolved_font_size = fontSizeOption ?? font_size;
+
+    this.brace = new Brace(obj, {
+      direction: [...pointRows(this.brace_direction, this.dim)[0] ?? [...DOWN]],
+      buff: resolved_buff,
+      ...resolved_config,
+    });
+
+    this.label = BraceLabel._build_label(
+      text,
+      this.label_constructor,
+      resolved_font_size,
+      {},
+    );
+
+    this.brace.put_at_tip(this.label);
+    this.add(this.brace, this.label);
+  }
+
+  static _build_label(
+    text: unknown,
+    label_constructor: unknown,
+    font_size: number | null,
+    kwargs: Record<string, unknown>,
+  ): VMobject {
+    // NOTE: mirrors Python `BraceLabel.__init__`: a tuple/list of strings is
+    // unpacked into the label constructor, otherwise the single text is
+    // passed (plus font_size). VMobject inputs are returned as-is (mirroring
+    // NumberLine._create_label_tex leniency); anything else needs the text
+    // pipeline that is out of scope for this port.
+    if (text instanceof VMobject) return text;
+    if (typeof label_constructor === "function") {
+      const ctor = label_constructor as (...args: unknown[]) => unknown;
+      const args = Array.isArray(text) ? [...text] : [String(text)];
+      const built = ctor(
+        ...args,
+        { ...(font_size !== null ? { font_size } : {}), ...kwargs },
+      );
+      if (built instanceof VMobject) return built;
+      throw new Error(
+        "TODO: text/tex not ported yet (BraceLabel label_constructor did not return a VMobject)",
+      );
+    }
+    throw new Error(
+      "TODO: text/tex not ported yet (BraceLabel label construction needs MathTex/Text)",
+    );
+  }
+
+  creation_anim(
+    // NOTE: `any[]` rest params keep arbitrary Animation subclasses
+    // (FadeIn, GrowFromCenter, ...) assignable under strictFunctionTypes.
+    label_anim: new (mobject: Mobject, ...args: any[]) => Animation = FadeIn,
+    brace_anim: new (mobject: Mobject, ...args: any[]) => Animation = GrowFromCenter,
+  ): AnimationGroup {
+    return new AnimationGroup(
+      new brace_anim(this.brace),
+      new label_anim(this.label),
+    );
+  }
+
+  shift_brace(obj: Mobject | Mobject[], kwargs: Record<string, unknown> = {}): this {
+    let target: Mobject;
+    if (Array.isArray(obj)) {
+      target = new Group(...obj);
+    } else {
+      target = obj;
+    }
+    this.brace = new Brace(target, {
+      direction: [...pointRows(this.brace_direction, this.dim)[0] ?? [...DOWN]],
+      ...(kwargs as BraceOptions),
+    });
+    this.brace.put_at_tip(this.label);
+    return this;
+  }
+
+  change_label(...args: unknown[]): this {
+    let text: unknown[] = args;
+    let kwargs: Record<string, unknown> = {};
+    const last = args[args.length - 1];
+    if (args.length > 0 && isBraceLabelKwargs(last)) {
+      kwargs = last as Record<string, unknown>;
+      text = args.slice(0, -1);
+    }
+    this.remove(this.label);
+    this.label = BraceLabel._build_label(
+      text.length === 1 ? text[0] : text,
+      this.label_constructor,
+      null,
+      kwargs,
+    );
+    this.brace.put_at_tip(this.label);
+    this.add(this.label);
+    return this;
+  }
+
+  change_brace_label(obj: Mobject | Mobject[], ...args: unknown[]): this {
+    let text: unknown[] = args;
+    let kwargs: Record<string, unknown> = {};
+    const last = args[args.length - 1];
+    if (args.length > 0 && isBraceLabelKwargs(last)) {
+      kwargs = last as Record<string, unknown>;
+      text = args.slice(0, -1);
+    }
+    this.shift_brace(obj);
+    this.change_label(...text, ...(Object.keys(kwargs).length > 0 ? [kwargs] : []));
+    return this;
   }
 }

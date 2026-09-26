@@ -6,7 +6,7 @@ import { MethodWithArgs } from "../data_structures.js";
 import { Mobject, _AnimationBuilder } from "../mobject/mobject.js";
 import { pointRows } from "../utils/arrays.js";
 import { extract_mobject_family_members } from "../utils/family.js";
-import { list_update } from "../utils/iterables.js";
+import { list_difference_update, list_update } from "../utils/iterables.js";
 import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
 import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { Animation, Wait, prepare_animation } from "../animation/animation.js";
@@ -536,6 +536,28 @@ export class Scene {
     };
     const index = mobjects.findIndex((mob) => consider_moving(mob));
     return index === -1 ? [] : mobjects.slice(index);
+  }
+
+  get_moving_and_static_mobjects(
+    animations: Iterable<Animation>,
+  ): [Mobject[], Mobject[]] {
+    const anims = [...animations];
+    const all_mobjects = list_update(this.mobjects, this.foreground_mobjects);
+    const all_mobject_families = extract_mobject_family_members(
+      all_mobjects,
+      this.renderer?.camera?.use_z_index ?? false,
+      true,
+    );
+    const moving_mobjects = this.get_moving_mobjects(...anims);
+    const all_moving_mobject_families = extract_mobject_family_members(
+      moving_mobjects,
+      this.renderer?.camera?.use_z_index ?? false,
+    );
+    const static_mobjects = list_difference_update(
+      all_mobject_families,
+      all_moving_mobject_families,
+    );
+    return [all_moving_mobject_families, static_mobjects];
   }
 
   restructure_mobjects(

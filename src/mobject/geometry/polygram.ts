@@ -1,10 +1,11 @@
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { addPoints, isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
-import { regular_vertices } from "../../utils/space_ops.js";
+import { adjacent_n_tuples, adjacent_pairs } from "../../utils/iterables.js";
+import { angle_between_vectors, normalize, regular_vertices } from "../../utils/space_ops.js";
 import { QuickHull, type Facet, type SubFacet } from "../../utils/qhull.js";
 import { DOWN, RIGHT, TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
 import { BLUE, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
-import type { NDArray } from "numpy-ts";
+import { array, type NDArray } from "numpy-ts";
 
 // Lazy Line access for Rectangle grid lines (mirrors Python's lazy
 // `from manim.mobject.geometry.line import Line` inside
@@ -18,6 +19,51 @@ let gridLineConstructor: GridLineConstructor | null = null;
 
 export function set_grid_line_constructor(ctor: GridLineConstructor): void {
   gridLineConstructor = ctor;
+}
+
+// Runtime constructors for Polygram.round_corners (mirrors the lazy
+// `from manim.mobject.geometry.arc import ArcBetweenPoints` /
+// `from manim.mobject.geometry.line import Line` inside the Python method;
+// top-level imports would cycle via line -> tips -> polygram). Registered by
+// the geometry/line module on load (it already imports ArcBetweenPoints).
+export interface RoundCornersArc {
+  points: NDArray;
+  get_end(): number[];
+  get_start(): number[];
+  get_arc_length(): number;
+}
+
+export type RoundCornersArcConstructor = new (
+  start: unknown,
+  end: unknown,
+  angle?: number,
+  radius?: number | null,
+  options?: Record<string, unknown>,
+) => RoundCornersArc;
+
+export interface RoundCornersLine {
+  points: NDArray;
+  get_start(): number[];
+  get_end(): number[];
+  get_length(): number;
+  insert_n_curves(n: number): unknown;
+}
+
+export type RoundCornersLineConstructor = new (
+  start: unknown,
+  end: unknown,
+  ...args: unknown[]
+) => RoundCornersLine;
+
+let roundCornersArcConstructor: RoundCornersArcConstructor | null = null;
+let roundCornersLineConstructor: RoundCornersLineConstructor | null = null;
+
+export function set_round_corners_constructors(
+  arcCtor: RoundCornersArcConstructor,
+  lineCtor: RoundCornersLineConstructor,
+): void {
+  roundCornersArcConstructor = arcCtor;
+  roundCornersLineConstructor = lineCtor;
 }
 
 export interface PolygramOptions extends VMobjectOptions {
@@ -69,13 +115,123 @@ export class Polygram extends VMobject {
     evenly_distribute_anchors = false,
     components_per_rounded_corner = 2,
   ): this {
-    void evenly_distribute_anchors;
-    void components_per_rounded_corner;
-    if (radius === 0) return this;
-    // NOTE: the general path needs ArcBetweenPoints and Line
-    // (manim.mobject.geometry.arc / line), which live in other translation
-    // batches; only the radius == 0 fast path is ported here.
-    throw new Error("TODO: Polygram.round_corners with nonzero radius needs ArcBetweenPoints/Line, not ported yet");
+    if (radius === 0) {
+      return this;
+    }
+    if (roundCornersArcConstructor === null || roundCornersLineConstructor === null) {
+      throw new Error(
+        "TODO: Polygram.round_corners with nonzero radius needs the geometry/line module to be imported (register ArcBetweenPoints/Line via set_round_corners_constructors)",
+      );
+    }
+    const arcCtor = roundCornersArcConstructor;
+    const lineCtor = roundCornersLineConstructor;
+
+    const new_points: number[][] = [];
+
+    for (const vertex_group of this.get_vertex_groups()) {
+      const arcs: RoundCornersArc[] = [];
+
+      // Repeat the radius list as necessary in order to provide a radius
+      // for each vertex.
+      let radius_list: number[];
+      if (typeof radius === "number") {
+        radius_list = new Array(vertex_group.length).fill(radius);
+      } else {
+        const repeats = Math.ceil(vertex_group.length / radius.length);
+        radius_list = Array.from(
+          { length: repeats * radius.length },
+          (_, index) => radius[index % radius.length] ?? 0,
+        );
+      }
+
+      const triples = adjacent_n_tuples(vertex_group, 3);
+      for (let index = 0; index < triples.length; index += 1) {
+        const current_radius = radius_list[index] ?? 0;
+        const [v1 = [0, 0, 0], v2 = [0, 0, 0], v3 = [0, 0, 0]] = triples[index] ?? [];
+        const vect1 = subtractPoints(v2, v1, this.dim);
+        const vect2 = subtractPoints(v3, v2, this.dim);
+        const unit_vect1 = normalize(vect1);
+        const unit_vect2 = normalize(vect2);
+
+        let corner_angle = angle_between_vectors(vect1, vect2);
+        // Negative radius gives concave curves
+        corner_angle *= Math.sign(current_radius);
+
+        // Distance between vertex and start of the arc
+        let cut_off_length = current_radius * Math.tan(corner_angle / 2);
+
+        // Clamp the cut-off length so that a (near) 180 degree turn
+        // between consecutive edges - which makes ``tan(angle / 2)``
+        // diverge to infinity - cannot push the arc endpoints to
+        // infinity.  This also bounds the rounded corner to at most half
+        // of the shorter adjacent edge, matching the expected behavior
+        // for degenerate collinear polygons (see issue #3052).
+        const max_cut_off =
+          Math.min(norm(vect1), norm(vect2)) / 2;
+        cut_off_length = Math.min(
+          Math.max(cut_off_length, -max_cut_off),
+          max_cut_off,
+        );
+
+        // Determines counterclockwise vs. clockwise
+        const cross_z =
+          (vect1[0] ?? 0) * (vect2[1] ?? 0) - (vect1[1] ?? 0) * (vect2[0] ?? 0);
+        const turn_sign = Math.sign(cross_z);
+
+        const arc = new arcCtor(
+          v2.map((value, dim) => value - (unit_vect1[dim] ?? 0) * cut_off_length),
+          v2.map((value, dim) => value + (unit_vect2[dim] ?? 0) * cut_off_length),
+          turn_sign * corner_angle,
+          null,
+          { num_components: components_per_rounded_corner },
+        );
+        arcs.push(arc);
+      }
+
+      let average_arc_length = 1.0;
+      if (evenly_distribute_anchors) {
+        // Determine the average length of each curve
+        const nonzero_length_arcs = arcs.filter(
+          (arc) => pointRows(arc.points, this.dim).length > 4,
+        );
+        if (nonzero_length_arcs.length > 0) {
+          const total_arc_length = nonzero_length_arcs.reduce(
+            (sum, arc) => sum + arc.get_arc_length(),
+            0,
+          );
+          const num_curves =
+            nonzero_length_arcs.reduce(
+              (sum, arc) => sum + pointRows(arc.points, this.dim).length,
+              0,
+            ) / 4;
+          average_arc_length = total_arc_length / num_curves;
+        }
+      }
+
+      // To ensure that we loop through starting with last
+      const ordered = [arcs[arcs.length - 1] as RoundCornersArc, ...arcs.slice(0, -1)];
+
+      for (const pair of adjacent_pairs(ordered)) {
+        const arc1 = pair[0] as RoundCornersArc;
+        const arc2 = pair[1] as RoundCornersArc;
+        new_points.push(...pointRows(arc1.points, this.dim));
+
+        const line = new lineCtor(arc1.get_end(), arc2.get_start());
+
+        // Make sure anchors are evenly distributed, if necessary
+        if (evenly_distribute_anchors) {
+          line.insert_n_curves(Math.ceil(line.get_length() / average_arc_length));
+        }
+
+        new_points.push(...pointRows(line.points, this.dim));
+      }
+    }
+
+    if (new_points.length > 0) {
+      this.set_points(array(new_points) as NDArray);
+    }
+
+    return this;
   }
 
   roundCorners(

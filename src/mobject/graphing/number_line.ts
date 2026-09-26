@@ -1,11 +1,13 @@
 import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
-import { DEFAULT_ARROW_TIP_LENGTH, DOWN, MED_SMALL_BUFF } from "../../constants.js";
-import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DOWN, MED_SMALL_BUFF, OUT, UP } from "../../constants.js";
+import { isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
-import { normalize } from "../../utils/space_ops.js";
+import { angle_of_vector, normalize } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Mobject } from "../mobject.js";
+import { Line } from "../geometry/line.js";
+import type { ArrowTip } from "../geometry/tips.js";
 import { LinearBase, _ScaleBase } from "./scale.js";
 
 // NOTE: mirrors CPython repr/str for floats: scientific notation when the
@@ -67,6 +69,10 @@ export class NumberLine extends VGroup {
   include_tip = false;
   tip_width = DEFAULT_ARROW_TIP_LENGTH;
   tip_height = DEFAULT_ARROW_TIP_LENGTH;
+  // NOTE: mirrors Python NumberLine.__init__ (tip_shape defaults to None for
+  // the default arrow tip). The ArrowTip pipeline lives on TipableVMobject;
+  // this VGroup-based port stores the option opaquely (see include_tip).
+  tip_shape: (new (...args: never[]) => ArrowTip) | null = null;
   font_size = 36;
   include_numbers = false;
   scaling: _ScaleBase = new LinearBase();
@@ -98,9 +104,11 @@ export class NumberLine extends VGroup {
     longer_tick_multiple?: number;
     exclude_origin_tick?: boolean;
     rotation?: number;
+    stroke_width?: number;
     include_tip?: boolean;
     tip_width?: number;
     tip_height?: number;
+    tip_shape?: (new (...args: never[]) => ArrowTip) | null;
     include_numbers?: boolean;
     font_size?: number;
     scaling?: _ScaleBase;
@@ -140,9 +148,11 @@ export class NumberLine extends VGroup {
     if (options.longer_tick_multiple !== undefined) this.longer_tick_multiple = options.longer_tick_multiple;
     if (options.exclude_origin_tick !== undefined) this.exclude_origin_tick = options.exclude_origin_tick;
     if (options.rotation !== undefined) this.rotation = options.rotation;
+    const stroke_width = options.stroke_width ?? 2.0;
     if (options.include_tip !== undefined) this.include_tip = options.include_tip;
     if (options.tip_width !== undefined) this.tip_width = options.tip_width;
     if (options.tip_height !== undefined) this.tip_height = options.tip_height;
+    if (options.tip_shape !== undefined) this.tip_shape = options.tip_shape;
     if (options.include_numbers !== undefined) this.include_numbers = options.include_numbers;
     if (options.font_size !== undefined) this.font_size = options.font_size;
     if (options.label_direction !== undefined) this.label_direction = options.label_direction;
@@ -180,14 +190,118 @@ export class NumberLine extends VGroup {
     } else {
       this.scale(this.unit_size);
     }
+    // NOTE: Python passes stroke_width into Line.__init__; this VGroup-based
+    // port applies it to the baseline stroke instead (same observable style,
+    // which get_tick().match_style inherits for the ticks below).
+    this.set_stroke(undefined, stroke_width, undefined, false);
     this.center();
+    if (this.include_tip) {
+      // NOTE: tip creation (add_tip with tip_length=tip_height,
+      // tip_width=tip_width, tip_shape) lives on TipableVMobject/Line in the
+      // Python original; this port extends VGroup (an earlier-batch decision
+      // kept for compatibility), so the tip branch is a marked stub. See
+      // .
+      throw new Error(
+        "TODO: NumberLine include_tip needs TipableVMobject tip machinery (VGroup base), not ported yet",
+      );
+    }
+    if (this.include_ticks) {
+      this.add_ticks();
+    }
     if (this.rotation) this.rotate(this.rotation);
+    if (this.include_numbers || this.numbers_to_include !== null) {
+      if (this.scaling.custom_labels) {
+        const tick_range = (this.get_tick_range().toArray() as unknown[]).map(Number);
+        const num_decimal_places = Number(
+          (this.decimal_number_config as Record<string, unknown>)["num_decimal_places"] ?? 0,
+        );
+        const custom_labels = this.scaling.get_custom_labels(tick_range, num_decimal_places);
+        const entries: Record<string, string | number | VMobject> = {};
+        tick_range.forEach((value, index) => {
+          entries[String(value)] = custom_labels[index] as string | number | VMobject;
+        });
+        this.add_labels(entries);
+      } else {
+        this.add_numbers(
+          this.numbers_to_include ?? null,
+          this.numbers_to_exclude,
+          this.font_size,
+          undefined,
+          {},
+        );
+      }
+    }
   }
 
   static _decimal_places_from_step(step: number): number {
     const step_str = pythonFloatStr(step);
     if (!step_str.includes(".")) return 0;
     return (step_str.split(".").pop() ?? "").length;
+  }
+
+  rotate_about_zero(
+    angle: number,
+    axis: readonly number[] | NDArray = [...OUT],
+    about_edge: readonly number[] | NDArray | null = null,
+  ): this {
+    return this.rotate_about_number(0, angle, axis, about_edge);
+  }
+
+  rotate_about_number(
+    number: number,
+    angle: number,
+    axis: readonly number[] | NDArray = [...OUT],
+    about_edge: readonly number[] | NDArray | null = null,
+  ): this {
+    return this.rotate(angle, axis, this.n2p(number), about_edge ?? undefined);
+  }
+
+  add_ticks(): this {
+    const ticks = new VGroup();
+    const elongated_tick_size = this.tick_size * this.longer_tick_multiple;
+    const elongated_tick_offsets = this.numbers_with_elongated_ticks.map(
+      (value) => value - this.x_min,
+    );
+    for (const x of (this.get_tick_range().toArray() as unknown[]).map(Number)) {
+      let size = this.tick_size;
+      // NOTE: mirrors np.any(np.isclose(x - self.x_min,
+      // elongated_tick_offsets)) with numpy's default tolerances.
+      const shifted = x - this.x_min;
+      const matches = elongated_tick_offsets.some((offset) =>
+        Math.abs(shifted - offset) <= 1e-08 + 1e-05 * Math.abs(offset),
+      );
+      if (matches) {
+        size = elongated_tick_size;
+      }
+      ticks.add(this.get_tick(x, size));
+    }
+    this.add(ticks);
+    this.ticks = ticks;
+    return this;
+  }
+
+  get_tick(x: number, size: number | null = null): Line {
+    const resolved = size ?? this.tick_size;
+    const result = new Line(
+      scalePoint(DOWN, resolved, this.dim),
+      scalePoint(UP, resolved, this.dim),
+    );
+    result.rotate(this.get_angle());
+    result.move_to(this.number_to_point(x));
+    result.match_style(this);
+    return result;
+  }
+
+  get_angle(): number {
+    const [start, end] = this.get_start_and_end();
+    return angle_of_vector(subtractPoints(end, start, this.dim)) as number;
+  }
+
+  get_unit_vector(): number[] {
+    const [start, end] = this.get_start_and_end();
+    return normalize(subtractPoints(end, start, this.dim)).map(
+      (value) => value * this.unit_size,
+    );
   }
 
   get_tick_marks(): VGroup {

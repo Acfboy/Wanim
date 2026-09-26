@@ -1,10 +1,14 @@
 import { array, type NDArray } from "numpy-ts";
-import { LEFT, RIGHT } from "../../constants.js";
+import { LEFT, MED_SMALL_BUFF, RIGHT } from "../../constants.js";
+import { config } from "../../_config/utils.js";
+import { RendererType } from "../../constants.js";
 import { isNDArray, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { polylabel } from "../../utils/polylabel.js";
 import type { Mobject } from "../mobject.js";
 import { VGroup } from "../types/vectorized_mobject.js";
-import { Line, type LineEndpoint, type LineOptions } from "./line.js";
+import { Arrow, Line, type LineEndpoint, type LineOptions } from "./line.js";
+import { ArrowTriangleFilledTip } from "./tips.js";
+import type { TipConstructor } from "./arc.js";
 import { Polygram, type PolygramOptions } from "./polygram.js";
 
 /**
@@ -127,6 +131,99 @@ export class LabeledLine extends Line {
     const label_coords = line_start.map((value, index) => value + (new_vec[index] ?? 0));
     this.label.move_to(label_coords);
     this.add(this.label);
+  }
+}
+
+export interface LabeledArrowOptions extends LabeledLineOptions {
+  stroke_width?: number;
+  buff?: number;
+  tip_shape?: TipConstructor | null;
+  max_tip_length_to_length_ratio?: number;
+  max_stroke_width_to_length_ratio?: number;
+}
+
+function isPlainOptionsObject(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value instanceof VGroup) return false;
+  if (isNDArray(value)) return false;
+  // NOTE: stricter than isLineOptionsObject: class instances (Mobject
+  // endpoints, ArrowTip, ...) are not plain option bags even though they
+  // are non-array objects.
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Constructs an arrow containing a label box somewhere along its length.
+ *
+ * NOTE: mirrors Python `class LabeledArrow(LabeledLine, Arrow)` via the MRO
+ * LabeledArrow -> LabeledLine -> Arrow -> Line: label arguments are consumed
+ * exactly like LabeledLine, while stroke/tip defaults follow Arrow
+ * (stroke_width=6, buff=MED_SMALL_BUFF, ArrowTriangleFilledTip end tip with
+ * length-proportional stroke narrowing).
+ */
+export class LabeledArrow extends LabeledLine {
+  max_tip_length_to_length_ratio: number;
+  max_stroke_width_to_length_ratio: number;
+  initial_stroke_width: number;
+
+  constructor(
+    label: string | unknown,
+    label_position = 0.5,
+    label_config: Record<string, unknown> | null = null,
+    box_config: Record<string, unknown> | null = null,
+    frame_config: Record<string, unknown> | null = null,
+    ...lineArgs: unknown[]
+  ) {
+    // Inject Arrow.__init__ defaults (stroke_width=6, buff=MED_SMALL_BUFF)
+    // wherever the caller left them unspecified, then let LabeledLine parse
+    // the line arguments as usual. An explicit option key wins, mirroring
+    // Python's **kwargs flow into Arrow.__init__.
+    const forwarded = [...lineArgs];
+    const last = forwarded[forwarded.length - 1];
+    let tip_shape: TipConstructor | null | undefined;
+    if (forwarded.length > 0 && isPlainOptionsObject(last)) {
+      const bag = { ...(last as LabeledArrowOptions) };
+      if (bag.stroke_width === undefined) bag.stroke_width = 6;
+      if (bag.buff === undefined) bag.buff = MED_SMALL_BUFF;
+      tip_shape = bag.tip_shape ?? undefined;
+      delete bag.tip_shape;
+      delete bag.max_tip_length_to_length_ratio;
+      delete bag.max_stroke_width_to_length_ratio;
+      forwarded[forwarded.length - 1] = bag;
+    } else {
+      forwarded.push({ stroke_width: 6, buff: MED_SMALL_BUFF } as LabeledArrowOptions);
+    }
+    super(label, label_position, label_config, box_config, frame_config, ...forwarded);
+    const bagAfter = forwarded[forwarded.length - 1] as LabeledArrowOptions;
+    this.max_tip_length_to_length_ratio =
+      (typeof bagAfter === "object" && bagAfter !== null
+        ? (bagAfter as LabeledArrowOptions).max_tip_length_to_length_ratio
+        : undefined) ?? 0.25;
+    this.max_stroke_width_to_length_ratio =
+      (typeof bagAfter === "object" && bagAfter !== null
+        ? (bagAfter as LabeledArrowOptions).max_stroke_width_to_length_ratio
+        : undefined) ?? 5;
+    // TODO, should this be affected when Arrow.set_stroke is called?
+    this.initial_stroke_width = this.stroke_width;
+    this.add_tip(null, tip_shape ?? ArrowTriangleFilledTip);
+    this._set_stroke_width_from_length();
+  }
+
+  override get_default_tip_length(): number {
+    const max_ratio = this.max_tip_length_to_length_ratio;
+    return Math.min(this.tip_length, max_ratio * this.get_length());
+  }
+
+  _set_stroke_width_from_length(): this {
+    const max_ratio = this.max_stroke_width_to_length_ratio;
+    const width = Math.min(this.initial_stroke_width, max_ratio * this.get_length());
+    if (config.renderer === RendererType.OPENGL) {
+      this.set_stroke(undefined, width, undefined, false);
+    } else {
+      this.set_stroke(undefined, width, undefined, false);
+    }
+    return this;
   }
 }
 
