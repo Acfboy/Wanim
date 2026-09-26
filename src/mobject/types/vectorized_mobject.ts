@@ -2232,11 +2232,16 @@ export class DashedVMobject extends VMobject {
     // tip, leading to many overlapping arrowheads. Pop tips from the working
     // copy and re-attach them only once after the dashes are created.
     let tips: VMobject | null = null;
-    const maybe_pop_tips = (working as unknown as { pop_tips?: () => VGroup }).pop_tips;
-    if (typeof maybe_pop_tips === "function") {
-      const popped_tips = maybe_pop_tips.call(working);
-      if (popped_tips.submobjects.length > 0) {
-        tips = popped_tips;
+    // NOTE: mirrors Python `hasattr(vmobject, "pop_tips")`. The Mobject proxy
+    // throws AttributeError on plain property reads, so use `in` (the `has`
+    // trap) instead of reading the property directly.
+    if ("pop_tips" in (working as unknown as Record<string, unknown>)) {
+      const maybe_pop_tips = (working as unknown as { pop_tips?: () => VGroup }).pop_tips;
+      if (typeof maybe_pop_tips === "function") {
+        const popped_tips = maybe_pop_tips.call(working);
+        if (popped_tips.submobjects.length > 0) {
+          tips = popped_tips;
+        }
       }
     }
 
