@@ -12,7 +12,7 @@ import {
   UP,
 } from "../../constants.js";
 import { norm, pointRows, subtractPoints } from "../../utils/arrays.js";
-import { angle_of_vector, line_intersection, normalize } from "../../utils/space_ops.js";
+import { angle_of_vector, cross, line_intersection, normalize } from "../../utils/space_ops.js";
 import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { DashedVMobject, VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
@@ -297,6 +297,14 @@ export class Arrow extends Line {
     return Math.min(this.tip_length, max_ratio * this.get_length());
   }
 
+  get_normal_vector(): number[] {
+    const [p0 = [0, 0, 0], p1 = [0, 0, 0], p2 = [0, 0, 0]] = (this.tip as ArrowTip).get_start_anchors().slice(0, 3);
+    return normalize(cross(
+      subtractPoints(p2, p1, this.dim),
+      subtractPoints(p1, p0, this.dim),
+    ));
+  }
+
   _set_stroke_width_from_length(): this {
     const max_ratio = this.max_stroke_width_to_length_ratio;
     const width = Math.min(this.initial_stroke_width, max_ratio * this.get_length());
@@ -402,7 +410,12 @@ export class Angle extends VMobject {
   elbow: boolean;
   radius?: number;
   dot_radius?: number;
-  angle_value!: number;
+  // NOTE: mirrors Python, where `angle_value` is only assigned on the
+  // non-elbow path (elbow RightAngles have no such attribute). `declare`
+  // emits no runtime field so `"angle_value" in angle` is false until
+  // assigned, and reads go through the Mobject proxy (AttributeError),
+  // exactly like Python's missing attribute.
+  declare angle_value: number;
 
   constructor(line1: Line, line2: Line, options: AngleOptions = {}) {
     const {
@@ -544,5 +557,16 @@ export class Angle extends VMobject {
     options: AngleOptions = {},
   ): Angle {
     return new Angle(new Line(B, A), new Line(B, C), options);
+  }
+}
+
+export interface RightAngleOptions extends AngleOptions {
+  length?: number | null;
+}
+
+export class RightAngle extends Angle {
+  constructor(line1: Line, line2: Line, length: number | null = null, options: RightAngleOptions = {}) {
+    const { length: lengthOption, ...rest } = options;
+    super(line1, line2, { radius: lengthOption ?? length, elbow: true, ...rest });
   }
 }

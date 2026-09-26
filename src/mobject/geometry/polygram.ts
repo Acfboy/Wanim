@@ -1,6 +1,7 @@
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { regular_vertices } from "../../utils/space_ops.js";
+import { QuickHull, type Facet, type SubFacet } from "../../utils/qhull.js";
 import { TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
 import { BLUE, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import type { NDArray } from "numpy-ts";
@@ -281,5 +282,61 @@ export class Cutout extends VMobject {
     for (const mobject of mobjects) {
       this.append_points((mobject as VMobject).force_direction(sub_direction).points);
     }
+  }
+}
+
+export interface ConvexHullOptions extends PolygramOptions {
+  tolerance?: number;
+}
+
+export class ConvexHull extends Polygram {
+  constructor(...args: unknown[]) {
+    // NOTE: locals are computed before super() (which must come first among
+    // `this` uses, but plain local computation beforehand is allowed).
+    let points: unknown[] = args;
+    let tolerance = 1e-5;
+    let options: ConvexHullOptions = {};
+    const last = args[args.length - 1];
+    if (
+      args.length > 0 &&
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last)
+    ) {
+      const { tolerance: toleranceOption, ...rest } = last as ConvexHullOptions;
+      tolerance = toleranceOption ?? tolerance;
+      options = rest;
+      points = args.slice(0, -1);
+    }
+    // Build Convex Hull (mirrors np.array(points)[:, :2]).
+    const matrix = points.map((point) => {
+      const row = pointRows(point, 3)[0] ?? [0, 0, 0];
+      return [row[0] ?? 0, row[1] ?? 0];
+    });
+    const hull = new QuickHull(tolerance);
+    hull.build(matrix);
+    // Extract vertices: walk the hull boundary facet by facet. The TS
+    // QuickHull stores facets in an array keyed by string (instead of a
+    // Python object set), so set difference/pop become key-filtered pop.
+    const live = hull.facets.filter((facet) => !hull.removed.has(facet.key()));
+    let facet = live.pop() as Facet;
+    const subfacets: SubFacet[] = [...facet.subfacets];
+    while (subfacets.length <= live.length) {
+      const sf = subfacets[subfacets.length - 1] as SubFacet;
+      const neighborMap = hull.neighbors.get(sf.key()) ?? new Map<string, Facet>();
+      facet = [...neighborMap.values()].find(
+        (candidate) => candidate.key() !== facet.key(),
+      ) as Facet;
+      const next = facet.subfacets.find(
+        (candidate) => candidate.key() !== sf.key(),
+      ) as SubFacet;
+      subfacets.push(next);
+    }
+    // Setup vertices as Point3D.
+    const vertices = subfacets.flatMap((subfacet) =>
+      subfacet.coordinates.map((row) => [row[0] ?? 0, row[1] ?? 0, 0]),
+    );
+    super(vertices, options);
   }
 }

@@ -70,6 +70,9 @@ export class NumberLine extends VGroup {
   font_size = 36;
   include_numbers = false;
   scaling: _ScaleBase = new LinearBase();
+  // NOTE: populated by add_ticks() (a later batch); the field exists here so
+  // get_tick_marks() has its faithful target to return.
+  ticks: VGroup = new VGroup();
 
   constructor(options: {
     x_range?: readonly [number, number] | readonly [number, number, number] | null;
@@ -147,6 +150,10 @@ export class NumberLine extends VGroup {
     const step_str = pythonFloatStr(step);
     if (!step_str.includes(".")) return 0;
     return (step_str.split(".").pop() ?? "").length;
+  }
+
+  get_tick_marks(): VGroup {
+    return this.ticks;
   }
 
   get_tick_range(): NDArray {    const [x_min, x_max, x_step] = this.x_range;

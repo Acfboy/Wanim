@@ -1,11 +1,15 @@
 import { array, type NDArray } from "numpy-ts";
 import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
-import { isNDArray, pointFrom, pointRows } from "../../utils/arrays.js";
+import { arange, isNDArray, linspace, numeric, pointFrom, pointRows } from "../../utils/arrays.js";
 import { update_dict_recursively } from "../../utils/config_ops.js";
-import { SMALL_BUFF, DL } from "../../constants.js";
+import { SMALL_BUFF, DL, RIGHT, TAU, RendererType } from "../../constants.js";
 import { BLUE_D } from "../../utils/color/index.js";
-import type { ParsableManimColor } from "../../utils/color/core.js";
+import { interpolate_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
+import { binary_search } from "../../utils/simple_functions.js";
+import { VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
+import { LinearBase, type _ScaleBase } from "./scale.js";
 
 /** Minimal structural surface a family member must provide for
  * prepare_for_nonlinear_transform (mirrors VMobject.get_num_curves /
@@ -18,6 +22,16 @@ interface NonlinearTransformable {
 function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]> {
   const length = Math.min(first.length, second.length);
   return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
+}
+
+/** Trapezoid-rule area under y(x), mirroring np.trapezoid(y, x). */
+function trapezoidAreas(y_values: number[], x_values: number[]): number {
+  let total = 0;
+  for (let index = 1; index < y_values.length; index += 1) {
+    total += (((y_values[index - 1] ?? 0) + (y_values[index] ?? 0)) / 2) *
+      ((x_values[index] ?? 0) - (x_values[index - 1] ?? 0));
+  }
+  return total;
 }
 
 export class CoordinateSystem {
@@ -69,9 +83,223 @@ export class CoordinateSystem {
     error.name = "NotImplementedError";
     throw error;
   }
-  get_axes(): Mobject[] { throw new Error("CoordinateSystem.get_axes must be implemented by a subclass."); }
-  get_axis(index: number): Mobject { return this.get_axes()[index]; }
+  get_axes(): VGroup {
+    const error = new Error("CoordinateSystem.get_axes must be implemented by a subclass.");
+    error.name = "NotImplementedError";
+    throw error;
+  }
+  get_axis(index: number): Mobject { return this.get_axes().__getitem__(index) as Mobject; }
   get_origin(): NDArray { return this.coords_to_point(0, 0); }
+
+  get_axis_labels(): VGroup {
+    const error = new Error();
+    error.name = "NotImplementedError";
+    throw error;
+  }
+
+  plot(
+    function_: (x: number) => number,
+    x_range: number[] | null = null,
+    use_vectorized = false,
+    colorscale: Array<ParsableManimColor | [ParsableManimColor, number]> | null = null,
+    colorscale_axis = 1,
+    options: ParametricFunctionOptions = {},
+  ): ParametricFunction {
+    const t_range: [number, number, number] = [
+      this.x_range[0] ?? 0,
+      this.x_range[1] ?? 0,
+      this.x_range[2] ?? 1,
+    ];
+    if (x_range !== null) {
+      for (let index = 0; index < x_range.length; index += 1) {
+        t_range[index] = x_range[index] ?? t_range[index] ?? 0;
+      }
+    }
+    if (x_range === null || x_range.length < 3) {
+      // if t_range has a defined step size, increase the number of sample points per tick
+      t_range[2] = (t_range[2] ?? 1) / this.num_sampled_graph_points_per_tick;
+    }
+    // For axes, the third coordinate of x_range indicates
+    // tick frequency.  But for functions, it indicates a
+    // sample frequency
+    // NOTE: Python reads self.x_axis.scaling; the TS CoordinateSystem
+    // hierarchy is not Mobject-based yet and has no x_axis, so the default
+    // linear scaling is used until the Axes integration lands.
+    const scaling: _ScaleBase = (this as unknown as { x_axis?: { scaling?: _ScaleBase } }).x_axis?.scaling ?? new LinearBase();
+    const graph = new ParametricFunction(
+      (t: number) => this.coords_to_point(t, function_(t)),
+      { t_range, scaling, use_vectorized, ...options },
+    );
+    graph.underlying_function = function_;
+
+    if (colorscale) {
+      let new_colors: ParsableManimColor[];
+      let pivots: number[];
+      if (Array.isArray(colorscale[0])) {
+        const pairs = colorscale as Array<[ParsableManimColor, number]>;
+        new_colors = pairs.map(([color]) => color);
+        pivots = pairs.map(([, pivot]) => pivot);
+      } else {
+        new_colors = colorscale as ParsableManimColor[];
+        const ranges = [this.x_range, this.y_range];
+        const pivot_min = ranges[colorscale_axis]?.[0] ?? 0;
+        const pivot_max = ranges[colorscale_axis]?.[1] ?? 1;
+        const pivot_frequency = (pivot_max - pivot_min) / (new_colors.length - 1);
+        pivots = arange(pivot_min, pivot_max + pivot_frequency, pivot_frequency);
+      }
+      // NOTE: mirrors Python, which indexes x_range directly here (raising
+      // TypeError when x_range is None and colorscale is given).
+      const xr = x_range as number[];
+      const resolution = xr.length === 2 ? 0.01 : (xr[2] ?? 0.01);
+      const sample_points = arange(xr[0] ?? 0, (xr[1] ?? 0) + resolution, resolution);
+      const color_list: ParsableManimColor[] = [];
+      for (const samp_x of sample_points) {
+        const axis_value = ([samp_x, function_(samp_x)] as number[])[colorscale_axis] ?? 0;
+        if (axis_value <= (pivots[0] ?? 0)) {
+          color_list.push(new_colors[0] as ParsableManimColor);
+        } else if (axis_value >= (pivots[pivots.length - 1] ?? 0)) {
+          color_list.push(new_colors[new_colors.length - 1] as ParsableManimColor);
+        } else {
+          for (let i = 0; i < pivots.length; i += 1) {
+            if ((pivots[i] ?? 0) > axis_value) {
+              const denom = (pivots[i] ?? 0) - (pivots[i - 1] ?? 0);
+              let color_index = denom === 0 ? 0 : (axis_value - (pivots[i - 1] ?? 0)) / denom;
+              color_index = Math.min(color_index, 1);
+              const mob_color = interpolate_color(
+                new ManimColor(new_colors[i - 1]),
+                new ManimColor(new_colors[i]),
+                color_index,
+              );
+              color_list.push(mob_color);
+              break;
+            }
+          }
+        }
+      }
+      if (config.renderer === RendererType.OPENGL) {
+        graph.set_color(color_list as unknown as ParsableManimColor);
+      } else {
+        graph.set_stroke(color_list as unknown as ParsableManimColor);
+        graph.set_sheen_direction([...RIGHT]);
+      }
+    }
+
+    return graph;
+  }
+
+  plot_parametric_curve(
+    function_: (t: number) => number[] | readonly number[] | NDArray,
+    use_vectorized = false,
+    options: ParametricFunctionOptions = {},
+  ): ParametricFunction {
+    const dim = this.dimension;
+    const graph = new ParametricFunction(
+      (t: number) => {
+        const value = function_(t);
+        const raw: number[] = isNDArray(value)
+          ? ((value as NDArray).toArray() as unknown[]).map(numeric)
+          : [...(value as readonly number[])].map(numeric);
+        return this.coords_to_point(...raw.slice(0, dim));
+      },
+      { use_vectorized, ...options },
+    );
+    graph.underlying_function = function_;
+    return graph;
+  }
+
+  plot_polar_graph(
+    r_func: (theta: number) => number,
+    theta_range: number[] | null = null,
+    options: ParametricFunctionOptions = {},
+  ): ParametricFunction {
+    const resolved = (theta_range === null ? [0, TAU] : [...theta_range]) as [number, number, number];
+    const graph = new ParametricFunction(
+      (th: number) => this.pr2pt(r_func(th), th),
+      { t_range: resolved, ...options },
+    );
+    graph.underlying_function = r_func;
+    return graph;
+  }
+
+  input_to_graph_point(x: number, graph: ParametricFunction | VMobject): NDArray {
+    const underlying = ("underlying_function" in (graph as object))
+      ? (graph as unknown as Record<string, unknown>)["underlying_function"]
+      : undefined;
+    if (underlying !== undefined && underlying !== null) {
+      return (graph as ParametricFunction).function(x);
+    }
+    const alpha = binary_search(
+      (a: number) => {
+        const proportion_point = pointRows((graph as VMobject).point_from_proportion(a), 3)[0] ?? [0, 0, 0];
+        return this.point_to_coords(proportion_point)[0] ?? 0;
+      },
+      x,
+      0,
+      1,
+    );
+    if (alpha !== null) {
+      return (graph as VMobject).point_from_proportion(alpha);
+    }
+    const startX = this.p2c((graph as VMobject).get_start())[0];
+    const endX = this.p2c((graph as VMobject).get_end())[0];
+    const error = new Error(
+      `x=${x} not located in the range of the graph ([${startX}, ${endX}])`,
+    );
+    error.name = "ValueError";
+    throw error;
+  }
+
+  input_to_graph_coords(x: number, graph: ParametricFunction): [number, number] {
+    const underlying = (graph as unknown as { underlying_function: (t: number) => number }).underlying_function;
+    return [x, underlying(x)];
+  }
+
+  i2gc(x: number, graph: ParametricFunction): [number, number] {
+    return this.input_to_graph_coords(x, graph);
+  }
+
+  i2gp(x: number, graph: ParametricFunction): NDArray {
+    return this.input_to_graph_point(x, graph);
+  }
+
+  plot_antiderivative_graph(
+    graph: ParametricFunction,
+    y_intercept = 0,
+    samples = 50,
+    use_vectorized = false,
+    options: ParametricFunctionOptions = {},
+  ): ParametricFunction {
+    // Mirrors the nested `antideriv` closure in Python: integrates the
+    // reference graph's underlying function from 0 to x with the trapezoid
+    // rule (np.trapezoid), adding y_intercept. With use_vectorized the input
+    // is an array (np.linspace(..., axis=1) layout: one row per x value) and
+    // the output is the matching array of areas.
+    const underlying = (graph as unknown as { underlying_function: (t: number) => number }).underlying_function;
+    const antideriv = (x: number | NDArray): number | NDArray => {
+      if (use_vectorized && isNDArray(x)) {
+        const x_rows: number[] = [];
+        const collect = (value: unknown): void => {
+          if (Array.isArray(value)) {
+            for (const item of value) collect(item);
+          } else {
+            x_rows.push(numeric(value));
+          }
+        };
+        collect((x as NDArray).toArray());
+        const integrated = x_rows.map((x_value) => {
+          const x_vals = linspace(0, x_value, samples);
+          const y_vals = x_vals.map((v) => underlying(v));
+          return trapezoidAreas(y_vals, x_vals) + y_intercept;
+        });
+        return array(integrated) as NDArray;
+      }
+      const x_value = numeric(x as number);
+      const x_vals = linspace(0, x_value, samples);
+      const y_vals = x_vals.map((v) => underlying(v));
+      return trapezoidAreas(y_vals, x_vals) + y_intercept;
+    };
+    return this.plot(antideriv as (x: number) => number, null, use_vectorized, null, 1, options);
+  }
 
   __matmul__(coord: number[] | readonly number[] | NDArray | Mobject): NDArray {
     let target: unknown = coord;
@@ -196,7 +424,15 @@ export class NumberPlane extends CoordinateSystem {
 }
 
 export class Axes extends NumberPlane {
-  get_axes(): Mobject[] { return []; }
+  // NOTE: Python Axes.__init__ builds self.axes as a VGroup of NumberLine
+  // axes (plus x_axis/y_axis/z_axis shortcuts). That construction is part of
+  // a later batch; the field exists here so get_axes() has its faithful
+  // target to return.
+  axes: VGroup = new VGroup();
+
+  override get_axes(): VGroup {
+    return this.axes;
+  }
 
   static _update_default_configs(
     default_configs: Array<Record<string, unknown>>,
@@ -391,6 +627,10 @@ export class PolarPlane extends Axes {
       if (num_inserted_curves > num_curves) mob.insert_n_curves(num_inserted_curves - num_curves);
     }
     return this;
+  }
+
+  override get_axes(): VGroup {
+    return this.axes;
   }
 }
 

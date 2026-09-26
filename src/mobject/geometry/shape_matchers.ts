@@ -1,8 +1,9 @@
 import { config } from "../../_config/utils.js";
-import { SMALL_BUFF } from "../../constants.js";
-import { BLACK, type ParsableManimColor } from "../../utils/color/core.js";
+import { SMALL_BUFF, UP, LEFT, DOWN, RIGHT } from "../../constants.js";
+import { BLACK, RED, type ParsableManimColor } from "../../utils/color/core.js";
 import { Group, Mobject } from "../mobject.js";
-import { singleOpacity, type VMobject } from "../types/vectorized_mobject.js";
+import { singleOpacity, VGroup, type VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { Line } from "./line.js";
 import { RoundedRectangle, type RoundedRectangleOptions } from "./polygram.js";
 
 type VMobjectStyleOptions = Parameters<VMobject["set_style"]>[0];
@@ -121,5 +122,42 @@ export class BackgroundRectangle extends SurroundingRectangle {
       console.info(`Argument ${JSON.stringify(extra)} is ignored in BackgroundRectangle.set_style.`);
     }
     return this;
+  }
+}
+
+export interface CrossOptions extends VMobjectOptions {
+  stroke_color?: ParsableManimColor;
+  stroke_width?: number;
+  scale_factor?: number;
+}
+
+export class Cross extends VGroup {
+  constructor(
+    mobject: Mobject | null = null,
+    stroke_color: ParsableManimColor = RED,
+    stroke_width = 6.0,
+    scale_factor = 1.0,
+    options: CrossOptions = {},
+  ) {
+    // NOTE: the TS VGroup constructor takes submobjects only (no style
+    // options), so **kwargs styling is dropped here; the explicit parameters
+    // above are all honored.
+    const {
+      stroke_color: strokeColorOption,
+      stroke_width: strokeWidthOption,
+      scale_factor: scaleFactorOption,
+      ...rest
+    } = options;
+    void rest;
+    const upLeft = [UP[0]! + LEFT[0]!, UP[1]! + LEFT[1]!, UP[2]! + LEFT[2]!];
+    const downRight = [DOWN[0]! + RIGHT[0]!, DOWN[1]! + RIGHT[1]!, DOWN[2]! + RIGHT[2]!];
+    const upRight = [UP[0]! + RIGHT[0]!, UP[1]! + RIGHT[1]!, UP[2]! + RIGHT[2]!];
+    const downLeft = [DOWN[0]! + LEFT[0]!, DOWN[1]! + LEFT[1]!, DOWN[2]! + LEFT[2]!];
+    super(new Line(upLeft, downRight), new Line(upRight, downLeft));
+    if (mobject !== null) {
+      this.replace(mobject, 0, true);
+    }
+    this.scale(scaleFactorOption ?? scale_factor);
+    this.set_stroke(strokeColorOption ?? stroke_color, strokeWidthOption ?? stroke_width);
   }
 }

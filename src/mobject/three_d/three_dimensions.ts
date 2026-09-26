@@ -1,13 +1,15 @@
 import { array, type NDArray } from "numpy-ts";
 import { isNDArray, linspace, norm, pointRows } from "../../utils/arrays.js";
-import { IN, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, X_AXIS, Y_AXIS, Z_AXIS } from "../../constants.js";
+import { IN, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, UP, DOWN, X_AXIS, Y_AXIS, Z_AXIS } from "../../constants.js";
+import { DEFAULT_DOT_RADIUS, LineJointType } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { RendererType } from "../../constants.js";
-import { normalize } from "../../utils/space_ops.js";
-import { BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
+import { normalize, z_to_vector } from "../../utils/space_ops.js";
+import { BLUE, BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { VGroup, VectorizedPoint, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Circle } from "../geometry/arc.js";
+import { Square } from "../geometry/polygram.js";
 
 export class ThreeDVMobject extends VMobject {
   u_index!: number;
@@ -218,6 +220,72 @@ export class Sphere extends Surface {
 
   override func(u: number, v: number): SurfacePoint {
     return spherePoint(this.radius, u, v);
+  }
+}
+
+export class Dot3D extends Sphere {
+  constructor(
+    point: readonly number[] | NDArray = [...ORIGIN],
+    radius = DEFAULT_DOT_RADIUS,
+    color: ParsableManimColor = WHITE,
+    resolution: number | [number, number] = [8, 8],
+    options: Record<string, unknown> = {},
+  ) {
+    void options;
+    super(point, radius, resolution);
+    this.set_color(color);
+  }
+}
+
+export interface CubeOptions {
+  fill_opacity?: number;
+  fill_color?: ParsableManimColor;
+  stroke_width?: number;
+  [key: string]: unknown;
+}
+
+export class Cube extends VGroup {
+  side_length: number;
+
+  constructor(
+    side_length = 2,
+    fill_opacity = 0.75,
+    fill_color: ParsableManimColor = BLUE,
+    stroke_width = 0,
+    options: CubeOptions = {},
+  ) {
+    super();
+    void options;
+    this.side_length = side_length;
+    this.set_fill(fill_color, fill_opacity);
+    this.set_stroke(undefined, stroke_width);
+    this.generate_points();
+  }
+
+  generate_points(): this {
+    // NOTE: the base VMobject constructor invokes generate_points() before
+    // this class assigns side_length (TS requires super() first, whereas
+    // Python assigns before super().__init__()). Treat that early call as a
+    // no-op; the constructor regenerates afterwards.
+    if (!("side_length" in this) || this.side_length === undefined) return this;
+    for (const vect of [IN, OUT, LEFT, RIGHT, UP, DOWN]) {
+      const face = new Square(this.side_length, {
+        shade_in_3d: true,
+        // NOTE: VMobject.joint_type is modeled as a string in this port
+        // (default "AUTO"); pass the enum member's name for BEVEL.
+        joint_type: LineJointType[LineJointType.BEVEL] as string,
+      });
+      face.flip();
+      face.shift(([...OUT] as number[]).map((value) => value * this.side_length / 2.0));
+      face.apply_matrix(z_to_vector(vect));
+      this.add(face);
+    }
+    return this;
+  }
+
+  init_points(): this {
+    this.generate_points();
+    return this;
   }
 }
 
@@ -592,5 +660,50 @@ export class Line3D {
     // and returns np.array(...) preserving shape; mirror that with a copy.
     if (isNDArray(mob_or_point)) return (mob_or_point as NDArray).copy();
     return array([...(mob_or_point as readonly number[])].map(Number)) as NDArray;
+  }
+}
+
+export interface Arrow3DOptions {
+  thickness?: number;
+  height?: number;
+  base_radius?: number;
+  color?: ParsableManimColor;
+  resolution?: number | [number, number];
+  [key: string]: unknown;
+}
+
+export class Arrow3D extends Line3D {
+  cone!: Cone;
+  end_point!: VectorizedPoint;
+
+  constructor(
+    start: Line3DEndpoint = [...LEFT],
+    end: Line3DEndpoint = [...RIGHT],
+    thickness = 0.02,
+    height = 0.3,
+    base_radius = 0.08,
+    color: ParsableManimColor = WHITE,
+    resolution: number | [number, number] = 24,
+    options: Arrow3DOptions = {},
+  ) {
+    super(start, end, thickness, color, resolution);
+    void options;
+    this.length = norm(this.vect);
+    const end_rows = pointRows(this.end, 3)[0] ?? [0, 0, 0];
+    const shortened = end_rows.map((value, index) => value - height * (this.direction[index] ?? 0));
+    this.set_start_and_end_attrs(this.start, shortened);
+    this.cone = new Cone(base_radius, height, [...this.direction]);
+    const np_end = pointRows(end, 3)[0] ?? [0, 0, 0];
+    this.cone.shift(np_end);
+    this.end_point = new VectorizedPoint(np_end);
+    // NOTE: Python adds end_point/cone as submobjects and applies set_color
+    // to the whole group; the TS Line3D base is a lightweight stub (not a
+    // Mobject), so they are stored as fields and only the color attribute is
+    // updated here.
+    this.color = color;
+  }
+
+  override get_end(): NDArray {
+    return array([...this.end_point.get_center()]) as NDArray;
   }
 }

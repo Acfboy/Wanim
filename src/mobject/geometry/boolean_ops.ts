@@ -165,3 +165,141 @@ export class _BooleanOps extends VMobject {
     throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
   }
 }
+
+/**
+ * Local stand-ins for the `pathops` boolean combinators (union, difference,
+ * intersection, xor) used by the classes below.
+ *
+ * The Python implementation delegates to the Skia `pathops` library, which
+ * has no equivalent among the allowed dependencies (only numpy-ts may be
+ * used), so these throw until a local boolean-op routine lands. They exist
+ * as named functions so the call sites below stay verbatim mirrors of the
+ * originals.
+ */
+function pathops_union(paths: SkiaPath[], outpen: { getPen(): SkiaPath }): void {
+  void paths;
+  void outpen;
+  throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+}
+
+function pathops_difference(paths: SkiaPath[], clip: SkiaPath[], outpen: { getPen(): SkiaPath }): void {
+  void paths;
+  void clip;
+  void outpen;
+  throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+}
+
+function pathops_intersection(paths: SkiaPath[], clip: SkiaPath[], outpen: { getPen(): SkiaPath }): void {
+  void paths;
+  void clip;
+  void outpen;
+  throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+}
+
+function pathops_xor(paths: SkiaPath[], clip: SkiaPath[], outpen: { getPen(): SkiaPath }): void {
+  void paths;
+  void clip;
+  void outpen;
+  throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+}
+
+export class Union extends _BooleanOps {
+  constructor(...args: unknown[]) {
+    let vmobjects: VMobject[];
+    let options: Record<string, unknown> = {};
+    const last = args[args.length - 1];
+    if (
+      args.length > 0 &&
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last) &&
+      !(last instanceof VMobject)
+    ) {
+      options = last as Record<string, unknown>;
+      vmobjects = args.slice(0, -1) as VMobject[];
+    } else {
+      vmobjects = args as VMobject[];
+    }
+    if (vmobjects.length < 2) {
+      const error = new Error("At least 2 mobjects needed for Union.");
+      error.name = "ValueError";
+      throw error;
+    }
+    super(options);
+    const paths = vmobjects.map((vmobject) => this._convert_vmobject_to_skia_path(vmobject));
+    const outpen = new SkiaPath();
+    pathops_union(paths, outpen.getPen());
+    this._convert_skia_path_to_vmobject(outpen);
+  }
+}
+
+export class Difference extends _BooleanOps {
+  constructor(subject: VMobject, clip: VMobject, options: Record<string, unknown> = {}) {
+    super(options);
+    const outpen = new SkiaPath();
+    pathops_difference(
+      [this._convert_vmobject_to_skia_path(subject)],
+      [this._convert_vmobject_to_skia_path(clip)],
+      outpen.getPen(),
+    );
+    this._convert_skia_path_to_vmobject(outpen);
+  }
+}
+
+export class Intersection extends _BooleanOps {
+  constructor(...args: unknown[]) {
+    let vmobjects: VMobject[];
+    let options: Record<string, unknown> = {};
+    const last = args[args.length - 1];
+    if (
+      args.length > 0 &&
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last) &&
+      !(last instanceof VMobject)
+    ) {
+      options = last as Record<string, unknown>;
+      vmobjects = args.slice(0, -1) as VMobject[];
+    } else {
+      vmobjects = args as VMobject[];
+    }
+    if (vmobjects.length < 2) {
+      const error = new Error("At least 2 mobjects needed for Intersection.");
+      error.name = "ValueError";
+      throw error;
+    }
+    super(options);
+    const outpen = new SkiaPath();
+    pathops_intersection(
+      [this._convert_vmobject_to_skia_path(vmobjects[0] as VMobject)],
+      [this._convert_vmobject_to_skia_path(vmobjects[1] as VMobject)],
+      outpen.getPen(),
+    );
+    let current = outpen;
+    for (let index = 2; index < vmobjects.length; index += 1) {
+      const next = new SkiaPath();
+      pathops_intersection(
+        [current],
+        [this._convert_vmobject_to_skia_path(vmobjects[index] as VMobject)],
+        next.getPen(),
+      );
+      current = next;
+    }
+    this._convert_skia_path_to_vmobject(current);
+  }
+}
+
+export class Exclusion extends _BooleanOps {
+  constructor(subject: VMobject, clip: VMobject, options: Record<string, unknown> = {}) {
+    super(options);
+    const outpen = new SkiaPath();
+    pathops_xor(
+      [this._convert_vmobject_to_skia_path(subject)],
+      [this._convert_vmobject_to_skia_path(clip)],
+      outpen.getPen(),
+    );
+    this._convert_skia_path_to_vmobject(outpen);
+  }
+}

@@ -213,6 +213,75 @@ export class ArrowCircleFilledTip extends ArrowCircleTip {
   }
 }
 
+export interface StealthTipOptions extends VMobjectOptions {
+  fill_opacity?: number;
+  stroke_width?: number;
+  length?: number;
+  start_angle?: number;
+}
+
+export class StealthTip extends VMobject {
+  start_angle: number;
+
+  constructor(
+    fill_opacity = 1,
+    stroke_width = 3,
+    length: number = DEFAULT_ARROW_TIP_LENGTH / 2,
+    start_angle: number = PI,
+    options: StealthTipOptions = {},
+  ) {
+    const {
+      fill_opacity: fillOpacityOption,
+      stroke_width: strokeWidthOption,
+      length: lengthOption,
+      start_angle: startAngleOption,
+      color: colorOption,
+      ...rest
+    } = options;
+    super({
+      fill_opacity: fillOpacityOption ?? fill_opacity,
+      stroke_width: strokeWidthOption ?? stroke_width,
+      color: colorOption ?? undefined,
+      ...rest,
+    });
+    // NOTE: mirrors Python, which assigns self.start_angle before
+    // VMobject.__init__() runs. The value is not read during construction,
+    // so assigning after super() is behaviorally identical.
+    this.start_angle = startAngleOption ?? start_angle;
+    this.set_points_as_corners([
+      [2, 0, 0],
+      [-1.2, 1.6, 0],
+      [0, 0, 0],
+      [-1.2, -1.6, 0],
+      [2, 0, 0],
+    ]);
+    this.scale((lengthOption ?? length) / this.length);
+  }
+
+  get base(): NDArray {
+    return tipBase(this);
+  }
+
+  get tip_point(): NDArray {
+    return tipPoint(this);
+  }
+
+  get vector(): number[] {
+    return tipVector(this);
+  }
+
+  get tip_angle(): number {
+    return tipAngle(this);
+  }
+
+  get length(): number {
+    // NOTE: unlike other tips, the stealth length is the height of the
+    // encompassing triangle (otherwise the tip scales too large).
+    const v = tipVector(this);
+    return Math.sqrt(v.reduce((sum, value) => sum + value * value, 0)) * 1.6;
+  }
+}
+
 export type ArrowTipOptions = VMobjectOptions & {
   color?: ParsableManimColor;
 };

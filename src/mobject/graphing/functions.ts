@@ -26,6 +26,10 @@ export class ParametricFunction extends VMobject {
   t_min: number;
   t_max: number;
   t_step: number;
+  // NOTE: set dynamically by CoordinateSystem.plot / plot_parametric_curve /
+  // plot_polar_graph (mirrors Python's `graph.underlying_function = ...`);
+  // read by input_to_graph_point/coords and plot_antiderivative_graph.
+  underlying_function?: (t: number) => unknown;
 
   constructor(function_: ParametricFunctionT, options: ParametricFunctionOptions = {}) {
     const {
