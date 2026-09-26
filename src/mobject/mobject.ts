@@ -1940,6 +1940,20 @@ export class _MethodAnimation extends Animation {
   }
 }
 
+/** Constructor shape shared by the mobject-local helper and the faithful
+ *  manim.animation.transform port (both are `(mobject, methods)` classes
+ *  named `_MethodAnimation`). */
+export type MethodAnimationClass = new (mobject: Mobject, methods: MethodWithArgs[]) => Animation;
+
+let builderAnimationClass: MethodAnimationClass | null = null;
+
+/** @internal Late binding for `_AnimationBuilder.build()` (see its NOTE).
+ *  Called once by animation/transform.js on module evaluation; not part of
+ *  the public manim API. */
+export function __registerBuilderAnimationClass(cls: MethodAnimationClass): void {
+  builderAnimationClass = cls;
+}
+
 export class _AnimationBuilder {
   mobject: Mobject;
   overridden_animation: any = null;
@@ -2053,7 +2067,19 @@ export class _AnimationBuilder {
   }
 
   build(): any {
-    const animation = this.overridden_animation ?? new _MethodAnimation(this.mobject, this.methods);
+    // NOTE: mirrors Python's function-local
+    // `from ..animation.transform import _MethodAnimation` (kept local there
+    // to avoid a hard import cycle). A static TS import of
+    // animation/transform.js here would be unresolvable for the same reason:
+    // transform.js pulls in types/vectorized_mobject.js, whose
+    // `class VMobject extends Mobject` must evaluate AFTER Mobject is
+    // defined. So transform.js registers its faithful class on import
+    // (see the bottom of animation/transform.ts) and build() late-binds to
+    // it — exactly like Python's deferred import. The mobject-local
+    // _MethodAnimation below is only a fallback for graphs that never load
+    // animation/transform.js.
+    const animation = this.overridden_animation ??
+      new (builderAnimationClass ?? _MethodAnimation)(this.mobject, this.methods);
     for (const [key, value] of Object.entries(this.anim_args)) (animation as Record<string, unknown>)[key] = value;
     return animation;
   }

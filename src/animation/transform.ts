@@ -1,6 +1,6 @@
 import { array, type NDArray } from "numpy-ts";
 import { Animation, classDefaultsOf, type AnimationOptions, type RateFunction, linear, smooth } from "./animation.js";
-import { Mobject, Group } from "../mobject/mobject.js";
+import { Mobject, Group, __registerBuilderAnimationClass } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
 import { MethodWithArgs } from "../data_structures.js";
 import { identityMatrix, matrixRows, pointFrom, pointRows, pointsFrom } from "../utils/arrays.js";
@@ -793,3 +793,12 @@ export class TransformAnimations extends Transform {
     super.interpolate(alpha);
   }
 }
+
+// NOTE: late binding for `_AnimationBuilder.build()` (see its NOTE in
+// mobject/mobject.js): Python resolves manim.animation.transform's
+// _MethodAnimation with a function-local import inside build(); the static TS
+// edge in the other direction is unresolvable (this module must load
+// types/vectorized_mobject.js, whose `VMobject extends Mobject` needs
+// Mobject's body already evaluated), so the faithful class registers itself
+// here instead. No new module-graph edge is added by this call.
+__registerBuilderAnimationClass(_MethodAnimation);

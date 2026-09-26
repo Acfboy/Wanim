@@ -15,11 +15,16 @@
 // defaults are only asserted to throw; all layout tests use MobjectTable with
 // an identity factory over Squares (no tex involved).
 import { describe, expect, it } from "vitest";
-import { Mobject, Group, _AnimationBuilder } from "../src/mobject/mobject.js";
-import { _MethodAnimation as MobjectMethodAnimation } from "../src/mobject/mobject.js";
-import { Animation } from "../src/animation/animation.js";
+// NOTE (import order matters): the first VALUE import must reach
+// mobject.js before the animation modules (mobject <-> animation form a
+// pre-existing cycle that only resolves mobject-first; esbuild drops the
+// type-only mobject.js import below, so the value-used VMobject/Square
+// imports lead). See the same note in src/mobject/table.ts.
 import { VMobject, VGroup } from "../src/mobject/types/vectorized_mobject.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
+import { Mobject, Group, _AnimationBuilder } from "../src/mobject/mobject.js";
+import { Animation } from "../src/animation/animation.js";
+import { _MethodAnimation as TransformMethodAnimation } from "../src/animation/transform.js";
 import { AnimationGroup } from "../src/animation/composition.js";
 import { Table, MobjectTable, MathTable, IntegerTable, DecimalTable } from "../src/mobject/table.js";
 
@@ -246,16 +251,11 @@ describe("Mobject.arrange_in_grid sizes, alignments and errors", () => {
 //   empty .build() -> _MethodAnimation with 0 methods
 // ---------------------------------------------------------------------------
 describe("_AnimationBuilder.build", () => {
-  // NOTE (deviation, pre-existing): Python's build() constructs
-  // manim.animation.transform._MethodAnimation (a MoveToTarget that blends
-  // mobject -> target mid-interpolation). The TS port constructs the
-  // mobject-local _MethodAnimation (same class name, extends Animation;
-  // methods snap onto the mobject in finish()). End-state behavior is
-  // identical, so these tests assert the behavioral contract (class name,
-  // .mobject identity, recorded methods, anim_args, begin/finish end state)
-  // rather than the exact module identity. Assertions compare small scalars
-  // (never whole animations) because serializing a Mobject graph on failure
-  // exhausts the vitest worker heap.
+  // Faithful to Python: build() constructs manim.animation.transform's
+  // _MethodAnimation (a MoveToTarget that blends mobject -> target
+  // mid-interpolation). Assertions compare small scalars (never whole
+  // animations) because serializing a Mobject graph on failure exhausts the
+  // vitest worker heap.
   it("builds a _MethodAnimation bound to the mobject with recorded methods", () => {
     const sq = new Square();
     const b = sq.animate;
@@ -264,11 +264,12 @@ describe("_AnimationBuilder.build", () => {
     );
     const chained = (b as unknown as Record<string, (v: number[]) => unknown>)["shift"]!([1, 0, 0]);
     expect(chained === (b as unknown)).toBe(true);
-    const anim = (b as _AnimationBuilder).build() as MobjectMethodAnimation;
+    const anim = (b as _AnimationBuilder).build() as TransformMethodAnimation;
     expect(anim instanceof Animation).toBe(true);
-    expect(anim instanceof MobjectMethodAnimation).toBe(true);
+    expect(anim instanceof TransformMethodAnimation).toBe(true);
     expect(anim.constructor.name).toBe("_MethodAnimation");
     expect(anim.mobject === (sq as unknown)).toBe(true);
+    expect(anim.target_mobject === (sq.target as unknown)).toBe(true);
     expect(anim.methods.length).toBe(1);
     expectCenter2((sq.target as Mobject).get_center(), [1, 0, 0]);
     // Original mobject untouched until begin/finish.
@@ -282,7 +283,7 @@ describe("_AnimationBuilder.build", () => {
     const b = sq.animate;
     b.call({ run_time: 2.5 });
     (b as unknown as Record<string, (v: number[]) => unknown>)["shift"]!([2, 0, 0]);
-    const anim = b.build() as MobjectMethodAnimation & { run_time?: number };
+    const anim = b.build() as TransformMethodAnimation & { run_time?: number };
     expect(anim.run_time).toBe(2.5);
     expectCenter2((sq.target as Mobject).get_center(), [2, 0, 0]);
   });
@@ -310,16 +311,19 @@ describe("_AnimationBuilder.build", () => {
     );
   });
 
-  it("begin/finish drives the mobject onto the recorded target", () => {
-    // Python: animate.shift([1,2,0]); begin(); finish() -> center [1,2,0].
+  it("begin/interpolate/finish blends the mobject onto the recorded target", () => {
+    // Python: animate.shift([1,2,0]); begin(); interpolate(0.5) -> center
+    // [0.5,1.0,0] (smooth rate is 0.5 at alpha 0.5); finish() -> [1,2,0].
     // NOTE: a single builder (one `.animate` access) — each access regenerates
     // the target, mirroring Python's per-access _AnimationBuilder.
     const sq = new Square();
     const b = sq.animate as unknown as _AnimationBuilder &
       Record<string, (v: number[]) => unknown>;
     b["shift"]!([1, 2, 0]);
-    const built = (b as _AnimationBuilder).build() as MobjectMethodAnimation;
+    const built = (b as _AnimationBuilder).build() as TransformMethodAnimation;
     built.begin();
+    built.interpolate(0.5);
+    expectCenter2(sq.get_center(), [0.5, 1.0, 0]);
     built.finish();
     expectCenter2(sq.get_center(), [1, 2, 0]);
     expectCenter2((sq.target as Mobject).get_center(), [1, 2, 0]);
@@ -332,13 +336,14 @@ describe("_AnimationBuilder.build", () => {
       Record<string, (...a: unknown[]) => unknown>;
     b["shift"]!([1, 0, 0]);
     b["scale"]!(2);
-    const anim = (b as _AnimationBuilder).build() as MobjectMethodAnimation;
+    const anim = (b as _AnimationBuilder).build() as TransformMethodAnimation;
     expect(anim.methods.length).toBe(2);
     expectClose((sq.target as Mobject).width, 4.0);
 
     const sq2 = new Square();
-    const empty = (sq2.animate as _AnimationBuilder).build() as MobjectMethodAnimation;
+    const empty = (sq2.animate as _AnimationBuilder).build() as TransformMethodAnimation;
     expect(empty.constructor.name).toBe("_MethodAnimation");
+    expect(empty instanceof TransformMethodAnimation).toBe(true);
     expect(empty.methods.length).toBe(0);
   });
 });
@@ -636,7 +641,7 @@ describe("integration: grid + builder + table", () => {
     const proxy = t.animate as unknown as _AnimationBuilder &
       Record<string, (...a: unknown[]) => unknown>;
     proxy["shift"]!([1, 0, 0]);
-    const anim = (proxy as _AnimationBuilder).build() as MobjectMethodAnimation;
+    const anim = (proxy as _AnimationBuilder).build() as TransformMethodAnimation;
     expect(anim.constructor.name).toBe("_MethodAnimation");
     anim.begin();
     anim.finish();
