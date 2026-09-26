@@ -96,3 +96,4 @@ export * from "./animation/speedmodifier.js";
 export * from "./animation/specialized.js";
 export * from "./animation/updaters/mobject_update_utils.js";
 export * from "./animation/updaters/update.js";
+export * from "./renderer/index.js";

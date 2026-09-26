@@ -343,6 +343,11 @@ export class Scene {
     this.skip_animations = resolvedSkip ?? false;
     this.renderer = resolvedRenderer;
     this.camera = this.camera_class === null ? null : new this.camera_class();
+    // Adopt the renderer's camera when present so the scene and the renderer
+    // (e.g. the serializer's JSONCairoRenderer) share one camera instance.
+    if (this.renderer?.camera !== undefined && this.renderer?.camera !== null) {
+      this.camera = this.renderer.camera;
+    }
     this.renderer?.init_scene?.(this);
     // NOTE: Python seeds the `random` and `numpy.random` singletons here.
     // The TS runtime has no seedable global RNG, so only the field above is
@@ -837,17 +842,28 @@ export class Scene {
       return this;
     }
     const start_time = this.time;
-    // NOTE: stand-in for `self.renderer.play(self, *args, **kwargs)` — the
-    // cairo renderer is not ported yet, so animations run inline here.
-    const prepared = flatten_iterable_parameters<Animation | Mobject>(
-      playArgs as Array<Animation | Mobject | Iterable<Animation | Mobject>>,
-    ).map((animation) => prepare_animation(animation));
-    this.animations.push(...prepared);
-    for (const animation of prepared) {
-      animation._setup_scene(this);
-      animation.begin();
-      animation.finish();
-      animation.clean_up_from_scene(this);
+    if (typeof this.renderer?.play === "function") {
+      // Mirror Python `self.renderer.play(self, *args, **kwargs)`: the
+      // subcaption keys are consumed above; any remaining renderer kwargs ride
+      // as a trailing plain-object argument (TS has no `**kwargs` channel).
+      const rendererArgs: unknown[] = Object.keys(_rendererKwargs).length > 0
+        ? [...playArgs, _rendererKwargs]
+        : [...playArgs];
+      this.renderer.play(this, ...rendererArgs);
+    } else {
+      // NOTE: stand-in for `self.renderer.play(self, *args, **kwargs)` — with
+      // no cairo renderer attached (plain `new Scene()` or a test stub that
+      // only exposes `render`), animations run inline here.
+      const prepared = flatten_iterable_parameters<Animation | Mobject>(
+        playArgs as Array<Animation | Mobject | Iterable<Animation | Mobject>>,
+      ).map((animation) => prepare_animation(animation));
+      this.animations.push(...prepared);
+      for (const animation of prepared) {
+        animation._setup_scene(this);
+        animation.begin();
+        animation.finish();
+        animation.clean_up_from_scene(this);
+      }
     }
     const run_time = this.time - start_time;
     if (subcaption) {
