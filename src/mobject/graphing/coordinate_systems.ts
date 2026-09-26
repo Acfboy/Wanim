@@ -3,15 +3,18 @@ import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
 import { arange, isNDArray, linspace, numeric, pointFrom, pointRows, type ComplexPoint } from "../../utils/arrays.js";
 import { update_dict_recursively } from "../../utils/config_ops.js";
-import { SMALL_BUFF, DL, RIGHT, TAU, RendererType } from "../../constants.js";
+import { MED_SMALL_BUFF, SMALL_BUFF, DL, DOWN, ORIGIN, PI, RIGHT, UP, UR, TAU, RendererType } from "../../constants.js";
 import { BLUE_D } from "../../utils/color/index.js";
-import { BLUE, GREEN } from "../../utils/color/core.js";
-import { interpolate_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLACK, BLUE, GREEN, WHITE } from "../../utils/color/core.js";
+import { color_gradient, interpolate_color, invert_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
 import { binary_search } from "../../utils/simple_functions.js";
 import { angle_of_vector } from "../../utils/space_ops.js";
-import { VGroup, VMobject } from "../types/vectorized_mobject.js";
-import { Polygon } from "../geometry/polygram.js";
-import { ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
+import { VDict, VectorizedPoint, VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { Polygon, Rectangle, RegularPolygon } from "../geometry/polygram.js";
+import { Dot } from "../geometry/arc.js";
+import { Arrow, DashedLine, Line } from "../geometry/line.js";
+import { ImplicitFunction, ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
+import { Surface } from "../three_d/three_dimensions.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
 /** Minimal structural surface a family member must provide for
@@ -29,6 +32,12 @@ interface NonlinearTransformable {
 export interface CoordinateAxisLike extends Mobject {
   scaling: _ScaleBase;
   get_tick_range(): NDArray;
+  get_unit_size(): number;
+  get_unit_vector(): number[];
+  get_projection(point: unknown): number[];
+  number_to_point(number: unknown): NDArray;
+  point_to_number(point: unknown): number | NDArray;
+  _create_label_tex(label: unknown, label_constructor?: unknown, kwargs?: Record<string, unknown>): VMobject;
   add_labels(
     dict_values: Map<number, unknown> | Record<string, unknown>,
     direction?: readonly number[] | NDArray | null,
@@ -60,6 +69,26 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]> {
   const length = Math.min(first.length, second.length);
   return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
+}
+
+/** Dispatches `self._origin_shift(axis_range)` the way Python's MRO does.
+// In Python, NumberPlane extends Axes so the abstract CoordinateSystem stub
+// is never hit; the TS hierarchy has NumberPlane extending CoordinateSystem
+// directly (Axes extends NumberPlane), so a NumberPlane instance's
+// constructor may still hold the throwing base stub. Fall back to the Axes
+// implementation in that case (no subclass overrides it). */
+function originShiftOf(host: CoordinateSystem, axis_range: readonly number[]): number {
+  const ctor = host.constructor as unknown as {
+    _origin_shift?: (axis_range: readonly number[]) => number;
+  };
+  if (typeof ctor._origin_shift === "function") {
+    try {
+      return ctor._origin_shift(axis_range);
+    } catch {
+      // fall through to the Axes implementation below
+    }
+  }
+  return Axes._origin_shift(axis_range);
 }
 
 /** Trapezoid-rule area under y(x), mirroring np.trapezoid(y, x). */
@@ -128,6 +157,54 @@ export class CoordinateSystem {
   }
   get_axis(index: number): Mobject { return this.get_axes().__getitem__(index) as Mobject; }
   get_origin(): NDArray { return this.coords_to_point(0, 0); }
+
+  get_x_axis(): CoordinateAxisLike { return this.get_axis(0) as unknown as CoordinateAxisLike; }
+
+  get_y_axis(): CoordinateAxisLike { return this.get_axis(1) as unknown as CoordinateAxisLike; }
+
+  get_z_axis(): CoordinateAxisLike { return this.get_axis(2) as unknown as CoordinateAxisLike; }
+
+  get_x_unit_size(): number { return this.get_x_axis().get_unit_size(); }
+
+  get_y_unit_size(): number { return this.get_y_axis().get_unit_size(); }
+
+  get_x_axis_label(
+    label: number | string | VMobject,
+    edge: readonly number[] | NDArray = [...UR],
+    direction: readonly number[] | NDArray = [...UR],
+    buff = SMALL_BUFF,
+    kwargs: Record<string, unknown> = {},
+  ): Mobject {
+    void kwargs;
+    return this._get_axis_label(label, this.get_x_axis(), edge, direction, buff);
+  }
+
+  get_y_axis_label(
+    label: number | string | VMobject,
+    edge: readonly number[] | NDArray = [...UR],
+    // NOTE: mirrors Python default `direction=UP * 0.5 + RIGHT` = [1, 0.5, 0].
+    direction: readonly number[] | NDArray = [1, 0.5, 0],
+    buff = SMALL_BUFF,
+    kwargs: Record<string, unknown> = {},
+  ): Mobject {
+    void kwargs;
+    return this._get_axis_label(label, this.get_y_axis(), edge, direction, buff);
+  }
+
+  _get_axis_label(
+    label: number | string | VMobject,
+    axis: Mobject,
+    edge: readonly number[] | NDArray,
+    direction: readonly number[] | NDArray,
+    buff = SMALL_BUFF,
+  ): Mobject {
+    // NOTE: mirrors Python verbatim, including its use of self.x_axis (not
+    // the `axis` argument) to construct the label.
+    const label_mobject: Mobject = (this as unknown as { x_axis: CoordinateAxisLike }).x_axis._create_label_tex(label);
+    label_mobject.next_to(axis.get_edge_center(edge), direction, buff);
+    label_mobject.shift_onto_screen({ buff: MED_SMALL_BUFF });
+    return label_mobject;
+  }
 
   get_axis_labels(): VGroup {
     const error = new Error();
@@ -229,6 +306,70 @@ export class CoordinateSystem {
     }
 
     return this;
+  }
+
+  get_line_from_axis_to_point(
+    index: number,
+    point: readonly number[] | NDArray,
+    line_func: new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject = DashedLine as unknown as new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject,
+    line_config: Record<string, unknown> | null = null,
+    color: ParsableManimColor | null = null,
+    stroke_width = 2,
+  ): VMobject {
+    const resolved_config: Record<string, unknown> = line_config !== null && line_config !== undefined ? { ...line_config } : {};
+    const resolved_color = color ?? new VMobject().color;
+    resolved_config["color"] = ManimColor.parse(resolved_color as ParsableManimColor);
+    resolved_config["stroke_width"] = stroke_width;
+    const axis = this.get_axis(index) as unknown as CoordinateAxisLike;
+    const line = new line_func(axis.get_projection(point), point, resolved_config);
+    return line;
+  }
+
+  get_vertical_line(point: readonly number[] | NDArray, kwargs: Record<string, unknown> = {}): VMobject {
+    const { line_func, line_config, color, stroke_width, ...rest } = kwargs as {
+      line_func?: new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject;
+      line_config?: Record<string, unknown> | null;
+      color?: ParsableManimColor | null;
+      stroke_width?: number;
+    };
+    if (Object.keys(rest).length > 0) {
+      throw new TypeError(`get_line_from_axis_to_point() got unexpected keyword arguments '${Object.keys(rest).join(", ")}'`);
+    }
+    return this.get_line_from_axis_to_point(
+      0,
+      point,
+      line_func ?? (DashedLine as unknown as new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject),
+      line_config ?? null,
+      color ?? null,
+      stroke_width ?? 2,
+    );
+  }
+
+  get_horizontal_line(point: readonly number[] | NDArray, kwargs: Record<string, unknown> = {}): VMobject {
+    const { line_func, line_config, color, stroke_width, ...rest } = kwargs as {
+      line_func?: new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject;
+      line_config?: Record<string, unknown> | null;
+      color?: ParsableManimColor | null;
+      stroke_width?: number;
+    };
+    if (Object.keys(rest).length > 0) {
+      throw new TypeError(`get_line_from_axis_to_point() got unexpected keyword arguments '${Object.keys(rest).join(", ")}'`);
+    }
+    return this.get_line_from_axis_to_point(
+      1,
+      point,
+      line_func ?? (DashedLine as unknown as new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject),
+      line_config ?? null,
+      color ?? null,
+      stroke_width ?? 2,
+    );
+  }
+
+  get_lines_to_point(point: readonly number[] | NDArray, kwargs: Record<string, unknown> = {}): VGroup {
+    return new VGroup(
+      this.get_horizontal_line(point, kwargs) as VMobject,
+      this.get_vertical_line(point, kwargs) as VMobject,
+    );
   }
 
   plot(
@@ -355,6 +496,82 @@ export class CoordinateSystem {
     return graph;
   }
 
+  plot_implicit_curve(
+    func: (x: number, y: number) => number,
+    min_depth = 5,
+    max_quads = 1500,
+    options: Record<string, unknown> = {},
+  ): ImplicitFunction {
+    const x_scale = this.get_x_axis().scaling;
+    const y_scale = this.get_y_axis().scaling;
+    const applyScale = (scale: _ScaleBase, value: number): number => {
+      const out = scale.function(value);
+      return typeof out === "number" ? out : numeric(pointRows(out, 1)[0]?.[0] ?? value);
+    };
+    const graph = new ImplicitFunction(
+      (x: number, y: number) => func(applyScale(x_scale, x), applyScale(y_scale, y)),
+      {
+        x_range: [...this.x_range].slice(0, 2),
+        y_range: [...this.y_range].slice(0, 2),
+        min_depth,
+        max_quads,
+        ...options,
+      },
+    );
+    graph
+      .stretch(this.get_x_unit_size(), 0, [...ORIGIN])
+      .stretch(this.get_y_unit_size(), 1, [...ORIGIN])
+      .shift(this.get_origin());
+    return graph;
+  }
+
+  plot_surface(
+    function_: (u: number, v: number) => number,
+    u_range: [number, number] | null = null,
+    v_range: [number, number] | null = null,
+    colorscale: Array<ParsableManimColor | [ParsableManimColor, number]> | null = null,
+    colorscale_axis = 2,
+    options: Record<string, unknown> = {},
+  ): Surface {
+    if (config.renderer === RendererType.OPENGL) {
+      // NOTE: Python builds an OpenGLSurface here; the TS port has no
+      // OpenGLSurface yet, so the OpenGL branch is a marked stub.
+      throw new Error("TODO: plot_surface OpenGL renderer needs OpenGLSurface, not ported yet");
+    }
+    // NOTE: Python forwards **kwargs to Surface; the TS Surface takes the
+    // same knobs positionally (with identical defaults), so known keys are
+    // forwarded positionally and unknown keys are ignored (Surface itself
+    // ignores its trailing options bag).
+    const o = options as Record<string, unknown>;
+    const surface = new Surface(
+      (u: number, v: number) => this.c2p(u, v, function_(u, v)),
+      u_range ?? [0, 1],
+      v_range ?? [0, 1],
+      (o["resolution"] as number | [number, number] | undefined) ?? 32,
+      (o["surface_piece_config"] as Record<string, unknown> | undefined) ?? {},
+      (o["fill_color"] as ParsableManimColor | undefined) ?? BLUE_D,
+      (o["fill_opacity"] as number | undefined) ?? 1.0,
+      (o["checkerboard_colors"] as Iterable<ParsableManimColor> | false | undefined) ?? undefined,
+      (o["stroke_color"] as ParsableManimColor | undefined) ?? undefined,
+      (o["stroke_width"] as number | undefined) ?? undefined,
+      (o["should_make_jagged"] as boolean | undefined) ?? undefined,
+      (o["pre_function_handle_to_anchor_scale_factor"] as number | undefined) ?? undefined,
+    );
+    if (colorscale) {
+      // NOTE: Surface.set_fill_by_value lives in a later layer (L20); call
+      // through a structural cast so this batch compiles. At runtime it
+      // resolves once that batch lands.
+      (surface as unknown as {
+        set_fill_by_value(opts: Record<string, unknown>): void;
+      }).set_fill_by_value({
+        axes: this,
+        colorscale,
+        axis: colorscale_axis,
+      });
+    }
+    return surface;
+  }
+
   input_to_graph_point(x: number, graph: ParametricFunction | VMobject): NDArray {
     const underlying = ("underlying_function" in (graph as object))
       ? (graph as unknown as Record<string, unknown>)["underlying_function"]
@@ -396,12 +613,163 @@ export class CoordinateSystem {
     return this.input_to_graph_point(x, graph);
   }
 
+  get_graph_label(
+    graph: ParametricFunction,
+    label: number | string | VMobject = "f(x)",
+    x_val: number | null = null,
+    direction: readonly number[] | NDArray = [...RIGHT],
+    buff = MED_SMALL_BUFF,
+    color: ParsableManimColor | null = null,
+    dot = false,
+    dot_config: Record<string, unknown> | null = null,
+  ): Mobject {
+    const resolved_dot_config: Record<string, unknown> = dot_config ?? {};
+    const resolved_color = color ?? graph.get_color();
+    // NOTE: mirrors Python `self.x_axis._create_label_tex(label)`.
+    const label_object: Mobject = (this as unknown as { x_axis: CoordinateAxisLike }).x_axis._create_label_tex(label);
+    label_object.set_color(resolved_color as ParsableManimColor);
+    let point: NDArray;
+    if (x_val === null || x_val === undefined) {
+      // Search from right to left
+      let found: NDArray | null = null;
+      for (const x of linspace(this.x_range[1] ?? 0, this.x_range[0] ?? 0, 100)) {
+        const candidate = this.input_to_graph_point(x, graph);
+        if ((pointRows(candidate, 3)[0]?.[1] ?? 0) < Number(config.frame_y_radius)) {
+          found = candidate;
+          break;
+        }
+      }
+      // NOTE: mirrors Python, where `point` would be unbound (NameError) if
+      // no sample falls inside the frame. The loop always inspects the
+      // right-most sample first; fall back to it if nothing matched.
+      point = found ?? this.input_to_graph_point(this.x_range[1] ?? 0, graph);
+    } else {
+      point = this.input_to_graph_point(x_val, graph);
+    }
+    label_object.next_to(point, direction, buff);
+    label_object.shift_onto_screen();
+    if (dot) {
+      // NOTE: mirrors Python `Dot(point=point, **dot_config)`: known Dot
+      // parameters bind positionally, the rest forwards as options.
+      const dc = resolved_dot_config;
+      const dot_mob = new Dot(
+        point,
+        (dc["radius"] as number | undefined) ?? undefined,
+        (dc["stroke_width"] as number | undefined) ?? undefined,
+        (dc["fill_opacity"] as number | undefined) ?? undefined,
+        (dc["color"] as ParsableManimColor | undefined) ?? undefined,
+        Object.fromEntries(Object.entries(dc).filter(([k]) => !["radius", "stroke_width", "fill_opacity", "color", "point"].includes(k))),
+      );
+      label_object.add(dot_mob);
+      (label_object as unknown as Record<string, unknown>)["dot"] = dot_mob;
+    }
+    return label_object;
+  }
+
   angle_of_tangent(x: number, graph: ParametricFunction, dx = 1e-8): number {
     const p0 = this.input_to_graph_coords(x, graph);
     const p1 = this.input_to_graph_coords(x + dx, graph);
     return Number(
       angle_of_vector([(p1[0] ?? 0) - (p0[0] ?? 0), (p1[1] ?? 0) - (p0[1] ?? 0)]),
     );
+  }
+
+  get_riemann_rectangles(
+    graph: ParametricFunction,
+    x_range: number[] | null = null,
+    dx = 0.1,
+    input_sample_type: string = "left",
+    stroke_width = 1,
+    stroke_color: ParsableManimColor = BLACK,
+    fill_opacity = 1,
+    color: Iterable<ParsableManimColor> | ParsableManimColor = [BLUE, GREEN],
+    show_signed_area = true,
+    bounded_graph: ParametricFunction | null = null,
+    blend = false,
+    width_scale_factor = 1.001,
+  ): VGroup {
+    // setting up x_range, overwrite user's third input
+    let resolved_range: number[];
+    if (x_range === null || x_range === undefined) {
+      if (bounded_graph === null || bounded_graph === undefined) {
+        resolved_range = [graph.t_min, graph.t_max, dx];
+      } else {
+        const x_min = Math.max(graph.t_min, bounded_graph.t_min);
+        const x_max = Math.min(graph.t_max, bounded_graph.t_max);
+        resolved_range = [x_min, x_max, dx];
+      }
+    } else {
+      resolved_range = [...x_range.slice(0, 2), dx];
+    }
+
+    const rectangles = new VGroup();
+    const x_range_array = arange(resolved_range[0] ?? 0, resolved_range[1] ?? 0, resolved_range[2] ?? dx);
+
+    // NOTE: mirrors Python `isinstance(color, (list, tuple))`.
+    let resolved_colors: ManimColor[];
+    if (Array.isArray(color)) {
+      resolved_colors = (color as ParsableManimColor[]).map((c) => new ManimColor(c));
+    } else {
+      resolved_colors = [new ManimColor(color as ParsableManimColor)];
+    }
+    const colors = color_gradient(resolved_colors, x_range_array.length);
+
+    for (let index = 0; index < x_range_array.length; index += 1) {
+      const x = x_range_array[index] ?? 0;
+      const rect_color = colors[index] as ManimColor;
+      let sample_input: number;
+      if (input_sample_type === "left") {
+        sample_input = x;
+      } else if (input_sample_type === "right") {
+        sample_input = x + dx;
+      } else if (input_sample_type === "center") {
+        sample_input = x + 0.5 * dx;
+      } else {
+        const error = new Error("Invalid input sample type");
+        error.name = "ValueError";
+        throw error;
+      }
+      const graph_point = this.input_to_graph_point(sample_input, graph);
+
+      let y_point: number;
+      if (bounded_graph === null || bounded_graph === undefined) {
+        y_point = originShiftOf(this, this.y_range);
+      } else {
+        y_point = (bounded_graph as unknown as { underlying_function: (t: number) => number }).underlying_function(x);
+      }
+
+      const points = new VGroup(
+        ...[
+          this.coords_to_point(x, y_point),
+          this.coords_to_point(x + width_scale_factor * dx, y_point),
+          graph_point,
+        ].map((p) => new VectorizedPoint(p)),
+      );
+
+      const rect = new Rectangle().replace(points, 0, true);
+      rectangles.add(rect);
+
+      // checks if the rectangle is under the x-axis
+      let fill: ManimColor = rect_color;
+      if ((this.p2c(pointRows(graph_point, 3)[0] ?? [0, 0, 0])[1] ?? 0) < y_point && show_signed_area) {
+        fill = invert_color(rect_color);
+      }
+
+      // blends rectangles smoothly
+      let resolved_stroke: ParsableManimColor = stroke_color;
+      if (blend) {
+        resolved_stroke = fill;
+      }
+
+      rect.set_style({
+        fill_color: fill,
+        fill_opacity,
+        stroke_color: resolved_stroke,
+        stroke_width,
+      });
+    }
+
+    return rectangles;
   }
 
   get_area(
@@ -483,6 +851,15 @@ export class CoordinateSystem {
     return val;
   }
 
+  plot_derivative_graph(
+    graph: ParametricFunction,
+    color: ParsableManimColor = GREEN,
+    options: ParametricFunctionOptions = {},
+  ): ParametricFunction {
+    const deriv = (x: number): number => this.slope_of_tangent(x, graph);
+    return this.plot(deriv, null, false, null, 1, { color, ...options });
+  }
+
   plot_antiderivative_graph(
     graph: ParametricFunction,
     y_intercept = 0,
@@ -520,6 +897,136 @@ export class CoordinateSystem {
       return trapezoidAreas(y_vals, x_vals) + y_intercept;
     };
     return this.plot(antideriv as (x: number) => number, null, use_vectorized, null, 1, options);
+  }
+
+  get_secant_slope_group(
+    x: number,
+    graph: ParametricFunction,
+    dx: number | null = null,
+    dx_line_color: ParsableManimColor = "PURE_YELLOW",
+    dy_line_color: ParsableManimColor | null = null,
+    dx_label: number | string | null = null,
+    dy_label: number | string | null = null,
+    include_secant_line = true,
+    secant_line_color: ParsableManimColor = GREEN,
+    secant_line_length = 10,
+  ): VGroup {
+    const group = new VGroup() as VGroup & Record<string, unknown>;
+
+    const resolved_dx = dx ?? ((this.x_range[1] ?? 0) - (this.x_range[0] ?? 0)) / 10;
+    const resolved_dy_color = dy_line_color ?? graph.get_color();
+
+    const p1 = this.input_to_graph_point(x, graph);
+    const p2 = this.input_to_graph_point(x + resolved_dx, graph);
+    const p1row = pointRows(p1, 3)[0] ?? [0, 0, 0];
+    const p2row = pointRows(p2, 3)[0] ?? [0, 0, 0];
+    const interim_point = [p2row[0] ?? 0, p1row[1] ?? 0, 0];
+
+    const dx_line = new Line(p1row, interim_point, { color: dx_line_color });
+    const df_line = new Line(interim_point, p2row, { color: resolved_dy_color });
+    group.dx_line = dx_line;
+    group.df_line = df_line;
+    group.add(dx_line, df_line);
+
+    const labels = new VGroup();
+    const x_axis = (this as unknown as { x_axis: CoordinateAxisLike }).x_axis;
+    if (dx_label !== null && dx_label !== undefined) {
+      const dx_label_mob = x_axis._create_label_tex(dx_label);
+      group.dx_label = dx_label_mob;
+      labels.add(dx_label_mob);
+      group.add(dx_label_mob);
+    }
+    if (dy_label !== null && dy_label !== undefined) {
+      const df_label_mob = x_axis._create_label_tex(dy_label);
+      group.df_label = df_label_mob;
+      labels.add(df_label_mob);
+      group.add(df_label_mob);
+    }
+
+    if (labels.submobjects.length > 0) {
+      const max_width = 0.8 * dx_line.width;
+      const max_height = 0.8 * df_line.height;
+      if (labels.width > max_width) {
+        labels.width = max_width;
+      }
+      if (labels.height > max_height) {
+        labels.height = max_height;
+      }
+    }
+
+    if (dx_label !== null && dx_label !== undefined) {
+      const dx_label_mob = group.dx_label as VMobject;
+      // NOTE: mirrors Python `np.sign(dx) * DOWN`.
+      dx_label_mob.next_to(dx_line, [0, -Math.sign(resolved_dx), 0], dx_label_mob.height / 2);
+      dx_label_mob.set_color(dx_line.get_color());
+    }
+
+    if (dy_label !== null && dy_label !== undefined) {
+      const df_label_mob = group.df_label as VMobject;
+      df_label_mob.next_to(df_line, [Math.sign(resolved_dx), 0, 0], df_label_mob.height / 2);
+      df_label_mob.set_color(df_line.get_color());
+    }
+
+    if (include_secant_line) {
+      const secant_line = new Line(p1row, p2row, { color: secant_line_color });
+      secant_line.scale(secant_line_length / secant_line.get_length());
+      group.secant_line = secant_line;
+      group.add(secant_line);
+    }
+    return group as VGroup;
+  }
+
+  get_vertical_lines_to_graph(
+    graph: ParametricFunction,
+    x_range: number[] | null = null,
+    num_lines = 20,
+    kwargs: Record<string, unknown> = {},
+  ): VGroup {
+    const resolved = x_range !== null && x_range !== undefined ? [...x_range] : [...this.x_range];
+    return new VGroup(
+      ...linspace(resolved[0] ?? 0, resolved[1] ?? 0, num_lines).map((x) =>
+        this.get_vertical_line(this.i2gp(x, graph), { ...kwargs }) as VMobject,
+      ),
+    );
+  }
+
+  get_T_label(
+    x_val: number,
+    graph: ParametricFunction,
+    label: number | string | Mobject | null = null,
+    label_color: ParsableManimColor | null = null,
+    triangle_size = MED_SMALL_BUFF,
+    triangle_color: ParsableManimColor | null = WHITE,
+    line_func: new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject = Line as unknown as new (start: unknown, end: unknown, options?: Record<string, unknown>) => VMobject,
+    line_color: ParsableManimColor = "PURE_YELLOW",
+  ): VGroup {
+    const T_label_group = new VGroup();
+    const triangle = new RegularPolygon(3, { start_angle: PI / 2, stroke_width: 0 }).set_fill(triangle_color as ParsableManimColor, 1);
+    triangle.height = triangle_size;
+    triangle.move_to(this.coords_to_point(x_val, 0), [...UP]);
+    if (label !== null && label !== undefined) {
+      const x_axis = (this as unknown as { x_axis: CoordinateAxisLike }).x_axis;
+      const t_label = x_axis._create_label_tex(label) as unknown as Mobject & {
+        set_color(c: ParsableManimColor): Mobject;
+        next_to(p: unknown, d: unknown): Mobject;
+      };
+      if (label_color !== null && label_color !== undefined) {
+        // NOTE: Python passes color into _create_label_tex; the TS
+        // _create_label_tex takes no color, so apply it afterwards.
+        t_label.set_color(label_color);
+      }
+      t_label.next_to(triangle, [...DOWN]);
+      T_label_group.add(t_label as unknown as VMobject);
+    }
+
+    const v_line = this.get_vertical_line(this.i2gp(x_val, graph), {
+      color: line_color,
+      line_func,
+    }) as VMobject;
+
+    T_label_group.add(triangle as unknown as VMobject, v_line);
+
+    return T_label_group;
   }
 
   __matmul__(coord: number[] | readonly number[] | NDArray | Mobject): NDArray {

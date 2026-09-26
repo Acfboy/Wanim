@@ -353,17 +353,36 @@ export class NumberLine extends VGroup {
   }
 
   number_to_point(number: number | number[] | NDArray): NDArray {
+    // NOTE: mirrors Python `number = np.asarray(number);
+    // scalar = number.ndim == 0` (a 0-d array counts as scalar) followed by
+    // `alphas = float(alphas) if scalar else np.vstack(alphas)`.
+    const scalar =
+      typeof number === "number" ||
+      (isNDArray(number) && (number.shape ?? []).length === 0);
     const scaled = this.scaling.inverse_function(number as number);
     const x_min = this.x_range[0] ?? 0;
     const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
-    let alphas: number | NDArray;
-    if (typeof scaled === "number") {
-      alphas = (scaled - x_min) / span;
-    } else {
-      const values = pointRows(scaled, 1).map((row) => row[0] ?? 0);
-      alphas = array(values.map((value) => (value - x_min) / span)) as NDArray;
-    }
     const [start, end] = this.get_start_and_end();
+    if (scalar) {
+      const value =
+        typeof scaled === "number"
+          ? scaled
+          : Number(pointRows(scaled, 1)[0]?.[0] ?? 0);
+      const result = interpolate(start, end, (value - x_min) / span);
+      return (isNDArray(result) ? result : array(result as unknown as number[])) as NDArray;
+    }
+    // NOTE: one alpha per input value (np.vstack semantics); flatten any
+    // nesting element-wise rather than reading a single point row.
+    const flat: number[] = [];
+    const collect = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) collect(item);
+      } else {
+        flat.push(Number(value));
+      }
+    };
+    collect(isNDArray(scaled) ? scaled.toArray() : scaled);
+    const alphas = array(flat.map((value) => (value - x_min) / span)) as NDArray;
     const result = interpolate(start, end, alphas);
     return (isNDArray(result) ? result : array(result as unknown as number[])) as NDArray;
   }
