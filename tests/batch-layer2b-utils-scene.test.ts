@@ -324,13 +324,16 @@ describe("Scene", () => {
     expect(scene.interactive_mode).toBe(false);
   });
 
-  it("add deduplicates; remove clears both lists; clear empties", () => {
+  it("add re-adds to the end; remove clears both lists; clear empties", () => {
+    // Python ground truth (Scene.add restructures then appends):
+    // add(a, b); add(a) -> [b, a] (a is removed from its old slot and
+    // re-appended), NOT deduplicated in place.
     const scene = new Scene();
     const a = new Mobject();
     const b = new Mobject();
     scene.add(a, b);
     scene.add(a);
-    expect(scene.mobjects).toEqual([a, b]);
+    expect(scene.mobjects).toEqual([b, a]);
     scene.remove(a);
     expect(scene.mobjects).toEqual([b]);
     scene.clear();

@@ -661,7 +661,12 @@ export class Scene {
     ): void {
       for (const mob of list_to_examine) {
         if (set_to_remove.has(mob)) continue;
-        const family = new Set(mob.get_family());
+        // NOTE: non-Mobject items (TS CoordinateSystem hierarchy, e.g. via
+        // VectorScene.add_plane) have no get_family; keep them as-is.
+        const family: Set<Mobject> =
+          typeof (mob as Mobject)?.get_family === "function"
+            ? new Set((mob as Mobject).get_family())
+            : new Set([mob]);
         const intersect = [...set_to_remove].filter((m) => family.has(m));
         if (intersect.length > 0) {
           add_safe_mobjects_from_list(mob.submobjects, new Set(intersect));
