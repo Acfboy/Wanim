@@ -82,7 +82,12 @@ export class VectorField extends VGroup {
     } else {
       this.single_color = true;
       this.color_scheme = options.color_scheme ?? default_color_scheme;
-      this.color = new ManimColor(options.color);
+      // NOTE: mirrors Python `self.color = ManimColor.parse(color)` where
+      // VMobject.color is a property (setter = set_fill+set_stroke). A plain
+      // field assignment here would leave fill/stroke WHITE and later
+      // init_colors (via set_opacity in ArrowVectorField) would overwrite
+      // color back to WHITE.
+      this.set_color(options.color as ParsableManimColor);
       this.rgbs = [];
     }
   }
