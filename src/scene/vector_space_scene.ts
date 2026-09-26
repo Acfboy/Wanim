@@ -1,5 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { Arrow, Vector, type ArrowOptions, type VectorOptions } from "../mobject/geometry/line.js";
+import { Rectangle } from "../mobject/geometry/polygram.js";
+import { DrawBorderThenFill } from "../animation/creation.js";
 import { GrowArrow } from "../animation/growing.js";
 import { Dot } from "../mobject/geometry/arc.js";
 import { BLACK } from "../utils/color/core.js";
@@ -8,12 +10,13 @@ import { Scene } from "./scene.js";
 import { isNDArray, matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
 import { update_dict_recursively } from "../utils/config_ops.js";
 import { config } from "../_config/utils.js";
-import { RIGHT, UP } from "../constants.js";
+import { RIGHT, UP, DL } from "../constants.js";
 import { Camera } from "../camera/camera.js";
 import { Create } from "../animation/creation.js";
 import { Animation } from "../animation/animation.js";
 import { ApplyPointwiseFunction, Transform } from "../animation/transform.js";
 import type { Mobject } from "../mobject/mobject.js";
+import { Group } from "../mobject/mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Axes, CoordinateSystem, NumberPlane } from "../mobject/graphing/coordinate_systems.js";
 import { GREY, ManimColor, WHITE, type ParsableManimColor } from "../utils/color/core.js";
@@ -489,21 +492,47 @@ export class LinearTransformationScene extends VectorScene {
     color: ParsableManimColor | Iterable<ParsableManimColor> = new ManimColor("PURE_YELLOW"),
     opacity = 0.3,
     stroke_width = 3,
-  ): never {
-    void color;
-    void opacity;
-    void stroke_width;
-    // NOTE: needs Rectangle (manim.mobject.geometry.polygram, not ported
-    // yet) plus NumberPlane unit-size/coords helpers.
-    throw new Error("TODO: Rectangle (manim.mobject.geometry.polygram) not ported yet");
+  ): Rectangle {
+    // NOTE: the TS Axes hierarchy ships no NumberLine axes yet (empty `axes`
+    // group), so get_x_unit_size()/get_y_unit_size() throw until that
+    // integration lands; the Rectangle construction itself is faithful.
+    const single = color as ParsableManimColor;
+    const square = new Rectangle({
+      color: single,
+      width: this.plane.get_x_unit_size(),
+      height: this.plane.get_y_unit_size(),
+      stroke_color: single,
+      stroke_width,
+      fill_color: single,
+      fill_opacity: opacity,
+    });
+    square.move_to(this.plane.coords_to_point(0, 0), [...DL]);
+    this.square = square;
+    return square;
   }
 
   add_unit_square(animate = false, kwargs: Record<string, unknown> = {}): this {
-    void animate;
-    void kwargs;
-    // NOTE: builds on get_unit_square (Rectangle, not ported yet) and plays
-    // DrawBorderThenFill (manim.animation.creation, not ported yet).
-    throw new Error("TODO: Rectangle (manim.mobject.geometry.polygram) not ported yet");
+    const { color, opacity, stroke_width, ...rest } = kwargs as {
+      color?: ParsableManimColor | Iterable<ParsableManimColor>;
+      opacity?: number;
+      stroke_width?: number;
+    };
+    void rest;
+    const square = this.get_unit_square(
+      color ?? new ManimColor("PURE_YELLOW"),
+      opacity ?? 0.3,
+      stroke_width ?? 3,
+    );
+    if (animate) {
+      this.play(
+        new DrawBorderThenFill(square),
+        new Animation(new Group(...this.moving_vectors)),
+      );
+    }
+    this.add_transformable_mobject(square);
+    this.bring_to_front(...this.moving_vectors);
+    this.square = square;
+    return this;
   }
 
   override add_vector(

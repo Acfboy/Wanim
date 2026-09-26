@@ -3,7 +3,7 @@ import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
 import { arange, isNDArray, linspace, numeric, pointFrom, pointRows, type ComplexPoint } from "../../utils/arrays.js";
 import { update_dict_recursively, merge_dicts_recursively } from "../../utils/config_ops.js";
-import { MED_SMALL_BUFF, SMALL_BUFF, DEGREES, DL, DOWN, DR, LEFT, ORIGIN, OUT, PI, RIGHT, UP, UR, TAU, RendererType } from "../../constants.js";
+import { MED_SMALL_BUFF, SMALL_BUFF, DEGREES, DEFAULT_DOT_RADIUS, DL, DOWN, DR, LEFT, ORIGIN, OUT, PI, RIGHT, UP, UR, TAU, RendererType } from "../../constants.js";
 import { BLUE_D } from "../../utils/color/index.js";
 import { BLACK, BLUE, GREEN, WHITE } from "../../utils/color/core.js";
 import { color_gradient, interpolate_color, invert_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
@@ -11,7 +11,7 @@ import { binary_search } from "../../utils/simple_functions.js";
 import { angle_of_vector } from "../../utils/space_ops.js";
 import { VDict, VectorizedPoint, VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Polygon, Rectangle, RegularPolygon } from "../geometry/polygram.js";
-import { Dot } from "../geometry/arc.js";
+import { Dot, Circle } from "../geometry/arc.js";
 import { Arrow, DashedLine, Line } from "../geometry/line.js";
 import { ImplicitFunction, ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
 import { NumberLine } from "./number_line.js";
@@ -78,6 +78,17 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]> {
   const length = Math.min(first.length, second.length);
   return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
+}
+
+/** hasattr-style method probe: Mobject attribute reads go through a proxy
+ * that raises AttributeError for missing attributes, so a direct `typeof`
+ * check would throw instead of yielding false. */
+function hasMethod(value: unknown, name: string): boolean {
+  try {
+    return typeof (value as Record<string, unknown>)[name] === "function";
+  } catch {
+    return false;
+  }
 }
 
 /** Dispatches `self._origin_shift(axis_range)` the way Python's MRO does.
@@ -1431,6 +1442,118 @@ export class Axes extends NumberPlane {
       yScaling === null || yScaling === undefined || yScaling instanceof LinearBase;
   }
 
+  _create_axis(
+    range_terms: readonly number[] | number[],
+    axis_config: Record<string, unknown>,
+    length: number | null,
+  ): NumberLine {
+    // NOTE: mirrors Python `axis_config["length"] = length; axis =
+    // NumberLine(range_terms, **axis_config)` followed by shifting the axis
+    // so that the origin-shift point lands on the origin.
+    const options = {
+      ...(axis_config as ConstructorParameters<typeof NumberLine>[0]),
+      x_range: [...range_terms] as [number, number, number],
+      length,
+    };
+    const axis = new NumberLine(options);
+    const originPoint = pointRows(
+      axis.number_to_point(Axes._origin_shift([axis.x_min, axis.x_max])),
+      3,
+    )[0] ?? [0, 0, 0];
+    axis.shift(originPoint.map((value) => -value));
+    return axis;
+  }
+
+  override coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
+    // NOTE: mirrors Python Axes.coords_to_point: points are built per axis
+    // via `axis.number_to_point`, shifted so the axes-center maps to the
+    // origin the constructor shifted onto. The TS hierarchy ships no
+    // NumberLine axes yet (empty `axes` group), so it falls back to the
+    // linear NumberPlane mapping until the integration lands (same pattern
+    // as the point_to_coords override below).
+    const axes = this.get_axes().submobjects.filter(
+      (axis): axis is Mobject & CoordinateAxisLike =>
+        // NOTE: attribute reads go through the Mobject proxy, which raises
+        // AttributeError (not undefined) for missing attributes, so probe
+        // with try/catch like Python hasattr().
+        hasMethod(axis, "point_to_number") && hasMethod(axis, "number_to_point"),
+    );
+    if (axes.length === 0) return super.coords_to_point(...coords);
+    // NOTE: mirrors `coords = np.asarray(coords)` shape analysis with plain
+    // numbers: one 2D argument is the [[x y z] ...] point-list format (a
+    // single row behaves like a flat coord, multiple rows are transposed
+    // for processing and the result is transposed back); a single flat list
+    // behaves like separate scalar coords; otherwise each argument already
+    // holds one axis' values.
+    const toPlain = (value: number | number[] | NDArray): unknown =>
+      isNDArray(value) ? (value as NDArray).toArray() : value;
+    const isRows = (value: unknown): value is unknown[][] =>
+      Array.isArray(value) && value.length > 0 && Array.isArray(value[0]);
+    let perAxis: number[][];
+    let transposeResult: boolean;
+    if (coords.length === 0) return array([0, 0, 0]) as NDArray;
+    if (coords.length === 1) {
+      const only = toPlain(coords[0] as number | number[] | NDArray);
+      if (isRows(only)) {
+        if (only.length === 1) {
+          perAxis = [(only[0] as unknown[]).map(Number)];
+          transposeResult = false;
+        } else {
+          const rowCount = only[0]?.length ?? 0;
+          perAxis = Array.from({ length: rowCount }, (_, col) =>
+            only.map((row) => Number((row as unknown[])[col] ?? 0)),
+          );
+          transposeResult = true;
+        }
+      } else if (Array.isArray(only)) {
+        perAxis = [(only as unknown[]).map(Number)];
+        transposeResult = false;
+      } else {
+        perAxis = [[Number(only)]];
+        transposeResult = false;
+      }
+    } else {
+      perAxis = (coords as Array<number | number[] | NDArray>).map((entry) => {
+        const plain = toPlain(entry);
+        if (isRows(plain)) return (plain as unknown[][]).map((row) => Number((row as unknown[])[0] ?? 0));
+        if (Array.isArray(plain)) return (plain as unknown[]).map(Number);
+        return [Number(plain)];
+      });
+      transposeResult = false;
+    }
+    const count = Math.max(1, ...perAxis.map((values) => values.length));
+    // NOTE: mirrors Python `origin = self.x_axis.number_to_point(
+    // self._origin_shift([self.x_axis.x_min, self.x_axis.x_max]))`.
+    const first = axes[0] as CoordinateAxisLike & { x_min?: number; x_max?: number };
+    const origin = pointRows(
+      first.number_to_point(
+        Axes._origin_shift([(first.x_min ?? 0), (first.x_max ?? 0)]),
+      ),
+      3,
+    )[0] ?? [0, 0, 0];
+    const columns = perAxis.map((values, axisIndex) => {
+      const axis = axes[Math.min(axisIndex, axes.length - 1)] as CoordinateAxisLike;
+      const broadcast = values.length === 1 && count > 1
+        ? Array.from({ length: count }, () => values[0] ?? 0)
+        : values;
+      const rows = pointRows(axis.number_to_point(broadcast.length === 1 ? (broadcast[0] ?? 0) : broadcast), 3);
+      return Array.from({ length: count }, (_, index) => rows[Math.min(index, rows.length - 1)] ?? [0, 0, 0]);
+    });
+    const points = Array.from({ length: count }, (_, index) => {
+      let point = [...(columns[0]?.[index] ?? [0, 0, 0])];
+      for (const column of columns.slice(1)) {
+        const row = column[index] ?? [0, 0, 0];
+        point = point.map((value, dim) => value + (row[dim] ?? 0) - (origin[dim] ?? 0));
+      }
+      return point;
+    });
+    if (count === 1 && !transposeResult) return array(points[0]) as NDArray;
+    // NOTE: mirrors Python `return points.T`: separate per-axis array inputs
+    // and point-list inputs both transpose the (n, 3) point list.
+    const transposed = points[0].map((_, col) => points.map((row) => row[col] ?? 0));
+    return array(transposed) as NDArray;
+  }
+
   override point_to_coords(point: readonly number[]): number[] {
     // Mirrors Python Axes.point_to_coords: one number per axis via
     // `axis.point_to_number(point)` (transposed for a list of points).
@@ -1477,6 +1600,71 @@ export class Axes extends NumberPlane {
 
   override get_axes(): VGroup {
     return this.axes;
+  }
+
+  plot_line_graph(
+    x_values: Iterable<number> | number[] | NDArray,
+    y_values: Iterable<number> | number[] | NDArray,
+    z_values: Iterable<number> | number[] | NDArray | null = null,
+    line_color: ParsableManimColor = "PURE_YELLOW",
+    add_vertex_dots = true,
+    vertex_dot_radius = DEFAULT_DOT_RADIUS,
+    vertex_dot_style: Record<string, unknown> | null = null,
+    kwargs: Record<string, unknown> = {},
+  ): VDict {
+    const xs = isNDArray(x_values)
+      ? ((x_values as NDArray).toArray() as unknown[]).map(Number)
+      : [...(x_values as Iterable<number>)].map(Number);
+    const ys = isNDArray(y_values)
+      ? ((y_values as NDArray).toArray() as unknown[]).map(Number)
+      : [...(y_values as Iterable<number>)].map(Number);
+    const zs = z_values === null || z_values === undefined
+      ? xs.map(() => 0)
+      : isNDArray(z_values)
+        ? ((z_values as NDArray).toArray() as unknown[]).map(Number)
+        : [...(z_values as Iterable<number>)].map(Number);
+    // NOTE: mirrors `zip(x_values, y_values, z_values, strict=True)`.
+    if (xs.length !== ys.length || xs.length !== zs.length) {
+      const error = new Error(
+        `zip() argument 2 is ${ys.length < xs.length || zs.length < xs.length ? "shorter" : "longer"} than argument 1`,
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    const line_graph = new VDict();
+    const graph = new VGroup();
+    graph.set_color(line_color);
+    if (Object.keys(kwargs).length > 0) {
+      graph.set_style(kwargs as Parameters<VGroup["set_style"]>[0]);
+    }
+    const vertices = xs.map((x, index) =>
+      pointRows(this.coords_to_point(x, ys[index] ?? 0, zs[index] ?? 0), 3)[0] ?? [0, 0, 0],
+    );
+    graph.set_points_as_corners(vertices);
+    line_graph.__setitem__("line_graph", graph);
+
+    if (add_vertex_dots) {
+      const style = vertex_dot_style ?? {};
+      const vertex_dots = new VGroup(
+        ...vertices.map(
+          (vertex) =>
+            new Dot(
+              vertex,
+              (style["radius"] as number | undefined) ?? vertex_dot_radius,
+              (style["stroke_width"] as number | undefined) ?? undefined,
+              (style["fill_opacity"] as number | undefined) ?? undefined,
+              (style["color"] as ParsableManimColor | undefined) ?? undefined,
+              Object.fromEntries(
+                Object.entries(style).filter(
+                  ([key]) => !["radius", "stroke_width", "fill_opacity", "color", "point"].includes(key),
+                ),
+              ),
+            ) as unknown as VMobject,
+        ),
+      );
+      line_graph.__setitem__("vertex_dots", vertex_dots);
+    }
+    return line_graph;
   }
 
   static _update_default_configs(
@@ -1949,6 +2137,85 @@ export class PolarPlane extends Axes {
 
   override get_axes(): VGroup {
     return this.axes;
+  }
+
+  _init_background_lines(): void {
+    if (this.faded_line_style === null || this.faded_line_style === undefined) {
+      const derived: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(this.background_line_style)) {
+        derived[key] = typeof value === "number" ? value * 0.5 : value;
+      }
+      this.faded_line_style = derived;
+    }
+    const [background_lines, faded_lines] = this._get_lines();
+    // NOTE: mirrors Python `self.background_lines.set_style(
+    // **self.background_line_style)`; the TS hierarchy is not Mobject-based
+    // yet (no add/add_to_back), so the styled groups are stored but not
+    // added — same limitation as NumberPlane._init_background_lines.
+    (background_lines as VGroup).set_style?.(this.background_line_style as never);
+    (faded_lines as VGroup).set_style?.(this.faded_line_style as never);
+    this.background_lines = background_lines;
+    this.faded_lines = faded_lines;
+  }
+
+  _get_lines(): [VGroup, VGroup] {
+    // NOTE: mirrors Python PolarPlane._get_lines verbatim. The TS Axes
+    // hierarchy is not Mobject-based yet, so get_x_axis() resolves against
+    // an empty axes group until the NumberLine integration lands; in that
+    // case the returned groups are empty (same fallback as
+    // NumberPlane._get_lines).
+    let center: number[];
+    let x_axis: (CoordinateAxisLike & { x_range: number[] }) | null = null;
+    try {
+      center = pointRows(this.get_origin(), 3)[0] ?? [0, 0, 0];
+      const axis = this.get_x_axis() as unknown as CoordinateAxisLike & { x_range?: number[] };
+      if (!axis || typeof axis.get_unit_vector !== "function" || !axis.x_range) {
+        return [new VGroup(), new VGroup()];
+      }
+      x_axis = axis as CoordinateAxisLike & { x_range: number[] };
+    } catch {
+      return [new VGroup(), new VGroup()];
+    }
+    let ratio_faded_lines = this.faded_line_ratio;
+    const offset = this.azimuth_offset;
+    if (ratio_faded_lines === 0) ratio_faded_lines = 1;
+    const rstep = (1 / ratio_faded_lines) * (x_axis.x_range[2] ?? 1);
+    const astep = (1 / ratio_faded_lines) * (TAU * (1 / this.azimuth_step));
+    const rlines1 = new VGroup();
+    const rlines2 = new VGroup();
+    const alines1 = new VGroup();
+    const alines2 = new VGroup();
+
+    const rinput = arange(0, (x_axis.x_range[1] ?? 0) + rstep, rstep);
+    const ainput = arange(0, TAU, astep);
+
+    const unit_vector = x_axis.get_unit_vector()[0] ?? 0;
+
+    rinput.forEach((x, k) => {
+      const new_circle = new Circle(x * unit_vector);
+      if (k % ratio_faded_lines === 0) alines1.add(new_circle);
+      else alines2.add(new_circle);
+    });
+
+    const axisEnd = (x_axis as unknown as { get_end: () => number[] }).get_end?.();
+    if (axisEnd === undefined) return [new VGroup(), new VGroup()];
+    const line = new Line(center, axisEnd);
+
+    ainput.forEach((x, k) => {
+      const new_line = line.copy() as Line;
+      new_line.rotate(x + offset, [...OUT], center);
+      if (k % ratio_faded_lines === 0) rlines1.add(new_line);
+      else rlines2.add(new_line);
+    });
+
+    const lines1 = new VGroup(...rlines1.submobjects as VMobject[], ...alines1.submobjects as VMobject[]);
+    const lines2 = new VGroup(...rlines2.submobjects as VMobject[], ...alines2.submobjects as VMobject[]);
+    return [lines1, lines2];
+  }
+
+  get_vector(coords: number[], kwargs: Record<string, unknown> = {}): Arrow {
+    (kwargs as Record<string, unknown>)["buff"] = 0;
+    return new Arrow(this.coords_to_point(0, 0), this.coords_to_point(...coords), kwargs as never);
   }
 
   get_coordinate_labels(
