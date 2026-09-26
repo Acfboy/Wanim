@@ -9,6 +9,7 @@
 import { DOWN, DR, MED_SMALL_BUFF, RIGHT } from "../constants.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 import { Mobject } from "./mobject.js";
+import { BackgroundRectangle } from "./geometry/shape_matchers.js";
 import { VGroup, VMobject } from "./types/vectorized_mobject.js";
 
 export type MatrixElementFactory = (
@@ -114,9 +115,7 @@ export class Matrix extends VMobject {
     this.center();
     this.mob_matrix = mobMatrix;
     if (this.add_background_rectangles_to_entries) {
-      for (const mob of this.elements) {
-        (mob as VMobject).add_background_rectangle();
-      }
+      this.add_background_to_entries();
     }
     if (this.include_background_rectangle) {
       this.add_background_rectangle();
@@ -186,8 +185,15 @@ export class Matrix extends VMobject {
   }
 
   add_background_to_entries(): this {
+    // NOTE: mirrors Python `mob.add_background_rectangle()` (defaults:
+    // color=None -> background color, opacity 0.75). Constructed directly
+    // instead of going through the global factory hook, which stays unwired
+    // (same convention as Table.add_background_to_entries).
     for (const mob of this.get_entries()) {
-      (mob as VMobject).add_background_rectangle();
+      const target = mob as VMobject;
+      const rect = new BackgroundRectangle(target, {});
+      target.background_rectangle = rect;
+      target.add_to_back(rect);
     }
     return this;
   }
