@@ -12,9 +12,11 @@ import { ImageMobjectFromCamera } from "../src/mobject/types/image_mobject.js";
 import { MovingCamera } from "../src/camera/moving_camera.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
 import { Circle } from "../src/mobject/geometry/arc.js";
-import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
+import { VGroup, VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { Group } from "../src/mobject/mobject.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
+import { DecimalNumber } from "../src/mobject/text/numbers.js";
+import { ImplicitFunction } from "../src/mobject/graphing/functions.js";
 import { Scene } from "../src/scene/scene.js";
 import {
   NumberPlane,
@@ -671,35 +673,24 @@ describe("SampleSpace.__getitem__", () => {
 // ---------------------------------------------------------------------------
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem.get_lines_to_point
 // original manim: returns a VGroup of [horizontal, vertical] lines.
-// DEVIATION (D-axes): the TS Axes hierarchy is not Mobject-based yet —
-//   get_axes() is an empty VGroup until the NumberLine integration lands, so
-//   get_line_from_axis_to_point -> get_axis(0) raises IndexError. The method
-//   body itself is ported verbatim; only the axis lookup is missing.
 // ---------------------------------------------------------------------------
 describe("CoordinateSystem.get_lines_to_point", () => {
-  it("needs built NumberLine axes like python needs its axes (D-axes)", () => {
-    // NOTE: with no axes built, both the TS port (IndexError from the empty
-    // axes VGroup) and the call shape agree the dependency is missing; once
-    // the NumberLine integration lands this must return 2 lines.
-    expect(
-      () => new Axes([-3, 3, 1], [-2, 2, 1], 6, 4).get_lines_to_point([1, 1, 0]),
-    ).toThrow();
+  it("returns a VGroup of horizontal+vertical lines like python", () => {
+    const lines = new Axes([-3, 3, 1], [-2, 2, 1], 6, 4).get_lines_to_point([1, 1, 0]);
+    expect(lines.submobjects.length).toBe(2);
   });
 });
 
 // ---------------------------------------------------------------------------
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem.plot_implicit_curve
 // original manim: circle x^2+y^2-1 -> ImplicitFunction with points.
-// DEVIATION (D-axes): the TS body reads self.get_x_axis().scaling, which
-//   needs the built axes (see D-axes above), so it throws until then.
 // ---------------------------------------------------------------------------
 describe("CoordinateSystem.plot_implicit_curve", () => {
-  it("needs built NumberLine axes for the scaling lookup (D-axes)", () => {
-    expect(() =>
-      new Axes([-3, 3, 1], [-2, 2, 1], 6, 4).plot_implicit_curve(
-        (x, y) => x * x + y * y - 1,
-      ),
-    ).toThrow();
+  it("returns an ImplicitFunction (reads the built axes' scaling)", () => {
+    const graph = new Axes([-3, 3, 1], [-2, 2, 1], 6, 4).plot_implicit_curve(
+      (x, y) => x * x + y * y - 1,
+    );
+    expect(graph).toBeInstanceOf(ImplicitFunction);
   });
 });
 
@@ -756,48 +747,57 @@ describe("CoordinateSystem.plot_surface", () => {
 // ---------------------------------------------------------------------------
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem.get_vertical_lines_to_graph
 // original manim: x_range [0,2] num_lines 5 -> 5 lines.
-// DEVIATION (D-axes): needs get_vertical_line -> get_axis (see above).
 // ---------------------------------------------------------------------------
 describe("CoordinateSystem.get_vertical_lines_to_graph", () => {
-  it("needs built NumberLine axes like python needs its axes (D-axes)", () => {
+  it("returns num_lines vertical lines like python", () => {
     const ax = new Axes([-3, 3, 1], [-2, 2, 1], 6, 4);
     const g = ax.plot((x) => x * x);
     expect(g.has_points()).toBe(true);
-    expect(() => ax.get_vertical_lines_to_graph(g, [0, 2], 5)).toThrow();
+    const lines = ax.get_vertical_lines_to_graph(g, [0, 2], 5);
+    expect(lines.submobjects.length).toBe(5);
   });
 });
 
 // ---------------------------------------------------------------------------
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem.get_T_label
 // original manim (label=None, no tex): VGroup of [triangle, v_line].
-// DEVIATION (D-axes): the triangle half is latex-free, but the vertical line
-//   needs get_axis (see above), so the full group throws until then.
 // ---------------------------------------------------------------------------
 describe("CoordinateSystem.get_T_label", () => {
-  it("needs built NumberLine axes for its vertical line (D-axes)", () => {
+  it("returns [triangle, vertical line] like python", () => {
     const ax = new Axes([-1, 10, 1], [-1, 10, 1], 9, 6);
     const g = ax.plot((x) => x);
-    expect(() => ax.get_T_label(4, g, null)).toThrow();
+    const group = ax.get_T_label(4, g, null);
+    expect(group.submobjects.length).toBe(2);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Axis/coordinate labels need Tex/DecimalNumber (text/tex, OUT OF SCOPE for
-// the entire port): assert the port marks them as unimplemented.
+// Axis/coordinate labels now render through MathTex / DecimalNumber (MathJax).
 // ---------------------------------------------------------------------------
-describe("axis/coordinate labels (text/tex out of scope)", () => {
-  it("Axes.get_axis_labels is unimplemented like other tex paths", () => {
-    expect(() =>
-      new Axes([-3, 3, 1], [-2, 2, 1], 6, 4).get_axis_labels("x", "y"),
-    ).toThrow();
+describe("axis/coordinate labels (MathTex-rendered)", () => {
+  it("Axes.get_axis_labels builds two positioned labels", () => {
+    const labels = new Axes([-3, 3, 1], [-2, 2, 1], 6, 4).get_axis_labels("x", "y");
+    expect(labels).toBeInstanceOf(VGroup);
+    expect(labels.submobjects.length).toBe(2);
+    for (const label of labels.submobjects) {
+      expect(label).toBeInstanceOf(VMobject);
+    }
   });
-  it("ThreeDAxes.get_axis_labels is unimplemented like other tex paths", () => {
-    expect(() =>
-      new ThreeDAxes([-3, 3, 1], [-2, 2, 1], 6, 4).get_axis_labels("x", "y", "z"),
-    ).toThrow();
+  it("ThreeDAxes.get_axis_labels builds three positioned labels", () => {
+    const labels = new ThreeDAxes([-3, 3, 1], [-2, 2, 1], 6, 4).get_axis_labels(
+      "x",
+      "y",
+      "z",
+    );
+    expect(labels).toBeInstanceOf(VGroup);
+    expect(labels.submobjects.length).toBe(3);
   });
-  it("ComplexPlane.get_coordinate_labels is unimplemented like other tex paths", () => {
-    expect(() => new ComplexPlane().get_coordinate_labels(1, 2)).toThrow();
+  it("ComplexPlane.get_coordinate_labels builds DecimalNumber labels", () => {
+    const labels = new ComplexPlane().get_coordinate_labels(1, 2);
+    expect(labels).toBeInstanceOf(VGroup);
+    expect(labels.submobjects.length).toBe(2);
+    expect((labels.submobjects[0] as unknown as DecimalNumber).get_value()).toBe(1);
+    expect((labels.submobjects[1] as unknown as DecimalNumber).get_value()).toBe(2);
   });
 });
 
@@ -1038,20 +1038,21 @@ describe("Line3D.__init__", () => {
 // original manim (Square(0.5) labels, ranges [-3,3,1]/[-2,2,1]/[-2,2,1]):
 //   y-label center [0.525, 3.5, 0], z-label center [0.35, 0, 3.25],
 //   and the label object is returned as-is (VMobject passthrough).
-// NOTE: the TS Axes hierarchy is not Mobject-based yet (no NumberLine axes
-// are constructed; get_axes() is empty until that integration lands), so
-// these calls currently throw here. Pinned until then.
 // ---------------------------------------------------------------------------
 describe("ThreeDAxes.get_y_axis_label/get_z_axis_label", () => {
-  it("y-axis label placement is pending the NumberLine integration", () => {
-    // original manim ground truth: center [0.525, 3.5, 0].
+  it("places the y-axis label like python (center [0.525, 3.5, 0])", () => {
     const ax = new ThreeDAxes([-3, 3, 1], [-2, 2, 1]);
-    expect(() => ax.get_y_axis_label(new Square(0.5))).toThrow();
+    const center = ax.get_y_axis_label(new Square(0.5))!.get_center();
+    expect(close(center[0] ?? NaN, 0.525, 1e-9)).toBe(true);
+    expect(close(center[1] ?? NaN, 3.5, 1e-9)).toBe(true);
+    expect(close(center[2] ?? NaN, 0, 1e-9)).toBe(true);
   });
-  it("z-axis label placement is pending the NumberLine integration", () => {
-    // original manim ground truth: center [0.35, 0, 3.25].
+  it("places the z-axis label like python (center [0.35, 0, 3.25])", () => {
     const ax = new ThreeDAxes([-3, 3, 1], [-2, 2, 1]);
-    expect(() => ax.get_z_axis_label(new Square(0.5))).toThrow();
+    const center = ax.get_z_axis_label(new Square(0.5))!.get_center();
+    expect(close(center[0] ?? NaN, 0.35, 1e-9)).toBe(true);
+    expect(close(center[1] ?? NaN, 0, 1e-9)).toBe(true);
+    expect(close(center[2] ?? NaN, 3.25, 1e-9)).toBe(true);
   });
 });
 

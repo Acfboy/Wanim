@@ -80,17 +80,6 @@ function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]
   return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
 }
 
-/** hasattr-style method probe: Mobject attribute reads go through a proxy
- * that raises AttributeError for missing attributes, so a direct `typeof`
- * check would throw instead of yielding false. */
-function hasMethod(value: unknown, name: string): boolean {
-  try {
-    return typeof (value as Record<string, unknown>)[name] === "function";
-  } catch {
-    return false;
-  }
-}
-
 /** Dispatches `self._origin_shift(axis_range)` the way Python's MRO does.
 // In Python, NumberPlane extends Axes so the abstract CoordinateSystem stub
 // is never hit; the TS hierarchy has NumberPlane extending CoordinateSystem
@@ -121,15 +110,26 @@ function trapezoidAreas(y_values: number[], x_values: number[]): number {
   return total;
 }
 
-export class CoordinateSystem {
+// NOTE: Python declares ``class Axes(VGroup, CoordinateSystem)`` via multiple
+// inheritance. TypeScript has no multiple inheritance, so the clean equivalent
+// is to make CoordinateSystem itself a VGroup subclass. Axes then extends
+// CoordinateSystem (so it is a real VGroup carrying the coordinate API). There
+// are no same-name collisions between the CoordinateSystem methods and
+// VGroup/Mobject, so the precedence reversal relative to Python's MRO is
+// unobservable.
+export class CoordinateSystem extends VGroup {
   dimension: number;
   x_range: number[];
   y_range: number[];
   x_length: number | null;
   y_length: number | null;
   num_sampled_graph_points_per_tick: number;
+  // NOTE: mirrors Python's `self.x_axis: NumberLine` annotation; it is only
+  // assigned by Axes.__init__ (a bare CoordinateSystem leaves it undefined).
+  x_axis?: NumberLine;
 
   constructor(x_range: number[] | null = null, y_range: number[] | null = null, x_length: number | null = null, y_length: number | null = null, dimension = 2) {
+    super();
     this.dimension = dimension;
     this.x_range = x_range === null ? [Math.round(-config.frame_x_radius), Math.round(config.frame_x_radius), 1] : (x_range.length === 2 ? [...x_range, 1] : [...x_range]);
     this.y_range = y_range === null ? [Math.round(-config.frame_y_radius), Math.round(config.frame_y_radius), 1] : (y_range.length === 2 ? [...y_range, 1] : [...y_range]);
@@ -417,10 +417,10 @@ export class CoordinateSystem {
     // For axes, the third coordinate of x_range indicates
     // tick frequency.  But for functions, it indicates a
     // sample frequency
-    // NOTE: Python reads self.x_axis.scaling; the TS CoordinateSystem
-    // hierarchy is not Mobject-based yet and has no x_axis, so the default
-    // linear scaling is used until the Axes integration lands.
-    const scaling: _ScaleBase = (this as unknown as { x_axis?: { scaling?: _ScaleBase } }).x_axis?.scaling ?? new LinearBase();
+    // NOTE: Python reads self.x_axis.scaling; the x_axis is real for Axes
+    // (its NumberLine carries the scaling), with a linear default for a bare
+    // CoordinateSystem.
+    const scaling: _ScaleBase = this.x_axis?.scaling ?? new LinearBase();
     const graph = new ParametricFunction(
       (t: number) => this.coords_to_point(t, function_(t)),
       { t_range, scaling, use_vectorized, ...options },
@@ -580,11 +580,8 @@ export class CoordinateSystem {
     if (colorscale) {
       // NOTE: Python calls surface.set_fill_by_value(axes=self.copy(),
       // colorscale=colorscale, axis=colorscale_axis) positionally-by-keyword.
-      // set_fill_by_value only reads the axes (ranges + point_to_coords), and
-      // the TS CoordinateSystem hierarchy is not Mobject-based (no copy()),
-      // so `this` is passed directly — behaviorally identical.
       surface.set_fill_by_value(
-        this as unknown as ThreeDAxes,
+        this.copy() as unknown as ThreeDAxes,
         colorscale,
         colorscale_axis,
       );
@@ -1064,351 +1061,19 @@ export class CoordinateSystem {
   }
 }
 
-function axisPosition(value: number, range: number[], length: number): number {
-  const min = Number(range[0]);
-  const max = Number(range[1]);
-  const alpha = max === min ? 0 : (value - min) / (max - min);
-  const centered = -length / 2 + alpha * length;
-  if (min > 0) return centered + length / 2;
-  if (max < 0) return centered - length / 2;
-  return centered;
-}
-
-function axisValue(value: number, range: number[], length: number): number {
-  // Algebraic inverse of axisPosition above: undo the edge shift applied
-  // when the whole range is strictly positive/negative, then invert the
-  // linear map from [min, max] onto [-length/2, length/2].
-  const min = Number(range[0]);
-  const max = Number(range[1]);
-  let centered = Number(value);
-  if (min > 0) centered -= length / 2;
-  else if (max < 0) centered += length / 2;
-  const alpha = length === 0 ? 0 : (centered + length / 2) / length;
-  return min + alpha * (max - min);
-}
-
-function unitPosition(value: number, range: number[]): number {
-  // Mirrors a unit-sized NumberLine axis centered on the range midpoint
-  // (Python NumberPlane/ComplexPlane with x_length=None): pos(x) is x
-  // shifted so the range midpoint lands on the origin.
-  return Number(value) - (Number(range[0]) + Number(range[1])) / 2;
-}
-
-function unitValue(point: number, range: number[]): number {
-  // Algebraic inverse of unitPosition above.
-  return Number(point) + (Number(range[0]) + Number(range[1])) / 2;
-}
-
-function coordinateRows(value: number | number[] | NDArray): number[][] {
-  if (isNDArray(value)) return pointRows(value, 3);
-  if (Array.isArray(value)) {
-    const rows = value as unknown[];
-    return rows.length > 0 && Array.isArray(rows[0]) ? (rows as number[][]).map((row) => row.map(Number)) : [(value as number[]).map(Number)];
-  }
-  return [[Number(value)]];
-}
-
-function axisValues(value: number | number[] | NDArray): number[] {
-  if (isNDArray(value)) {
-    const rows = pointRows(value, 3);
-    return rows.length === 1 ? rows[0].slice(0, 1) : rows.map((row) => row[0] ?? 0);
-  }
-  if (Array.isArray(value)) {
-    const rows = value as unknown[];
-    return rows.length > 0 && Array.isArray(rows[0]) ? (rows as number[][]).map((row) => Number(row[0])) : (value as number[]).map(Number);
-  }
-  return [Number(value)];
-}
-
-export class NumberPlane extends CoordinateSystem {
-  axis_config: Record<string, unknown> = {};
-  y_axis_config: Record<string, unknown> = {};
-  background_line_style: Record<string, unknown> = {};
-  faded_line_style: Record<string, unknown> | null = null;
-  faded_line_ratio = 1;
-  make_smooth_after_applying_functions = true;
-  background_lines: VGroup | null = null;
-  faded_lines: VGroup | null = null;
-  x_lines: VGroup = new VGroup();
-  y_lines: VGroup = new VGroup();
-
-  constructor(
-    x_range: number[] | null = null,
-    y_range: number[] | null = null,
-    x_length: number | null = null,
-    y_length: number | null = null,
-    background_line_style: Record<string, unknown> | null = null,
-    faded_line_style: Record<string, unknown> | null = null,
-    faded_line_ratio = 1,
-    make_smooth_after_applying_functions = true,
-    options: {
-      axis_config?: Record<string, unknown> | null;
-      y_axis_config?: Record<string, unknown> | null;
-      [key: string]: unknown;
-    } = {},
-  ) {
-    // NOTE: mirrors Python NumberPlane.__init__ defaults, which use the raw
-    // frame radii (unlike Axes/CoordinateSystem, which round them to
-    // [-7, 7, 1] / [-4, 4, 1]).
-    super(
-      x_range ?? [-config.frame_x_radius, config.frame_x_radius, 1],
-      y_range ?? [-config.frame_y_radius, config.frame_y_radius, 1],
-      x_length,
-      y_length,
-    );
-    this.axis_config = {
-      stroke_width: 2,
-      include_ticks: false,
-      include_tip: false,
-      line_to_number_buff: SMALL_BUFF,
-      label_direction: [...DR],
-      font_size: 24,
-    };
-    this.y_axis_config = { label_direction: [...DR] };
-    this.background_line_style = {
-      stroke_color: BLUE_D,
-      stroke_width: 2,
-      stroke_opacity: 1,
-    };
-    const { axis_config, y_axis_config, ..._restKw } = options;
-    void _restKw;
-    Axes._update_default_configs(
-      [this.axis_config, this.y_axis_config, this.background_line_style],
-      [axis_config ?? null, y_axis_config ?? null, background_line_style],
-    );
-    this.faded_line_style = faded_line_style;
-    this.faded_line_ratio = faded_line_ratio;
-    this.make_smooth_after_applying_functions = make_smooth_after_applying_functions;
-    // NOTE: Python forwards axis_config/y_axis_config into Axes.__init__
-    // here. The TS Axes constructor already ran via super() (TS requires
-    // super first), so merge them into this instance's Axes-level configs
-    // the same way Axes.__init__ would.
-    this._init_background_lines();
-  }
-
-  _init_background_lines(): void {
-    if (this.faded_line_style === null || this.faded_line_style === undefined) {
-      const style: Record<string, unknown> = { ...this.background_line_style };
-      for (const key of Object.keys(style)) {
-        if (typeof style[key] === "number") {
-          style[key] = (style[key] as number) * 0.5;
-        }
-      }
-      this.faded_line_style = style;
-    }
-    const [background_lines, faded_lines] = this._get_lines();
-    (background_lines as VGroup).set_style?.(this.background_line_style as never);
-    (faded_lines as VGroup).set_style?.(this.faded_line_style as never);
-    this.background_lines = background_lines;
-    this.faded_lines = faded_lines;
-  }
-
-  _get_lines(): [VGroup, VGroup] {
-    // NOTE: mirrors Python NumberPlane._get_lines verbatim. The TS Axes
-    // hierarchy is not Mobject-based yet, so get_x_axis()/get_y_axis()
-    // resolve against an empty axes group until the NumberLine integration
-    // lands; in that case the returned groups are empty.
-    let x_axis: CoordinateAxisLike | null = null;
-    let y_axis: CoordinateAxisLike | null = null;
-    try {
-      x_axis = this.get_x_axis() ?? null;
-      y_axis = this.get_y_axis() ?? null;
-    } catch {
-      x_axis = null;
-      y_axis = null;
-    }
-    const x_range = (x_axis as unknown as { x_range?: number[] } | null)?.x_range;
-    const y_range = (y_axis as unknown as { x_range?: number[] } | null)?.x_range;
-    if (!x_axis || !y_axis || !x_range || !y_range) {
-      this.x_lines = new VGroup();
-      this.y_lines = new VGroup();
-      return [new VGroup(), new VGroup()];
-    }
-    const [x_lines1, x_lines2] = this._get_lines_parallel_to_axis(
-      x_axis,
-      y_axis,
-      (y_axis as unknown as { x_range: number[] }).x_range[2] ?? 1,
-      this.faded_line_ratio,
-    );
-    const [y_lines1, y_lines2] = this._get_lines_parallel_to_axis(
-      y_axis,
-      x_axis,
-      (x_axis as unknown as { x_range: number[] }).x_range[2] ?? 1,
-      this.faded_line_ratio,
-    );
-    this.x_lines = x_lines1;
-    this.y_lines = y_lines1;
-    return [new VGroup(...x_lines1.submobjects as VMobject[], ...y_lines1.submobjects as VMobject[]), new VGroup(...x_lines2.submobjects as VMobject[], ...y_lines2.submobjects as VMobject[])];
-  }
-
-  _get_lines_parallel_to_axis(
-    axis_parallel_to: CoordinateAxisLike,
-    axis_perpendicular_to: CoordinateAxisLike,
-    freq: number,
-    ratio_faded_lines: number,
-  ): [VGroup, VGroup] {
-    let ratio = ratio_faded_lines;
-    if (ratio === 0) ratio = 1;
-    const step = (1 / ratio) * freq;
-    const start = (axis_parallel_to as unknown as { get_start: () => number[] }).get_start?.();
-    const end = (axis_parallel_to as unknown as { get_end: () => number[] }).get_end?.();
-    const lines1 = new VGroup();
-    const lines2 = new VGroup();
-    if (start === undefined || end === undefined) return [lines1, lines2];
-    const line = new Line(start, end);
-    const unit_vector_axis_perp_to = axis_perpendicular_to.get_unit_vector();
-    const perp_range = (axis_perpendicular_to as unknown as { x_range: number[] }).x_range;
-    let x_min = perp_range?.[0] ?? 0;
-    let x_max = perp_range?.[1] ?? 0;
-    const x_min_scaled = (axis_perpendicular_to as unknown as { x_min?: number }).x_min;
-    if (x_min_scaled !== undefined && x_min_scaled > 0 && x_min < 0) {
-      x_min = 0;
-      x_max = Math.abs(perp_range?.[0] ?? 0) + Math.abs(perp_range?.[1] ?? 0);
-    }
-    const ranges: number[][] = [
-      [0],
-      arange(step, Math.min(x_max - x_min, x_max), step),
-      arange(-step, Math.max(x_min - x_max, x_min), -step),
-    ];
-    for (const inputs of ranges) {
-      inputs.forEach((x, k) => {
-        const new_line = line.copy() as Line;
-        new_line.shift(unit_vector_axis_perp_to.map((v) => v * x));
-        if ((k + 1) % ratio === 0) lines1.add(new_line);
-        else lines2.add(new_line);
-      });
-    }
-    return [lines1, lines2];
-  }
-
-  get_vector(coords: number[], kwargs: Record<string, unknown> = {}): Arrow {
-    (kwargs as Record<string, unknown>)["buff"] = 0;
-    return new Arrow(this.coords_to_point(0, 0), this.coords_to_point(...coords), kwargs as never);
-  }
-
-  override get_x_unit_size(): number {
-    // NOTE: mirrors Python `get_x_axis().get_unit_size()` (a NumberLine of
-    // length x_length over x_range, i.e. x_length / span). The TS hierarchy
-    // is not Mobject-based yet (get_axes throws), so the ratio is computed
-    // directly; a null length selects the unit-sized mapping (unit size 1,
-    // matching Python's unscaled NumberLine axes).
-    if (this.x_length === null || this.x_length === undefined) return 1;
-    const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
-    return span === 0 ? 0 : this.x_length / span;
-  }
-
-  override get_y_unit_size(): number {
-    if (this.y_length === null || this.y_length === undefined) return 1;
-    const span = (this.y_range[1] ?? 0) - (this.y_range[0] ?? 0);
-    return span === 0 ? 0 : this.y_length / span;
-  }
-
-  point_to_coords(point: readonly number[]): number[] {
-    // Mirrors Axes.point_to_coords for the linear mapping implemented by
-    // coords_to_point above (Python resolves this through NumberLine axes;
-    // the observable result is the algebraic inverse of the linear map).
-    // Like Python (`point.ndim == 2 -> result.T`), a list of points maps
-    // row-wise to a list of coordinate pairs.
-    if (
-      Array.isArray(point) &&
-      point.length > 0 &&
-      Array.isArray((point as unknown as unknown[])[0])
-    ) {
-      const single = (p: readonly number[]): number[] => this.point_to_coords(p);
-      return (point as unknown as number[][]).map((p) => single(p)) as unknown as number[];
-    }
-    const values = [...point].map(Number);
-    // NOTE: a null length mirrors Python's unit-sized NumberLine axes
-    // (NumberPlane/ComplexPlane with x_length=None map coords about the
-    // range midpoint at unit size); explicit lengths use the linear map.
-    const xValue =
-      this.x_length === null || this.x_length === undefined
-        ? unitValue(values[0] ?? 0, this.x_range)
-        : axisValue(values[0] ?? 0, this.x_range, this.x_length);
-    const yValue =
-      this.y_length === null || this.y_length === undefined
-        ? unitValue(values[1] ?? 0, this.y_range)
-        : axisValue(values[1] ?? 0, this.y_range, this.y_length);
-    return [xValue, yValue];
-  }
-
-  coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
-    if (coords.length === 0) return array([0, 0, 0]) as NDArray;
-    const xLength = this.x_length;
-    const yLength = this.y_length;
-    // NOTE: null lengths mirror Python's unit-sized axes (see
-    // point_to_coords); explicit lengths fall back to the frame-derived
-    // sizes only when the fields are null here for legacy callers — Axes
-    // always stores resolved lengths, so this branch only affects direct
-    // NumberPlane/ComplexPlane use with an explicit length on one axis.
-    const resolvedXLength = xLength ?? Math.round(config.frame_width) - 2;
-    const resolvedYLength = yLength ?? Math.round(config.frame_height) - 2;
-    const mapPoint = (x: number, y: number): number[] => [
-      xLength === null || xLength === undefined
-        ? unitPosition(Number(x), this.x_range)
-        : axisPosition(Number(x), this.x_range, resolvedXLength),
-      yLength === null || yLength === undefined
-        ? unitPosition(Number(y), this.y_range)
-        : axisPosition(Number(y), this.y_range, resolvedYLength),
-      0,
-    ];
-    if (coords.length === 1) {
-      const rows = coordinateRows(coords[0]);
-      const points = rows.map((row) => mapPoint(row[0] ?? 0, row[1] ?? 0));
-      if (points.length === 1) return array(points[0]) as NDArray;
-      return array(points) as NDArray;
-    }
-    const xValues = axisValues(coords[0]);
-    const yValues = axisValues(coords[1]);
-    const count = Math.max(xValues.length, yValues.length);
-    const points = Array.from({ length: count }, (_, index) => mapPoint(xValues[index] ?? xValues[xValues.length - 1] ?? 0, yValues[index] ?? yValues[yValues.length - 1] ?? 0));
-    if (count === 1) return array(points[0]) as NDArray;
-    // Ground truth (Python NumberPlane.coords_to_point docstring): passing
-    // separate per-axis arrays is the *transposed* input format, so the output
-    // is the transpose of the point list, e.g.
-    //   coords_to_point([0,1,1],[1,1,0]) == coords_to_point([[0,1],[1,1],[1,0]]).T
-    const transposed = points[0].map((_, col) => points.map((row) => row[col] ?? 0));
-    return array(transposed) as NDArray;
-  }
-
-  prepare_for_nonlinear_transform(num_inserted_curves = 50): this {
-    // NOTE: Python NumberPlane is a VGroup (Mobject), so
-    // family_members_with_points() always exists there. The TS
-    // CoordinateSystem hierarchy is not Mobject-based yet, so the insertion
-    // pass only runs when the host provides family members.
-    const host = this as unknown as {
-      family_members_with_points?: () => NonlinearTransformable[];
-    };
-    for (const mob of host.family_members_with_points?.() ?? []) {
-      const num_curves = mob.get_num_curves();
-      if (num_inserted_curves > num_curves) mob.insert_n_curves(num_inserted_curves - num_curves);
-    }
-    return this;
-  }
-
-  prepareForNonlinearTransform(num_inserted_curves = 50): this {
-    return this.prepare_for_nonlinear_transform(num_inserted_curves);
-  }
-}
-
-export class Axes extends NumberPlane {
-  // NOTE: Python Axes.__init__ builds self.axes as a VGroup of NumberLine
-  // axes (plus x_axis/y_axis shortcuts) and shifts the group so the
-  // lines-center maps to the origin. The TS CoordinateSystem hierarchy is
-  // not Mobject-based yet, so no NumberLine axes are constructed here;
-  // the config-merging logic (the observable part of __init__) is ported
-  // faithfully and `axes` stays an empty VGroup until the NumberLine
-  // integration lands (same limitation as get_axes/point_to_coords note).
+export class Axes extends CoordinateSystem {
   axes: VGroup = new VGroup();
   axis_config: Record<string, unknown> = {};
   x_axis_config: Record<string, unknown> = {};
   y_axis_config: Record<string, unknown> = {};
+  declare x_axis: NumberLine;
+  declare y_axis: NumberLine;
 
   constructor(
     x_range: number[] | null = null,
     y_range: number[] | null = null,
-    x_length: number | null = null,
-    y_length: number | null = null,
+    x_length: number | null | undefined = undefined,
+    y_length: number | null | undefined = undefined,
     axis_config: Record<string, unknown> | null = null,
     x_axis_config: Record<string, unknown> | null = null,
     y_axis_config: Record<string, unknown> | null = null,
@@ -1417,11 +1082,15 @@ export class Axes extends NumberPlane {
     // NOTE: mirrors Python Axes.__init__, whose omitted ranges round the
     // frame radii ([-7, 7, 1] / [-4, 4, 1]); NumberPlane/ComplexPlane keep
     // the raw radii, so the rounding is applied here before delegating.
+    // `x_length`/`y_length` default to the frame-derived value when omitted
+    // (``undefined``), while an explicit ``null`` is a genuine None (used by
+    // NumberPlane/PolarPlane for their unit-sized default axes), matching
+    // Python's default-parameter semantics.
     super(
       x_range ?? [Math.round(-config.frame_x_radius), Math.round(config.frame_x_radius), 1],
       y_range ?? [Math.round(-config.frame_y_radius), Math.round(config.frame_y_radius), 1],
-      x_length ?? Math.round(config.frame_width) - 2,
-      y_length ?? Math.round(config.frame_height) - 2,
+      x_length === undefined ? Math.round(config.frame_width) - 2 : x_length,
+      y_length === undefined ? Math.round(config.frame_height) - 2 : y_length,
     );
 
     this.axis_config = {
@@ -1457,6 +1126,24 @@ export class Axes extends NumberPlane {
     const yScaling = this.y_axis_config["scaling"] as _ScaleBase | undefined | null;
     this.y_axis_config["exclude_origin_tick"] =
       yScaling === null || yScaling === undefined || yScaling instanceof LinearBase;
+
+    this.x_axis = this._create_axis(this.x_range, this.x_axis_config, this.x_length);
+    this.y_axis = this._create_axis(this.y_range, this.y_axis_config, this.y_length);
+
+    // Add as a separate group in case various other mobjects are added to
+    // self, as for example in NumberPlane below.
+    this.axes = new VGroup(this.x_axis, this.y_axis);
+    this.add(this.x_axis, this.y_axis);
+
+    // finds the middle-point on each axis
+    const lines_center_point: number[] = this.axes.submobjects.map((axis) => {
+      const typed = axis as unknown as CoordinateAxisLike & { x_range: number[] };
+      const value = ((typed.x_range[1] ?? 0) + (typed.x_range[0] ?? 0)) / 2;
+      const out = typed.scaling.function(value);
+      return typeof out === "number" ? out : numeric(pointRows(out, 1)[0]?.[0] ?? 0);
+    });
+    const center = pointRows(this.coords_to_point(...lines_center_point), 3)[0] ?? [0, 0, 0];
+    this.shift(center.map((value) => -value));
   }
 
   _create_axis(
@@ -1466,11 +1153,12 @@ export class Axes extends NumberPlane {
   ): NumberLine {
     // NOTE: mirrors Python `axis_config["length"] = length; axis =
     // NumberLine(range_terms, **axis_config)` followed by shifting the axis
-    // so that the origin-shift point lands on the origin.
+    // so that the origin-shift point lands on the origin. Like Python, the
+    // passed config dict is mutated in place (it is self.x_axis_config etc).
+    axis_config["length"] = length;
     const options = {
       ...(axis_config as ConstructorParameters<typeof NumberLine>[0]),
       x_range: [...range_terms] as [number, number, number],
-      length,
     };
     const axis = new NumberLine(options);
     const originPoint = pointRows(
@@ -1484,51 +1172,54 @@ export class Axes extends NumberPlane {
   override coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
     // NOTE: mirrors Python Axes.coords_to_point: points are built per axis
     // via `axis.number_to_point`, shifted so the axes-center maps to the
-    // origin the constructor shifted onto. The TS hierarchy ships no
-    // NumberLine axes yet (empty `axes` group), so it falls back to the
-    // linear NumberPlane mapping until the integration lands (same pattern
-    // as the point_to_coords override below).
-    const axes = this.get_axes().submobjects.filter(
-      (axis): axis is Mobject & CoordinateAxisLike =>
-        // NOTE: attribute reads go through the Mobject proxy, which raises
-        // AttributeError (not undefined) for missing attributes, so probe
-        // with try/catch like Python hasattr().
-        hasMethod(axis, "point_to_number") && hasMethod(axis, "number_to_point"),
-    );
-    if (axes.length === 0) return super.coords_to_point(...coords);
-    // NOTE: mirrors `coords = np.asarray(coords)` shape analysis with plain
-    // numbers: one 2D argument is the [[x y z] ...] point-list format (a
-    // single row behaves like a flat coord, multiple rows are transposed
-    // for processing and the result is transposed back); a single flat list
-    // behaves like separate scalar coords; otherwise each argument already
-    // holds one axis' values.
+    // origin the constructor shifted onto. The NumberLine axes are real
+    // (built by the constructor), so `self.axes` always holds x/y[/z].
+    const axes = this.get_axes().submobjects as Mobject[];
+    if (coords.length === 0) return array([0, 0, 0]) as NDArray;
+
+    // NOTE: mirrors `coords = np.asarray(coords)`. The normalized result is
+    // either a 1D scalar list (one coordinate, returned as a single point) or
+    // a 2D list of per-axis value arrays (returned transposed, unless the
+    // input was already in point-list form).
     const toPlain = (value: number | number[] | NDArray): unknown =>
       isNDArray(value) ? (value as NDArray).toArray() : value;
     const isRows = (value: unknown): value is unknown[][] =>
       Array.isArray(value) && value.length > 0 && Array.isArray(value[0]);
     let perAxis: number[][];
-    let transposeResult: boolean;
-    if (coords.length === 0) return array([0, 0, 0]) as NDArray;
+    let singleScalars: number[] | null = null;
+    let transposeResult = false;
     if (coords.length === 1) {
       const only = toPlain(coords[0] as number | number[] | NDArray);
       if (isRows(only)) {
         if (only.length === 1) {
-          perAxis = [(only[0] as unknown[]).map(Number)];
-          transposeResult = false;
+          // [[x, y, z]] behaves like the flat coordinate [x, y, z].
+          singleScalars = (only[0] as unknown[]).map(Number);
+          perAxis = (singleScalars as number[]).map((value) => [value]);
         } else {
-          const rowCount = only[0]?.length ?? 0;
+          const rowCount = (only[0] as unknown[]).length;
           perAxis = Array.from({ length: rowCount }, (_, col) =>
             only.map((row) => Number((row as unknown[])[col] ?? 0)),
           );
           transposeResult = true;
         }
       } else if (Array.isArray(only)) {
-        perAxis = [(only as unknown[]).map(Number)];
-        transposeResult = false;
+        // A flat list [x, y, z] is c2p(x, y, z).
+        singleScalars = (only as unknown[]).map(Number);
+        perAxis = (singleScalars as number[]).map((value) => [value]);
       } else {
+        singleScalars = [Number(only)];
         perAxis = [[Number(only)]];
-        transposeResult = false;
       }
+    } else if (
+      coords.every(
+        (entry) =>
+          typeof entry === "number" ||
+          (isNDArray(entry) && ((entry as NDArray).shape ?? []).length === 0),
+      )
+    ) {
+      // c2p(x, y, z): all scalar arguments -> a single point.
+      singleScalars = coords.map((entry) => Number(entry));
+      perAxis = (singleScalars as number[]).map((value) => [value]);
     } else {
       perAxis = (coords as Array<number | number[] | NDArray>).map((entry) => {
         const plain = toPlain(entry);
@@ -1538,7 +1229,7 @@ export class Axes extends NumberPlane {
       });
       transposeResult = false;
     }
-    const count = Math.max(1, ...perAxis.map((values) => values.length));
+
     // NOTE: mirrors Python `origin = self.x_axis.number_to_point(
     // self._origin_shift([self.x_axis.x_min, self.x_axis.x_max]))`.
     const first = axes[0] as CoordinateAxisLike & { x_min?: number; x_max?: number };
@@ -1548,12 +1239,30 @@ export class Axes extends NumberPlane {
       ),
       3,
     )[0] ?? [0, 0, 0];
-    const columns = perAxis.map((values, axisIndex) => {
-      const axis = axes[Math.min(axisIndex, axes.length - 1)] as CoordinateAxisLike;
+    const axisAt = (index: number): CoordinateAxisLike =>
+      axes[index] as unknown as CoordinateAxisLike;
+
+    // Single-coordinate form: one value per axis, summed into one point.
+    if (singleScalars !== null) {
+      const used = Math.min(singleScalars.length, axes.length);
+      let point: number[] = [0, 0, 0];
+      for (let index = 0; index < used; index += 1) {
+        const row = pointRows(axisAt(index).number_to_point(singleScalars[index] ?? 0), 3)[0] ?? [0, 0, 0];
+        if (index === 0) point = [...row];
+        else point = point.map((value, dim) => value + (row[dim] ?? 0) - (origin[dim] ?? 0));
+      }
+      return array(point) as NDArray;
+    }
+
+    // NOTE: mirrors `zip(other_axes, coords[1:], strict=False)` — extra
+    // coordinate arguments beyond the number of real axes are ignored.
+    const activeAxes = perAxis.slice(0, axes.length);
+    const count = Math.max(1, ...activeAxes.map((values) => values.length));
+    const columns = activeAxes.map((values, axisIndex) => {
       const broadcast = values.length === 1 && count > 1
         ? Array.from({ length: count }, () => values[0] ?? 0)
         : values;
-      const rows = pointRows(axis.number_to_point(broadcast.length === 1 ? (broadcast[0] ?? 0) : broadcast), 3);
+      const rows = pointRows(axisAt(axisIndex).number_to_point(broadcast.length === 1 ? (broadcast[0] ?? 0) : broadcast), 3);
       return Array.from({ length: count }, (_, index) => rows[Math.min(index, rows.length - 1)] ?? [0, 0, 0]);
     });
     const points = Array.from({ length: count }, (_, index) => {
@@ -1564,9 +1273,9 @@ export class Axes extends NumberPlane {
       }
       return point;
     });
-    if (count === 1 && !transposeResult) return array(points[0]) as NDArray;
-    // NOTE: mirrors Python `return points.T`: separate per-axis array inputs
-    // and point-list inputs both transpose the (n, 3) point list.
+    // NOTE: mirrors Python `if are_coordinates_transposed or points.ndim == 1:
+    // return points; return points.T`.
+    if (transposeResult) return array(points) as NDArray;
     const transposed = points[0].map((_, col) => points.map((row) => row[col] ?? 0));
     return array(transposed) as NDArray;
   }
@@ -1574,18 +1283,7 @@ export class Axes extends NumberPlane {
   override point_to_coords(point: readonly number[]): number[] {
     // Mirrors Python Axes.point_to_coords: one number per axis via
     // `axis.point_to_number(point)` (transposed for a list of points).
-    // NOTE: the TS Axes hierarchy is not Mobject-based yet, so `axes` is
-    // empty until the NumberLine integration lands; fall back to the linear
-    // NumberPlane mapping in that case.
     const axes = this.get_axes().submobjects;
-    const hasAxes =
-      axes.length > 0 &&
-      axes.every(
-        (axis) =>
-          typeof (axis as unknown as { point_to_number?: unknown })
-            .point_to_number === "function",
-      );
-    if (!hasAxes) return super.point_to_coords(point);
     type NumberLineLike = {
       point_to_number(point: unknown): number | NDArray;
     };
@@ -1716,6 +1414,172 @@ export class Axes extends NumberPlane {
   }
 }
 
+export class NumberPlane extends Axes {
+  axis_config: Record<string, unknown> = {};
+  y_axis_config: Record<string, unknown> = {};
+  background_line_style: Record<string, unknown> = {};
+  faded_line_style: Record<string, unknown> | null = null;
+  faded_line_ratio = 1;
+  make_smooth_after_applying_functions = true;
+  background_lines: VGroup | null = null;
+  faded_lines: VGroup | null = null;
+  x_lines: VGroup = new VGroup();
+  y_lines: VGroup = new VGroup();
+
+  constructor(
+    x_range: number[] | null = null,
+    y_range: number[] | null = null,
+    x_length: number | null = null,
+    y_length: number | null = null,
+    background_line_style: Record<string, unknown> | null = null,
+    faded_line_style: Record<string, unknown> | null = null,
+    faded_line_ratio = 1,
+    make_smooth_after_applying_functions = true,
+    options: {
+      axis_config?: Record<string, unknown> | null;
+      y_axis_config?: Record<string, unknown> | null;
+      [key: string]: unknown;
+    } = {},
+  ) {
+    // NOTE: mirrors Python NumberPlane.__init__ defaults, which use the raw
+    // frame radii (unlike Axes/CoordinateSystem, which round them to
+    // [-7, 7, 1] / [-4, 4, 1]). The configs are built before super() because
+    // they are forwarded into Axes.__init__ (which builds the real axes).
+    const axis_config: Record<string, unknown> = {
+      stroke_width: 2,
+      include_ticks: false,
+      include_tip: false,
+      line_to_number_buff: SMALL_BUFF,
+      label_direction: [...DR],
+      font_size: 24,
+    };
+    const y_axis_config: Record<string, unknown> = { label_direction: [...DR] };
+    const background_style: Record<string, unknown> = {
+      stroke_color: BLUE_D,
+      stroke_width: 2,
+      stroke_opacity: 1,
+    };
+    const { axis_config: userAxisConfig, y_axis_config: userYAxisConfig } = options;
+    Axes._update_default_configs(
+      [axis_config, y_axis_config, background_style],
+      [userAxisConfig ?? null, userYAxisConfig ?? null, background_line_style],
+    );
+    super(
+      x_range ?? [-config.frame_x_radius, config.frame_x_radius, 1],
+      y_range ?? [-config.frame_y_radius, config.frame_y_radius, 1],
+      x_length,
+      y_length,
+      axis_config,
+      null,
+      y_axis_config,
+    );
+    this.axis_config = axis_config;
+    this.y_axis_config = y_axis_config;
+    this.background_line_style = background_style;
+    this.faded_line_style = faded_line_style;
+    this.faded_line_ratio = faded_line_ratio;
+    this.make_smooth_after_applying_functions = make_smooth_after_applying_functions;
+    this._init_background_lines();
+  }
+
+  _init_background_lines(): void {
+    if (this.faded_line_style === null || this.faded_line_style === undefined) {
+      const style: Record<string, unknown> = { ...this.background_line_style };
+      for (const key of Object.keys(style)) {
+        if (typeof style[key] === "number") {
+          style[key] = (style[key] as number) * 0.5;
+        }
+      }
+      this.faded_line_style = style;
+    }
+    [this.background_lines, this.faded_lines] = this._get_lines();
+    (this.background_lines as VGroup).set_style(this.background_line_style as never);
+    (this.faded_lines as VGroup).set_style(this.faded_line_style as never);
+    this.add_to_back(this.faded_lines as VGroup, this.background_lines as VGroup);
+  }
+
+  _get_lines(): [VGroup, VGroup] {
+    // NOTE: mirrors Python NumberPlane._get_lines verbatim.
+    const x_axis = this.get_x_axis();
+    const y_axis = this.get_y_axis();
+
+    const [x_lines1, x_lines2] = this._get_lines_parallel_to_axis(
+      x_axis,
+      y_axis,
+      (y_axis as unknown as { x_range: number[] }).x_range[2] ?? 1,
+      this.faded_line_ratio,
+    );
+    const [y_lines1, y_lines2] = this._get_lines_parallel_to_axis(
+      y_axis,
+      x_axis,
+      (x_axis as unknown as { x_range: number[] }).x_range[2] ?? 1,
+      this.faded_line_ratio,
+    );
+    this.x_lines = x_lines1;
+    this.y_lines = y_lines1;
+    return [
+      new VGroup(...x_lines1.submobjects as VMobject[], ...y_lines1.submobjects as VMobject[]),
+      new VGroup(...x_lines2.submobjects as VMobject[], ...y_lines2.submobjects as VMobject[]),
+    ];
+  }
+
+  _get_lines_parallel_to_axis(
+    axis_parallel_to: CoordinateAxisLike,
+    axis_perpendicular_to: CoordinateAxisLike,
+    freq: number,
+    ratio_faded_lines: number,
+  ): [VGroup, VGroup] {
+    let ratio = ratio_faded_lines;
+    if (ratio === 0) ratio = 1;
+    const step = (1 / ratio) * freq;
+    const lines1 = new VGroup();
+    const lines2 = new VGroup();
+    const line = new Line(axis_parallel_to.get_start(), axis_parallel_to.get_end());
+    const unit_vector_axis_perp_to = axis_perpendicular_to.get_unit_vector();
+    const perp_range = (axis_perpendicular_to as unknown as { x_range: number[] }).x_range;
+    let x_min = perp_range?.[0] ?? 0;
+    let x_max = perp_range?.[1] ?? 0;
+    const x_min_scaled = (axis_perpendicular_to as unknown as { x_min?: number }).x_min;
+    if (x_min_scaled !== undefined && x_min_scaled > 0 && x_min < 0) {
+      x_min = 0;
+      x_max = Math.abs(perp_range?.[0] ?? 0) + Math.abs(perp_range?.[1] ?? 0);
+    }
+    const ranges: number[][] = [
+      [0],
+      arange(step, Math.min(x_max - x_min, x_max), step),
+      arange(-step, Math.max(x_min - x_max, x_min), -step),
+    ];
+    for (const inputs of ranges) {
+      inputs.forEach((x, k) => {
+        const new_line = line.copy() as Line;
+        new_line.shift(unit_vector_axis_perp_to.map((v) => v * x));
+        if ((k + 1) % ratio === 0) lines1.add(new_line);
+        else lines2.add(new_line);
+      });
+    }
+    return [lines1, lines2];
+  }
+
+  get_vector(coords: number[], kwargs: Record<string, unknown> = {}): Arrow {
+    (kwargs as Record<string, unknown>)["buff"] = 0;
+    return new Arrow(this.coords_to_point(0, 0), this.coords_to_point(...coords), kwargs as never);
+  }
+
+  prepare_for_nonlinear_transform(num_inserted_curves = 50): this {
+    for (const mob of this.family_members_with_points()) {
+      const num_curves = (mob as unknown as NonlinearTransformable).get_num_curves();
+      if (num_inserted_curves > num_curves) {
+        (mob as unknown as NonlinearTransformable).insert_n_curves(num_inserted_curves - num_curves);
+      }
+    }
+    return this;
+  }
+
+  prepareForNonlinearTransform(num_inserted_curves = 50): this {
+    return this.prepare_for_nonlinear_transform(num_inserted_curves);
+  }
+}
+
 export interface AxisShadingSubmobject {
   get_gradient_start_and_end_points: () => [unknown, unknown];
   get_unit_normal: (point: unknown) => number[];
@@ -1736,8 +1600,8 @@ export class ThreeDAxes extends Axes {
   z_length: number | null;
   z_axis_config: Record<string, unknown> = {};
   z_normal: number[];
-  dimension = 3;
-  z_axis: unknown = null;
+  override dimension = 3;
+  z_axis!: NumberLine;
 
   constructor(
     x_range: number[] | null = null,
@@ -1787,12 +1651,31 @@ export class ThreeDAxes extends Axes {
     const zScaling = this.z_axis_config["scaling"] as _ScaleBase | undefined | null;
     this.z_axis_config["exclude_origin_tick"] =
       zScaling === null || zScaling === undefined || zScaling instanceof LinearBase;
-    // NOTE: Python builds the z-axis NumberLine here (_create_axis), rotates
-    // it about its origin (-PI/2 about UP, then angle_of_vector(z_normal)),
-    // and shifts it onto the x-axis origin. The TS Axes hierarchy is not
-    // Mobject-based yet (no NumberLine axes are constructed), so there is no
-    // axis object to rotate/shift; z_axis stays null until that integration
-    // lands.
+
+    const z_axis = this._create_axis(this.z_range, this.z_axis_config, this.z_length);
+
+    // [ax.x_min, ax.x_max] used to account for LogBase() scaling
+    // where ax.x_range[0] != ax.x_min
+    const z_origin = Axes._origin_shift([z_axis.x_min, z_axis.x_max]);
+
+    z_axis.rotate_about_number(z_origin, -PI / 2, [...UP]);
+    z_axis.rotate_about_number(z_origin, angle_of_vector(this.z_normal) as number);
+    z_axis.shift(
+      (pointRows(z_axis.number_to_point(z_origin), 3)[0] ?? [0, 0, 0]).map((value) => -value),
+    );
+    z_axis.shift(
+      pointRows(
+        this.x_axis.number_to_point(
+          Axes._origin_shift([this.x_axis.x_min, this.x_axis.x_max]),
+        ),
+        3,
+      )[0] ?? [0, 0, 0],
+    );
+
+    this.axes.add(z_axis);
+    this.add(z_axis);
+    this.z_axis = z_axis;
+
     if (config.renderer === RendererType.CAIRO) {
       this._add_3d_pieces();
       this._set_axis_shading();
@@ -1801,90 +1684,11 @@ export class ThreeDAxes extends Axes {
 
   get_z_unit_size(): number {
     // NOTE: mirrors Python `get_z_axis().get_unit_size()` (a NumberLine of
-    // length z_length over z_range); computed directly like the
-    // NumberPlane x/y overrides until the NumberLine integration lands.
-    if (this.z_length === null || this.z_length === undefined) return 1;
-    const span = (this.z_range[1] ?? 0) - (this.z_range[0] ?? 0);
-    return span === 0 ? 0 : this.z_length / span;
-  }
-
-  override coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
-    // NOTE: mirrors Python ThreeDAxes.coords_to_point (per-axis NumberLine
-    // mapping over x/y/z). The TS hierarchy ships no NumberLine axes yet, so
-    // the linear NumberPlane-style mapping is extended to the z axis here —
-    // the inherited Axes/NumberPlane fallback only maps x/y and drops z.
-    if (coords.length === 0) return array([0, 0, 0]) as NDArray;
-    const mapPoint = (x: number, y: number, z: number): number[] => [
-      this.x_length === null || this.x_length === undefined
-        ? unitPosition(Number(x), this.x_range)
-        : axisPosition(Number(x), this.x_range, this.x_length),
-      this.y_length === null || this.y_length === undefined
-        ? unitPosition(Number(y), this.y_range)
-        : axisPosition(Number(y), this.y_range, this.y_length),
-      this.z_length === null || this.z_length === undefined
-        ? unitPosition(Number(z), this.z_range)
-        : axisPosition(Number(z), this.z_range, this.z_length),
-    ];
-    if (coords.length === 1) {
-      const rows = coordinateRows(coords[0]);
-      const points = rows.map((row) => mapPoint(row[0] ?? 0, row[1] ?? 0, row[2] ?? 0));
-      if (points.length === 1) return array(points[0]) as NDArray;
-      return array(points) as NDArray;
-    }
-    const xValues = axisValues(coords[0]);
-    const yValues = axisValues(coords[1]);
-    const zValues = coords.length > 2 ? axisValues(coords[2]) : [0];
-    const count = Math.max(xValues.length, yValues.length, zValues.length);
-    const lastOf = (values: number[]): number => values[values.length - 1] ?? 0;
-    const points = Array.from({ length: count }, (_, index) => mapPoint(
-      xValues[index] ?? lastOf(xValues),
-      yValues[index] ?? lastOf(yValues),
-      zValues[index] ?? lastOf(zValues),
-    ));
-    if (count === 1) return array(points[0]) as NDArray;
-    const transposed = points[0].map((_, col) => points.map((row) => row[col] ?? 0));
-    return array(transposed) as NDArray;
-  }
-
-  override point_to_coords(point: readonly number[]): number[] {
-    // NOTE: algebraic inverse of coords_to_point above (Python resolves this
-    // through the z NumberLine axis; the observable result is the same linear
-    // inverse). A list of points maps row-wise like NumberPlane.
-    if (
-      Array.isArray(point) &&
-      point.length > 0 &&
-      Array.isArray((point as unknown as unknown[])[0])
-    ) {
-      const single = (p: readonly number[]): number[] => this.point_to_coords(p);
-      return (point as unknown as number[][]).map((p) => single(p)) as unknown as number[];
-    }
-    const values = [...point].map(Number);
-    const xValue =
-      this.x_length === null || this.x_length === undefined
-        ? unitValue(values[0] ?? 0, this.x_range)
-        : axisValue(values[0] ?? 0, this.x_range, this.x_length);
-    const yValue =
-      this.y_length === null || this.y_length === undefined
-        ? unitValue(values[1] ?? 0, this.y_range)
-        : axisValue(values[1] ?? 0, this.y_range, this.y_length);
-    const zValue =
-      this.z_length === null || this.z_length === undefined
-        ? unitValue(values[2] ?? 0, this.z_range)
-        : axisValue(values[2] ?? 0, this.z_range, this.z_length);
-    return [xValue, yValue, zValue];
-  }
-
-  *[Symbol.iterator](): Iterator<ShadedAxis> {
-    // NOTE: mirrors Python `for axis in self` (ThreeDAxes is a VGroup of
-    // axes); the TS port tracks the axes in `shaded_axes` until the Axes
-    // hierarchy becomes Mobject-based.
-    yield* this.shaded_axes;
+    // length z_length over z_range).
+    return this.get_z_axis().get_unit_size();
   }
 
   _add_3d_pieces(): void {
-    // NOTE: mirrors ``for axis in self.axes``; the TS Axes hierarchy is not
-    // Mobject-based yet, so `axes` is empty until the NumberLine integration
-    // lands and this loop is a no-op in the meantime (same as _set_axis_shading).
     for (const axis of this.axes.submobjects) {
       const mob = axis as Mobject;
       // NOTE: get_pieces returns a Group; unpack its members explicitly
@@ -1908,8 +1712,8 @@ export class ThreeDAxes extends Axes {
     };
 
     for (const axis of this) {
-      for (const submob of axis.family_members_with_points()) {
-        submob.get_gradient_start_and_end_points = make_func(axis);
+      for (const submob of (axis as unknown as ShadedAxis).family_members_with_points()) {
+        submob.get_gradient_start_and_end_points = make_func(axis as unknown as ShadedAxis);
         submob.get_unit_normal = (_point: unknown): number[] => [1, 1, 1];
         submob.set_sheen(0.2);
       }
@@ -2071,8 +1875,8 @@ export class PolarPlane extends Axes {
   azimuth_label_buff: number;
   azimuth_label_font_size: number;
   azimuth_compact_fraction: boolean;
-  override background_lines: VGroup | null = null;
-  override faded_lines: VGroup | null = null;
+  background_lines: VGroup | null = null;
+  faded_lines: VGroup | null = null;
 
   constructor(
     radius_max: number | null = null,
@@ -2092,22 +1896,7 @@ export class PolarPlane extends Axes {
     make_smooth_after_applying_functions = true,
     options: PolarPlaneOptions = {},
   ) {
-    const resolved_radius_max = radius_max ?? config.frame_y_radius;
-    super(
-      [-resolved_radius_max, resolved_radius_max, radius_step],
-      [-resolved_radius_max, resolved_radius_max, radius_step],
-      size,
-      size,
-    );
-    // NOTE: mirrors Python, which passes x_length=size / y_length=size
-    // (None by default) straight through Axes.__init__ to
-    // CoordinateSystem.__init__ (stored as-is). The TS Axes constructor
-    // substitutes frame-derived defaults for null, so restore the
-    // pass-through values here; null lengths select the unit-sized
-    // midpoint-centered mapping in coords_to_point/point_to_coords.
-    this.x_length = size;
-    this.y_length = size;
-    void options;
+    // error catching (mirrors Python, which validates before calling super)
     if (
       azimuth_units !== "PI radians" &&
       azimuth_units !== "TAU radians" &&
@@ -2121,14 +1910,13 @@ export class PolarPlane extends Axes {
       error.name = "ValueError";
       throw error;
     }
-    this.azimuth_units = azimuth_units;
     if (azimuth_direction !== "CW" && azimuth_direction !== "CCW") {
       const error = new Error("Invalid azimuth units. Expected one of: CW, CCW.");
       error.name = "ValueError";
       throw error;
     }
-    this.azimuth_direction = azimuth_direction;
-    this.radius_config = {
+    const resolved_radius_max = radius_max ?? config.frame_y_radius;
+    const radius_config_default: Record<string, unknown> = {
       stroke_width: 2,
       include_ticks: false,
       include_tip: false,
@@ -2136,12 +1924,12 @@ export class PolarPlane extends Axes {
       label_direction: [...DL],
       font_size: 24,
     };
-    this.background_line_style = {
+    const background_style: Record<string, unknown> = {
       stroke_color: BLUE_D as unknown as ParsableManimColor,
       stroke_width: 2,
       stroke_opacity: 1,
     };
-    this.azimuth_step = azimuth_step ?? (
+    const az_step = azimuth_step ?? (
       {
         "PI radians": 20,
         "TAU radians": 20,
@@ -2150,14 +1938,9 @@ export class PolarPlane extends Axes {
       } as Record<string, number>
     )[String(azimuth_units)] ?? 1;
     Axes._update_default_configs(
-      [this.radius_config, this.background_line_style],
-      [radius_config ?? {}, background_line_style ?? {}],
+      [radius_config_default, background_style],
+      [radius_config ?? null, background_line_style ?? null],
     );
-    // NOTE: mirrors Python `super().__init__(..., axis_config=self.radius_config,
-    // **kwargs)`: the radius config becomes the Axes-level axis config, so it
-    // is merged into axis_config/x_axis_config/y_axis_config here (after
-    // super(), which TS requires first). Known Axes options keys forwarded
-    // from the trailing options bag win over it, mirroring **kwargs.
     const {
       radius_config: _droppedRadiusConfig,
       background_line_style: _droppedBackgroundLineStyle,
@@ -2174,40 +1957,29 @@ export class PolarPlane extends Axes {
     void _droppedFadedLineStyle;
     void _droppedFadedLineRatio;
     void _ignoredOptions;
-    Axes._update_default_configs(
-      [this.axis_config, this.x_axis_config, this.y_axis_config],
-      [
-        this.radius_config,
-        (axisConfigOption as Record<string, unknown> | undefined) ?? null,
-        (axisConfigOption as Record<string, unknown> | undefined) ?? null,
-      ],
+    const mergedRadiusConfig = { ...radius_config_default };
+    if (axisConfigOption !== undefined && axisConfigOption !== null) {
+      update_dict_recursively(mergedRadiusConfig, axisConfigOption as Record<string, unknown>);
+    }
+    // NOTE: mirrors Python `super().__init__(..., axis_config=self.radius_config,
+    // **kwargs)`: the radius config becomes the Axes-level axis config, so the
+    // real axes are built from it.
+    super(
+      [-resolved_radius_max, resolved_radius_max, radius_step],
+      [-resolved_radius_max, resolved_radius_max, radius_step],
+      size,
+      size,
+      mergedRadiusConfig,
+      (xAxisConfigOption as Record<string, unknown> | null | undefined) ?? null,
+      (yAxisConfigOption as Record<string, unknown> | null | undefined) ?? null,
+      (tipsOption as boolean | null | undefined) ?? true,
     );
-    if (xAxisConfigOption !== undefined && xAxisConfigOption !== null) {
-      update_dict_recursively(this.x_axis_config, xAxisConfigOption as Record<string, unknown>);
-    }
-    if (yAxisConfigOption !== undefined && yAxisConfigOption !== null) {
-      update_dict_recursively(this.y_axis_config, yAxisConfigOption as Record<string, unknown>);
-    }
-    this.x_axis_config = merge_dicts_recursively(this.axis_config, this.x_axis_config);
-    this.y_axis_config = merge_dicts_recursively(this.axis_config, this.y_axis_config);
-    void tipsOption;
-    // NOTE: mirrors Python _init_background_lines' first half: when no faded
-    // style is given, it defaults to a faded copy of background_line_style
-    // with every numeric value halved (stroke_width 2 -> 1.0, opacity 1 ->
-    // 0.5; colors kept). Only the line *construction* half is deferred (see
-    // below); the style derivation is pure dict math so it is ported.
-    // (typeof boolean is not "number" here, unlike Python's
-    // isinstance(bool, numbers.Number); a boolean style value would halve to
-    // 0.5 in Python but is kept as-is here.)
-    if (faded_line_style === null || faded_line_style === undefined) {
-      const derived: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(this.background_line_style)) {
-        derived[key] = typeof value === "number" ? value * 0.5 : value;
-      }
-      this.faded_line_style = derived;
-    } else {
-      this.faded_line_style = faded_line_style;
-    }
+    this.azimuth_units = azimuth_units;
+    this.azimuth_direction = azimuth_direction;
+    this.radius_config = radius_config_default;
+    this.background_line_style = background_style;
+    this.azimuth_step = az_step;
+    this.faded_line_style = faded_line_style;
     this.faded_line_ratio = faded_line_ratio;
     // NOTE: mirrors Python, where PolarPlane sets this field to True and then
     // Axes.__init__ runs VGroup.__init__(**kwargs), which unconditionally
@@ -2220,29 +1992,17 @@ export class PolarPlane extends Axes {
     this.azimuth_label_buff = azimuth_label_buff;
     this.azimuth_label_font_size = azimuth_label_font_size;
     this.azimuth_compact_fraction = azimuth_compact_fraction;
-    // NOTE: Python calls self._init_background_lines() here (Circle/Line
-    // background construction over the Mobject family). The TS
-    // CoordinateSystem hierarchy is not Mobject-based yet, so background
-    // line construction is deferred until that integration lands;
-    // background_lines/faded_lines stay null (the NumberPlane super()
-    // constructor above populated them with empty groups, so reset here).
-    this.background_lines = null;
-    this.faded_lines = null;
+    this._init_background_lines();
   }
 
-  override prepare_for_nonlinear_transform(num_inserted_curves = 50): this {
-    const host = this as unknown as {
-      family_members_with_points?: () => NonlinearTransformable[];
-    };
-    for (const mob of host.family_members_with_points?.() ?? []) {
-      const num_curves = mob.get_num_curves();
-      if (num_inserted_curves > num_curves) mob.insert_n_curves(num_inserted_curves - num_curves);
+  prepare_for_nonlinear_transform(num_inserted_curves = 50): this {
+    for (const mob of this.family_members_with_points()) {
+      const num_curves = (mob as unknown as NonlinearTransformable).get_num_curves();
+      if (num_inserted_curves > num_curves) {
+        (mob as unknown as NonlinearTransformable).insert_n_curves(num_inserted_curves - num_curves);
+      }
     }
     return this;
-  }
-
-  override get_axes(): VGroup {
-    return this.axes;
   }
 
   _init_background_lines(): void {
@@ -2253,35 +2013,16 @@ export class PolarPlane extends Axes {
       }
       this.faded_line_style = derived;
     }
-    const [background_lines, faded_lines] = this._get_lines();
-    // NOTE: mirrors Python `self.background_lines.set_style(
-    // **self.background_line_style)`; the TS hierarchy is not Mobject-based
-    // yet (no add/add_to_back), so the styled groups are stored but not
-    // added — same limitation as NumberPlane._init_background_lines.
-    (background_lines as VGroup).set_style?.(this.background_line_style as never);
-    (faded_lines as VGroup).set_style?.(this.faded_line_style as never);
-    this.background_lines = background_lines;
-    this.faded_lines = faded_lines;
+    [this.background_lines, this.faded_lines] = this._get_lines();
+    (this.background_lines as VGroup).set_style(this.background_line_style as never);
+    (this.faded_lines as VGroup).set_style(this.faded_line_style as never);
+    this.add_to_back(this.faded_lines as VGroup, this.background_lines as VGroup);
   }
 
   _get_lines(): [VGroup, VGroup] {
-    // NOTE: mirrors Python PolarPlane._get_lines verbatim. The TS Axes
-    // hierarchy is not Mobject-based yet, so get_x_axis() resolves against
-    // an empty axes group until the NumberLine integration lands; in that
-    // case the returned groups are empty (same fallback as
-    // NumberPlane._get_lines).
-    let center: number[];
-    let x_axis: (CoordinateAxisLike & { x_range: number[] }) | null = null;
-    try {
-      center = pointRows(this.get_origin(), 3)[0] ?? [0, 0, 0];
-      const axis = this.get_x_axis() as unknown as CoordinateAxisLike & { x_range?: number[] };
-      if (!axis || typeof axis.get_unit_vector !== "function" || !axis.x_range) {
-        return [new VGroup(), new VGroup()];
-      }
-      x_axis = axis as CoordinateAxisLike & { x_range: number[] };
-    } catch {
-      return [new VGroup(), new VGroup()];
-    }
+    // NOTE: mirrors Python PolarPlane._get_lines verbatim.
+    const center = pointRows(this.get_origin(), 3)[0] ?? [0, 0, 0];
+    const x_axis = this.get_x_axis() as unknown as CoordinateAxisLike & { x_range: number[] };
     let ratio_faded_lines = this.faded_line_ratio;
     const offset = this.azimuth_offset;
     if (ratio_faded_lines === 0) ratio_faded_lines = 1;
@@ -2303,9 +2044,7 @@ export class PolarPlane extends Axes {
       else alines2.add(new_circle);
     });
 
-    const axisEnd = (x_axis as unknown as { get_end: () => number[] }).get_end?.();
-    if (axisEnd === undefined) return [new VGroup(), new VGroup()];
-    const line = new Line(center, axisEnd);
+    const line = new Line(center, (x_axis as unknown as { get_end: () => number[] }).get_end());
 
     ainput.forEach((x, k) => {
       const new_line = line.copy() as Line;
@@ -2357,11 +2096,8 @@ export class PolarPlane extends Axes {
       error.name = "ValueError";
       throw error;
     }
-    // NOTE: mirrors `self.get_right()[0]` (the plane's right edge); the TS
-    // hierarchy is not Mobject-based, so the same geometric value is read
-    // off the coordinate mapping at the top of the radius range instead.
-    const right_point = pointRows(this.coords_to_point(this.x_range[1] ?? 0, 0), 3)[0] ?? [0, 0, 0];
-    const right_x = right_point[0] ?? 0;
+    // NOTE: mirrors `self.get_right()[0]` (the plane's right edge).
+    const right_x = this.get_right()[0] ?? 0;
     const a_points = resolved_a.map((i) => ({
       label: i,
       point: [
@@ -2408,10 +2144,8 @@ export class PolarPlane extends Axes {
     a_values: Iterable<number> | null = null,
   ): this {
     // NOTE: mirrors Python `self.add(self.get_coordinate_labels(r_values,
-    // a_values))`; the TS CoordinateSystem hierarchy is not Mobject-based
-    // yet (see ComplexPlane.add_coordinates), so storing the labels on
-    // coordinate_labels is the observable part.
-    this.get_coordinate_labels(r_values, a_values);
+    // a_values))`.
+    this.add(this.get_coordinate_labels(r_values, a_values));
     return this;
   }
 
@@ -2523,8 +2257,6 @@ function toComplexPoint(value: ComplexNumberLike): ComplexPoint {
 }
 
 export class ComplexPlane extends NumberPlane {
-  private _complexAxes: VGroup | null = null;
-
   constructor(
     x_range: number[] | null = null,
     y_range: number[] | null = null,
@@ -2532,32 +2264,9 @@ export class ComplexPlane extends NumberPlane {
     y_length: number | null = null,
   ) {
     // NOTE: mirrors Python `ComplexPlane.__init__(self, **kwargs)` (which
-    // only forwards to NumberPlane); the TS CoordinateSystem hierarchy
-    // takes explicit range/length params instead of a kwargs bag.
+    // only forwards to NumberPlane); the TS port takes explicit
+    // range/length params instead of a kwargs bag.
     super(x_range, y_range, x_length, y_length);
-  }
-
-  override get_axes(): VGroup {
-    // NOTE: Python ComplexPlane is a NumberPlane (hence an Axes, i.e. a
-    // VGroup of two NumberLine axes). The TS Axes hierarchy is not
-    // Mobject-based yet, so NumberPlane/ComplexPlane ship no axes and the
-    // base get_axes throws NotImplementedError. ComplexPlane methods that
-    // only need tick ranges (notably _get_default_coordinate_values) build
-    // the two NumberLines on demand here, cached per instance, with the
-    // origin tick excluded exactly like Python's LinearBase axes.
-    if (this._complexAxes === null) {
-      this._complexAxes = new VGroup(
-        new NumberLine({
-          x_range: [...this.x_range] as [number, number, number],
-          exclude_origin_tick: true,
-        }),
-        new NumberLine({
-          x_range: [...this.y_range] as [number, number, number],
-          exclude_origin_tick: true,
-        }),
-      );
-    }
-    return this._complexAxes;
   }
 
   number_to_point(number: ComplexNumberLike): NDArray {
@@ -2630,11 +2339,8 @@ export class ComplexPlane extends NumberPlane {
     ...args: Array<ComplexNumberLike | Record<string, unknown>>
   ): this {
     // NOTE: mirrors Python `self.add(self.get_coordinate_labels(*numbers,
-    // **kwargs))`; the TS CoordinateSystem hierarchy is not Mobject-based
-    // yet (see the Axes note), so there is no `add` — storing the labels on
-    // coordinate_labels (as CoordinateSystem.add_coordinates does) is the
-    // observable part.
-    this.get_coordinate_labels(...args);
+    // **kwargs))`.
+    this.add(this.get_coordinate_labels(...args));
     return this;
   }
 }

@@ -25,6 +25,7 @@ import { Arrow, DoubleArrow, Line } from "../src/mobject/geometry/line.js";
 import { ArrowTriangleFilledTip } from "../src/mobject/geometry/tips.js";
 import { VGroup, VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
+import { DecimalNumber } from "../src/mobject/text/numbers.js";
 import { MED_SMALL_BUFF, SMALL_BUFF, UR, OUT, RIGHT } from "../src/constants.js";
 import { ApplyMethod } from "../src/animation/transform.js";
 import { Succession } from "../src/animation/composition.js";
@@ -169,19 +170,15 @@ describe("Arrow3D.__init__ extras", () => {
 // Scatter-text method: python groups get_x_axis_label(x) + get_y_axis_label
 // (y) into axis_labels. str/float labels go through MathTex (out of scope);
 // VMobject labels are returned as-is, positioned next_to the axis edge.
-// NOTE: the TS Axes hierarchy ships an empty `axes` group until the
-// NumberLine integration lands (pre-existing gap, asserted below), so real
-// NumberLines are wired into the documented slots here; label creation then
-// runs through the real NumberLine._create_label_tex.
+// Axes now builds its real NumberLine axes, so get_x_axis()/get_y_axis()
+// return them directly.
 // original manim: axis_labels stored on self, labels[i] is the passed-in mobject.
 // ---------------------------------------------------------------------------
 describe("Axes.get_axis_labels", () => {
   function wiredAxes() {
     const ax = new Axes([0, 5, 1], [0, 5, 1], 5, 5);
-    const xLine = new NumberLine({ x_range: [0, 5, 1], length: 5 });
-    const yLine = new NumberLine({ x_range: [0, 5, 1], length: 5 });
-    ax.axes.add(xLine, yLine);
-    (ax as unknown as { x_axis: NumberLine }).x_axis = xLine;
+    const xLine = ax.get_x_axis() as unknown as NumberLine;
+    const yLine = ax.get_y_axis() as unknown as NumberLine;
     return { ax, xLine, yLine };
   }
 
@@ -221,17 +218,20 @@ describe("Axes.get_axis_labels", () => {
     );
   });
 
-  it("raises the text/tex TODO for str labels (out of scope)", () => {
+  it("renders str labels via MathTex", () => {
     const { ax } = wiredAxes();
-    expect(() => ax.get_axis_labels("x", "y")).toThrowError(/text\/tex/);
+    const labels = ax.get_axis_labels("x", "y");
+    expect(labels instanceof VGroup).toBe(true);
+    expect(labels.submobjects.length).toBe(2);
+    expect(labels.submobjects[0]).toBeInstanceOf(VMobject);
   });
 
-  it("documents the empty-axes gap on unwired Axes", () => {
-    // Pre-existing NumberLine-integration gap (not this batch): with no
-    // wired axes, get_axis raises IndexError.
-    expect(() => new Axes([0, 5, 1], [0, 5, 1], 5, 5).get_axis_labels(new Square(), new Square())).toThrowError(
-      /range object index out of range/,
+  it("uses the built axes for VMobject labels (no manual wiring needed)", () => {
+    const labels = new Axes([0, 5, 1], [0, 5, 1], 5, 5).get_axis_labels(
+      new Square(),
+      new Square(),
     );
+    expect(labels.submobjects.length).toBe(2);
   });
 });
 
@@ -245,11 +245,9 @@ describe("Axes.get_axis_labels", () => {
 describe("ThreeDAxes.get_axis_labels", () => {
   function wiredAxes() {
     const ax = new ThreeDAxes([0, 3, 1], [0, 3, 1], 3, 3, undefined, [], 20, [0, 3, 1], 3);
-    const xLine = new NumberLine({ x_range: [0, 3, 1], length: 3 });
-    const yLine = new NumberLine({ x_range: [0, 3, 1], length: 3 });
-    const zLine = new NumberLine({ x_range: [0, 3, 1], length: 3 });
-    ax.axes.add(xLine, yLine, zLine);
-    (ax as unknown as { x_axis: NumberLine }).x_axis = xLine;
+    const xLine = ax.get_x_axis() as unknown as NumberLine;
+    const yLine = ax.get_y_axis() as unknown as NumberLine;
+    const zLine = ax.get_z_axis() as unknown as NumberLine;
     return { ax, xLine, yLine, zLine };
   }
 
@@ -292,9 +290,13 @@ describe("ThreeDAxes.get_axis_labels", () => {
     }
   });
 
-  it("raises the text/tex TODO for str labels (out of scope)", () => {
+  it("renders str labels via MathTex", () => {
     const { ax } = wiredAxes();
-    expect(() => ax.get_axis_labels("x", "y", "z")).toThrowError(/text\/tex/);
+    const labels = ax.get_axis_labels("x", "y", "z");
+    expect(labels.submobjects.length).toBe(3);
+    for (const label of labels.submobjects) {
+      expect(label).toBeInstanceOf(VMobject);
+    }
   });
 });
 
@@ -336,10 +338,11 @@ describe("ComplexPlane.get_coordinate_labels", () => {
     expect(labels.submobjects.length).toBe(3);
   });
 
-  it("throws the text/tex TODO on the real NumberLine path", () => {
-    expect(() => new ComplexPlane().get_coordinate_labels(1 as never)).toThrowError(
-      /text\/tex/,
-    );
+  it("builds DecimalNumber labels on the real NumberLine path", () => {
+    const labels = new ComplexPlane().get_coordinate_labels(1 as never);
+    expect(labels).toBeInstanceOf(VGroup);
+    expect(labels.submobjects.length).toBe(1);
+    expect((labels.submobjects[0] as unknown as DecimalNumber).get_value()).toBe(1);
   });
 });
 
@@ -361,8 +364,12 @@ describe("ComplexPlane.add_coordinates extras", () => {
     expect(cp.coordinate_labels.submobjects.length).toBe(1);
   });
 
-  it("default coordinate values hit the text/tex TODO on real axes", () => {
-    expect(() => new ComplexPlane().add_coordinates()).toThrowError(/text\/tex/);
+  it("default coordinate values build the full label set on real axes", () => {
+    const cp = new ComplexPlane();
+    const expected = cp._get_default_coordinate_values().length;
+    const ret = cp.add_coordinates();
+    expect(ret === cp).toBe(true);
+    expect(cp.coordinate_labels.submobjects.length).toBe(expected);
   });
 });
 

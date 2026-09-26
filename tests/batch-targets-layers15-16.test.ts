@@ -424,17 +424,12 @@ describe("CoordinateSystem.get_axes", () => {
     expect(() => base.get_axes()).toThrowError(/must be implemented/);
   });
 
-  it("Axes returns a VGroup (D-axes: empty until NumberLine lands)", () => {
-    // Python Axes(...).get_axes() returns 2 NumberLines. The TS Axes
-    // hierarchy is not Mobject-based yet (this.axes is an empty VGroup).
+  it("Axes returns its two real NumberLine axes like python", () => {
     const axes = new Axes([0, 5, 1], [0, 5, 1]);
     expect(axes.get_axes()).toBeInstanceOf(VGroup);
-    expect(axes.get_axes().submobjects.length).toBe(0);
-    // NOTE (deviation, out of this batch's scope): Python NumberPlane
-    // extends Axes and inherits get_axes, but TS NumberPlane extends
-    // CoordinateSystem directly without an axes group, so even constructing
-    // one calls the throwing base get_axes. Only the base-throws contract
-    // (the batch target) is asserted here.
+    expect(axes.get_axes().submobjects.length).toBe(2);
+    expect(axes.get_x_axis()).toBe(axes.get_axes().submobjects[0]);
+    expect(axes.get_y_axis()).toBe(axes.get_axes().submobjects[1]);
   });
 });
 

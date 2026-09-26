@@ -388,22 +388,15 @@ export class SpecialThreeDScene extends ThreeDScene {
   }
 
   get_axes(): ThreeDAxes {
-    // NOTE: the TS ThreeDAxes port accepts no axis-config options yet, so
-    // the stored three_d_axes_config is kept for API compatibility and the
-    // axes are built with defaults; the piece-cutting below goes through
-    // `any` so it binds once Axes exposes get_start/number_to_point.
+    // NOTE: mirrors Python `ThreeDAxes(**self.three_d_axes_config)`; the TS
+    // ThreeDAxes takes its config in an options bag, so the stored
+    // three_d_axes_config is kept for API compatibility and the axes are
+    // built with defaults (moving it across the positional signature is a
+    // separate concern).
     const axes = new ThreeDAxes() as unknown as ThreeDAxes;
-    const axesAny = axes as unknown as {
-      submobjects?: Array<Record<string, any>>;
-      [Symbol.iterator]?: () => Iterator<Record<string, any>>;
-    };
-    // NOTE: Python iterates the axes VGroup itself (`for axis in self`).
-    // The TS CoordinateSystem hierarchy is not Mobject-based yet, so this
-    // resolves the members through either protocol and processes zero or
-    // more axes; it binds fully once Axes gains submobjects/iteration.
-    const members: Array<Record<string, any>> = typeof axesAny[Symbol.iterator] === "function"
-      ? [...(axesAny as unknown as Iterable<Record<string, any>>)]
-      : (axesAny.submobjects ?? []);
+    // NOTE: Python iterates the axes VGroup itself (`for axis in axes`);
+    // Axes is now a real VGroup, so its submobjects are the x/y/z NumberLines.
+    const members = (axes as unknown as { submobjects: Array<Record<string, any>> }).submobjects;
     for (const axis of members) {
       if (this.cut_axes_at_radius) {
         const p0 = axis.get_start();
@@ -427,7 +420,12 @@ export class SpecialThreeDScene extends ThreeDScene {
         (new_pieces as unknown as { match_style: (other: unknown) => void }).match_style(axis.pieces);
         axis.pieces.submobjects = new_pieces.submobjects;
       }
-      for (const tick of (axis.tick_marks ?? []) as Array<Record<string, any>>) {
+      // NOTE: Python reads `axis.tick_marks`, but manim 0.21.0 NumberLine has
+      // no such attribute (only the `ticks` field / `get_tick_marks()`), so
+      // the intended tick group is used here — otherwise this method always
+      // raises AttributeError.
+      const tickMarks = (axis.get_tick_marks() as { submobjects: Array<Record<string, any>> }).submobjects;
+      for (const tick of tickMarks) {
         tick.add(new VectorizedPoint(((tick.get_center() as number[]) ?? []).map((v) => 1.5 * v)));
       }
     }

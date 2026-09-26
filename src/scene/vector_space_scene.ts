@@ -60,10 +60,10 @@ export class VectorScene extends Scene {
   }
 
   add_plane(animate = false, kwargs: Record<string, unknown> = {}): NumberPlane {
-    // NOTE: the TS NumberPlane port only supports the geometric range/length
-    // options; grid-styling kwargs (axis_config, background_line_style,
-    // faded_line_ratio, ...) are accepted but ignored until NumberPlane
-    // itself is fully ported.
+    // NOTE: only the geometric range/length options are forwarded; grid-style
+    // options (axis_config/background_line_style/...) hit the pre-existing
+    // merge_dicts_recursively color-object recursion bug in config_ops, so
+    // they remain accepted-but-ignored until that helper is fixed.
     const plane = new NumberPlane(
       (kwargs.x_range as number[] | null) ?? null,
       (kwargs.y_range as number[] | null) ?? null,
@@ -93,11 +93,8 @@ export class VectorScene extends Scene {
   }
 
   lock_in_faded_grid(dimness = 0.7, axes_dimness = 0.5): void {
-    // NOTE: NumberPlane.get_axes/fade and the axes-group set_color/fade
-    // helpers are not ported yet (later batches); this mirrors the Python
-    // call sequence through `any` so it binds once they land.
-    const plane: any = this.add_plane();
-    const axes: any = plane.get_axes();
+    const plane = this.add_plane();
+    const axes = plane.get_axes();
     plane.fade(dimness);
     axes.set_color(WHITE);
     axes.fade(axes_dimness);
@@ -296,9 +293,9 @@ export interface LinearTransformationSceneOptions {
 }
 
 function numberPlaneFromKwargs(kwargs: Record<string, unknown>): NumberPlane {
-  // NOTE: the TS NumberPlane port only supports the geometric range/length
-  // options; grid-styling kwargs (axis_config, background_line_style,
-  // faded_line_ratio, ...) are accepted for API compatibility and ignored.
+  // NOTE: only the geometric range/length options are forwarded; grid-style
+  // options hit the pre-existing merge_dicts_recursively color-object
+  // recursion bug in config_ops (see add_plane).
   return new NumberPlane(
     (kwargs.x_range as number[] | null) ?? null,
     (kwargs.y_range as number[] | null) ?? null,
@@ -493,9 +490,6 @@ export class LinearTransformationScene extends VectorScene {
     opacity = 0.3,
     stroke_width = 3,
   ): Rectangle {
-    // NOTE: the TS Axes hierarchy ships no NumberLine axes yet (empty `axes`
-    // group), so get_x_unit_size()/get_y_unit_size() throw until that
-    // integration lands; the Rectangle construction itself is faithful.
     const single = color as ParsableManimColor;
     const square = new Rectangle({
       color: single,

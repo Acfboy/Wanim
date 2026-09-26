@@ -680,11 +680,11 @@ describe("ComplexPlane.add_coordinates", () => {
     expect(cp.coordinate_labels.submobjects.length).toBe(2);
   });
 
-  it("falls back to the real NumberLine path which raises text/tex TODO", () => {
+  it("falls back to the real NumberLine path which labels the axes", () => {
     const cp = new ComplexPlane();
-    expect(() => cp.add_coordinates({ re: 1, im: 0 })).toThrowError(
-      /text\/tex/,
-    );
+    const ret = cp.add_coordinates({ re: 1, im: 0 });
+    expect(ret === cp).toBe(true);
+    expect(cp.coordinate_labels.submobjects.length).toBe(1);
   });
 });
 

@@ -102,17 +102,13 @@ describe("CoordinateSystem.get_axis_labels", () => {
     );
   });
 
-  it("Axes override exists; unwired axes hit the empty-axes gap", () => {
-    // NOTE (updated): Axes.get_axis_labels has since been ported (it groups
-    // get_x_axis_label/get_y_axis_label into axis_labels; str labels need
-    // MathTex -> text/tex TODO, VMobject labels are positioned verbatim —
-    // see batch-targets-2124-layers21-24.test.ts). The TS Axes hierarchy
-    // still ships an empty `axes` group until the NumberLine integration
-    // lands, so an unwired Axes raises IndexError here, not
-    // NotImplementedError.
-    expect(() => makeAxes().get_axis_labels()).toThrowError(
-      expect.objectContaining({ name: "IndexError" }),
-    );
+  it("Axes override groups positioned labels (str labels render via MathTex)", () => {
+    // Axes.get_axis_labels builds MathTex labels for str/float inputs; the
+    // NumberLine axes are real, so this now succeeds and returns positioned
+    // labels.
+    const labels = makeAxes().get_axis_labels();
+    expect(labels).toBeInstanceOf(VGroup);
+    expect(labels.submobjects.length).toBe(2);
   });
 });
 

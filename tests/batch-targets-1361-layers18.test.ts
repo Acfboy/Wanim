@@ -12,7 +12,7 @@
 // FileNotFoundError there). The TS port keeps clearly-marked TODO stubs for
 // those paths; tests assert the stub behavior plus the tex-free layout paths
 // (documented inline as deviations D1..D5).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { NDArray } from "numpy-ts";
 import {
   Axes,
@@ -185,7 +185,16 @@ describe("SampleSpace.__init__", () => {
 // ---------------------------------------------------------------------------
 describe("BarChart._create_bar", () => {
   function chart(): BarChart {
-    return new BarChart([1, 2, 3]);
+    // The y-axis DecimalNumber/Tex labels are out of scope; stub the number
+    // mobject so BarChart construction reaches the geometry.
+    vi.spyOn(NumberLine.prototype, "get_number_mobject").mockImplementation(
+      () => new Square() as unknown as VMobject,
+    );
+    try {
+      return new BarChart([1, 2, 3]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   }
 
   it("creates positioned bars matching the axis mapping", () => {
@@ -846,10 +855,17 @@ describe("integration: layers-18 batch with earlier ports", () => {
     const ax = new Axes([0, 3, 1], [0, 3, 0.75], 3, 4);
     const yOf = (v: number): number => (ax.c2p(0, v).toArray() as number[])[1] ?? NaN;
     const base = yOf(0);
-    const bc = new BarChart([1, 2, 3]);
-    for (const v of [1, 2, 3]) {
-      const bar = bc._create_bar(0, v);
-      expectClose(bar.height, Math.abs(yOf(v) - base));
+    vi.spyOn(NumberLine.prototype, "get_number_mobject").mockImplementation(
+      () => new Square() as unknown as VMobject,
+    );
+    try {
+      const bc = new BarChart([1, 2, 3]);
+      for (const v of [1, 2, 3]) {
+        const bar = bc._create_bar(0, v);
+        expectClose(bar.height, Math.abs(yOf(v) - base));
+      }
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 

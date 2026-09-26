@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { array, type NDArray } from "numpy-ts";
 import { ArrowVectorField } from "../src/mobject/vector_field.js";
 import { Table, MobjectTable } from "../src/mobject/table.js";
@@ -209,9 +209,11 @@ describe("NumberLine._create_label_tex", () => {
     const vm = new VMobject();
     expect(nl._create_label_tex(vm)).toBe(vm);
   });
-  it("string without a label_constructor throws tex TODO (python: latex FileNotFoundError)", () => {
+  it("string builds a MathTex label via the default constructor", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl._create_label_tex("hello")).toThrow(/text\/tex/);
+    const rendered = nl._create_label_tex("hello");
+    expect(rendered).toBeInstanceOf(VMobject);
+    expect(rendered.submobjects.length).toBeGreaterThan(0);
   });
 });
 
@@ -258,8 +260,15 @@ describe("tex-only stubs throw TODO", () => {
     expect(() => new SampleSpace().add_title()).toThrow(/text\/tex/);
   });
   it("BarChart.get_bar_labels throws", () => {
-    const bc = new BarChart([1, 2, 3]);
-    expect(() => bc.get_bar_labels()).toThrow(/text\/tex/);
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      const bc = new BarChart([1, 2, 3]);
+      expect(() => bc.get_bar_labels()).toThrow(/text\/tex/);
+    } finally {
+      spy.mockRestore();
+    }
   });
   it("PolarPlane.get_radian_label throws (string computed, MathTex out of scope)", () => {
     const pp = new PolarPlane();
@@ -267,11 +276,10 @@ describe("tex-only stubs throw TODO", () => {
   });
   it("PolarPlane.get_coordinate_labels throws (needs MathTex labels)", () => {
     const pp = new PolarPlane();
-    // NOTE: python reaches MathTex (latex FileNotFoundError here); the TS
-    // Axes hierarchy is not Mobject-based yet so get_x_axis() fails first
-    // with "range object index out of range" (see ).
-    // Either error confirms the labels cannot be built without tex/axes.
-    expect(() => pp.get_coordinate_labels()).toThrow(/text\/tex|range object index/);
+    // Python reaches MathTex (latex FileNotFoundError here); the TS port
+    // builds the real axes and reaches DecimalNumber/MathTex label creation,
+    // which is the unported text pipeline.
+    expect(() => pp.get_coordinate_labels()).toThrow(/text\/tex/);
   });
 });
 

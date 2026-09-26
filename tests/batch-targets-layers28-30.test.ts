@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { array, type NDArray } from "numpy-ts";
 import { Brace, BraceLabel, BraceText } from "../src/mobject/svg/brace.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
+import { DecimalNumber, string_to_mob_map } from "../src/mobject/text/numbers.js";
 import {
   Matrix,
   DecimalMatrix,
@@ -108,9 +109,15 @@ describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
       /text\/tex/,
     );
   });
-  it("NumberLine.get_number_mobject throws (python: DecimalNumber -> latex)", () => {
+  it("NumberLine.get_number_mobject builds a positioned DecimalNumber (python)", () => {
+    string_to_mob_map.clear();
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl.get_number_mobject(1)).toThrow(/text\/tex/);
+    const mob = nl.get_number_mobject(1) as unknown as DecimalNumber;
+    expect(mob).toBeInstanceOf(DecimalNumber);
+    expect(mob.get_value()).toBe(1);
+    expect(close(mob.get_center()[0] ?? NaN, 1, 1e-9)).toBe(true);
+    // python: next_to([1,0,0], DOWN, 0.25) -> label top edge at y=-0.25
+    expect(close(mob.get_top()[1] ?? NaN, -0.25, 1e-9)).toBe(true);
   });
   it("Vector.coordinate_label throws (python: Matrix -> latex)", () => {
     const v = new Vector([1, 2, 0]);
@@ -123,16 +130,13 @@ describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
   it("LabeledArrow.__init__ throws via Label (python: MathTex -> latex)", () => {
     expect(() => new LabeledArrow("hi")).toThrow(/text\/tex/);
   });
-  it("PolarPlane.add_coordinates throws IndexError from the unported Axes integration (python: MathTex/DecimalNumber labels -> latex FileNotFoundError)", () => {
-    // NOTE: python reaches label construction (MathTex via get_radian_label,
+  it("PolarPlane.add_coordinates throws text/tex TODO (python: MathTex/DecimalNumber labels -> latex FileNotFoundError)", () => {
+    // Python reaches label construction (MathTex via get_radian_label,
     // DecimalNumber via axis.add_numbers) and fails on missing latex. The TS
-    // port fails earlier: PolarPlane axes are not Mobject-integrated yet, so
-    // get_x_axis().get_tick_range() indexes an empty group -> IndexError
-    // ("range object index out of range"). Documented in
-    //  ("PolarPlane live 坐标标签仍不可用", pre-existing,
-    // not introduced by this batch).
+    // port now builds the real axes and reaches the same DecimalNumber label
+    // path, which is the unported text pipeline.
     const pp = new PolarPlane();
-    expect(() => pp.add_coordinates()).toThrow(/range object index out of range/);
+    expect(() => pp.add_coordinates()).toThrow(/text\/tex not ported/);
   });
   it("Matrix.__init__ default factory throws (python: MathTex -> latex)", () => {
     expect(

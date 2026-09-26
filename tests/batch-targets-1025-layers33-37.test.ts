@@ -9,6 +9,8 @@ import {
   ThreeDAxes,
 } from "../src/mobject/graphing/coordinate_systems.js";
 import { BarChart } from "../src/mobject/graphing/probability.js";
+import { NumberLine } from "../src/mobject/graphing/number_line.js";
+import { Square } from "../src/mobject/geometry/polygram.js";
 import {
   ConvexHull3D,
   Dodecahedron,
@@ -201,15 +203,12 @@ describe("NumberPlane._init_background_lines / _get_lines", () => {
     expect(pl.faded_lines).toBeInstanceOf(VGroup);
   });
 
-  it("_get_lines returns [background, faded] VGroups", () => {
-    // NOTE deviation: python builds 22 background + 0 faded line mobjects via
-    // NumberLine axes; the TS hierarchy is not Mobject-based yet (empty axes
-    // group), so both groups are empty. Counts bind once NumberLine lands.
+  it("_get_lines returns [background, faded] VGroups (python: 22 + 0)", () => {
     const pl = new NumberPlane();
     const [bg, faded] = pl._get_lines();
     expect(bg).toBeInstanceOf(VGroup);
     expect(faded).toBeInstanceOf(VGroup);
-    expect(bg.submobjects.length).toBe(0);
+    expect(bg.submobjects.length).toBe(22);
     expect(faded.submobjects.length).toBe(0);
   });
 });
@@ -259,9 +258,6 @@ describe("PolarPlane.__init__ (python ground truth)", () => {
 
 describe("PolarPlane._init_background_lines / get_vector", () => {
   it("_init_background_lines derives faded style and stores groups", () => {
-    // NOTE deviation: python builds 25 circle/line mobjects; TS groups stay
-    // empty until the Mobject-based axes integration lands (same as
-    // NumberPlane._get_lines). The style derivation is ported verbatim.
     const pp = new PolarPlane();
     pp._init_background_lines();
     expect(pp.background_lines).toBeInstanceOf(VGroup);
@@ -269,7 +265,7 @@ describe("PolarPlane._init_background_lines / get_vector", () => {
     expect(pp.faded_line_style?.["stroke_width"]).toBe(1.0);
     expect(pp.faded_line_style?.["stroke_opacity"]).toBe(0.5);
     const [bg, faded] = pp._get_lines();
-    expect(bg.submobjects.length).toBe(0);
+    expect(bg.submobjects.length).toBe(25);
     expect(faded.submobjects.length).toBe(0);
   });
 
@@ -409,21 +405,45 @@ describe("ConvexHull3D.__init__ (python ground truth)", () => {
 // ---------------------------------------------------------------------------
 
 describe("BarChart.__init__ (python ground truth)", () => {
+  // The y-axis numbers now build real DecimalNumbers (MathJax-rendered).
+  // Stub the number mobject where the test only cares about the ported
+  // config/geometry arithmetic (keeps these cases fast).
+  function withStubbedNumbers<T>(fn: () => T): T {
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      return fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
   it("derives x_range/y_range/lengths (python [0,3,1]/[0,3,0.75], 3/4)", () => {
-    const bc = new BarChart([1, 2, 3]);
-    expect(bc.values).toEqual([1, 2, 3]);
-    expect(bc.x_range).toEqual([0, 3, 1]);
-    expect(bc.y_range).toEqual([0, 3, 0.75]);
-    expect(bc.x_length).toBe(3);
-    expect(bc.y_length).toBe(4);
-    expect(bc.bars.submobjects.length).toBe(3);
+    withStubbedNumbers(() => {
+      const bc = new BarChart([1, 2, 3]);
+      expect(bc.values).toEqual([1, 2, 3]);
+      expect(bc.x_range).toEqual([0, 3, 1]);
+      expect(bc.y_range).toEqual([0, 3, 0.75]);
+      expect(bc.x_length).toBe(3);
+      expect(bc.y_length).toBe(4);
+      expect(bc.bars.submobjects.length).toBe(3);
+    });
   });
 
   it("bar heights scale with values (python ratio 1:2:3)", () => {
+    withStubbedNumbers(() => {
+      const bc = new BarChart([1, 2, 3]);
+      const bars = bc.bars.submobjects as Array<{ height: number }>;
+      expect(close(bars[1]?.height ?? NaN, 2 * (bars[0]?.height ?? NaN), 1e-9)).toBe(true);
+      expect(close(bars[2]?.height ?? NaN, 3 * (bars[0]?.height ?? NaN), 1e-9)).toBe(true);
+    });
+  });
+
+  it("construction builds the real y-axis numbers (python: 4 labels)", () => {
     const bc = new BarChart([1, 2, 3]);
-    const bars = bc.bars.submobjects as Array<{ height: number }>;
-    expect(close(bars[1]?.height ?? NaN, 2 * (bars[0]?.height ?? NaN), 1e-9)).toBe(true);
-    expect(close(bars[2]?.height ?? NaN, 3 * (bars[0]?.height ?? NaN), 1e-9)).toBe(true);
+    expect(bc.y_axis.numbers).toBeInstanceOf(VGroup);
+    expect(bc.y_axis.numbers!.submobjects.length).toBe(4);
   });
 
   it("bar_names need Tex labels (text/tex out of scope)", () => {
@@ -433,10 +453,12 @@ describe("BarChart.__init__ (python ground truth)", () => {
   });
 
   it("explicit two-element y_range gains a computed step", () => {
-    const bc = new BarChart([1, 2, 3], { y_range: [0, 5] });
-    expect(bc.y_range[0]).toBe(0);
-    expect(bc.y_range[1]).toBe(5);
-    expect(close(bc.y_range[2] ?? NaN, 0.75, 1e-9)).toBe(true);
+    withStubbedNumbers(() => {
+      const bc = new BarChart([1, 2, 3], { y_range: [0, 5] });
+      expect(bc.y_range[0]).toBe(0);
+      expect(bc.y_range[1]).toBe(5);
+      expect(close(bc.y_range[2] ?? NaN, 0.75, 1e-9)).toBe(true);
+    });
   });
 });
 
@@ -458,16 +480,15 @@ describe("VectorScene.add_axes / add_plane (python ground truth)", () => {
     expect(plane).toBeInstanceOf(NumberPlane);
   });
 
-  it("lock_in_faded_grid needs Mobject axes (deferred)", () => {
-    // NOTE deviation: python fades the VGroup plane/axes in place; the TS
-    // CoordinateSystem hierarchy is not Mobject-based yet (get_axes throws),
-    // so this binds once the NumberLine integration lands.
-    // Pins the specific deferred error (NumberPlane has no Mobject axes yet),
-    // not just any throw, so a different failure mode can't masquerade as it.
+  it("lock_in_faded_grid fades the plane/axes and reseats the camera", () => {
     const vs = new VectorScene();
-    expect(() => vs.lock_in_faded_grid()).toThrow(
-      /CoordinateSystem\.get_axes must be implemented by a subclass/,
-    );
+    const calls: number[] = [];
+    (vs as unknown as { renderer: { update_frame: () => void; camera: unknown } }).renderer = {
+      update_frame: () => calls.push(1),
+      camera: null,
+    };
+    expect(() => vs.lock_in_faded_grid()).not.toThrow();
+    expect(calls.length).toBe(1);
   });
 });
 
@@ -525,10 +546,17 @@ describe("integration (this batch x earlier batches)", () => {
   });
 
   it("BarChart bar height equals the axes y-span (probability x coords)", () => {
-    const bc = new BarChart([1, 2, 3]);
-    const yOf = (v: number): number => toNums(bc.coords_to_point(0, v))[1] ?? 0;
-    const bars = bc.bars.submobjects as Array<{ height: number }>;
-    expect(close(bars[0]?.height ?? NaN, Math.abs(yOf(1) - yOf(0)), 1e-9)).toBe(true);
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      const bc = new BarChart([1, 2, 3]);
+      const yOf = (v: number): number => toNums(bc.coords_to_point(0, v))[1] ?? 0;
+      const bars = bc.bars.submobjects as Array<{ height: number }>;
+      expect(close(bars[0]?.height ?? NaN, Math.abs(yOf(1) - yOf(0)), 1e-9)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("ComplexPlane n2p/p2n round-trips through NumberPlane mapping", () => {

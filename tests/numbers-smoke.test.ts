@@ -52,10 +52,22 @@ describe("numbers smoke", () => {
     expect(new Integer(2.1, { mob_class: dummyFactory }).get_value()).toBe(2);
   });
 
-  it("default mob_class throws text/tex TODO", () => {
-    expect(() => new DecimalNumber(0)).toThrow("TODO: text/tex not ported yet");
-    expect(() => new Variable(0.5, "x")).toThrow("TODO: text/tex not ported yet");
-    expect(() => new Variable(0.5, new VMobject())).toThrow("TODO: text/tex not ported yet");
+  it("default mob_class renders digits/glyphs via MathTex", () => {
+    string_to_mob_map.clear();
+    const d = new DecimalNumber(0);
+    expect(d.submobjects.length).toBeGreaterThan(0);
+    expect(d._get_num_string(0)).toBe("0.00");
+    // python Variable: label = MathTex("x") with MathTex("=") appended;
+    // value = DecimalNumber(0.5, num_decimal_places=2).
+    const v = new Variable(0.5, "x");
+    expect(v.submobjects.length).toBe(2);
+    expect(v.label.submobjects.length).toBe(2);
+    expect(v.value.get_value()).toBe(0.5);
+    const vm = new VMobject();
+    const v2 = new Variable(0.5, vm);
+    expect(v2.label).toBe(vm);
+    expect(vm.submobjects.length).toBe(1);
+    expect(v2.value.get_value()).toBe(0.5);
   });
 
   it("complex num strings", () => {

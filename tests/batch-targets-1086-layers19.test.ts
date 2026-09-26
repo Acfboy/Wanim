@@ -476,9 +476,10 @@ describe("ThreeDAxes", () => {
     expectRowsClose(plainRows(td.coords_to_point(-6, -5)), [[-5.25, -5.25, 0]], 1e-9);
   });
 
-  it("keeps axes empty until the NumberLine integration lands (D1)", () => {
+  it("builds x/y/z NumberLine axes like python", () => {
     const td = new ThreeDAxes();
-    expect(td.get_axes().submobjects.length).toBe(0);
+    expect(td.get_axes().submobjects.length).toBe(3);
+    expect(td.get_z_axis()).toBeInstanceOf(NumberLine);
   });
 });
 
@@ -647,9 +648,9 @@ describe("NumberPlane", () => {
     expect((np.point_to_coords([1, 1, 0]) as number[]).map(Number)).toEqual([1, 1]);
   });
 
-  it("defers background line construction (D1)", () => {
+  it("builds the real background grid (python: 22 + 0)", () => {
     const np = new NumberPlane();
-    expect(np.background_lines?.submobjects.length ?? 0).toBe(0);
+    expect(np.background_lines?.submobjects.length ?? 0).toBe(22);
     expect(np.faded_lines?.submobjects.length ?? 0).toBe(0);
   });
 

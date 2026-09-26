@@ -1,13 +1,16 @@
 import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
-import { DEFAULT_ARROW_TIP_LENGTH, DOWN, MED_SMALL_BUFF, OUT, UP } from "../../constants.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DOWN, LEFT, MED_SMALL_BUFF, OUT, UP } from "../../constants.js";
 import { isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
+import { merge_dicts_recursively } from "../../utils/config_ops.js";
 import { angle_of_vector, normalize } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Mobject } from "../mobject.js";
 import { Line } from "../geometry/line.js";
 import type { ArrowTip } from "../geometry/tips.js";
+import { DecimalNumber, type DecimalNumberMobFactory } from "../text/numbers.js";
+import { MathTex } from "../text/tex_mobject.js";
 import { LinearBase, _ScaleBase } from "./scale.js";
 
 // NOTE: mirrors CPython repr/str for floats: scientific notation when the
@@ -40,9 +43,26 @@ function arange(start: number, stop: number, step: number): number[] {
   return result;
 }
 
-// NOTE: minimal port. NumberLine's label/text rendering (Tex, DecimalNumber)
-// is out of scope for the interpreter target; only the pure-computation
-// pieces translated so far are included here.
+// NOTE: NumberLine's label/text rendering (DecimalNumber/MathTex) is wired
+// through the ported MathJax-backed text pipeline; the pure-computation
+// pieces (scaling, ticks, n2p/p2n) are included here as well.
+
+/** Normalize a `label_constructor` (a class like MathTex, or an already-built
+ * factory) into DecimalNumber's `mob_class` factory. */
+function toMobFactory(ctor: unknown): DecimalNumberMobFactory | undefined {
+  if (typeof ctor !== "function") return undefined;
+  const fn = ctor as (...args: unknown[]) => VMobject;
+  return (text: string, kwargs: Record<string, unknown> = {}) => {
+    try {
+      return new (fn as unknown as new (t: string, k?: Record<string, unknown>) => VMobject)(
+        text,
+        kwargs,
+      );
+    } catch {
+      return fn(text, kwargs);
+    }
+  };
+}
 function isSinglePoint(point: unknown): boolean {
   if (isNDArray(point)) {
     return (point.shape ?? []).length <= 1;
@@ -77,11 +97,11 @@ export class NumberLine extends VGroup {
   include_numbers = false;
   scaling: _ScaleBase = new LinearBase();
   // NOTE: mirrors Python NumberLine.__init__ (label_direction defaults to
-  // DOWN, label_constructor to MathTex). The MathTex/Text pipeline is out of
-  // scope for this port, so label_constructor is stored opaquely (null until
-  // set) and only consulted when label mobjects must be constructed.
+  // DOWN, label_constructor to MathTex). MathTex renders through MathJax; the
+  // constructor is stored opaquely and consulted when label mobjects are
+  // constructed.
   label_direction: readonly number[] | NDArray = [...DOWN];
-  label_constructor: unknown = null;
+  label_constructor: unknown = MathTex;
   line_to_number_buff = MED_SMALL_BUFF;
   decimal_number_config: Record<string, unknown> = {};
   numbers_to_exclude: number[] = [];
@@ -196,14 +216,19 @@ export class NumberLine extends VGroup {
     this.set_stroke(undefined, stroke_width, undefined, false);
     this.center();
     if (this.include_tip) {
-      // NOTE: tip creation (add_tip with tip_length=tip_height,
-      // tip_width=tip_width, tip_shape) lives on TipableVMobject/Line in the
-      // Python original; this port extends VGroup (an earlier-batch decision
-      // kept for compatibility), so the tip branch is a marked stub. See
-      // .
-      throw new Error(
-        "TODO: NumberLine include_tip needs TipableVMobject tip machinery (VGroup base), not ported yet",
-      );
+      // NOTE: Python calls self.add_tip(tip_shape=..., tip_length=tip_height,
+      // tip_width=tip_width) (NumberLine is a TipableVMobject). This port
+      // extends VGroup, so the tip is built through an equivalent Line (which
+      // is a TipableVMobject) and the resulting tip geometry is attached to
+      // self at the same end. The baseline endpoints are left as-is, matching
+      // the observable geometry (get_start/get_end/unit_size are unchanged).
+      const tipLine = new Line(this.get_start(), this.get_end());
+      tipLine.add_tip(null, this.tip_shape as never, this.tip_height, this.tip_width);
+      const tip = tipLine.tip;
+      if (tip !== undefined) {
+        this.add(tip as unknown as VMobject);
+        (this as unknown as { tip: ArrowTip }).tip = tip;
+      }
     }
     if (this.include_ticks) {
       this.add_ticks();
@@ -302,6 +327,20 @@ export class NumberLine extends VGroup {
     return normalize(subtractPoints(end, start, this.dim)).map(
       (value) => value * this.unit_size,
     );
+  }
+
+  get_projection(point: readonly number[] | NDArray): number[] {
+    // NOTE: mirrors Line.get_projection (Python NumberLine is a Line, so it
+    // inherits this); this port extends VGroup, so the same projection onto
+    // the baseline is computed here.
+    const [start, end] = this.get_start_and_end();
+    const unit_vect = normalize(subtractPoints(end, start, this.dim));
+    const pointRowsValue = pointRows(point, this.dim)[0] ?? [0, 0, 0];
+    const dot = subtractPoints(pointRowsValue, start, this.dim).reduce(
+      (sum, value, index) => sum + value * (unit_vect[index] ?? 0),
+      0,
+    );
+    return start.map((value, index) => value + dot * (unit_vect[index] ?? 0));
   }
 
   get_tick_marks(): VGroup {
@@ -412,17 +451,38 @@ export class NumberLine extends VGroup {
   }
 
   get_number_mobject(
-    _x: number,
-    _direction?: readonly number[] | NDArray | null,
-    _buff?: number | null,
-    _font_size?: number | null,
-    _label_constructor?: unknown,
-    _number_config: Record<string, unknown> = {},
+    x: number,
+    direction: readonly number[] | NDArray | null = null,
+    buff: number | null = null,
+    font_size: number | null = null,
+    label_constructor: unknown = null,
+    number_config: Record<string, unknown> = {},
   ): VMobject {
-    // NOTE: mirrors Python NumberLine.get_number_mobject, which builds a
-    // positioned DecimalNumber. DecimalNumber (like the Tex label pipeline)
-    // is out of scope for this port, so construction throws.
-    throw new Error("TODO: text/tex not ported yet (NumberLine.get_number_mobject needs DecimalNumber)");
+    // Faithful port of Python NumberLine.get_number_mobject: builds a
+    // positioned DecimalNumber whose digits are rendered with
+    // `label_constructor` (which defaults to the line's label_constructor,
+    // i.e. MathTex in Python; DecimalNumber's own default MathTex factory is
+    // used when none is given).
+    const merged = merge_dicts_recursively(this.decimal_number_config, number_config);
+    const resolvedDirection = direction ?? this.label_direction;
+    const resolvedBuff = buff ?? this.line_to_number_buff;
+    const resolvedFontSize = font_size ?? this.font_size;
+    const resolvedConstructor = label_constructor ?? this.label_constructor;
+
+    const options: Record<string, unknown> = {
+      font_size: resolvedFontSize,
+      ...merged,
+    };
+    const factory = toMobFactory(resolvedConstructor);
+    if (factory !== undefined) options.mob_class = factory;
+
+    const numMob = new DecimalNumber(x, options) as unknown as VMobject;
+    numMob.next_to(this.number_to_point(x), resolvedDirection, resolvedBuff);
+    const dx = (resolvedDirection as readonly number[])[0] ?? 0;
+    if (x < 0 && dx === 0) {
+      numMob.shift(scalePoint(LEFT, (numMob.__getitem__(0) as Mobject).width / 2, this.dim));
+    }
+    return numMob;
   }
 
   get_number_mobjects(...numbers: number[]): VGroup {
@@ -517,15 +577,21 @@ export class NumberLine extends VGroup {
 
   _create_label_tex(
     label_tex: string | number | VMobject,
-    _label_constructor: unknown = null,
-    _kwargs: Record<string, unknown> = {},
+    label_constructor: unknown = null,
+    kwargs: Record<string, unknown> = {},
   ): VMobject {
-    // NOTE: mirrors Python NumberLine._create_label_tex: VMobject inputs are
-    // returned as-is; anything else is passed to the label_constructor
-    // (MathTex/Tex by default), which needs the text pipeline that is out of
-    // scope for this port.
+    // Mirrors Python NumberLine._create_label_tex: VMobject inputs are
+    // returned as-is; everything else is stringified and passed to
+    // label_constructor (MathTex by default, rendered through MathJax).
     if (label_tex instanceof VMobject) return label_tex;
-    throw new Error("TODO: text/tex not ported yet (NumberLine._create_label_tex needs a label_constructor)");
+    const resolvedConstructor = label_constructor ?? this.label_constructor ?? MathTex;
+    const factory = toMobFactory(resolvedConstructor);
+    if (factory === undefined) {
+      throw new Error(
+        `NumberLine._create_label_tex: label_constructor ${String(resolvedConstructor)} is not callable`,
+      );
+    }
+    return factory(String(label_tex), kwargs);
   }
 }
 

@@ -516,37 +516,29 @@ describe("SpecialThreeDScene", () => {
 //   [[5.25,0.175,0],[-5.25,-0.175,0]]; normal [1,1,1].
 // ---------------------------------------------------------------------------
 describe("ThreeDAxes._set_axis_shading", () => {
-  function stubAxis(): ShadedAxis & { vm: VMobject } {
-    const vm = new VMobject();
-    vm.set_points_as_corners([[0, 0, 0], [1, 0, 0]]);
-    const edge = (direction: readonly number[]): number[] => [...direction].slice(0, 3);
-    return {
-      vm,
-      get_edge_center: edge,
-      family_members_with_points: () => [vm as unknown as AxisShadingSubmobject],
-    };
-  }
-  it("installs gradient endpoints, unit normal, and sheen 0.2", () => {
-    const a1 = stubAxis();
-    const a2 = stubAxis();
-    const axes = new ThreeDAxes(null, null, null, null, [-7, -9, 10], [a1, a2]);
+  it("installs gradient endpoints, unit normal, and sheen 0.2 (original manim)", () => {
+    const axes = new ThreeDAxes();
     axes._set_axis_shading();
-    for (const a of [a1, a2]) {
-      expect(a.vm.get_sheen_factor()).toBe(0.2);
-      expect(a.vm.get_unit_normal([0, 0, 0])).toEqual([1, 1, 1]);
-      expectRowsClose(
-        a.vm.get_gradient_start_and_end_points() as number[][],
-        [[7, 9, -10], [-7, -9, 10]],
-      );
+    const xAxis = axes.get_x_axis() as unknown as VMobject;
+    const fams = xAxis.family_members_with_points();
+    expect(fams.length).toBeGreaterThan(0);
+    for (const m of fams) {
+      expect(m.get_sheen_factor()).toBe(0.2);
+      expect(m.get_unit_normal([0, 0, 0])).toEqual([1, 1, 1]);
     }
-  });
-  it("custom light_source feeds the gradient endpoints", () => {
-    const a = stubAxis();
-    const axes = new ThreeDAxes(null, null, null, null, [1, 2, 3], [a]);
-    axes._set_axis_shading();
     expectRowsClose(
-      a.vm.get_gradient_start_and_end_points() as number[][],
-      [[-1, -2, -3], [1, 2, 3]],
+      fams[0]!.get_gradient_start_and_end_points() as number[][],
+      [[5.25, 0.175, 0], [-5.25, -0.175, 0]],
+    );
+  });
+  it("custom light_source feeds the gradient endpoints (original manim)", () => {
+    const axes = new ThreeDAxes(null, null, null, null, [1, 2, 3]);
+    axes._set_axis_shading();
+    const xAxis = axes.get_x_axis() as unknown as VMobject;
+    const fam = xAxis.family_members_with_points()[0]!;
+    expectRowsClose(
+      fam.get_gradient_start_and_end_points() as number[][],
+      [[-5.25, -0.175, 0], [5.25, 0.175, 0]],
     );
   });
 });

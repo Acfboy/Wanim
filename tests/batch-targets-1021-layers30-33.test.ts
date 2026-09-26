@@ -196,24 +196,30 @@ describe("DecimalNumber.increment_value (python: set_value(get_value()+delta))",
   });
 });
 
-describe("Variable.__init__ (python needs MathTex for label + '=')", () => {
-  it("string labels throw text/tex TODO (python MathTex(label))", () => {
-    expect(() => new Variable(0.5, "x")).toThrow(/text\/tex not ported/);
+describe("Variable.__init__ (python: MathTex label + '=')", () => {
+  it("string labels build a MathTex label (python MathTex(label))", () => {
+    const v = new Variable(0.5, "x");
+    expect(v.label).toBeInstanceOf(VMobject);
+    expect(v.label.submobjects.length).toBe(2); // "x" glyph + "="
+    expect(v.value).toBeInstanceOf(DecimalNumber);
+    expect(v.value.get_value()).toBe(0.5);
+    expect(v.submobjects.length).toBe(2);
   });
 
-  it("VMobject labels still throw (python adds MathTex('=') next_to label)", () => {
-    // NOTE deviation: python accepts a VMobject label without latex (only the
-    // '=' needs MathTex); the TS port builds the '=' unconditionally first,
-    // so every construction currently throws. Binds once text lands.
-    expect(() => new Variable(0.5, new VMobject())).toThrow(
-      /text\/tex not ported/,
-    );
+  it("VMobject labels are kept and get MathTex('=') appended (python)", () => {
+    // python: self.label = label; equals = MathTex('=').next_to(label, RIGHT);
+    // self.label.add(equals)
+    const label = new VMobject();
+    const v = new Variable(0.5, label);
+    expect(v.label).toBe(label);
+    expect(label.submobjects.length).toBe(1);
+    expect(v.value.get_value()).toBe(0.5);
   });
 
-  it("Integer var_type path also requires text (same '=' stub)", () => {
-    expect(() => new Variable(1, new VMobject(), Integer)).toThrow(
-      /text\/tex not ported/,
-    );
+  it("Integer var_type builds an Integer value (python)", () => {
+    const v = new Variable(1, new VMobject(), Integer);
+    expect(v.value).toBeInstanceOf(Integer);
+    expect(v.value.get_value()).toBe(1);
   });
 });
 
@@ -258,15 +264,25 @@ describe("NumberLine.__init__ (python ground truth)", () => {
   });
 });
 
-describe("NumberLine label builders (text/tex stubs)", () => {
-  it("get_number_mobject throws (python builds DecimalNumber)", () => {
+describe("NumberLine label builders", () => {
+  it("get_number_mobject builds a positioned DecimalNumber (python)", () => {
+    string_to_mob_map.clear();
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl.get_number_mobject(1)).toThrow(/text\/tex not ported/);
+    const mob = nl.get_number_mobject(1) as unknown as DecimalNumber;
+    expect(mob).toBeInstanceOf(DecimalNumber);
+    expect(mob.get_value()).toBe(1);
+    expect(close(mob.get_center()[0] ?? NaN, 1, 1e-9)).toBe(true);
+    // python: next_to(n2p(1)=[1,0,0], DOWN, MED_SMALL_BUFF=0.25) -> top y=-0.25
+    expect(close(mob.get_top()[1] ?? NaN, -0.25, 1e-9)).toBe(true);
   });
 
   it("get_number_mobjects forwards to get_number_mobject; empty call mirrors AttributeError", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl.get_number_mobjects(1, 2)).toThrow(/text\/tex not ported/);
+    const group = nl.get_number_mobjects(1, 2);
+    expect(group).toBeInstanceOf(VGroup);
+    expect(group.submobjects.length).toBe(2);
+    expect((group.submobjects[0] as DecimalNumber).get_value()).toBe(1);
+    expect((group.submobjects[1] as DecimalNumber).get_value()).toBe(2);
     expect(() => nl.get_number_mobjects()).toThrow(/default_numbers_to_display/);
     try {
       nl.get_number_mobjects();
@@ -281,17 +297,26 @@ describe("NumberLine label builders (text/tex stubs)", () => {
     expect(() => nl.get_labels()).toThrow(/default_numbers_to_display/);
   });
 
-  it("add_numbers throws once labels are needed (python DecimalNumber path)", () => {
+  it("add_numbers builds DecimalNumber labels (python)", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl.add_numbers([1, 2])).toThrow(/text\/tex not ported/);
-    expect(() => nl.add_numbers()).toThrow(/text\/tex not ported/);
+    nl.add_numbers([1, 2]);
+    expect(nl.numbers).toBeInstanceOf(VGroup);
+    expect(nl.numbers!.submobjects.length).toBe(2);
+    expect((nl.numbers!.submobjects[0] as DecimalNumber).get_value()).toBe(1);
+    // python: add_numbers() defaults x_values to get_tick_range() -> 7 labels
+    const nl2 = new NumberLine({ x_range: [-3, 3, 1] });
+    nl2.add_numbers();
+    expect(nl2.numbers!.submobjects.length).toBe(7);
   });
 
   it("_create_label_tex passes VMobjects through (python behavior)", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
     const vm = new VMobject();
     expect(nl._create_label_tex(vm)).toBe(vm);
-    expect(() => nl._create_label_tex("1")).toThrow(/text\/tex not ported/);
+    // strings render through label_constructor (MathTex)
+    const rendered = nl._create_label_tex("1");
+    expect(rendered).toBeInstanceOf(VMobject);
+    expect(rendered.submobjects.length).toBeGreaterThan(0);
   });
 });
 
@@ -552,41 +577,54 @@ describe("Axes._create_axis (python ground truth)", () => {
 });
 
 describe("BarChart._add_x_axis_labels stub + geometry", () => {
-  it("throws text/tex TODO (python builds Tex labels)", () => {
+  it("construction succeeds on the built y_axis numbers (python)", () => {
+    // python: y_range [0,3,0.75], exclude_origin_tick -> 4 DecimalNumber labels
+    // (0.75, 1.5, 2.25, 3.0) on the real y_axis.
     const bc = new BarChart([1, 2, 3]);
-    expect(() => bc._add_x_axis_labels()).toThrow(/text\/tex not ported/);
-    expect(() => bc.get_bar_labels()).toThrow(/text\/tex not ported/);
+    expect(bc.bars.submobjects.length).toBe(3);
+    expect(bc.y_axis.numbers).toBeInstanceOf(VGroup);
+    expect(bc.y_axis.numbers!.submobjects.length).toBe(4);
+    // bar_names still go through the unported Tex label stub.
     expect(() => new BarChart([1, 2], { bar_names: ["a", "b"] })).toThrow(
       /text\/tex not ported/,
     );
   });
 
-  it("bar geometry stays usable without labels", () => {
-    const bc = new BarChart([1, 2, 3]);
-    expect(bc.bars.submobjects.length).toBe(3);
-    const bars = bc.bars.submobjects as Rectangle[];
-    expect(close((bars[1]?.height ?? NaN), 2 * (bars[0]?.height ?? NaN), 1e-6)).toBe(true);
+  it("bar geometry stays usable when label rendering is stubbed", () => {
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      const bc = new BarChart([1, 2, 3]);
+      expect(bc.bars.submobjects.length).toBe(3);
+      const bars = bc.bars.submobjects as Rectangle[];
+      expect(close((bars[1]?.height ?? NaN), 2 * (bars[0]?.height ?? NaN), 1e-6)).toBe(true);
+      // Tex label paths still throw with the number pipeline stubbed.
+      expect(() => bc._add_x_axis_labels()).toThrow(/text\/tex not ported/);
+      expect(() => bc.get_bar_labels()).toThrow(/text\/tex not ported/);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
-describe("PolarPlane._get_lines (deferred construction)", () => {
-  it("returns empty VGroups until the Mobject-based axes integration lands", () => {
-    // NOTE deviation: python builds 25 circle/line background mobjects; the TS
-    // hierarchy is not Mobject-based yet (empty axes group), so both groups
-    // are empty VGroups. Counts bind once NumberLine integration lands.
+describe("PolarPlane._get_lines (python counts)", () => {
+  it("builds the real circle/line background groups (original manim: 25 background, 0 faded)", () => {
     const pp = new PolarPlane();
     const [bg, faded] = pp._get_lines();
     expect(bg).toBeInstanceOf(VGroup);
     expect(faded).toBeInstanceOf(VGroup);
-    expect(bg.submobjects.length).toBe(0);
+    expect(bg.submobjects.length).toBe(25);
     expect(faded.submobjects.length).toBe(0);
   });
 
-  it("NumberPlane._get_lines shares the same deferred contract", () => {
+  it("NumberPlane._get_lines builds the real grid (original manim default: 22/0)", () => {
     const pl = new NumberPlane();
     const [bg, faded] = pl._get_lines();
     expect(bg).toBeInstanceOf(VGroup);
     expect(faded).toBeInstanceOf(VGroup);
+    expect(bg.submobjects.length).toBe(22);
+    expect(faded.submobjects.length).toBe(0);
   });
 });
 

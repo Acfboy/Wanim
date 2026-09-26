@@ -7,6 +7,7 @@ import { Line } from "../src/mobject/geometry/line.js";
 import { LogBase } from "../src/mobject/graphing/scale.js";
 import { index_labels } from "../src/utils/debug.js";
 import { NumberLine, UnitInterval } from "../src/mobject/graphing/number_line.js";
+import { DecimalNumber } from "../src/mobject/text/numbers.js";
 import {
   Axes,
   ComplexPlane,
@@ -156,17 +157,20 @@ describe("text/tex stubs (out of scope for the entire port)", () => {
     expect(() => index_labels(g)).toThrow(/text\/tex not ported/);
   });
 
-  it("NumberLine label builders throw (python needs DecimalNumber/MathTex)", () => {
+  it("NumberLine label builders build DecimalNumber labels (python)", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl.get_number_mobject(1)).toThrow(/text\/tex not ported/);
-    expect(() => nl.get_number_mobjects(1, 2)).toThrow(/text\/tex not ported/);
+    expect((nl.get_number_mobject(1) as unknown as DecimalNumber).get_value()).toBe(1);
+    expect(nl.get_number_mobjects(1, 2).submobjects.length).toBe(2);
     // python get_number_mobjects() with no args calls the missing
     // default_numbers_to_display(); the TS port mirrors the AttributeError.
     expect(() => nl.get_number_mobjects()).toThrow(/default_numbers_to_display/);
     expect(() => nl.get_labels()).toThrow(/default_numbers_to_display/);
-    expect(() => nl.add_numbers([1, 2])).toThrow(/text\/tex not ported/);
-    expect(() => nl.add_numbers()).toThrow(/text\/tex not ported/);
-    expect(() => nl._create_label_tex("1")).toThrow(/text\/tex not ported/);
+    nl.add_numbers([1, 2]);
+    expect(nl.numbers?.submobjects.length).toBe(2);
+    const nl2 = new NumberLine({ x_range: [-3, 3, 1] });
+    nl2.add_numbers();
+    expect(nl2.numbers?.submobjects.length).toBe(7);
+    expect(nl._create_label_tex("1").submobjects.length).toBeGreaterThan(0);
     // VMobject inputs pass through without text (python behavior).
     const vm = new VMobject();
     expect(nl._create_label_tex(vm)).toBe(vm);
@@ -188,9 +192,16 @@ describe("text/tex stubs (out of scope for the entire port)", () => {
   });
 
   it("BarChart._add_x_axis_labels throws (python builds Tex labels)", () => {
-    const bc = new BarChart([1, 2, 3]);
-    expect(() => bc._add_x_axis_labels()).toThrow(/text\/tex not ported/);
-    expect(() => bc.get_bar_labels()).toThrow(/text\/tex not ported/);
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      const bc = new BarChart([1, 2, 3]);
+      expect(() => bc._add_x_axis_labels()).toThrow(/text\/tex not ported/);
+      expect(() => bc.get_bar_labels()).toThrow(/text\/tex not ported/);
+    } finally {
+      spy.mockRestore();
+    }
     // bar_names trigger the label path in __init__, like python.
     expect(() => new BarChart([1, 2], { bar_names: ["a", "b"] })).toThrow(
       /text\/tex not ported/,
@@ -687,28 +698,41 @@ describe("ThreeDAxes.__init__ / SpecialThreeDScene.get_axes (python)", () => {
 // ---------------------------------------------------------------------------
 
 describe("BarChart.__init__ (python config math)", () => {
+  // The y-axis DecimalNumber/Tex labels are out of scope; stub the number
+  // mobject so the ported config math and bar geometry can be verified.
+  function withStubbedNumbers<T>(fn: () => T): T {
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      return fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
   it("stores values/colors and builds one bar per value", () => {
-    // NOTE: python BarChart.__init__ itself needs latex (Tex label
-    // constructor + y-axis DecimalNumbers), so no python frame numbers are
-    // asserted; the ported config math (x_range/y_range derivation) and bar
-    // geometry are verified structurally instead.
-    const bc = new BarChart([1, 2, 3]);
-    expect(bc.values).toEqual([1, 2, 3]);
-    expect(bc.bar_names).toBeNull();
-    expect(bc.bars.submobjects.length).toBe(3);
-    expect(bc.x_range).toEqual([0, 3, 1]);
-    // y_range = [min(0,min), max(0,max), round(max/y_length, 2)]
-    expect(bc.y_range[0]).toBe(0);
-    expect(bc.y_range[1]).toBe(3);
+    withStubbedNumbers(() => {
+      const bc = new BarChart([1, 2, 3]);
+      expect(bc.values).toEqual([1, 2, 3]);
+      expect(bc.bar_names).toBeNull();
+      expect(bc.bars.submobjects.length).toBe(3);
+      expect(bc.x_range).toEqual([0, 3, 1]);
+      // y_range = [min(0,min), max(0,max), round(max/y_length, 2)]
+      expect(bc.y_range[0]).toBe(0);
+      expect(bc.y_range[1]).toBe(3);
+    });
   });
 
   it("bar heights scale with values, widths are equal", () => {
-    const bc = new BarChart([1, 2, 3]);
-    const bars = bc.bars.submobjects as Rectangle[];
-    const heights = bars.map((b) => b.height);
-    expect(close(heights[1] ?? NaN, 2 * (heights[0] ?? NaN), 1e-6)).toBe(true);
-    expect(close(heights[2] ?? NaN, 3 * (heights[0] ?? NaN), 1e-6)).toBe(true);
-    expect(close(bars[0]?.width ?? NaN, bars[1]?.width ?? NaN, 1e-9)).toBe(true);
+    withStubbedNumbers(() => {
+      const bc = new BarChart([1, 2, 3]);
+      const bars = bc.bars.submobjects as Rectangle[];
+      const heights = bars.map((b) => b.height);
+      expect(close(heights[1] ?? NaN, 2 * (heights[0] ?? NaN), 1e-6)).toBe(true);
+      expect(close(heights[2] ?? NaN, 3 * (heights[0] ?? NaN), 1e-6)).toBe(true);
+      expect(close(bars[0]?.width ?? NaN, bars[1]?.width ?? NaN, 1e-9)).toBe(true);
+    });
   });
 });
 
@@ -730,12 +754,15 @@ describe("VectorScene plane/axes helpers (python)", () => {
     expect(plane.x_range).toEqual([-2, 2, 1]);
   });
 
-  it("add_plane(animate=true) needs Mobject-based planes (python plays Create)", () => {
-    // NOTE deviation: python plays Create(plane, lag_ratio=0.5); the TS
-    // NumberPlane hierarchy is not Mobject-based yet, so Create rejects it.
-    // The animate path binds once that integration lands.
+  it("add_plane(animate=true) plays Create on the VMobject plane (python)", () => {
+    // Python plays Create(plane, lag_ratio=0.5); NumberPlane is now a real
+    // VGroup, so Create accepts it.
     const vs = new VectorScene();
-    expect(() => vs.add_plane(true)).toThrow(/only works for VMobjects/);
+    const spy = vi.spyOn(vs, "play").mockImplementation(() => undefined as never);
+    const plane = vs.add_plane(true);
+    expect(plane).toBeInstanceOf(NumberPlane);
+    expect(spy).toHaveBeenCalledOnce();
+    expect(vs.mobjects.includes(plane as never)).toBe(true);
   });
 
   it("add_axes returns Axes and adds it", () => {
@@ -745,13 +772,15 @@ describe("VectorScene plane/axes helpers (python)", () => {
     expect(vs.mobjects.includes(axes as never)).toBe(true);
   });
 
-  it("lock_in_faded_grid binds the plane/axes/fade sequence", () => {
-    // NOTE deviation: python fades the plane VGroup and re-seats the
-    // camera; the TS NumberPlane hierarchy is not Mobject-based yet
-    // (get_axes throws NotImplementedError), so this currently throws.
-    // Recorded here so the gap is visible; binds once NumberPlane axes land.
+  it("lock_in_faded_grid fades the plane/axes and reseats the camera", () => {
     const vs = new VectorScene();
-    expect(() => vs.lock_in_faded_grid()).toThrow(/get_axes/);
+    const calls: number[] = [];
+    (vs as unknown as { renderer: { update_frame: () => void; camera: unknown } }).renderer = {
+      update_frame: () => calls.push(1),
+      camera: null,
+    };
+    expect(() => vs.lock_in_faded_grid()).not.toThrow();
+    expect(calls.length).toBe(1);
   });
 });
 
