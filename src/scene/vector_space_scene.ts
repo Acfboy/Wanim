@@ -616,16 +616,11 @@ export class LinearTransformationScene extends VectorScene {
     if (!("run_time" in kwargs)) {
       kwargs["run_time"] = 3;
     }
-    // NOTE: the TS ApplyPointwiseFunction takes a mobject-level function
-    // (it morphs into function_(copy)), while Python's takes the pointwise
-    // function directly; the adapter applies the pointwise func to the copy
-    // so the target matches Python's ApplyMethod target.
-    const mobFunc = (mob: Mobject): Mobject => {
-      mob.apply_function(func);
-      return mob;
-    };
+    // NOTE: mirrors Python `ApplyPointwiseFunction(function, t_mob)`: the
+    // pointwise function is passed directly; ApplyMethod applies it via
+    // `target.apply_function(function)` in `create_target`.
     const anims: Animation[] = [
-      ...(this.transformable_mobjects.map((t_mob) => new ApplyPointwiseFunction(mobFunc, t_mob)) as Animation[]),
+      ...(this.transformable_mobjects.map((t_mob) => new ApplyPointwiseFunction(func, t_mob)) as Animation[]),
       this.get_vector_movement(func),
       this.get_transformable_label_movement(),
       this.get_moving_mobject_movement(func),

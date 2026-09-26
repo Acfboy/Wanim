@@ -1,9 +1,10 @@
 import { Animation, classDefaultsOf, type AnimationOptions } from "./animation.js";
+import { Succession } from "./composition.js";
 import { Mobject, Group } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 import { config } from "../_config/utils.js";
-import { TAU } from "../constants.js";
+import { RIGHT, TAU } from "../constants.js";
 import { integer_interpolate } from "../utils/bezier.js";
 import { double_smooth, linear } from "../utils/rate_functions.js";
 import { pointRows, addPoints, scalePoint, subtractPoints } from "../utils/arrays.js";
@@ -256,6 +257,253 @@ export class DrawBorderThenFill extends Animation {
     } else {
       submobject.interpolate(outline, startingSubmobject, subalpha);
     }
+  }
+}
+
+export interface WriteOptions extends Omit<DrawBorderThenFillOptions, "run_time" | "lag_ratio"> {
+  rate_func?: AnimationOptions["rate_func"];
+  reverse?: boolean;
+  run_time?: number | null;
+  lag_ratio?: number | null;
+  remover?: boolean;
+  introducer?: boolean;
+}
+
+// NOTE: module-local so Unwrite.__init__ can use it before super().__init__
+// (TS cannot touch `this` before `super()`, unlike Python's
+// `self._set_default_config_from_length(...)` call).
+function setDefaultConfigFromLength(
+  vmobject: VMobject,
+  runTime: number | null,
+  lagRatio: number | null,
+): [number, number] {
+  const length = vmobject.family_members_with_points().length;
+  let resolvedRunTime = runTime;
+  if (resolvedRunTime === null || resolvedRunTime === undefined) {
+    resolvedRunTime = length < 15 ? 1 : 2;
+  }
+  let resolvedLagRatio = lagRatio;
+  if (resolvedLagRatio === null || resolvedLagRatio === undefined) {
+    resolvedLagRatio = Math.min(4.0 / Math.max(1.0, length), 0.2);
+  }
+  return [resolvedRunTime, resolvedLagRatio];
+}
+
+// NOTE: Write is documented for Text/VMobjects, but its logic (inherited
+// DrawBorderThenFill machinery plus run_time/lag_ratio defaults from the
+// submobject count) is mobject-agnostic, so the parameter is typed as
+// Mobject/VMobject here. Text rendering itself remains out of scope.
+export class Write extends DrawBorderThenFill {
+  reverse: boolean;
+
+  constructor(vmobject: VMobject, options: WriteOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    const {
+      rate_func = (clsDefaults.rate_func as AnimationOptions["rate_func"] | undefined) ?? linear,
+      reverse = (clsDefaults.reverse as boolean | undefined) ?? false,
+      run_time: runTimeOption = (clsDefaults.run_time as number | null | undefined) ?? null,
+      lag_ratio: lagRatioOption = (clsDefaults.lag_ratio as number | null | undefined) ?? null,
+      ...rest
+    } = options;
+    const [run_time, lag_ratio] = setDefaultConfigFromLength(
+      vmobject,
+      (runTimeOption as number | null | undefined) ?? null,
+      (lagRatioOption as number | null | undefined) ?? null,
+    );
+    if (!("remover" in rest)) (rest as Record<string, unknown>)["remover"] = reverse;
+    super(vmobject, {
+      ...rest,
+      rate_func,
+      run_time,
+      lag_ratio,
+      introducer: (rest as AnimationOptions).introducer ?? !(reverse as boolean),
+    });
+    this.reverse = reverse as boolean;
+  }
+
+  _set_default_config_from_length(
+    vmobject: VMobject,
+    runTime: number | null,
+    lagRatio: number | null,
+  ): [number, number] {
+    return setDefaultConfigFromLength(vmobject, runTime, lagRatio);
+  }
+
+  reverse_submobjects(): void {
+    this.mobject.invert(true);
+  }
+
+  override begin(): void {
+    if (this.reverse) this.reverse_submobjects();
+    super.begin();
+  }
+
+  override finish(): void {
+    super.finish();
+    if (this.reverse) this.reverse_submobjects();
+  }
+}
+
+export interface UnwriteOptions extends WriteOptions {}
+
+export class Unwrite extends Write {
+  constructor(vmobject: VMobject, options: UnwriteOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    const {
+      rate_func = (clsDefaults.rate_func as AnimationOptions["rate_func"] | undefined) ?? linear,
+      reverse = (clsDefaults.reverse as boolean | undefined) ?? true,
+      run_time: runTimeOption = (clsDefaults.run_time as number | null | undefined) ?? null,
+      lag_ratio: lagRatioOption = (clsDefaults.lag_ratio as number | null | undefined) ?? null,
+      ...rest
+    } = options;
+    const [run_time, lag_ratio] = setDefaultConfigFromLength(
+      vmobject,
+      (runTimeOption as number | null | undefined) ?? null,
+      (lagRatioOption as number | null | undefined) ?? null,
+    );
+    super(vmobject, {
+      ...rest,
+      rate_func,
+      run_time,
+      lag_ratio,
+      reverse_rate_function: true,
+      reverse,
+    });
+  }
+}
+
+export class RemoveTextLetterByLetter extends AddTextLetterByLetter {
+  constructor(text: Mobject, options: AddTextLetterByLetterOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    super(text, {
+      reverse_rate_function: (clsDefaults.reverse_rate_function as boolean | undefined) ?? true,
+      introducer: (clsDefaults.introducer as boolean | undefined) ?? false,
+      remover: (clsDefaults.remover as boolean | undefined) ?? true,
+      ...options,
+    });
+  }
+}
+
+// TODO, this is broken... (mirrors the Python comment above AddTextWordByWord)
+export class AddTextWordByWord extends Succession {
+  time_per_char: number;
+
+  constructor(
+    textMobject: Mobject,
+    options: AnimationOptions & { time_per_char?: number; run_time?: number | null } = {},
+  ) {
+    const clsDefaults = classDefaultsOf(new.target);
+    const {
+      // NOTE: mirrors Python, where the `run_time` parameter is accepted
+      // but never forwarded (the sub-animations carry their own run_times).
+      run_time: _ignoredRunTime = (clsDefaults.run_time as number | null | undefined) ?? null,
+      time_per_char = (clsDefaults.time_per_char as number | undefined) ?? 0.06,
+      ...rest
+    } = options;
+    void _ignoredRunTime;
+    const tpc = time_per_char;
+    const anims: Animation[] = [];
+    for (const word of textMobject) {
+      const wordLength = (word as Mobject).__len__();
+      anims.push(
+        new ShowIncreasingSubsets(word as Mobject, { run_time: tpc * wordLength }),
+        new Animation(word as Mobject, { run_time: 0.005 * wordLength ** 1.5 }),
+      );
+    }
+    super(...anims, rest);
+    this.time_per_char = tpc;
+  }
+}
+
+export interface TypeWithCursorOptions extends AddTextLetterByLetterOptions {
+  buff?: number;
+  keep_cursor_y?: boolean;
+  leave_cursor_on?: boolean;
+}
+
+export class TypeWithCursor extends AddTextLetterByLetter {
+  cursor: Mobject;
+  buff: number;
+  keep_cursor_y: boolean;
+  leave_cursor_on: boolean;
+  y_cursor!: number;
+
+  constructor(text: Mobject, cursor: Mobject, options: TypeWithCursorOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    const {
+      buff = (clsDefaults.buff as number | undefined) ?? 0.1,
+      keep_cursor_y = (clsDefaults.keep_cursor_y as boolean | undefined) ?? true,
+      leave_cursor_on = (clsDefaults.leave_cursor_on as boolean | undefined) ?? true,
+      time_per_char = (clsDefaults.time_per_char as number | undefined) ?? 0.1,
+      reverse_rate_function = (clsDefaults.reverse_rate_function as boolean | undefined) ?? false,
+      introducer = (clsDefaults.introducer as boolean | undefined) ?? true,
+      ...rest
+    } = options;
+    super(text, {
+      ...rest,
+      time_per_char,
+      reverse_rate_function,
+      introducer,
+    });
+    this.cursor = cursor;
+    this.buff = buff;
+    this.keep_cursor_y = keep_cursor_y;
+    this.leave_cursor_on = leave_cursor_on;
+  }
+
+  override begin(): void {
+    this.y_cursor = this.cursor.get_y();
+    (this.cursor as unknown as Record<string, unknown>)["initial_position"] = this.mobject.get_center();
+    if (this.keep_cursor_y) this.cursor.set_y(this.y_cursor);
+
+    this.cursor.set_opacity(0);
+    this.mobject.add(this.cursor);
+    super.begin();
+  }
+
+  override finish(): void {
+    if (this.leave_cursor_on) {
+      this.cursor.set_opacity(1);
+    } else {
+      this.cursor.set_opacity(0);
+      this.mobject.remove(this.cursor);
+    }
+    super.finish();
+  }
+
+  override clean_up_from_scene(scene: { remove: (...mobjects: Mobject[]) => void }): void {
+    if (!this.leave_cursor_on) scene.remove(this.cursor);
+    super.clean_up_from_scene(scene);
+  }
+
+  override update_submobject_list(index: number): void {
+    for (const mobject of this.all_submobs.slice(0, index)) mobject.set_opacity(1);
+    for (const mobject of this.all_submobs.slice(index)) mobject.set_opacity(0);
+
+    const initialPosition = (this.cursor as unknown as Record<string, number[]>)["initial_position"] as number[];
+    if (index !== 0) {
+      this.cursor.next_to(this.all_submobs[index - 1], RIGHT, this.buff).set_y(initialPosition[1]);
+    } else {
+      this.cursor.move_to(this.all_submobs[0]).set_y(initialPosition[1]);
+    }
+
+    if (this.keep_cursor_y) this.cursor.set_y(this.y_cursor);
+    this.cursor.set_opacity(1);
+  }
+}
+
+export interface UntypeWithCursorOptions extends TypeWithCursorOptions {}
+
+export class UntypeWithCursor extends TypeWithCursor {
+  constructor(text: Mobject, cursor: Mobject, options: UntypeWithCursorOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    super(text, cursor, {
+      time_per_char: (clsDefaults.time_per_char as number | undefined) ?? 0.1,
+      reverse_rate_function: (clsDefaults.reverse_rate_function as boolean | undefined) ?? true,
+      introducer: (clsDefaults.introducer as boolean | undefined) ?? false,
+      remover: (clsDefaults.remover as boolean | undefined) ?? true,
+      ...options,
+    });
   }
 }
 

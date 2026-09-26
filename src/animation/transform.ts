@@ -1,11 +1,11 @@
 import { array, type NDArray } from "numpy-ts";
-import { Animation, type AnimationOptions, type RateFunction, linear, smooth } from "./animation.js";
+import { Animation, classDefaultsOf, type AnimationOptions, type RateFunction, linear, smooth } from "./animation.js";
 import { Mobject, Group } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
 import { identityMatrix, matrixRows, pointFrom, pointRows, pointsFrom } from "../utils/arrays.js";
 import { path_along_arc, path_along_circles, type PathFuncType } from "../utils/paths.js";
 import { squish_rate_func } from "../utils/rate_functions.js";
-import { DEGREES, ORIGIN, OUT } from "../constants.js";
+import { DEGREES, DEFAULT_POINTWISE_FUNCTION_RUN_TIME, ORIGIN, OUT } from "../constants.js";
 
 export interface TransformOptions extends AnimationOptions {
   path_func?: PathFuncType | null;
@@ -247,18 +247,80 @@ export class ApplyMethod extends Transform {
   }
 }
 
-export class ApplyPointwiseFunction extends Transform {
+export class ApplyFunction extends Transform {
   function: (mobject: Mobject) => Mobject;
 
-  constructor(function_: (mobject: Mobject) => Mobject, mobject: Mobject, options: AnimationOptions = {}) {
-    super(mobject, function_(mobject.copy()), options);
+  constructor(
+    function_: (mobject: Mobject) => Mobject,
+    mobject: Mobject,
+    options: TransformOptions = {},
+  ) {
+    super(mobject, options);
     this.function = function_;
   }
 
-  create_target(): Mobject {
+  override create_target(): Mobject {
     const target = this.function(this.mobject.copy());
-    if (!(target instanceof Mobject)) throw new TypeError("Functions passed to ApplyPointwiseFunction must return object of type Mobject");
+    if (!(target instanceof Mobject)) {
+      throw new TypeError(
+        "Functions passed to ApplyFunction must return object of type Mobject",
+      );
+    }
     return target;
+  }
+}
+
+/**
+ * Mirrors the `Animation.__init__` option handling for subclasses that must
+ * call `super(...)` without options (TS cannot touch `this` before `super()`,
+ * while Python forwards `**kwargs` through the super call). The result is
+ * identical: per-class defaults underneath, explicit options on top, unknown
+ * keys copied as attributes.
+ */
+function forwardAnimationOptions(anim: Animation, cls: unknown, options: AnimationOptions): void {
+  const clsDefaults = classDefaultsOf(cls);
+  const merged = { ...clsDefaults, ...options };
+  if (merged.run_time !== undefined) anim.run_time = merged.run_time as number;
+  if (merged.rate_func !== undefined) anim.rate_func = merged.rate_func as RateFunction;
+  if (merged.reverse_rate_function !== undefined) anim.reverse_rate_function = merged.reverse_rate_function as boolean;
+  if (merged.name !== undefined) anim.name = merged.name as string;
+  if (merged.remover !== undefined) anim.remover = merged.remover as boolean;
+  if (merged.introducer !== undefined) anim.introducer = merged.introducer as boolean;
+  if (merged.suspend_mobject_updating !== undefined) anim.suspend_mobject_updating = merged.suspend_mobject_updating as boolean;
+  if (merged.lag_ratio !== undefined) anim.lag_ratio = merged.lag_ratio as number;
+  if (merged._on_finish !== undefined) anim.on_finish = merged._on_finish as (scene: any) => void;
+  for (const [key, value] of Object.entries(merged)) {
+    if (!["mobject", "run_time", "lag_ratio", "rate_func", "reverse_rate_function", "name", "remover", "introducer", "suspend_mobject_updating", "_on_finish", "use_override"].includes(key)) {
+      (anim as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+}
+
+export type PointwiseFunction = (point: number[]) => number[] | unknown;
+
+export class ApplyPointwiseFunction extends ApplyMethod {
+  constructor(
+    function_: PointwiseFunction,
+    mobject: Mobject,
+    options: AnimationOptions = {},
+  ) {
+    // NOTE: Python passes the bound method `mobject.apply_function`
+    // (carrying `__self__`/`__func__`). TS prototype methods carry neither,
+    // so an equivalent bound-method facade is built here (same validation
+    // and `create_target` behavior downstream in ApplyMethod).
+    const unbound = (mobject as unknown as { apply_function: (...args: never[]) => unknown }).apply_function;
+    const bound = function (...args: unknown[]): unknown {
+      return (unbound as (...callArgs: unknown[]) => unknown).apply(mobject, args);
+    } as MobjectBoundMethod;
+    bound.__self__ = mobject;
+    bound.__func__ = unbound as (...args: never[]) => unknown;
+    super(bound, function_);
+    const cls = new.target ?? ApplyPointwiseFunction;
+    const clsDefaults = classDefaultsOf(cls);
+    forwardAnimationOptions(this, cls, {
+      run_time: (clsDefaults.run_time as number | undefined) ?? DEFAULT_POINTWISE_FUNCTION_RUN_TIME,
+      ...options,
+    });
   }
 }
 
@@ -266,15 +328,17 @@ export class ApplyMatrix extends ApplyPointwiseFunction {
   constructor(matrix: unknown, mobject: Mobject, about_point: readonly number[] = ORIGIN, options: AnimationOptions = {}) {
     const initialized = ApplyMatrix.initialize_matrix(matrix);
     const origin = pointRows(pointFrom(about_point, 3), 3)[0] ?? [0, 0, 0];
-    super((pointMobject) => {
-      pointMobject.apply_function((point) => {
-        const centered = point.map((value, index) => value - (origin[index] ?? 0));
-        const m = matrixRows(initialized);
-        const result = m[0].map((_, row) => m[row].reduce((sum, value, column) => sum + value * centered[column], 0));
-        return result.map((value, index) => value + (origin[index] ?? 0));
-      });
-      return pointMobject;
-    }, mobject, options);
+    const rows = matrixRows(initialized);
+    // NOTE: mirrors Python `func(p) = np.dot(p - about_point, matrix.T) +
+    // about_point` (row-vector convention).
+    const func = (point: number[]): number[] => {
+      const centered = point.map((value, index) => value - (origin[index] ?? 0));
+      const result = rows.map((row) =>
+        row.reduce((sum, value, column) => sum + value * (centered[column] ?? 0), 0),
+      );
+      return result.map((value, index) => value + (origin[index] ?? 0));
+    };
+    super(func, mobject, options);
   }
 
   static initialize_matrix(matrix: unknown): NDArray {

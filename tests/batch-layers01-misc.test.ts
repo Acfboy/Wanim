@@ -610,15 +610,18 @@ describe("ApplyMatrix func + initialize_matrix", () => {
   it("target matches Python create_target (unit segment x-coords double)", () => {
     // Python: ApplyMatrix([[2,0],[0,2]], Line(ORIGIN, RIGHT)).create_target()
     //   == [[0,0,0],[2/3,0,0],[4/3,0,0],[2,0,0]].
+    // NOTE: Python computes the target lazily in create_target() (via the
+    // bound apply_function method); target_mobject at construction is an
+    // empty Mobject, so the ground truth is read from create_target().
     const anim = new ApplyMatrix([[2, 0], [0, 2]], unitSegment());
-    const target = (anim as unknown as { target_mobject: VMobject }).target_mobject;
+    const target = anim.create_target() as VMobject;
     expectClose(target.points, [0, 0, 0, 2 / 3, 0, 0, 4 / 3, 0, 0, 2, 0, 0]);
   });
 
   it("respects about_point (Python func: dot(p-about, M.T)+about)", () => {
     // M = 2I about [1,0,0]: [0,0,0] -> [-1,0,0]; [1,0,0] stays [1,0,0].
     const anim = new ApplyMatrix([[2, 0], [0, 2]], unitSegment(), [1, 0, 0]);
-    const target = (anim as unknown as { target_mobject: VMobject }).target_mobject;
+    const target = anim.create_target() as VMobject;
     expectClose(rowsOf(target.points)[0]!, [-1, 0, 0]);
     expectClose(rowsOf(target.points)[3]!, [1, 0, 0]);
   });

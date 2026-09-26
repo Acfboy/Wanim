@@ -243,3 +243,56 @@ export class TransformMatchingShapes extends TransformMatchingAbstractBase {
     return result;
   }
 }
+
+// NOTE: text/tex rendering is out of scope for this port, but
+// TransformMatchingTex itself is pure key-matching logic over the
+// `tex_string` attribute (no LaTeX binary needed), so it is ported
+// faithfully. `MathTexPart` (manim.mobject.text.tex_mobject) is not ported;
+// the `isinstance(mobject, MathTexPart)` check is expressed structurally
+// (a string `tex_string` attribute), and `Tex`/`MathTex` construction
+// elsewhere remains a TODO stub.
+export interface TexStringCarrier extends Mobject {
+  tex_string: string;
+}
+
+function readTexString(mobject: Mobject): unknown {
+  try {
+    return (mobject as unknown as Record<string, unknown>)["tex_string"];
+  } catch {
+    // NOTE: Mobjects in this port raise on unknown property reads, which
+    // is the equivalent of Python's missing attribute (AssertionError below).
+    return undefined;
+  }
+}
+
+export class TransformMatchingTex extends TransformMatchingAbstractBase {
+  static override get_mobject_parts(mobject: Mobject): Mobject[] {
+    // NOTE: Python also accepts the OpenGL Group/VGroup variants; only the
+    // Cairo Group/VGroup branch applies here (OpenGL is not ported).
+    if (mobject instanceof Group || mobject instanceof VGroup) {
+      return mobject.submobjects.flatMap((submobject) =>
+        TransformMatchingTex.get_mobject_parts(submobject),
+      );
+    }
+    if (readTexString(mobject) === undefined) {
+      const error = new Error(
+        `assert hasattr(mobject, "tex_string"): got ${mobject.constructor?.name ?? typeof mobject}`,
+      );
+      error.name = "AssertionError";
+      throw error;
+    }
+    return [...mobject.submobjects];
+  }
+
+  static override get_mobject_key(mobject: Mobject): string {
+    const texString = readTexString(mobject);
+    if (typeof texString !== "string") {
+      const error = new Error(
+        `assert isinstance(mobject, MathTexPart): got ${mobject.constructor?.name ?? typeof mobject}`,
+      );
+      error.name = "AssertionError";
+      throw error;
+    }
+    return texString;
+  }
+}
