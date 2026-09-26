@@ -3,7 +3,7 @@ import { QUALITIES, DEFAULT_QUALITY, RendererType, ORIGIN, UP, DOWN, RIGHT, LEFT
 import { ManimColor, BLACK, type ParsableManimColor } from "../utils/color/core.js";
 
 export const MANIM_CONFIG_OPTIONS = [
-  "assets_dir", "background_color", "background_opacity", "custom_folders", "disable_caching", "disable_caching_warning", "dry_run", "encoder_queue_size", "enable_wireframe", "ffmpeg_loglevel", "format", "flush_cache", "frame_height", "frame_rate", "frame_width", "frame_x_radius", "frame_y_radius", "from_animation_number", "images_dir", "input_file", "media_embed", "media_width", "log_dir", "log_to_file", "max_files_cached", "max_inflight_encoders", "media_dir", "movie_file_extension", "notify_outdated_version", "output_file", "partial_movie_dir", "pixel_height", "pixel_width", "plugins",   "preview", "progress_bar", "quality", "save_as_gif", "save_sections", "save_last_frame", "save_pngs", "scene_names", "seed", "show_in_file_browser", "tex_dir", "tex_template", "tex_template_file", "text_dir", "transparent", "upto_animation_number", "renderer", "enable_gui", "gui_location", "use_projection_fill_shaders", "use_projection_stroke_shaders", "verbosity", "video_dir", "sections_dir", "fullscreen", "window_position", "window_size", "window_monitor", "write_all", "write_to_movie", "zero_pad", "force_window", "no_latex_cleanup", "preview_command",
+  "assets_dir", "background_color", "background_opacity", "custom_folders", "disable_caching", "disable_caching_warning", "dry_run", "encoder_queue_size", "enable_wireframe", "ffmpeg_loglevel", "format", "flush_cache", "frame_height", "frame_rate", "frame_width", "frame_x_radius", "frame_y_radius", "from_animation_number", "images_dir", "input_file", "media_embed", "media_width", "log_dir", "log_to_file", "max_files_cached", "max_inflight_encoders", "media_dir", "movie_file_extension", "notify_outdated_version", "output_file", "partial_movie_dir", "pixel_height", "pixel_width", "plugins",   "preview", "progress_bar", "quality", "save_as_gif", "save_sections", "save_last_frame", "save_pngs", "scene_names", "seed", "show_in_file_browser",    "tex_dir", "tex_template", "tex_template_file", "text_dir", "upto_animation_number", "renderer", "enable_gui", "gui_location", "use_projection_fill_shaders", "use_projection_stroke_shaders", "verbosity", "video_dir", "sections_dir", "fullscreen", "window_position", "window_size", "window_monitor", "write_all", "write_to_movie", "zero_pad", "force_window", "no_latex_cleanup", "preview_command",
 ] as const;
 
 export type ManimConfigKey = (typeof MANIM_CONFIG_OPTIONS)[number] | string;
@@ -57,7 +57,6 @@ const defaults: Record<string, unknown> = {
   tex_template: "",
   tex_template_file: "",
   text_dir: "./media/texts",
-  transparent: false,
   upto_animation_number: -1,
   renderer: RendererType.CAIRO,
   enable_gui: false,
@@ -177,12 +176,17 @@ export class ManimConfig {
     if (key === "left_side") return this.left_side;
     if (key === "right_side") return this.right_side;
     if (key === "frame_center") return [0, 0, 0];
+    if (key === "transparent") return this.transparent;
     const error = new Error(`'ManimConfig' object has no attribute '${key}'`);
     error.name = "AttributeError";
     throw error;
   }
 
   __setitem__(key: string, value: unknown): void {
+    // NOTE: `transparent` is a derived property (see its accessor), not a
+    // stored option, so it is handled before the stored-key guard — mirroring
+    // Python, where __setitem__ dispatches through the property setter.
+    if (key === "transparent") { this.transparent = value as boolean; return; }
     if (!Object.prototype.hasOwnProperty.call(this.values, key)) {
       const error = new Error(`'ManimConfig' object has no attribute '${key}'`);
       error.name = "AttributeError";
@@ -233,7 +237,6 @@ export class ManimConfig {
     if (key === "sections_dir") { this.sections_dir = value as string; return; }
     if (key === "text_dir") { this.text_dir = value as string; return; }
     if (key === "tex_dir") { this.tex_dir = value as string; return; }
-    if (key === "transparent") { this.transparent = value as boolean; return; }
     if (key === "custom_folders") { this.custom_folders = value as string; return; }
     if (key === "input_file") { this.input_file = value as string; return; }
     if (key === "output_file") { this.output_file = value as string; return; }
@@ -736,12 +739,22 @@ export class ManimConfig {
   set save_as_gif(value: boolean) { this._set_boolean("save_as_gif", value); }
   get save_sections(): boolean { return this.__getitem__("save_sections"); }
   set save_sections(value: boolean) { this._set_boolean("save_sections", value); }
-  // NOTE: minimal boolean storage for the `transparent` CLI flag. Python's
-  // setter additionally resolves the movie file extension
-  // (resolve_movie_file_extension), which is a rendering concern and is not
-  // ported yet.
-  get transparent(): boolean { return this.__getitem__("transparent"); }
-  set transparent(value: boolean) { this._set_boolean("transparent", value); }
+  // NOTE: `transparent` is a derived property in the Python original
+  // (background_opacity < 1.0), not a stored option: it is readable via
+  // __getitem__/__contains__ but excluded from iteration and __len__.
+  // The movie-extension resolution is a rendering concern and is not ported.
+  get transparent(): boolean {
+    const opacity: unknown = this.values["background_opacity"];
+    if (typeof opacity !== "number") {
+      const error = new Error("assert isinstance(background_opacity, float)");
+      error.name = "AssertionError";
+      throw error;
+    }
+    return opacity < 1;
+  }
+  set transparent(value: boolean) {
+    this.background_opacity = value ? 0 : 1;
+  }
   get enable_wireframe(): boolean { return this.__getitem__("enable_wireframe"); }
   set enable_wireframe(value: boolean) { this._set_boolean("enable_wireframe", value); }
   get force_window(): boolean { return this.__getitem__("force_window"); }
