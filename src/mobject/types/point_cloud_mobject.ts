@@ -269,10 +269,16 @@ export class PMobject extends Mobject {
   interpolate_color(mobject1: Mobject, mobject2: Mobject, alpha: number): this {
     const first = mobject1 as PMobject;
     const second = mobject2 as PMobject;
-    // NOTE: bezier.interpolate() collapses single-row inputs to 1-D and
-    // truncates rows to width 3, so the (N, 4) shape of rgbas is restored
-    // explicitly here.
-    const blended = pointRows(interpolate(first.rgbas, second.rgbas, alpha), 4);
+    // NOTE: mirrors Python `interpolate(mobject1.rgbas, mobject2.rgbas,
+    // alpha)` elementwise over all 4 channels. The shared
+    // bezier.interpolate() truncates rows to width 3 (dropping alpha), so
+    // the lerp is done explicitly here to preserve the (N, 4) rgbas.
+    const firstRows = pointRows(first.rgbas, 4);
+    const secondRows = pointRows(second.rgbas, 4);
+    const blended = firstRows.map((row, index) => {
+      const other = secondRows[index] ?? secondRows[0] ?? [0, 0, 0, 0];
+      return row.map((value, channel) => (1 - alpha) * value + alpha * (other[channel] ?? 0));
+    });
     this.rgbas = array(blended.length > 0 ? blended : []).reshape(blended.length, 4) as NDArray;
     this.set_stroke_width(
       interpolate(first.get_stroke_width(), second.get_stroke_width(), alpha) as number,
