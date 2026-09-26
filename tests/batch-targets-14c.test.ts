@@ -33,7 +33,7 @@ import {
   setIsolineComputer,
 } from "../src/mobject/graphing/functions.js";
 import { Line, Elbow, Angle } from "../src/mobject/geometry/line.js";
-import { _BooleanOps } from "../src/mobject/geometry/boolean_ops.js";
+import { _BooleanOps, SkiaPath } from "../src/mobject/geometry/boolean_ops.js";
 import { Point } from "../src/mobject/types/point_cloud_mobject.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
 import { pointRows } from "../src/utils/arrays.js";
@@ -678,16 +678,21 @@ describe("_BooleanOps", () => {
     expect(b._convert_2d_to_3d_array([]).shape[0]).toBe(0);
   });
 
-  it("skia converters: to-path is ported, to-vmobject stays a TODO stub", () => {
+  it("skia converters: to-path and to-vmobject are both ported", () => {
     // NOTE (batch-14d ground truth): _convert_vmobject_to_skia_path is
     // implemented via the local SkiaPath shim and verified against Python
     // pathops output in tests/batch-targets-14d.test.ts (Square -> 6 cmds,
     // Circle -> 10 cmds; coords at 1e-6 due to Skia float32 rounding), so an
-    // empty VMobject yields an empty path instead of throwing. Only the
-    // reverse converter still needs pathops and stays a TODO stub.
+    // empty VMobject yields an empty path instead of throwing. The reverse
+    // converter was ported in the layers-16 batch (targets-1061) and is
+    // covered against Python there (move/line/close, cubic, quad); an empty
+    // path yields an empty vmobject here, and unknown verbs raise.
     const b = new _BooleanOps();
     expect(b._convert_vmobject_to_skia_path(new VMobject()).commands.length).toBe(0);
-    expect(() => b._convert_skia_path_to_vmobject({})).toThrowError(/pathops|not ported/);
+    expect(b._convert_skia_path_to_vmobject(new SkiaPath()).get_num_points()).toBe(0);
+    const bad = new SkiaPath();
+    bad.commands.push({ verb: "bogus" as never, points: [] });
+    expect(() => b._convert_skia_path_to_vmobject(bad)).toThrowError(/Unsupported/);
   });
 });
 

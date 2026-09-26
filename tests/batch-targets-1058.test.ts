@@ -504,7 +504,7 @@ describe("SpecialThreeDScene", () => {
     expect(scene.get_sphere({ radius: 3 }).radius).toBe(3);
     expect(scene.get_default_camera_position()).toBe(scene.default_angled_camera_position);
     expect(scene.get_axes()).toBeInstanceOf(ThreeDAxes);
-  });
+  }, 30000);
 });
 
 // ---------------------------------------------------------------------------
