@@ -37,9 +37,22 @@ export class Line extends TipableVMobject {
   constructor(
     start: LineEndpoint = [...LEFT],
     end: LineEndpoint = [...RIGHT],
+    buffOrOptions: number | LineOptions = 0,
+    pathArcOrOptions: number | LineOptions = 0,
     options: LineOptions = {},
   ) {
-    const { buff = 0, path_arc = 0, ...rest } = options;
+    // NOTE: mirrors Python `Line(start, end, buff=0, path_arc=0, **kwargs)`:
+    // buff/path_arc may arrive positionally (as the transpiler will emit for
+    // manim-style user code) or inside an options bag. Explicit option keys
+    // win over positionals.
+    let positionalBuff: number | undefined;
+    let positionalPathArc: number | undefined;
+    let merged: LineOptions = { ...options };
+    if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
+    else merged = { ...buffOrOptions, ...merged };
+    if (typeof pathArcOrOptions === "number") positionalPathArc = pathArcOrOptions;
+    else merged = { ...pathArcOrOptions, ...merged };
+    const { buff = positionalBuff ?? 0, path_arc = positionalPathArc ?? 0, ...rest } = merged;
     super({ dim: 3, ...rest });
     // NOTE: Python assigns these fields before super().__init__() so that
     // the generate_points() call inside the base constructor already sees
@@ -248,16 +261,24 @@ export class Arrow extends Line {
   constructor(
     start: LineEndpoint = [...LEFT],
     end: LineEndpoint = [...RIGHT],
+    buffOrOptions: number | ArrowOptions = MED_SMALL_BUFF,
     options: ArrowOptions = {},
   ) {
+    // NOTE: mirrors Python `Arrow(*args, stroke_width=6,
+    // buff=MED_SMALL_BUFF, ...)`: buff may arrive positionally or inside an
+    // options bag; an explicit option key wins over the positional.
+    let positionalBuff: number | undefined;
+    let merged: ArrowOptions = { ...options };
+    if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
+    else merged = { ...buffOrOptions, ...merged };
     const {
       stroke_width = 6,
-      buff = MED_SMALL_BUFF,
+      buff = positionalBuff ?? MED_SMALL_BUFF,
       max_tip_length_to_length_ratio = 0.25,
       max_stroke_width_to_length_ratio = 5,
       tip_shape = null,
       ...rest
-    } = options;
+    } = merged;
     // NOTE: Python assigns the max_* fields before super().__init__();
     // TS requires super() first — they are assigned here instead, before
     // any method that reads them runs.
@@ -285,6 +306,52 @@ export class Arrow extends Line {
       this.set_stroke(undefined, width, undefined, false);
     } else {
       this.set_stroke(undefined, width, undefined, false);
+    }
+    return this;
+  }
+
+  override scale(
+    factor: number,
+    scaleTipsOrAboutPoint: boolean | readonly number[] | NDArray | null = false,
+    aboutPointOrAboutEdge: readonly number[] | NDArray | null = null,
+    aboutEdgeParam: readonly number[] | NDArray | null = null,
+  ): this {
+    // NOTE: mirrors Python `Arrow.scale(factor, scale_tips=False,
+    // **kwargs)`: scaling keeps stroke width and tip size fixed unless
+    // `scale_tips` is set. The second parameter doubles as `about_point`
+    // (Mobject.scale calling convention) when it is not a boolean, so both
+    // `scale(2)` / `scale(2, point)` and `scale(0, true, point)` work.
+    let scaleTips = false;
+    let aboutPoint: readonly number[] | NDArray | null | undefined;
+    let resolvedAboutEdge: readonly number[] | NDArray | null | undefined;
+    if (typeof scaleTipsOrAboutPoint === "boolean") {
+      scaleTips = scaleTipsOrAboutPoint;
+      aboutPoint = aboutPointOrAboutEdge ?? undefined;
+      resolvedAboutEdge = aboutEdgeParam ?? undefined;
+    } else {
+      aboutPoint = scaleTipsOrAboutPoint ?? undefined;
+      resolvedAboutEdge = aboutPointOrAboutEdge ?? undefined;
+    }
+    if (this.get_length() === 0) return this;
+    if (scaleTips) {
+      super.scale(factor, aboutPoint, resolvedAboutEdge);
+      this._set_stroke_width_from_length();
+      return this;
+    }
+    const hasTip = this.has_tip();
+    const hasStartTip = this.has_start_tip();
+    let oldTips: import("../mobject.js").Group | null = null;
+    if (hasTip || hasStartTip) {
+      oldTips = this.pop_tips();
+    }
+    super.scale(factor, aboutPoint, resolvedAboutEdge);
+    this._set_stroke_width_from_length();
+    if (hasTip && oldTips !== null) {
+      this.add_tip(oldTips.submobjects[0] as ArrowTip, null, null, null, false);
+    }
+    if (hasStartTip && oldTips !== null) {
+      const startTip = (hasTip ? oldTips.submobjects[1] : oldTips.submobjects[0]) as ArrowTip;
+      this.add_tip(startTip, null, null, null, true);
     }
     return this;
   }

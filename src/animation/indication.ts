@@ -1,8 +1,9 @@
 import { Animation, classDefaultsOf, smooth, type AnimationOptions, type RateFunction } from "./animation.js";
-import { AnimationGroup, type AnimationGroupOptions } from "./composition.js";
+import { AnimationGroup, Succession, type AnimationGroupOptions } from "./composition.js";
 import { ShowPartial, type ShowPartialOptions } from "./creation.js";
 import { Homotopy } from "./movement.js";
 import { Transform, type TransformOptions } from "./transform.js";
+import { UpdateFromFunc } from "./updaters/update.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
 import { Dot } from "../mobject/geometry/arc.js";
@@ -386,5 +387,49 @@ export class Wiggle extends Animation {
       undefined,
       this.get_rotate_about_point(),
     );
+  }
+}
+
+export interface BlinkOptions extends AnimationGroupOptions {
+  time_on?: number;
+  time_off?: number;
+  blinks?: number;
+  hide_at_end?: boolean;
+}
+
+export class Blink extends Succession {
+  constructor(
+    mobject: Mobject,
+    time_on = 0.5,
+    time_off = 0.5,
+    blinks = 1,
+    hide_at_end = false,
+    options: BlinkOptions = {},
+  ) {
+    const {
+      time_on: timeOnOption,
+      time_off: timeOffOption,
+      blinks: blinksOption,
+      hide_at_end: hideAtEndOption,
+      ...rest
+    } = options;
+    const resolvedTimeOn = timeOnOption ?? time_on;
+    const resolvedTimeOff = timeOffOption ?? time_off;
+    const resolvedBlinks = blinksOption ?? blinks;
+    const resolvedHideAtEnd = hideAtEndOption ?? hide_at_end;
+    const onAnim = (): UpdateFromFunc =>
+      new UpdateFromFunc(mobject, (mob: Mobject) => { mob.set_opacity(1.0); }, { run_time: resolvedTimeOn });
+    const offAnim = (): UpdateFromFunc =>
+      new UpdateFromFunc(mobject, (mob: Mobject) => { mob.set_opacity(0.0); }, { run_time: resolvedTimeOff });
+    // NOTE: mirrors Python `[on, off] * blinks` (list repetition): each blink
+    // gets fresh animation instances sharing the same mobject.
+    const animations: UpdateFromFunc[] = [];
+    for (let index = 0; index < resolvedBlinks; index += 1) {
+      animations.push(onAnim(), offAnim());
+    }
+    if (!resolvedHideAtEnd) {
+      animations.push(onAnim());
+    }
+    super(...animations, rest);
   }
 }

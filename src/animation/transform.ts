@@ -2,10 +2,12 @@ import { array, type NDArray } from "numpy-ts";
 import { Animation, classDefaultsOf, type AnimationOptions, type RateFunction, linear, smooth } from "./animation.js";
 import { Mobject, Group } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
+import { MethodWithArgs } from "../data_structures.js";
 import { identityMatrix, matrixRows, pointFrom, pointRows, pointsFrom } from "../utils/arrays.js";
 import { path_along_arc, path_along_circles, type PathFuncType } from "../utils/paths.js";
 import { squish_rate_func } from "../utils/rate_functions.js";
 import { DEGREES, DEFAULT_POINTWISE_FUNCTION_RUN_TIME, ORIGIN, OUT } from "../constants.js";
+import type { ParsableManimColor } from "../utils/color/core.js";
 
 export interface TransformOptions extends AnimationOptions {
   path_func?: PathFuncType | null;
@@ -155,6 +157,25 @@ export type MobjectBoundMethod = ((...args: any[]) => unknown) & {
   __self__?: unknown;
   __func__?: (...args: any[]) => unknown;
 };
+
+/**
+ * Builds a bound-method facade for `mobject[name]`, carrying `__self__` /
+ * `__func__` the way CPython bound methods do, so it passes
+ * `ApplyMethod.check_validity_of_input` and works with `create_target`.
+ * (Same pattern as `ApplyPointwiseFunction` in this file.)
+ */
+function boundMethodOf(mobject: Mobject, name: string): MobjectBoundMethod {
+  const unbound = (mobject as unknown as Record<string, unknown>)[name];
+  if (typeof unbound !== "function") {
+    throw new Error(`${mobject.constructor.name} has no method '${name}'`);
+  }
+  const bound = function (...args: unknown[]): unknown {
+    return (unbound as (...callArgs: unknown[]) => unknown).apply(mobject, args);
+  } as MobjectBoundMethod;
+  bound.__self__ = mobject;
+  bound.__func__ = unbound as (...args: never[]) => unknown;
+  return bound;
+}
 
 export class ApplyMethod extends Transform {
   method: MobjectBoundMethod;
@@ -364,6 +385,35 @@ export class ApplyMatrix extends ApplyPointwiseFunction {
   }
 }
 
+export class FadeToColor extends ApplyMethod {
+  constructor(mobject: Mobject, color: ParsableManimColor, options: AnimationOptions = {}) {
+    // NOTE: mirrors Python `super().__init__(mobject.set_color, color,
+    // **kwargs)`; the bound-method facade carries __self__/__func__ like a
+    // CPython bound method, and animation kwargs ride via
+    // forwardAnimationOptions (same pattern as ApplyPointwiseFunction).
+    super(boundMethodOf(mobject, "set_color"), color);
+    forwardAnimationOptions(this, new.target ?? FadeToColor, options);
+  }
+}
+
+export class ScaleInPlace extends ApplyMethod {
+  constructor(mobject: Mobject, scale_factor: number, options: AnimationOptions = {}) {
+    // NOTE: mirrors Python `super().__init__(mobject.scale, scale_factor,
+    // **kwargs)`; see FadeToColor for the facade/options pattern.
+    super(boundMethodOf(mobject, "scale"), scale_factor);
+    forwardAnimationOptions(this, new.target ?? ScaleInPlace, options);
+  }
+}
+
+export class Restore extends ApplyMethod {
+  constructor(mobject: Mobject, options: AnimationOptions = {}) {
+    // NOTE: mirrors Python `super().__init__(mobject.restore, **kwargs)`;
+    // see FadeToColor for the facade/options pattern.
+    super(boundMethodOf(mobject, "restore"));
+    forwardAnimationOptions(this, new.target ?? Restore, options);
+  }
+}
+
 export class FadeTransform extends Transform {
   to_add_on_completion: Mobject;
   stretch: boolean;
@@ -432,11 +482,47 @@ export class FadeTransform extends Transform {
   }
 }
 
-export class ApplyComplexFunction extends Transform {
-  constructor(function_: (value: { re: number; im: number }) => { re: number; im: number }, mobject: Mobject, options: AnimationOptions = {}) {
-    const target = mobject.copy();
-    target.apply_complex_function(function_);
-    super(mobject, target, options);
+export type ComplexFunctionResult =
+  | { re: number; im: number }
+  | { real: number; imag: number }
+  | number;
+
+export type ComplexFunction = (value: { re: number; im: number }) => ComplexFunctionResult;
+
+export class ApplyComplexFunction extends ApplyMethod {
+  function: ComplexFunction;
+
+  constructor(function_: ComplexFunction, mobject: Mobject, options: AnimationOptions = {}) {
+    // NOTE: mirrors Python, which passes the bound method
+    // `mobject.apply_complex_function` (carrying `__self__`/`__func__`) to
+    // `ApplyMethod.__init__`; the facade here is equivalent (same pattern
+    // as ApplyPointwiseFunction in this file).
+    super(boundMethodOf(mobject, "apply_complex_function"), function_);
+    this.function = function_;
+    forwardAnimationOptions(this, new.target ?? ApplyComplexFunction, options);
+  }
+
+  _init_path_func(): void {
+    const func1 = this.function({ re: 1, im: 0 });
+    let re: number;
+    let im: number;
+    if (typeof func1 === "number") {
+      re = func1;
+      im = 0;
+    } else if ("re" in func1) {
+      re = func1.re;
+      im = func1.im;
+    } else {
+      re = func1.real;
+      im = func1.imag;
+    }
+    // NOTE: mirrors Python `self.path_arc = np.log(func1).imag`, i.e. the
+    // argument (angle) of the complex value func(1).
+    this.path_arc = Math.atan2(im, re);
+    // NOTE: Python then calls `super()._init_path_func()`, but no ancestor
+    // (Transform/Animation) defines `_init_path_func` — that call would raise
+    // AttributeError in Python, and nothing in manim ever calls
+    // `_init_path_func`, so the port stops after the path_arc assignment.
   }
 }
 
@@ -484,6 +570,31 @@ export class MoveToTarget extends Transform {
       error.name = "ValueError";
       throw error;
     }
+  }
+}
+
+export class _MethodAnimation extends MoveToTarget {
+  methods: MethodWithArgs[];
+
+  constructor(mobject: Mobject, methods: MethodWithArgs[]) {
+    super(mobject);
+    this.methods = methods;
+  }
+
+  override finish(): void {
+    for (const item of this.methods) {
+      const bound = item.method as unknown as MobjectBoundMethod;
+      // NOTE: mirrors Python `item.method.__func__(self.mobject,
+      // *item.args, **item.kwargs)`; TS has no **kwargs channel, so a
+      // non-empty kwarg dict rides as the last positional (same convention
+      // as ApplyMethod.create_target in this file). The `?? item.method`
+      // fallback covers MethodWithArgs built from plain functions (e.g. the
+      // `.animate` builder), which carry no `__func__`.
+      const func = bound.__func__ ?? (item.method as (...args: any[]) => unknown);
+      if (Object.keys(item.kwargs ?? {}).length > 0) func.apply(this.mobject, [...item.args, item.kwargs]);
+      else func.apply(this.mobject, item.args);
+    }
+    super.finish();
   }
 }
 

@@ -76,7 +76,15 @@ export * from "./animation/movement.js";
 export * from "./animation/numbers.js";
 export * from "./animation/rotation.js";
 export * from "./animation/transform.js";
+// NOTE: both ./mobject/mobject.js (animate-builder helper) and
+// ./animation/transform.js (faithful port of manim.animation.transform)
+// export `_MethodAnimation`; the explicit re-export below resolves the
+// star-export ambiguity in favor of the transform port (manim defines exactly
+// one `_MethodAnimation`, in animation.transform). The mobject helper stays
+// importable via its deep path.
+export { _MethodAnimation } from "./animation/transform.js";
 export * from "./animation/transform_matching_parts.js";
 export * from "./animation/speedmodifier.js";
+export * from "./animation/specialized.js";
 export * from "./animation/updaters/mobject_update_utils.js";
 export * from "./animation/updaters/update.js";

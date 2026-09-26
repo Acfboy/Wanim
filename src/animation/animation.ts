@@ -293,6 +293,10 @@ export class Animation {
   __str__(): string {
     return this.toString();
   }
+
+  __repr__(): string {
+    return this.toString();
+  }
 }
 
 export interface WaitOptions extends AnimationOptions {
