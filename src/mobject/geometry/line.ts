@@ -16,7 +16,7 @@ import { angle_of_vector, line_intersection, normalize } from "../../utils/space
 import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { DashedVMobject, VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
-import { Arc, Dot, TipableVMobject, type TipableVMobjectOptions } from "./arc.js";
+import { Arc, Dot, TipableVMobject, set_line_constructor, type TipableVMobjectOptions } from "./arc.js";
 import { ArrowTriangleFilledTip } from "./tips.js";
 import type { ArrowTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
@@ -176,6 +176,10 @@ export class Line extends TipableVMobject {
     return this.scale(scale_factor);
   }
 }
+
+// Registers Line for ArcPolygonFromArcs gap-filling (arc.js must not import
+// line.js directly: this module imports Arc from there).
+set_line_constructor(Line as unknown as Parameters<typeof set_line_constructor>[0]);
 
 export interface DashedLineOptions extends LineOptions {
   dash_length?: number;

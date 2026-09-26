@@ -255,3 +255,31 @@ export class Square extends Rectangle {
     this.scale(value / this.side_length);
   }
 }
+
+export interface CutoutOptions extends VMobjectOptions {}
+
+export class Cutout extends VMobject {
+  constructor(main_shape: VMobject, ...args: unknown[]) {
+    let options: CutoutOptions = {};
+    let mobjects: unknown[] = args;
+    const last = args[args.length - 1];
+    if (
+      args.length > 0 &&
+      last !== null &&
+      typeof last === "object" &&
+      !(last instanceof VMobject) &&
+      !Array.isArray(last) &&
+      !isNDArray(last)
+    ) {
+      options = last as CutoutOptions;
+      mobjects = args.slice(0, -1);
+    }
+    super(options);
+    this.append_points(main_shape.points);
+    const sub_direction: "CCW" | "CW" =
+      main_shape.get_direction() === "CW" ? "CCW" : "CW";
+    for (const mobject of mobjects) {
+      this.append_points((mobject as VMobject).force_direction(sub_direction).points);
+    }
+  }
+}

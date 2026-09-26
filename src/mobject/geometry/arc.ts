@@ -1,6 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
-import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, ORIGIN, OUT, PI, RIGHT, TAU, UP } from "../../constants.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, UP } from "../../constants.js";
 import { linspace, isNDArray, norm, pointAt, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { adjacent_pairs } from "../../utils/iterables.js";
 import {
   angle_of_vector,
   cartesian_to_spherical,
@@ -29,6 +30,26 @@ let default_tip_shape: TipConstructor | null = null;
  * tips.js imports Circle from this module). */
 export function set_default_tip_shape(ctor: TipConstructor): void {
   default_tip_shape = ctor;
+}
+
+/** Minimal structural type for the Line class used for gap-filling in
+ * ArcPolygonFromArcs (avoids a module cycle: line.js imports Arc from this
+ * module, mirroring the set_default_tip_shape registry above). */
+export type LineConstructor = new (
+  start: unknown,
+  end: unknown,
+  options?: Record<string, unknown>,
+) => VMobject & {
+  get_length(): number;
+  insert_n_curves(n: number): VMobject;
+};
+
+let line_constructor: LineConstructor | null = null;
+
+/** Registers the Line class used by ArcPolygonFromArcs. Called by the
+ * geometry/line module on load. */
+export function set_line_constructor(ctor: LineConstructor): void {
+  line_constructor = ctor;
 }
 
 export interface TipableVMobjectOptions extends VMobjectOptions {
@@ -685,5 +706,205 @@ export class Ellipse extends Circle {
     super(null, rest);
     this.stretch_to_fit_width(widthOption ?? width);
     this.stretch_to_fit_height(heightOption ?? height);
+  }
+}
+
+export interface ArcBetweenPointsOptions extends ArcOptions {
+  num_components?: number;
+  arc_center?: readonly number[] | NDArray;
+}
+
+export class ArcBetweenPoints extends Arc {
+  constructor(
+    start: readonly number[] | NDArray,
+    end: readonly number[] | NDArray,
+    angle = TAU / 4,
+    radius: number | null = null,
+    options: ArcBetweenPointsOptions = {},
+  ) {
+    // NOTE: Python assigns self.radius / derives angle before
+    // super().__init__(); TS requires super() first, so the radius/angle
+    // resolution happens up front and is passed through to Arc instead.
+    const { num_components = 9, arc_center = [...ORIGIN], ...rest } = options;
+    let resolved_angle = angle;
+    let resolved_radius = radius;
+    if (resolved_radius !== null && resolved_radius !== undefined) {
+      let working = resolved_radius;
+      let sign: number;
+      if (working < 0) {
+        sign = -2;
+        working *= -1;
+      } else {
+        sign = 2;
+      }
+      const start_row = pointRows(start, 3)[0] ?? [0, 0, 0];
+      const end_row = pointRows(end, 3)[0] ?? [0, 0, 0];
+      const halfdist = norm(subtractPoints(start_row, end_row, 3)) / 2;
+      if (working < halfdist) {
+        const error = new Error(
+          `ArcBetweenPoints called with a radius that is
+                                smaller than half the distance between the points.`,
+        );
+        error.name = "ValueError";
+        throw error;
+      }
+      const arc_height = working - Math.sqrt(working ** 2 - halfdist ** 2);
+      resolved_angle = Math.acos((working - arc_height) / working) * sign;
+      resolved_radius = working;
+    }
+    super(resolved_radius, 0, resolved_angle, num_components, arc_center, rest);
+    if (resolved_angle === 0) {
+      this.set_points_as_corners([[...LEFT], [...RIGHT]]);
+    }
+    this.put_start_and_end_on(start, end);
+    if (radius === null || radius === undefined) {
+      const center = this.get_arc_center(false);
+      if (!this._failed_to_get_center) {
+        const start_row = pointRows(start, this.dim)[0] ?? [0, 0, 0];
+        this.radius = norm(subtractPoints(start_row, center, this.dim));
+      } else {
+        this.radius = Infinity;
+      }
+    }
+  }
+}
+
+export interface CubicBezierOptions extends VMobjectOptions {}
+
+export class CubicBezier extends VMobject {
+  constructor(
+    start_anchor: readonly number[] | NDArray,
+    start_handle: readonly number[] | NDArray,
+    end_handle: readonly number[] | NDArray,
+    end_anchor: readonly number[] | NDArray,
+    options: CubicBezierOptions = {},
+  ) {
+    super(options);
+    this.add_cubic_bezier_curve(start_anchor, start_handle, end_handle, end_anchor);
+  }
+}
+
+export interface ArcPolygonOptions extends VMobjectOptions {
+  angle?: number;
+  radius?: number | null;
+  arc_config?: Array<Record<string, unknown>> | Record<string, unknown> | null;
+}
+
+export class ArcPolygon extends VMobject {
+  arcs: ArcBetweenPoints[];
+
+  constructor(...args: unknown[]) {
+    let options: ArcPolygonOptions = {};
+    let vertices: unknown[] = args;
+    const last = args[args.length - 1];
+    if (
+      args.length > 0 &&
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last) &&
+      !(last instanceof VMobject)
+    ) {
+      options = last as ArcPolygonOptions;
+      vertices = args.slice(0, -1);
+    }
+    const { angle = PI / 4, radius = null, arc_config = null, ...rest } = options;
+    const n = vertices.length;
+    const point_pairs: unknown[][] = vertices.map((_, k) => [
+      vertices[k],
+      vertices[(k + 1) % n],
+    ]);
+    let all_arc_configs: Array<Record<string, unknown>>;
+    if (!arc_config) {
+      if (radius) {
+        all_arc_configs = point_pairs.map(() => ({ radius }) as Record<string, unknown>);
+      } else {
+        all_arc_configs = point_pairs.map(() => ({ angle }) as Record<string, unknown>);
+      }
+    } else if (!Array.isArray(arc_config)) {
+      const shared = arc_config as Record<string, unknown>;
+      all_arc_configs = point_pairs.map(() => shared);
+    } else {
+      if (arc_config.length !== n) {
+        throw new Error("AssertionError");
+      }
+      all_arc_configs = arc_config;
+    }
+    const arcs = point_pairs.map((pair, index) => {
+      const conf = all_arc_configs[index] ?? {};
+      const { angle: conf_angle, radius: conf_radius, ...conf_rest } = conf;
+      return new ArcBetweenPoints(
+        pair[0] as readonly number[] | NDArray,
+        pair[1] as readonly number[] | NDArray,
+        (conf_angle as number | undefined) ?? TAU / 4,
+        (conf_radius as number | null | undefined) ?? null,
+        conf_rest as ArcBetweenPointsOptions,
+      );
+    });
+    super(rest);
+    // Adding the arcs like this makes ArcPolygon double as a VGroup.
+    // Also makes changes to the ArcPolygon, such as scaling, affect
+    // the arcs, so that their new values are usable.
+    this.add(...arcs);
+    for (const arc of arcs) {
+      this.append_points(arc.points);
+    }
+    // This enables the use of ArcPolygon.arcs as a convenience
+    // because ArcPolygon[0] returns itself, not the first Arc.
+    this.arcs = arcs;
+  }
+}
+
+export class ArcPolygonFromArcs extends VMobject {
+  arcs: Arc[];
+
+  constructor(...args: unknown[]) {
+    let options: VMobjectOptions = {};
+    let arc_list: unknown[] = args;
+    const last = args[args.length - 1];
+    if (
+      args.length > 0 &&
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last) &&
+      !(last instanceof VMobject)
+    ) {
+      options = last as VMobjectOptions;
+      arc_list = args.slice(0, -1);
+    }
+    const arcs = arc_list as Arc[];
+    if (!arcs.every((m) => m instanceof Arc)) {
+      const error = new Error(
+        "All ArcPolygon submobjects must be of type Arc/ArcBetweenPoints",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    super(options);
+    // Adding the arcs like this makes ArcPolygonFromArcs double as a VGroup.
+    // Also makes changes to the ArcPolygonFromArcs, such as scaling, affect
+    // the arcs, so that their new values are usable.
+    this.add(...arcs);
+    // This enables the use of ArcPolygonFromArcs.arcs as a convenience
+    // because ArcPolygonFromArcs[0] returns itself, not the first Arc.
+    this.arcs = [...arcs];
+    if (line_constructor === null) {
+      throw new Error("TODO: ArcPolygonFromArcs needs Line (import the geometry/line module), not loaded yet");
+    }
+    for (const pair of adjacent_pairs(arcs)) {
+      const arc1 = pair[0] as Arc;
+      const arc2 = pair[1] as Arc;
+      this.append_points(arc1.points);
+      const line = new line_constructor(arc1.get_end(), arc2.get_start());
+      const len_ratio = line.get_length() / arc1.get_arc_length();
+      if (Number.isNaN(len_ratio) || !Number.isFinite(len_ratio)) {
+        continue;
+      }
+      // NOTE: Python int() truncates toward zero; the ratio is
+      // non-negative here, matching Math.trunc.
+      line.insert_n_curves(Math.trunc(arc1.get_num_curves() * len_ratio));
+      this.append_points(line.points);
+    }
   }
 }
