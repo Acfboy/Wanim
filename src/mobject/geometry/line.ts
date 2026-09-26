@@ -436,6 +436,39 @@ export class Arrow extends Line {
   }
 }
 
+export interface DoubleArrowOptions extends ArrowOptions {
+  tip_shape_start?: TipConstructor | null;
+  tip_shape_end?: TipConstructor | null;
+}
+
+export class DoubleArrow extends Arrow {
+  constructor(
+    start: LineEndpoint = [...LEFT],
+    end: LineEndpoint = [...RIGHT],
+    buffOrOptions: number | DoubleArrowOptions = MED_SMALL_BUFF,
+    options: DoubleArrowOptions = {},
+  ) {
+    // NOTE: mirrors Python `DoubleArrow.__init__(self, *args, **kwargs)`:
+    // `tip_shape_end` (when present) is renamed to `tip_shape` for the end
+    // tip, and `tip_shape_start` (default ArrowTriangleFilledTip) becomes
+    // the start tip added after construction.
+    let positionalBuff: number | undefined;
+    let merged: DoubleArrowOptions = { ...options };
+    if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
+    else merged = { ...buffOrOptions, ...merged };
+    const {
+      tip_shape_start = ArrowTriangleFilledTip,
+      tip_shape_end,
+      ...rest
+    } = merged;
+    const forwarded: ArrowOptions = { ...rest };
+    if (tip_shape_end !== undefined) forwarded.tip_shape = tip_shape_end;
+    if (positionalBuff !== undefined) super(start, end, positionalBuff, forwarded);
+    else super(start, end, forwarded);
+    this.add_tip(null, tip_shape_start, null, null, true);
+  }
+}
+
 export interface ElbowOptions extends VMobjectOptions {
   width?: number;
   angle?: number;

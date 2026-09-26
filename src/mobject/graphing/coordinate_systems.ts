@@ -1,14 +1,16 @@
 import { array, type NDArray } from "numpy-ts";
 import { Mobject } from "../mobject.js";
 import { config } from "../../_config/utils.js";
-import { arange, isNDArray, linspace, numeric, pointFrom, pointRows } from "../../utils/arrays.js";
+import { arange, isNDArray, linspace, numeric, pointFrom, pointRows, type ComplexPoint } from "../../utils/arrays.js";
 import { update_dict_recursively } from "../../utils/config_ops.js";
 import { SMALL_BUFF, DL, RIGHT, TAU, RendererType } from "../../constants.js";
 import { BLUE_D } from "../../utils/color/index.js";
+import { BLUE, GREEN } from "../../utils/color/core.js";
 import { interpolate_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
 import { binary_search } from "../../utils/simple_functions.js";
 import { angle_of_vector } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { Polygon } from "../geometry/polygram.js";
 import { ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
@@ -400,6 +402,85 @@ export class CoordinateSystem {
     return Number(
       angle_of_vector([(p1[0] ?? 0) - (p0[0] ?? 0), (p1[1] ?? 0) - (p0[1] ?? 0)]),
     );
+  }
+
+  get_area(
+    graph: ParametricFunction,
+    x_range: readonly [number, number] | [number, number] | null = null,
+    color: ParsableManimColor | ParsableManimColor[] = [BLUE, GREEN],
+    opacity = 0.3,
+    bounded_graph: ParametricFunction | null = null,
+    kwargs: Record<string, unknown> = {},
+  ): Polygon {
+    let a: number;
+    let b: number;
+    if (x_range === null) {
+      a = graph.t_min;
+      b = graph.t_max;
+    } else {
+      [a, b] = [x_range[0] ?? 0, x_range[1] ?? 0];
+    }
+    if (bounded_graph !== null && bounded_graph !== undefined) {
+      if (bounded_graph.t_min > b) {
+        const error = new Error(`Ranges not matching: ${bounded_graph.t_min} < ${b}`);
+        error.name = "ValueError";
+        throw error;
+      }
+      if (bounded_graph.t_max < a) {
+        const error = new Error(`Ranges not matching: ${bounded_graph.t_max} > ${a}`);
+        error.name = "ValueError";
+        throw error;
+      }
+      a = Math.max(a, bounded_graph.t_min);
+      b = Math.min(b, bounded_graph.t_max);
+    }
+
+    // NOTE: graph points are converted to plain rows first: Polygon groups a
+    // single array-of-points argument via Array.isArray checks, so raw
+    // NDArray vertices would be misread as one point.
+    const toRow = (point: unknown): number[] => pointRows(point, 3)[0] ?? [0, 0, 0];
+    const inRange = (point: number[]): boolean => {
+      const x = this.point_to_coords(point)[0] ?? 0;
+      return a <= x && x <= b;
+    };
+    let points: number[][];
+    if (bounded_graph === null || bounded_graph === undefined) {
+      points = [
+        toRow(this.c2p(a)),
+        toRow(graph.function(a)),
+        ...pointRows(graph.points, 3).filter(inRange),
+        toRow(graph.function(b)),
+        toRow(this.c2p(b)),
+      ];
+    } else {
+      const collect = (g: ParametricFunction): number[][] => [
+        toRow(g.function(a)),
+        ...pointRows(g.points, 3).filter(inRange),
+        toRow(g.function(b)),
+      ];
+      points = [...collect(graph), ...collect(bounded_graph).reverse()];
+    }
+    // NOTE: `color` may be a list (gradient, mirroring Python's default
+    // `(BLUE, GREEN)`). Python's set_fill/set_stroke forward such lists to
+    // update_rgbas_array (a point-wise gradient); the TS set_fill/set_color
+    // single-parse the color into ManimColor and reject lists, so the
+    // gradient path is invoked directly here with identical ordering
+    // (set_opacity first, then the color updates).
+    const area = new Polygon(points, kwargs).set_opacity(opacity);
+    if (Array.isArray(color)) {
+      const gradient = color.map((c) => new ManimColor(c));
+      area.update_rgbas_array("fill_rgbas", gradient, null);
+      area.update_rgbas_array("stroke_rgbas", gradient, null);
+      return area;
+    }
+    return area.set_color(color);
+  }
+
+  slope_of_tangent(x: number, graph: ParametricFunction, dx = 1e-8): number {
+    // NOTE: mirrors Python `slope_of_tangent(self, x, graph, **kwargs)`
+    // (kwargs forwards to angle_of_tangent, whose only keyword is dx).
+    const val: number = Math.tan(this.angle_of_tangent(x, graph, dx));
+    return val;
   }
 
   plot_antiderivative_graph(
@@ -849,6 +930,54 @@ export class PolarPlane extends Axes {
 
   override get_axes(): VGroup {
     return this.axes;
+  }
+}
+
+/** TS stand-in for Python's `float | complex`: a real number, a
+ * `{ re, im }` pair (mirroring `complex(x, y)`), or a `[re, im]` tuple. */
+export type ComplexNumberLike = number | ComplexPoint | readonly [number, number];
+
+function toComplexPoint(value: ComplexNumberLike): ComplexPoint {
+  if (typeof value === "number") return { re: value, im: 0 };
+  if (Array.isArray(value)) {
+    const pair = value as readonly number[];
+    return { re: pair[0] ?? 0, im: pair[1] ?? 0 };
+  }
+  const c = value as ComplexPoint;
+  return { re: c.re ?? 0, im: c.im ?? 0 };
+}
+
+export class ComplexPlane extends NumberPlane {
+  constructor(
+    x_range: number[] | null = null,
+    y_range: number[] | null = null,
+    x_length: number | null = null,
+    y_length: number | null = null,
+  ) {
+    // NOTE: mirrors Python `ComplexPlane.__init__(self, **kwargs)` (which
+    // only forwards to NumberPlane); the TS CoordinateSystem hierarchy
+    // takes explicit range/length params instead of a kwargs bag.
+    super(x_range, y_range, x_length, y_length);
+  }
+
+  number_to_point(number: ComplexNumberLike): NDArray {
+    // NOTE: mirrors `number = complex(number)` (accepts floats and complex
+    // alike) followed by `coords_to_point(number.real, number.imag)`.
+    const c = toComplexPoint(number);
+    return this.coords_to_point(c.re, c.im);
+  }
+
+  n2p(number: ComplexNumberLike): NDArray {
+    return this.number_to_point(number);
+  }
+
+  point_to_number(point: readonly number[]): ComplexPoint {
+    const [x = 0, y = 0] = this.point_to_coords(point);
+    return { re: x, im: y };
+  }
+
+  p2n(point: readonly number[]): ComplexPoint {
+    return this.point_to_number(point);
   }
 }
 

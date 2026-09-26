@@ -1,31 +1,40 @@
 import { type NDArray } from "numpy-ts";
-import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { Mobject, type MobjectSlice } from "../mobject.js";
+import { VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { Rectangle, type RectangleOptions } from "../geometry/polygram.js";
+import { Brace, type BraceOptions } from "../svg/brace.js";
 import { Axes } from "./coordinate_systems.js";
 import { config } from "../../_config/utils.js";
+import { DOWN, LEFT, MED_SMALL_BUFF, RIGHT, SMALL_BUFF, UP } from "../../constants.js";
 import { isNDArray, pointRows } from "../../utils/arrays.js";
 import { tuplify } from "../../utils/iterables.js";
-import { DARK_GREY, LIGHT_GREY, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLUE_E, DARK_GREY, LIGHT_GREY, YELLOW, color_gradient, type ParsableManimColor } from "../../utils/color/core.js";
 
 export const EPSILON = 0.0001;
 
-export interface SampleSpaceOptions extends VMobjectOptions {
-  height?: number;
-  width?: number;
-  fill_color?: ParsableManimColor;
-  fill_opacity?: number;
-  stroke_width?: number;
-  stroke_color?: ParsableManimColor;
+export interface SampleSpaceOptions extends RectangleOptions {
   default_label_scale_val?: number;
 }
 
-// NOTE: Python's SampleSpace extends Rectangle (geometry/polygram). The
-// Rectangle port is out of scope for this batch, so SampleSpace currently
-// extends VMobject directly with matching width/height constructor params.
-export class SampleSpace extends VMobject {
+/** A subdivision group produced by divide_horizontally/divide_vertically,
+ *  carrying the braces/labels built for it (mirrors Python setting
+ *  `parts.braces`, `parts.labels` and `parts.label_kwargs`). */
+export type SampleSpaceDivision = VGroup & {
+  braces?: VGroup;
+  labels?: VGroup;
+  label_kwargs?: {
+    labels: VGroup;
+    direction: readonly number[] | NDArray;
+    buff: number;
+  };
+};
+
+export class SampleSpace extends Rectangle {
   default_label_scale_val: number;
   label: string | null = null;
-  horizontal_parts?: VMobject & { braces?: VMobject; labels?: VMobject };
-  vertical_parts?: VMobject & { braces?: VMobject; labels?: VMobject };
+  title?: VMobject;
+  horizontal_parts?: SampleSpaceDivision;
+  vertical_parts?: SampleSpaceDivision;
 
   constructor(options: SampleSpaceOptions = {}) {
     const {
@@ -38,10 +47,14 @@ export class SampleSpace extends VMobject {
       default_label_scale_val = 1,
       ...rest
     } = options;
-    super({ fill_color, fill_opacity, stroke_width, stroke_color, ...rest });
-    void height;
-    void width;
+    super({ height, width, fill_color, fill_opacity, stroke_width, stroke_color, ...rest });
     this.default_label_scale_val = default_label_scale_val;
+  }
+
+  add_title(_title = "Sample space", _buff: number = MED_SMALL_BUFF): this {
+    // NOTE: Python builds a `Tex` title here; text/tex is out of scope for
+    // the entire port.
+    throw new Error("TODO: text/tex not ported yet (SampleSpace.add_title needs Tex)");
   }
 
   add_label(label: string): this {
@@ -59,13 +72,159 @@ export class SampleSpace extends VMobject {
     return new_p_list;
   }
 
+  get_division_along_dimension(
+    p_list: number | Iterable<number> | NDArray,
+    dim: number,
+    colors: Iterable<ParsableManimColor>,
+    vect: readonly number[] | NDArray,
+  ): VGroup {
+    const p_list_complete = this.complete_p_list(p_list);
+    const colors_in_gradient = color_gradient([...colors], p_list_complete.length);
+
+    const vectRow = pointRows(vect, 3)[0] ?? [0, 0, 0];
+    const negVect = vectRow.map((value) => -value);
+    let last_point = this.get_edge_center(negVect);
+    const parts = new VGroup();
+    for (let index = 0; index < p_list_complete.length; index += 1) {
+      const factor = p_list_complete[index] ?? 0;
+      const color = colors_in_gradient[index] as ParsableManimColor;
+      const part = new SampleSpace();
+      part.set_fill(color, 1);
+      part.replace(this, 0, true);
+      part.stretch(factor, dim);
+      part.move_to(last_point, negVect);
+      last_point = part.get_edge_center(vectRow);
+      parts.add(part);
+    }
+    return parts;
+  }
+
+  get_horizontal_division(
+    p_list: number | Iterable<number> | NDArray,
+    colors: Iterable<ParsableManimColor> = ["GREEN_E", BLUE_E],
+    vect: readonly number[] | NDArray = [...DOWN],
+  ): VGroup {
+    return this.get_division_along_dimension(p_list, 1, colors, vect);
+  }
+
+  get_vertical_division(
+    p_list: number | Iterable<number> | NDArray,
+    colors: Iterable<ParsableManimColor> = ["MAROON_B", YELLOW],
+    vect: readonly number[] | NDArray = [...RIGHT],
+  ): VGroup {
+    return this.get_division_along_dimension(p_list, 0, colors, vect);
+  }
+
+  divide_horizontally(
+    p_list: number | Iterable<number> | NDArray,
+    colors: Iterable<ParsableManimColor> = ["GREEN_E", BLUE_E],
+    vect: readonly number[] | NDArray = [...DOWN],
+  ): this {
+    this.horizontal_parts = this.get_horizontal_division(p_list, colors, vect) as SampleSpaceDivision;
+    this.add(this.horizontal_parts);
+    return this;
+  }
+
+  divide_vertically(
+    p_list: number | Iterable<number> | NDArray,
+    colors: Iterable<ParsableManimColor> = ["MAROON_B", YELLOW],
+    vect: readonly number[] | NDArray = [...RIGHT],
+  ): this {
+    this.vertical_parts = this.get_vertical_division(p_list, colors, vect) as SampleSpaceDivision;
+    this.add(this.vertical_parts);
+    return this;
+  }
+
+  get_subdivision_braces_and_labels(
+    parts: VGroup,
+    labels: Array<string | VMobject>,
+    direction: readonly number[] | NDArray,
+    buff = SMALL_BUFF,
+    min_num_quads = 1,
+  ): VGroup {
+    const label_mobs = new VGroup();
+    const braces = new VGroup();
+    const count = Math.min(labels.length, parts.submobjects.length);
+    for (let index = 0; index < count; index += 1) {
+      const label = labels[index] as string | VMobject;
+      const part = parts.submobjects[index] as VMobject;
+      // NOTE: min_num_quads is accepted for signature compatibility and
+      // forwarded; the TS Brace port does not implement it yet.
+      const brace = new Brace(part, { direction, buff, min_num_quads } as BraceOptions);
+      let label_mob: VMobject;
+      if (label instanceof VMobject) {
+        label_mob = label;
+      } else {
+        // NOTE: Python builds a `MathTex` label here; text/tex is out of
+        // scope for the entire port.
+        throw new Error("TODO: text/tex not ported yet (SampleSpace labels need MathTex)");
+      }
+      label_mob.next_to(brace, direction, buff);
+      braces.add(brace);
+      label_mobs.add(label_mob);
+    }
+    const division = parts as SampleSpaceDivision;
+    division.braces = braces;
+    division.labels = label_mobs;
+    division.label_kwargs = {
+      labels: label_mobs.copy() as VGroup,
+      direction,
+      buff,
+    };
+    return new VGroup(division.braces, division.labels);
+  }
+
+  get_side_braces_and_labels(
+    labels: Array<string | VMobject>,
+    direction: readonly number[] | NDArray = [...LEFT],
+    buff = SMALL_BUFF,
+    min_num_quads = 1,
+  ): VGroup {
+    if (this.horizontal_parts === undefined || this.horizontal_parts === null) {
+      throw new Error("AssertionError: SampleSpace has no horizontal_parts (call divide_horizontally first)");
+    }
+    const parts: VGroup = this.horizontal_parts;
+    return this.get_subdivision_braces_and_labels(parts, labels, direction, buff, min_num_quads);
+  }
+
+  get_top_braces_and_labels(
+    labels: Array<string | VMobject>,
+    buff = SMALL_BUFF,
+    min_num_quads = 1,
+  ): VGroup {
+    if (this.vertical_parts === undefined || this.vertical_parts === null) {
+      throw new Error("AssertionError: SampleSpace has no vertical_parts (call divide_vertically first)");
+    }
+    const parts: VGroup = this.vertical_parts;
+    return this.get_subdivision_braces_and_labels(parts, labels, [...UP], buff, min_num_quads);
+  }
+
+  get_bottom_braces_and_labels(
+    labels: Array<string | VMobject>,
+    direction: readonly number[] | NDArray = [...DOWN],
+    buff = SMALL_BUFF,
+    min_num_quads = 1,
+  ): VGroup {
+    if (this.vertical_parts === undefined || this.vertical_parts === null) {
+      throw new Error("AssertionError: SampleSpace has no vertical_parts (call divide_vertically first)");
+    }
+    const parts: VGroup = this.vertical_parts;
+    return this.get_subdivision_braces_and_labels(parts, labels, direction, buff, min_num_quads);
+  }
+
   add_braces_and_labels(): this {
+    // NOTE: `in` mirrors Python's hasattr here: plain attribute reads go
+    // through the Mobject proxy, which raises AttributeError (not undefined)
+    // for attributes that were never assigned (e.g. `braces` on a division
+    // that has none yet).
     for (const attr of ["horizontal_parts", "vertical_parts"] as const) {
-      const parts = this[attr] as (VMobject & { braces?: VMobject; labels?: VMobject }) | undefined;
+      if (!(attr in this)) continue;
+      const parts = this[attr] as SampleSpaceDivision | undefined | null;
       if (parts === undefined || parts === null) continue;
       for (const subattr of ["braces", "labels"] as const) {
-        const sub = (parts as unknown as Record<string, unknown>)[subattr];
-        if (sub !== undefined && sub !== null) this.add(sub as VMobject);
+        if (!(subattr in (parts as object))) continue;
+        const sub = parts[subattr] as VGroup | undefined | null;
+        if (sub !== undefined && sub !== null) this.add(sub);
       }
     }
     return this;
@@ -73,6 +232,15 @@ export class SampleSpace extends VMobject {
 
   addBracesAndLabels(): this {
     return this.add_braces_and_labels();
+  }
+
+  override __getitem__(value: number | MobjectSlice): Mobject {
+    if (this.horizontal_parts !== undefined && this.horizontal_parts !== null) {
+      return this.horizontal_parts.__getitem__(value) as Mobject;
+    } else if (this.vertical_parts !== undefined && this.vertical_parts !== null) {
+      return this.vertical_parts.__getitem__(value) as Mobject;
+    }
+    return super.__getitem__(value) as Mobject;
   }
 }
 
