@@ -112,11 +112,14 @@ describe("CoordinateSystem._get_axis_label (tex out of scope)", () => {
     // has no x_axis yet (NumberLine integration, see above), so the call
     // fails on the missing axis before reaching label construction.
     const ax = new Axes([-3, 3, 1], [-2, 2, 1]);
+    // _get_axis_label reads self.x_axis._create_label_tex; with no NumberLine
+    // axes built yet x_axis is undefined, so a TypeError is raised before any
+    // label construction (which would need MathTex in any case).
     expect(() =>
       (ax as unknown as { _get_axis_label: (...a: unknown[]) => unknown })._get_axis_label(
         "x", new Square(), [...RIGHT], [...UR],
       ),
-    ).toThrow();
+    ).toThrowError(TypeError);
   });
 });
 
@@ -162,8 +165,9 @@ describe("Animation.begin / finish", () => {
     const sq = new Square();
     const anim = new Animation(sq, { suspend_mobject_updating: true });
     anim.begin();
-    expect(sq.updaters.length === 0 || true).toBe(true);
+    expect(sq.updating_suspended).toBe(true);
     anim.finish();
+    expect(sq.updating_suspended).toBe(false);
   });
 });
 
