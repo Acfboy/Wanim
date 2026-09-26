@@ -148,6 +148,7 @@ function normalizeVertexMobjects(
 function splitEdgeConfig(
   edge_config: Record<string, unknown> | Map<unknown, Record<string, unknown>> | null | undefined,
   edges: GraphEdge[],
+  pop_tip_config = true,
 ): {
   default_tip_config: Record<string, unknown>;
   default_edge_config: Record<string, unknown>;
@@ -163,7 +164,10 @@ function splitEdgeConfig(
     ? [...edge_config.entries()]
     : Object.entries(edge_config);
   for (const [key, value] of entries) {
-    if (typeof key === "string" && key === "tip_config") {
+    // NOTE: only __init__ pops the global "tip_config" (mirroring Python's
+    // `edge_config.pop("tip_config", {})` there); add_edges treats it as an
+    // ordinary option, like Python.
+    if (pop_tip_config && typeof key === "string" && key === "tip_config") {
       default_tip_config = { ...((value as Record<string, unknown>) ?? {}) };
       continue;
     }
@@ -949,6 +953,9 @@ export class GenericGraph extends VMobject {
     const { default_edge_config: non_edge_defaults, per_edge_config } = splitEdgeConfig(
       raw_edge_config,
       edges,
+      // NOTE: mirrors Python add_edges, which has no "tip_config" special
+      // case (unlike __init__): every non-edge key is a plain edge option.
+      false,
     );
     const base_edge_config = { ...this.default_edge_config, ...non_edge_defaults };
     const resolved_edge_config = new Map<string, Record<string, unknown>>();
