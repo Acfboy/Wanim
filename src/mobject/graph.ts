@@ -1775,11 +1775,23 @@ export function _determine_graph_layout(
   if (layout instanceof Map || (typeof layout === "object" && layout !== null && !((layout as unknown) instanceof Function) && !(typeof layout === "string"))) {
     return layout as Map<GraphVertex, NDArray> | Record<string, NDArray>;
   } else if (typeof layout === "string" && layout in _layouts) {
-    const auto_layout = (_layouts[layout as LayoutName] as unknown as (
-      graph: NetworkXGraphLike,
-      scale?: number | number[],
-      config?: Record<string, unknown>,
-    ) => Map<GraphVertex, NDArray>)(nx_graph, layout_scale, config);
+    // NOTE: mirrors Python `_layouts[layout](nx_graph, scale=layout_scale,
+    // **layout_config)`. The tree layout has a different signature
+    // (root_vertex first), so it is invoked with keywords explicitly; the
+    // remaining layouts take (graph, scale, config) in this port.
+    const auto_layout: Map<GraphVertex, NDArray> = layout === "tree"
+      ? tree_layout(
+          nx_graph,
+          (config["root_vertex"] as GraphVertex | undefined) ?? null,
+          layout_scale,
+          (config["vertex_spacing"] as number[] | undefined) ?? null,
+          (config["orientation"] as string | undefined) ?? "down",
+        )
+      : (_layouts[layout as LayoutName] as unknown as (
+          graph: NetworkXGraphLike,
+          scale?: number | number[],
+          config?: Record<string, unknown>,
+        ) => Map<GraphVertex, NDArray>)(nx_graph, layout_scale, config);
     if (auto_layout.size === 0) return new Map();
     const first = auto_layout.values().next().value as NDArray | undefined;
     if ((config as Record<string, unknown>)["dim"] === 3 || (first?.shape?.[0] ?? 0) === 3) {

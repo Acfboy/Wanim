@@ -138,7 +138,14 @@ export class TipableVMobject extends VMobject {
     style["fill_color"] = color;
     style["stroke_color"] = color;
     Object.assign(style, this.tip_style);
-    const tip = new shape(undefined, undefined, {
+    // NOTE: Python calls `tip_shape(length=tip_length, **style)`, i.e. with
+    // keyword arguments. wanim's tip constructors accept the Python kwargs as
+    // a leading options bag, so pass the bag as the first argument (passing
+    // it positionally as `length` would bind the bag itself and yield NaNs).
+    const TipCtor = shape as unknown as new (
+      options?: Record<string, unknown>,
+    ) => ArrowTip;
+    const tip = new TipCtor({
       length: resolved_length,
       ...style,
     });

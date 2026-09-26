@@ -192,11 +192,13 @@ export function getTextPaths(
   x: number,
   y: number,
   fontSize: number,
-  options: { runs?: StyledRun[] } = {},
+  options: { runs?: StyledRun[]; lineSpacing?: number } = {},
 ): PositionedGlyph[] {
   const scale = fontSize / (font.unitsPerEm || 1000);
+  const lineSpacing = options.lineSpacing ?? 0;
   const paths: PositionedGlyph[] = [];
   let currentX = x;
+  let lineIndex = 0;
 
   let runs = options.runs;
   if (!runs || runs.length === 0) {
@@ -205,19 +207,28 @@ export function getTextPaths(
 
   for (let charIndex = 0; charIndex < text.length; charIndex += 1) {
     const char = text[charIndex] as string;
+    if (char === "\n") {
+      // Hard line break: reset the pen and advance one line (Pango treats
+      // "\n" as a paragraph separator). No glyph is emitted for the break.
+      currentX = x;
+      lineIndex += 1;
+      continue;
+    }
+    if (char === "\r") continue;
     const runIndex = findRunForCharIndex(runs, charIndex);
     const glyphIndex = font.charToGlyphIndex(char);
     const glyph = font.glyphs.get(glyphIndex);
+    const glyphY = y + lineIndex * lineSpacing;
 
     if (glyph) {
-      const glyphPath = glyph.getPath(currentX, y, fontSize);
+      const glyphPath = glyph.getPath(currentX, glyphY, fontSize);
       paths.push({
         char,
         charIndex,
         glyphIndex,
         path: glyphPath.toPathData(2),
         x: currentX,
-        y,
+        y: glyphY,
         advanceWidth: (glyph.advanceWidth ?? 0) * scale,
         width: 0,
         leftSideBearing: glyph.leftSideBearing ? glyph.leftSideBearing * scale : 0,
@@ -227,14 +238,14 @@ export function getTextPaths(
     } else {
       const notdefGlyph = font.glyphs.get(0);
       if (notdefGlyph) {
-        const glyphPath = notdefGlyph.getPath(currentX, y, fontSize);
+        const glyphPath = notdefGlyph.getPath(currentX, glyphY, fontSize);
         paths.push({
           char,
           charIndex,
           glyphIndex: 0,
           path: glyphPath.toPathData(2),
           x: currentX,
-          y,
+          y: glyphY,
           advanceWidth: (notdefGlyph.advanceWidth ?? 0) * scale,
           width: 0,
           leftSideBearing: notdefGlyph.leftSideBearing ? notdefGlyph.leftSideBearing * scale : 0,

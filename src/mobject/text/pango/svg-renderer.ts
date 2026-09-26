@@ -26,6 +26,8 @@ export interface PangoRendererOptions {
 export interface RenderOptions {
   fontSize?: number;
   color?: string;
+  /** Baseline-to-baseline distance (same user units as `fontSize`). */
+  lineSpacing?: number;
 }
 
 export class PangoRenderer {
@@ -76,6 +78,7 @@ export class PangoRenderer {
   renderToSVGString(markup: string, options: RenderOptions = {}): string {
     const fontSize = options.fontSize ?? this.fontSize;
     const color = options.color ?? this.defaultColor;
+    const lineSpacing = options.lineSpacing ?? 0;
 
     if (!this.font) {
       // Auto-load the bundled font so callers do not have to.
@@ -94,7 +97,7 @@ export class PangoRenderer {
       if (!styles.font_size) styles.font_size = fontSize;
     }
 
-    const glyphPositions = getTextPaths(font, text, 0, 0, fontSize, { runs });
+    const glyphPositions = getTextPaths(font, text, 0, 0, fontSize, { runs, lineSpacing });
 
     const padding = fontSize * 0.2;
 
@@ -106,11 +109,13 @@ export class PangoRenderer {
 
     const baselineY = fontSize * 1.2;
     const textHeight = fontSize * 1.5;
+    const lineCount = text.split("\n").length;
 
     const decorations = generateDecorations(glyphPositions, runs, metrics, fontSize, baselineY);
 
     const width = Math.max(maxWidth + padding * 2, 100);
-    const height = textHeight + padding * 2 + fontSize * 0.5;
+    const height =
+      textHeight + (lineCount - 1) * lineSpacing + padding * 2 + fontSize * 0.5;
 
     let svgContent = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="${svgNS}" viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}">
@@ -128,7 +133,7 @@ export class PangoRenderer {
 
       const currentColor = (style.foreground as string) || color;
       const pathX = glyph.x + padding;
-      let yOffset = baselineY + padding;
+      let yOffset = baselineY + padding + glyph.y;
       if (style.baseline_shift) {
         yOffset += (style.baseline_shift as number) * fontSize;
       }

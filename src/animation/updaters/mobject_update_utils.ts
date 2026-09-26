@@ -5,12 +5,27 @@ import { isNDArray, pointRows } from "../../utils/arrays.js";
 import { RIGHT } from "../../constants.js";
 import { type NDArray } from "numpy-ts";
 
-export type BoundMethod = ((...args: any[]) => any) & { originalMethod?: (...args: any[]) => any; mobject?: Mobject };
+export type BoundMethod = ((...args: any[]) => any) & {
+  originalMethod?: (...args: any[]) => any;
+  mobject?: Mobject;
+  __self__?: Mobject;
+  __func__?: (...args: any[]) => any;
+};
 
 export function bind_mobject_method(mobject: Mobject, name: string): BoundMethod {
   const method = (mobject as unknown as Record<string, unknown>)[name];
   if (typeof method !== "function") throw new Error(`Mobject has no method '${name}'`);
-  return Object.assign((method as (...args: any[]) => any).bind(mobject), { mobject, originalMethod: method as (...args: any[]) => any });
+  // NOTE: mirrors a CPython bound method: the facade carries `__self__` /
+  // `__func__` so it passes `ApplyMethod.check_validity_of_input` (and the
+  // `Scene.play` bound-method rejection) exactly like Python's
+  // `mobject.method`. `mobject`/`originalMethod` are kept for `always` /
+  // `f_always` (the port's historical spelling).
+  const bound = (method as (...args: any[]) => any).bind(mobject) as BoundMethod;
+  bound.__self__ = mobject;
+  bound.__func__ = method as (...args: any[]) => any;
+  bound.mobject = mobject;
+  bound.originalMethod = method as (...args: any[]) => any;
+  return bound;
 }
 
 export function assert_is_mobject_method(method: BoundMethod): Mobject {

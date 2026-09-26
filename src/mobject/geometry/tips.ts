@@ -134,13 +134,21 @@ export class ArrowTriangleTip extends Triangle {
 }
 
 export class ArrowTriangleFilledTip extends ArrowTriangleTip {
-  constructor(fill_opacity = 1, stroke_width = 0, options: ArrowTriangleTipOptions = {}) {
+  constructor(fillOpacityOrOptions: number | ArrowTriangleTipOptions = 1, stroke_width = 0, options: ArrowTriangleTipOptions = {}) {
+    // Python: ArrowTriangleFilledTip(fill_opacity=1, stroke_width=0,
+    // **kwargs) -> super(...). Accept a leading kwargs bag (used by
+    // TipableVMobject.get_unpositioned_tip, which passes the style bag).
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as ArrowTriangleTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
       ...rest
-    } = options;
-    super(fillOpacityOption ?? fill_opacity, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
+    } = bag;
+    super(fillOpacityOption ?? positionalFill ?? 1, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
   }
 }
 
@@ -219,13 +227,19 @@ export class ArrowCircleTip extends Circle {
 }
 
 export class ArrowCircleFilledTip extends ArrowCircleTip {
-  constructor(fill_opacity = 1, stroke_width = 0, options: ArrowCircleTipOptions = {}) {
+  constructor(fillOpacityOrOptions: number | ArrowCircleTipOptions = 1, stroke_width = 0, options: ArrowCircleTipOptions = {}) {
+    // Accept a leading kwargs bag; see ArrowTriangleFilledTip.
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as ArrowCircleTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
       ...rest
-    } = options;
-    super(fillOpacityOption ?? fill_opacity, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
+    } = bag;
+    super(fillOpacityOption ?? positionalFill ?? 1, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
   }
 }
 
@@ -298,13 +312,19 @@ export class ArrowSquareTip extends Square {
 }
 
 export class ArrowSquareFilledTip extends ArrowSquareTip {
-  constructor(fill_opacity = 1, stroke_width = 0, options: ArrowSquareTipOptions = {}) {
+  constructor(fillOpacityOrOptions: number | ArrowSquareTipOptions = 1, stroke_width = 0, options: ArrowSquareTipOptions = {}) {
+    // Accept a leading kwargs bag; see ArrowTriangleFilledTip.
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as ArrowSquareTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
       ...rest
-    } = options;
-    super(fillOpacityOption ?? fill_opacity, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
+    } = bag;
+    super(fillOpacityOption ?? positionalFill ?? 1, strokeWidthOption ?? stroke_width, DEFAULT_ARROW_TIP_LENGTH, PI, rest);
   }
 }
 

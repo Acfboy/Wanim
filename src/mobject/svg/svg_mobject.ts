@@ -326,12 +326,15 @@ export class SVGMobject extends VMobject {
     const allMobjects: VMobject[] = [];
     this._walk_svg_node(root, {}, IDENTITY_AFFINE, allMobjects, 0);
 
-    if (this._root_vgroup.submobjects.length > 0) {
-      this._all_vgroups.push(this._root_vgroup);
-    }
+    // Python always keeps a "root" vgroup holding every leaf (used as a
+    // fallback by MathTex._break_up_by_substrings).
+    this._id_to_vgroup.set("root", this._root_vgroup);
     this.id_to_vgroup_dict = this._id_to_vgroup;
 
-    if (this._split_by_id) {
+    // `split_by_id` prefers the id'd top-level vgroups (MathTex); when the SVG
+    // carries no such ids (e.g. SingleStringMathTex) fall back to the flat leaf
+    // list, mirroring Python's `self.add(*mobjects)`.
+    if (this._split_by_id && this._all_vgroups.length > 0) {
       this.add(...this._all_vgroups);
     } else {
       this.add(...allMobjects);
@@ -384,11 +387,13 @@ export class SVGMobject extends VMobject {
     const mob = this._mob_from_svg_node(tag, attrs, totalTransform);
     if (mob !== null) {
       allMobjects.push(mob);
-      if (this._vgroup_stack.length > 0) {
-        (this._vgroup_stack[this._vgroup_stack.length - 1] as VGroup).add(mob);
-      } else {
-        this._root_vgroup.add(mob);
-      }
+      // NOTE: mirrors Python `SVGMobject.get_mobjects_from`: every leaf is added
+      // to *all* enclosing id'd vgroups (not just the innermost one), plus the
+      // synthetic "root" group. This is what makes a MathTex id like
+      // `unique000` contain the glyphs of nested `unique000substring` groups as
+      // well.
+      this._root_vgroup.add(mob);
+      for (const vg of this._vgroup_stack) vg.add(mob);
     }
   }
 
