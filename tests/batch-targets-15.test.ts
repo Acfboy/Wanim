@@ -921,8 +921,8 @@ describe("batch-15 integration", () => {
       void target;
       const pristine = new Square();
       pristine.scale(2);
-      void pristine;
-      expect(sq.get_center()).toBeDefined();
+      expectClose(sq.width, 4.0);
+      expectRowsClose(rowsOf(sq.points, sq.dim), rowsOf(pristine.points, pristine.dim));
     } finally {
       ChangeSpeed.is_changing_dt = false;
     }
