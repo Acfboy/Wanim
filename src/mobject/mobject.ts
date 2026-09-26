@@ -1636,10 +1636,36 @@ export class Mobject {
     throw error;
   }
 
-  become(other: Mobject): this {
-    this.points = pointsFrom(other.points, this.dim);
-    this.set_color(other.get_color(), null, false);
-    this.submobjects = other.submobjects.map((child) => child.copy());
+  become(
+    mobject: Mobject,
+    match_height = false,
+    match_width = false,
+    match_depth = false,
+    match_center = false,
+    stretch = false,
+  ): this {
+    if (stretch || match_height || match_width || match_depth || match_center) {
+      mobject = mobject.copy();
+      if (stretch) {
+        mobject.stretch_to_fit_height(this.height);
+        mobject.stretch_to_fit_width(this.width);
+        mobject.stretch_to_fit_depth(this.depth);
+      } else {
+        if (match_height) mobject.match_height(this);
+        if (match_width) mobject.match_width(this);
+        if (match_depth) mobject.match_depth(this);
+      }
+      if (match_center) mobject.move_to(this.get_center());
+    }
+    this.align_data(mobject, true);
+    const selfFamily = this.get_family();
+    const otherFamily = mobject.get_family();
+    for (let index = 0; index < selfFamily.length; index += 1) {
+      const sm1 = selfFamily[index]!;
+      const sm2 = otherFamily[index]!;
+      sm1.points = pointsFrom(sm2.points, sm1.dim);
+      sm1.interpolate_color(sm1, sm2, 1);
+    }
     return this;
   }
 

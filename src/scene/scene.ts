@@ -404,6 +404,20 @@ export class Scene {
     return this;
   }
 
+  add_mobjects_from_animations(animations: Animation[]): void {
+    let curr_mobjects = this.get_mobject_family_members();
+    for (const animation of animations) {
+      if (animation.is_introducer()) continue;
+      // Anything animated that's not already in the
+      // scene gets added to the scene
+      const mob = animation.mobject;
+      if (mob !== null && mob !== undefined && !curr_mobjects.includes(mob)) {
+        this.add(mob);
+        curr_mobjects = [...curr_mobjects, ...mob.get_family()];
+      }
+    }
+  }
+
   remove(...mobjects: Mobject[]): this {
     if (config.renderer === RendererType.OPENGL) {
       const mobjects_to_remove: Mobject[] = [];

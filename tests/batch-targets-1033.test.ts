@@ -407,18 +407,16 @@ describe("Mobject state and family", () => {
     v.restore();
     expectClose(v.points, before);
   });
-  it("base Mobject.restore round-trips (documented deviation from python)", () => {
-    // DEVIATION: python Mobject.restore -> become -> per-submobject
-    // interpolate_color raises NotImplementedError on a plain Mobject; the TS
-    // port's become() is simplified (copies points/color/submobjects without
-    // interpolate_color), so restore succeeds here. VMobject parity (the
+  it("base Mobject.restore raises NotImplementedError (matches python)", () => {
+    // Python Mobject.restore -> become -> per-submobject interpolate_color
+    // raises NotImplementedError on a plain Mobject; the TS port's become()
+    // is faithful, so restore raises here too. VMobject parity (the
     // realistic path) is pinned by the test above.
     const m = new Mobject();
     m.points = array([[0, 0, 0]]) as never;
     m.save_state();
     m.points = array([[9, 9, 9]]) as never;
-    m.restore();
-    expectClose(m.points, [0, 0, 0]);
+    expectErrorName(() => m.restore(), "NotImplementedError");
   });
   it("align_points is a no-op returning self when counts match", () => {
     const a = new Mobject();
