@@ -639,10 +639,9 @@ export class CoordinateSystem {
           break;
         }
       }
-      // NOTE: mirrors Python, where `point` would be unbound (NameError) if
-      // no sample falls inside the frame. The loop always inspects the
-      // right-most sample first; fall back to it if nothing matched.
-      point = found ?? this.input_to_graph_point(this.x_range[1] ?? 0, graph);
+      // NOTE: mirrors Python, where `point` keeps the last loop value
+      // (the left-most sample, x_range[0]) when no sample breaks.
+      point = found ?? this.input_to_graph_point(this.x_range[0] ?? 0, graph);
     } else {
       point = this.input_to_graph_point(x_val, graph);
     }
@@ -913,8 +912,8 @@ export class CoordinateSystem {
   ): VGroup {
     const group = new VGroup() as VGroup & Record<string, unknown>;
 
-    const resolved_dx = dx ?? ((this.x_range[1] ?? 0) - (this.x_range[0] ?? 0)) / 10;
-    const resolved_dy_color = dy_line_color ?? graph.get_color();
+    const resolved_dx = dx || ((this.x_range[1] ?? 0) - (this.x_range[0] ?? 0)) / 10;
+    const resolved_dy_color = dy_line_color || graph.get_color();
 
     const p1 = this.input_to_graph_point(x, graph);
     const p2 = this.input_to_graph_point(x + resolved_dx, graph);
@@ -1517,6 +1516,44 @@ export class PolarPlane extends Axes {
       [this.radius_config, this.background_line_style],
       [radius_config ?? {}, background_line_style ?? {}],
     );
+    // NOTE: mirrors Python `super().__init__(..., axis_config=self.radius_config,
+    // **kwargs)`: the radius config becomes the Axes-level axis config, so it
+    // is merged into axis_config/x_axis_config/y_axis_config here (after
+    // super(), which TS requires first). Known Axes options keys forwarded
+    // from the trailing options bag win over it, mirroring **kwargs.
+    const {
+      radius_config: _droppedRadiusConfig,
+      background_line_style: _droppedBackgroundLineStyle,
+      faded_line_style: _droppedFadedLineStyle,
+      faded_line_ratio: _droppedFadedLineRatio,
+      axis_config: axisConfigOption,
+      x_axis_config: xAxisConfigOption,
+      y_axis_config: yAxisConfigOption,
+      tips: tipsOption,
+      ..._ignoredOptions
+    } = options;
+    void _droppedRadiusConfig;
+    void _droppedBackgroundLineStyle;
+    void _droppedFadedLineStyle;
+    void _droppedFadedLineRatio;
+    void _ignoredOptions;
+    Axes._update_default_configs(
+      [this.axis_config, this.x_axis_config, this.y_axis_config],
+      [
+        this.radius_config,
+        (axisConfigOption as Record<string, unknown> | undefined) ?? null,
+        (axisConfigOption as Record<string, unknown> | undefined) ?? null,
+      ],
+    );
+    if (xAxisConfigOption !== undefined && xAxisConfigOption !== null) {
+      update_dict_recursively(this.x_axis_config, xAxisConfigOption as Record<string, unknown>);
+    }
+    if (yAxisConfigOption !== undefined && yAxisConfigOption !== null) {
+      update_dict_recursively(this.y_axis_config, yAxisConfigOption as Record<string, unknown>);
+    }
+    this.x_axis_config = merge_dicts_recursively(this.axis_config, this.x_axis_config);
+    this.y_axis_config = merge_dicts_recursively(this.axis_config, this.y_axis_config);
+    void tipsOption;
     this.faded_line_style = faded_line_style;
     this.faded_line_ratio = faded_line_ratio;
     this.make_smooth_after_applying_functions = make_smooth_after_applying_functions;
