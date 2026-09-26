@@ -15,4 +15,12 @@ export class _BooleanOps extends VMobject {
     }
     return array(list_of_points) as NDArray;
   }
+
+  _convert_vmobject_to_skia_path(_vmobject: VMobject): unknown {
+    throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+  }
+
+  _convert_skia_path_to_vmobject(_path: unknown): VMobject {
+    throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+  }
 }

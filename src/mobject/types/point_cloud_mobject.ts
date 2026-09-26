@@ -376,6 +376,50 @@ export class Mobject2D extends PMobject {
   }
 }
 
+export class PGroup extends PMobject {
+  constructor(...args: Array<PMobject | PMobjectOptions>) {
+    // Mirrors Python `PGroup.__init__(self, *pmobs, **kwargs)`: a trailing
+    // plain object is the PMobject kwargs, everything else must be PMobjects.
+    const last = args[args.length - 1];
+    let options: PMobjectOptions = {};
+    let pmobs = args as PMobject[];
+    if (
+      last !== undefined &&
+      !(last instanceof Mobject) &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last)
+    ) {
+      options = last as PMobjectOptions;
+      pmobs = args.slice(0, -1) as PMobject[];
+    }
+    if (!pmobs.every((m) => m instanceof PMobject)) {
+      const error = new Error(
+        "All submobjects must be of type PMobject or OpenGLPMObject if using the opengl renderer",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    super(options);
+    this.add(...pmobs);
+  }
+
+  override fade_to(color: ParsableManimColor, alpha: number, family = true): this {
+    // NOTE: unlike PMobject.fade_to, PGroup only fades its submobjects and
+    // never touches its own rgbas (mirrors Python).
+    if (family) {
+      for (const mob of this.submobjects) {
+        (mob as PMobject).fade_to(color, alpha, family);
+      }
+    }
+    return this;
+  }
+
+  fadeTo(color: ParsableManimColor, alpha: number, family = true): this {
+    return this.fade_to(color, alpha, family);
+  }
+}
+
 export interface PointCloudDotOptions extends Mobject1DOptions {
   center?: number[] | readonly number[] | NDArray;
   radius?: number;

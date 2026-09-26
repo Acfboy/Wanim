@@ -3,16 +3,20 @@ import { config } from "../../_config/utils.js";
 import {
   DEFAULT_ARROW_TIP_LENGTH,
   DEFAULT_DASH_LENGTH,
+  DEGREES,
   LEFT,
   MED_SMALL_BUFF,
+  ORIGIN,
   RendererType,
   RIGHT,
+  UP,
 } from "../../constants.js";
-import { pointRows, subtractPoints } from "../../utils/arrays.js";
-import { angle_of_vector, normalize } from "../../utils/space_ops.js";
+import { norm, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { angle_of_vector, line_intersection, normalize } from "../../utils/space_ops.js";
+import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
-import { DashedVMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
-import { TipableVMobject, type TipableVMobjectOptions } from "./arc.js";
+import { DashedVMobject, VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { Arc, Dot, TipableVMobject, type TipableVMobjectOptions } from "./arc.js";
 import { ArrowTriangleFilledTip } from "./tips.js";
 import type { ArrowTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
@@ -279,5 +283,195 @@ export class Arrow extends Line {
       this.set_stroke(undefined, width, undefined, false);
     }
     return this;
+  }
+}
+
+export interface ElbowOptions extends VMobjectOptions {
+  width?: number;
+  angle?: number;
+}
+
+export class Elbow extends VMobject {
+  angle: number;
+
+  constructor(width = 0.2, angle = 0, options: ElbowOptions = {}) {
+    const { width: widthOption, angle: angleOption, ...rest } = options;
+    super(rest);
+    // NOTE: Python assigns self.angle before super().__init__(); TS requires
+    // super() first. Elbow defines no generate_points override, so the base
+    // constructor's point generation needs no fields from this class.
+    this.angle = angleOption ?? angle;
+    this.set_points_as_corners([
+      [...UP],
+      [UP[0]! + RIGHT[0]!, UP[1]! + RIGHT[1]!, UP[2]! + RIGHT[2]!],
+      [...RIGHT],
+    ]);
+    this.rescale_to_fit(widthOption ?? width, 0, false, [...ORIGIN]);
+    this.rotate(this.angle, undefined, [...ORIGIN]);
+  }
+}
+
+export type AngleQuadrant = [number, number] | readonly [number, number];
+
+export interface AngleOptions extends VMobjectOptions {
+  radius?: number | null;
+  quadrant?: AngleQuadrant;
+  other_angle?: boolean;
+  dot?: boolean;
+  dot_radius?: number | null;
+  dot_distance?: number;
+  dot_color?: ParsableManimColor;
+  elbow?: boolean;
+}
+
+export class Angle extends VMobject {
+  lines: [Line, Line];
+  quadrant: AngleQuadrant;
+  dot_distance: number;
+  elbow: boolean;
+  radius?: number;
+  dot_radius?: number;
+  angle_value!: number;
+
+  constructor(line1: Line, line2: Line, options: AngleOptions = {}) {
+    const {
+      radius = null,
+      quadrant = [1, 1] as AngleQuadrant,
+      other_angle = false,
+      dot = false,
+      dot_radius = null,
+      dot_distance = 0.55,
+      dot_color = WHITE,
+      elbow = false,
+      ...rest
+    } = options;
+    super(rest);
+    this.lines = [line1, line2];
+    this.quadrant = quadrant;
+    this.dot_distance = dot_distance;
+    this.elbow = elbow;
+    let inter: number[];
+    try {
+      inter = line_intersection(
+        [line1.get_start(), line1.get_end()],
+        [line2.get_start(), line2.get_end()],
+      );
+    } catch {
+      const lines_are_in_xy_plane = [line1, line2].every((line) =>
+        [line.get_start(), line.get_end()].every((point) => point[2] === 0),
+      );
+      const cross_z = ((): number => {
+        const v1 = line1.get_vector();
+        const v2 = line2.get_vector();
+        return (v1[0] ?? 0) * (v2[1] ?? 0) - (v1[1] ?? 0) * (v2[0] ?? 0);
+      })();
+      if (!(lines_are_in_xy_plane && cross_z === 0)) throw new Error(
+        "The lines are parallel, there is no unique intersection point.",
+      );
+      // When the two lines are parallel or collinear there is no unique
+      // intersection point. Rather than raising, Angle becomes an empty
+      // Mobject (see issue #1930).
+      this.angle_value = 0.0;
+      return;
+    }
+
+    let resolved_radius: number;
+    if (radius === null || radius === undefined) {
+      const dist_1 = norm(
+        subtractPoints(
+          (this.quadrant[0] === 1 ? line1.get_end() : line1.get_start()),
+          inter,
+          this.dim,
+        ),
+      );
+      const dist_2 = norm(
+        subtractPoints(
+          (this.quadrant[1] === 1 ? line2.get_end() : line2.get_start()),
+          inter,
+          this.dim,
+        ),
+      );
+      if (Math.min(dist_1, dist_2) < 0.6) {
+        resolved_radius = (2 / 3) * Math.min(dist_1, dist_2);
+      } else {
+        resolved_radius = 0.4;
+      }
+    } else {
+      this.radius = radius;
+      resolved_radius = radius;
+    }
+
+    const unit1 = line1.get_unit_vector();
+    const unit2 = line2.get_unit_vector();
+    const anchor_angle_1 = inter.map(
+      (value, index) => value + (this.quadrant[0] ?? 0) * resolved_radius * (unit1[index] ?? 0),
+    );
+    const anchor_angle_2 = inter.map(
+      (value, index) => value + (this.quadrant[1] ?? 0) * resolved_radius * (unit2[index] ?? 0),
+    );
+
+    if (elbow) {
+      const anchor_middle = inter.map(
+        (value, index) =>
+          value +
+          (this.quadrant[0] ?? 0) * resolved_radius * (unit1[index] ?? 0) +
+          (this.quadrant[1] ?? 0) * resolved_radius * (unit2[index] ?? 0),
+      );
+      const angle_mobject: VMobject = new Elbow(0.2, 0, rest);
+      angle_mobject.set_points_as_corners([anchor_angle_1, anchor_middle, anchor_angle_2]);
+      this.set_points(angle_mobject.points);
+    } else {
+      const angle_1 = Number(angle_of_vector(subtractPoints(anchor_angle_1, inter, this.dim)));
+      const angle_2 = Number(angle_of_vector(subtractPoints(anchor_angle_2, inter, this.dim)));
+      let start_angle: number;
+      let angle_fin: number;
+      if (!other_angle) {
+        start_angle = angle_1;
+        if (angle_2 > angle_1) angle_fin = angle_2 - angle_1;
+        else angle_fin = 2 * Math.PI - (angle_1 - angle_2);
+      } else {
+        start_angle = angle_1;
+        if (angle_2 < angle_1) angle_fin = -angle_1 + angle_2;
+        else angle_fin = -2 * Math.PI + (angle_2 - angle_1);
+      }
+      this.angle_value = angle_fin;
+      const angle_mobject = new Arc(resolved_radius, start_angle, this.angle_value, 9, inter, rest);
+      if (dot) {
+        let resolved_dot_radius: number;
+        if (dot_radius === null || dot_radius === undefined) {
+          resolved_dot_radius = resolved_radius / 10;
+        } else {
+          this.dot_radius = dot_radius;
+          resolved_dot_radius = dot_radius;
+        }
+        const right_dot = new Dot([...ORIGIN], resolved_dot_radius, 0, 1.0, dot_color);
+        const center = angle_mobject.get_center();
+        const diff = subtractPoints(center, inter, this.dim);
+        const diff_norm = norm(diff);
+        const dot_anchor = inter.map(
+          (value, index) => value + ((diff[index] ?? 0) / diff_norm) * resolved_radius * dot_distance,
+        );
+        right_dot.move_to(dot_anchor);
+        this.add(right_dot);
+      }
+      this.set_points(angle_mobject.points);
+    }
+  }
+
+  get_lines(): VGroup {
+    return new VGroup(...this.lines);
+  }
+
+  get_value(degrees = false): number {
+    return degrees ? this.angle_value / DEGREES : this.angle_value;
+  }
+
+  static from_three_points(
+    A: readonly number[] | NDArray,
+    B: readonly number[] | NDArray,
+    C: readonly number[] | NDArray,
+    options: AngleOptions = {},
+  ): Angle {
+    return new Angle(new Line(B, A), new Line(B, C), options);
   }
 }

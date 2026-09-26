@@ -3,8 +3,10 @@ import { DOWN, LEFT, RIGHT, UP } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { addPoints, isNDArray, numeric, pointRows } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
-import { ManimColor, YELLOW_C, color_to_int_rgb, type ParsableManimColor } from "../../utils/color/core.js";
+import { ManimColor, WHITE, YELLOW_C, color_to_int_rgb, type ParsableManimColor } from "../../utils/color/core.js";
 import { change_to_rgba_array, get_full_raster_image_path } from "../../utils/images.js";
+import { SurroundingRectangle } from "../geometry/shape_matchers.js";
+import type { MovingCamera } from "../../camera/moving_camera.js";
 import { Mobject, type MobjectOptions } from "../mobject.js";
 
 export interface AbstractImageMobjectOptions extends MobjectOptions {
@@ -299,4 +301,77 @@ function lerpNested(first: unknown, second: unknown, alpha: number): unknown {
     return first.map((value, index) => lerpNested(value, second[index], alpha));
   }
   return (1 - alpha) * Number(first) + alpha * Number(second);
+}
+
+export interface ImageMobjectFromCameraOptions extends Omit<AbstractImageMobjectOptions, "scale_to_resolution"> {
+  default_display_frame_config?: Record<string, unknown> | null;
+  scale_to_resolution?: number | false;
+}
+
+export class ImageMobjectFromCamera extends AbstractImageMobject {
+  camera: MovingCamera;
+  default_display_frame_config: Record<string, unknown>;
+  pixel_array: NDArray;
+  display_frame?: SurroundingRectangle;
+
+  constructor(
+    camera: MovingCamera,
+    default_display_frame_config: Record<string, unknown> | null = null,
+    options: ImageMobjectFromCameraOptions = {},
+  ) {
+    const { default_display_frame_config: cfg, scale_to_resolution: _ignored, ...rest } = options;
+    void _ignored;
+    super({ ...rest, scale_to_resolution: false });
+    this.camera = camera;
+    this.default_display_frame_config = default_display_frame_config ??
+      cfg ?? {
+        stroke_width: 3,
+        stroke_color: WHITE,
+        buff: 0,
+      };
+    this.pixel_array = this.camera.pixel_array;
+    // NOTE: the base Mobject constructor already called reset_points(), but
+    // pixel_array was not assigned yet (see the guard in
+    // AbstractImageMobject.reset_points). Regenerate now that the camera
+    // pixel array is available, mirroring Python which assigns pixel_array
+    // before super().__init__().
+    this.reset_points();
+  }
+
+  override get_pixel_array(): NDArray {
+    this.pixel_array = this.camera.pixel_array;
+    return this.pixel_array;
+  }
+
+  add_display_frame(options: Record<string, unknown> = {}): this {
+    const config = { ...this.default_display_frame_config, ...options };
+    this.display_frame = new SurroundingRectangle(this, config);
+    this.add(this.display_frame);
+    return this;
+  }
+
+  override interpolate_color(mobject1: Mobject, mobject2: Mobject, alpha: number): this {
+    if (!(mobject1 instanceof ImageMobjectFromCamera) || !(mobject2 instanceof ImageMobjectFromCamera)) {
+      const error = new Error("Both mobjects must be ImageMobjectFromCamera");
+      error.name = "AssertionError";
+      throw error;
+    }
+    if (mobject1.pixel_array.shape.join(",") !== mobject2.pixel_array.shape.join(",")) {
+      const error = new Error(
+        `Mobject pixel array shapes incompatible for interpolation.\nMobject 1 (${mobject1}) : ${mobject1.pixel_array.shape}\nMobject 2 (${mobject2}) : ${mobject2.pixel_array.shape}`,
+      );
+      error.name = "AssertionError";
+      throw error;
+    }
+    // NOTE: bezier.interpolate() flattens arrays to rows, so the elementwise
+    // lerp over the (h, w, 4) pixel arrays is done on nested lists instead to
+    // preserve the shape exactly (mirrors numpy broadcasting in Python).
+    const first = mobject1.pixel_array.toArray() as unknown;
+    const second = mobject2.pixel_array.toArray() as unknown;
+    const blended = lerpNested(first, second, alpha);
+    this.pixel_array = (array(blended as number[][][]) as NDArray).astype(
+      this.pixel_array_dtype as "uint8",
+    ) as NDArray;
+    return this;
+  }
 }
