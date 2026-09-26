@@ -152,19 +152,16 @@ describe("CoordinateSystem.plot", () => {
 describe("CoordinateSystem.plot_parametric_curve", () => {
   it("maps the parametric function through coords_to_point", () => {
     const ax = makeAxes();
-    const g = ax.plot_parametric_curve((t: number) => [t, t ** 2, 0], false, {
+    const fn = (t: number): number[] => [t, t ** 2, 0];
+    const g = ax.plot_parametric_curve(fn, false, {
       t_range: [0, 1, 0.5],
     });
     expect(g.get_num_points()).toBe(8);
     const rows = rowsOf(g.points, g.dim);
     expectRowsClose([rows[0] ?? []], [[0, 0, 0]]);
     expectRowsClose([rows[rows.length - 1] ?? []], [[1.0000000000000002, 1, 0]]);
-    expectClose(
-      (g as unknown as { underlying_function: unknown }).underlying_function === undefined
-        ? NaN
-        : 0,
-      0,
-    );
+    // Python stashes the raw callable as graph.underlying_function.
+    expect(g.underlying_function).toBe(fn);
   });
 });
 
