@@ -293,12 +293,85 @@ export class Scene {
     return this;
   }
 
+  replace(old_mobject: Mobject, new_mobject: Mobject): void {
+    if (old_mobject === null || old_mobject === undefined || new_mobject === null || new_mobject === undefined) {
+      const error = new Error("Specified mobjects cannot be None");
+      error.name = "ValueError";
+      throw error;
+    }
+
+    function replace_in_list(mobj_list: Mobject[], old_m: Mobject, new_m: Mobject): boolean {
+      // Avoid duplicate references to the same object in self.mobjects
+      if (mobj_list.includes(new_m)) {
+        if (old_m === new_m) {
+          // In this case, one could say that the old Mobject was already found.
+          // No replacement is needed, since old_m is new_m, so no action is required.
+          // This might be unexpected, so raise a warning.
+          console.warn(
+            `Attempted to replace ${(old_m as Mobject).constructor.name} ` +
+              "with itself in Scene.mobjects.",
+          );
+          return true;
+        }
+        mobj_list.splice(mobj_list.indexOf(new_m), 1);
+      }
+
+      // We use breadth-first search because some Mobjects get very deep and
+      // we expect top-level elements to be the most common targets for replace.
+      for (let i = 0; i < mobj_list.length; i += 1) {
+        // Is this the old mobject?
+        if (mobj_list[i] === old_m) {
+          // If so, write the new object to the same spot and stop looking.
+          mobj_list[i] = new_m;
+          return true;
+        }
+      }
+      // Now check all the children of all these mobs.
+      for (const mob of mobj_list) {
+        if (replace_in_list(mob.submobjects, old_m, new_m)) {
+          // If we found it in a submobject, stop looking.
+          return true;
+        }
+      }
+      // If we did not find the mobject in the mobject list or any submobjects,
+      // (or the list was empty), indicate we did not make the replacement.
+      return false;
+    }
+
+    // Make use of short-circuiting conditionals to check mobjects and then
+    // foreground_mobjects
+    const replaced = replace_in_list(this.mobjects, old_mobject, new_mobject) ||
+      replace_in_list(this.foreground_mobjects, old_mobject, new_mobject);
+
+    if (!replaced) {
+      const error = new Error(`Could not find ${old_mobject} in scene`);
+      error.name = "ValueError";
+      throw error;
+    }
+  }
+
   next_section(
     name = "unnamed",
     section_type: string = DefaultSectionType.NORMAL,
     skip_animations = false,
   ): void {
     this.renderer.file_writer.next_section(name, section_type, skip_animations);
+  }
+
+  get_top_level_mobjects(): Mobject[] {
+    // Return only those which are not in the family
+    // of another mobject from the scene
+    const families = this.mobjects.map((m) => m.get_family());
+
+    function is_top_level(mobject: Mobject): boolean {
+      const num_families = families.reduce(
+        (count, family) => count + (family.includes(mobject) ? 1 : 0),
+        0,
+      );
+      return num_families === 1;
+    }
+
+    return this.mobjects.filter(is_top_level);
   }
 
   get_mobject_family_members(): Mobject[] {

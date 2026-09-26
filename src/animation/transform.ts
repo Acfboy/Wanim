@@ -291,10 +291,9 @@ export class FadeTransform extends Transform {
   ending_mobject: Mobject;
 
   constructor(mobject: Mobject, targetMobject: Mobject, options: AnimationOptions & { stretch?: boolean; dim_to_match?: number } = {}) {
-    const stretch = options.stretch ?? true;
-    const dimToMatch = options.dim_to_match ?? 1;
+    const { stretch = true, dim_to_match: dimToMatch = 1, ...rest } = options;
     mobject.save_state?.();
-    super(new Group(mobject, targetMobject.copy()), options);
+    super(new Group(mobject, targetMobject.copy()), rest);
     this.to_add_on_completion = targetMobject;
     this.stretch = stretch;
     this.dim_to_match = dimToMatch;
@@ -317,6 +316,12 @@ export class FadeTransform extends Transform {
 
   get_all_mobjects(): Mobject[] {
     return [this.mobject, this.starting_mobject, this.ending_mobject];
+  }
+
+  override get_all_families_zipped(): Mobject[][] {
+    // NOTE: Python explicitly calls Animation.get_all_families_zipped(self)
+    // here (2-family zip), skipping Transform's 3-family override.
+    return Animation.prototype.get_all_families_zipped.call(this);
   }
 
   clean_up_from_scene(scene: any): void {

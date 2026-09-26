@@ -217,9 +217,15 @@ export class Animation {
   }
 
   get_all_families_zipped(): Mobject[][] {
-    const first = this.mobject.family_members_with_points();
-    const second = this.starting_mobject.family_members_with_points();
-    return first.map((mobject, index) => [mobject, second[index] ?? mobject]);
+    // NOTE: mirrors Python `zip(*(mob.family_members_with_points() for mob
+    // in self.get_all_mobjects()), strict=False)`: the zip runs over ALL
+    // mobjects (subclasses such as FadeTransform extend that list), not just
+    // the (mobject, starting_mobject) pair. Shorter families are padded with
+    // the first family's member, matching the `?? mobject` convention used
+    // by the subclass zips in this codebase.
+    const families = this.get_all_mobjects().map((mob) => mob.family_members_with_points());
+    const first = families[0] ?? [];
+    return first.map((mobject, index) => families.map((family) => family[index] ?? mobject));
   }
 
   get_all_mobjects_to_update(): Mobject[] {
@@ -285,10 +291,42 @@ export class Animation {
   }
 }
 
+export interface WaitOptions extends AnimationOptions {
+  run_time?: number;
+  stop_condition?: (() => boolean) | null;
+  frozen_frame?: boolean | null;
+}
+
 export class Wait extends Animation {
-  constructor(...mobjects: Mobject[]) {
-    const mobject = mobjects.length === 1 ? mobjects[0] : new Group(...mobjects);
-    super(mobject, { run_time: 0, introducer: true });
+  duration: number;
+  stop_condition: (() => boolean) | null;
+  is_static_wait: boolean | null;
+
+  constructor(run_time_or_options: number | WaitOptions = 1, options: WaitOptions = {}) {
+    const first = run_time_or_options as WaitOptions;
+    const isOptions = run_time_or_options !== null && typeof run_time_or_options === "object";
+    const merged: WaitOptions = isOptions ? { ...first, ...options } : options;
+    const run_time = isOptions ? (merged.run_time ?? 1) : (run_time_or_options as number);
+    const stop_condition = merged.stop_condition ?? null;
+    const frozen_frame = merged.frozen_frame ?? null;
+    if (stop_condition && frozen_frame) {
+      const error = new Error("A static Wait animation cannot have a stop condition.");
+      error.name = "ValueError";
+      throw error;
+    }
+    super(null, {
+      ...merged,
+      run_time,
+      rate_func: merged.rate_func ?? linear,
+    });
+    // NOTE: mirrors Python `self.duration = run_time` (kept alongside the
+    // Animation run_time machinery) and the OpenGL workaround below: the
+    // Cairo Mobject has no shader wrappers, so an empty list is attached
+    // dynamically the same way Python assigns the attribute.
+    this.duration = run_time;
+    this.stop_condition = stop_condition;
+    this.is_static_wait = frozen_frame;
+    (this.mobject as unknown as Record<string, unknown>)["shader_wrapper_list"] = [];
   }
 
   begin(): void {}

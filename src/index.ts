@@ -69,6 +69,7 @@ export * from "./scene/zoomed_scene.js";
 export * from "./animation/animation.js";
 export * from "./animation/composition.js";
 export * from "./animation/creation.js";
+export * from "./animation/fading.js";
 export * from "./animation/movement.js";
 export * from "./animation/numbers.js";
 export * from "./animation/rotation.js";
