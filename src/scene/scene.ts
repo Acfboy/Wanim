@@ -164,6 +164,9 @@ export class TimeProgression implements Iterable<number> {
   [Symbol.iterator](): IterableIterator<number> {
     return this.times[Symbol.iterator]();
   }
+
+  /** Mirrors the tqdm progress-bar `close()` (a no-op here; kept for API parity). */
+  close(): void {}
 }
 
 /**
@@ -769,13 +772,13 @@ export class Scene {
       } else {
         time_progression = this.get_time_progression(
           duration,
-          `Waiting ${this.renderer.num_plays}`,
+          `Waiting ${this.renderer?.num_plays ?? 0}`,
         );
       }
     } else {
       time_progression = this.get_time_progression(
         duration,
-        `Animation ${this.renderer.num_plays}: ${String(animations[0])}${animations.length > 1 ? ", etc." : ""}`,
+        `Animation ${this.renderer?.num_plays ?? 0}: ${String(animations[0])}${animations.length > 1 ? ", etc." : ""}`,
       );
     }
     return time_progression;
@@ -838,6 +841,196 @@ export class Scene {
       this.add_subcaption(subcaption, duration, -run_time + (subcaption_offset ?? 0));
     }
     return this;
+  }
+
+  begin_animations(): void {
+    for (const animation of this.animations) {
+      animation._setup_scene(this);
+      animation.begin();
+    }
+
+    if (config.renderer === RendererType.CAIRO) {
+      // Paint all non-moving objects onto the screen, so they don't
+      // have to be rendered every frame
+      [this.moving_mobjects, this.static_mobjects] =
+        this.get_moving_and_static_mobjects(this.animations);
+    }
+  }
+
+  play_internal(skip_rendering = false): void {
+    this.duration = this.get_run_time(this.animations);
+    this.time_progression = this._get_animation_time_progression(
+      this.animations,
+      this.duration,
+    );
+    for (const t of this.time_progression) {
+      this.update_to_time(t);
+      if (!skip_rendering && !this.skip_animation_preview) {
+        // NOTE: with no renderer attached yet (plain `new Scene()`), there
+        // is nothing to render into, so the call is skipped.
+        this.renderer?.render(this, t, this.moving_mobjects);
+      }
+      if (this.stop_condition !== null && this.stop_condition()) {
+        this.time_progression.close();
+        break;
+      }
+    }
+
+    for (const animation of this.animations) {
+      animation.finish();
+      animation.clean_up_from_scene(this);
+    }
+    if (!this.renderer?.skip_animations) {
+      this.update_mobjects(0);
+    }
+    // TODO: The OpenGLRenderer does not have the property static.image.
+    if (this.renderer) {
+      this.renderer.static_image = null;
+    }
+    // Closing the progress bar at the end of the play.
+    this.time_progression.close();
+  }
+
+  interact(
+    shell: {
+      pt_app: { app: { exit: (error?: unknown) => void } } | null;
+    },
+    keyboard_thread: { join: () => void },
+  ): void {
+    // NOTE: Python asserts isinstance(self.renderer, OpenGLRenderer) and
+    // watches the input file with watchdog's Observer to queue reruns; the
+    // OpenGL renderer and watchdog have no TS equivalent, so the file
+    // observer is skipped and interaction runs purely off this.queue (the
+    // action handling below otherwise mirrors Python verbatim).
+    const eofError = (): Error => {
+      const error = new Error("EOF");
+      error.name = "EOFError";
+      return error;
+    };
+
+    this.quit_interaction = false;
+    let keyboard_thread_needs_join = shell?.pt_app !== null && shell?.pt_app !== undefined;
+    if (this.queue.length !== 0) {
+      const error = new Error("assert self.queue.qsize() == 0");
+      error.name = "AssertionError";
+      throw error;
+    }
+
+    let last_time = Date.now() / 1000;
+    while (!(
+      (
+        this.renderer?.window !== null &&
+        this.renderer?.window !== undefined &&
+        this.renderer.window.is_closing
+      ) ||
+      this.quit_interaction
+    )) {
+      if (this.queue.length > 0) {
+        const action = this.queue.shift() as SceneInteractAction;
+        if (action instanceof SceneInteractRerun) {
+          // Intentionally skip calling join() on the file thread to save time.
+          if (action.sender !== "keyboard") {
+            if (shell?.pt_app) {
+              shell.pt_app.app.exit(eofError());
+            }
+            throw new RerunSceneException();
+          }
+          keyboard_thread.join();
+
+          if ("from_animation_number" in action.kwargs) {
+            (config as unknown as Record<string, unknown>)["from_animation_number"] =
+              action.kwargs["from_animation_number"];
+          }
+          // # TODO: This option only makes sense if interactive_embed() is run at the
+          // # end of a scene by default.
+          // if "upto_animation_number" in action.kwargs:
+          //     config["upto_animation_number"] = action.kwargs[
+          //         "upto_animation_number"
+          //     ]
+
+          keyboard_thread.join();
+          throw new RerunSceneException();
+        } else if (action instanceof SceneInteractContinue) {
+          // Intentionally skip calling join() on the file thread to save time.
+          if (action.sender !== "keyboard" && shell?.pt_app) {
+            shell.pt_app.app.exit(eofError());
+          }
+          keyboard_thread.join();
+          // Remove exit_keyboard from the queue if necessary.
+          while (this.queue.length > 0) {
+            this.queue.shift();
+          }
+          keyboard_thread_needs_join = false;
+          break;
+        } else {
+          // NOTE: Python calls action.method(*action.args, **action.kwargs);
+          // the TS MethodWithArgs carries kwargs but its method channel is
+          // positional-only, so kwargs ride no separate channel here.
+          const methodAction = action as MethodWithArgs;
+          methodAction.method(...methodAction.args);
+        }
+      } else {
+        if (this.renderer) {
+          this.renderer.animation_start_time = 0;
+        }
+        const now = Date.now() / 1000;
+        const dt = now - last_time;
+        last_time = now;
+        // NOTE: skipped when no renderer is attached (see play_internal).
+        this.renderer?.render(this, dt, this.moving_mobjects);
+        this.update_mobjects(dt);
+        this.update_meshes(dt);
+        this.update_self(dt);
+      }
+    }
+
+    // Join the keyboard thread if necessary.
+    if (shell !== null && shell !== undefined && keyboard_thread_needs_join) {
+      shell.pt_app?.app.exit(eofError());
+      keyboard_thread.join();
+      // Remove exit_keyboard from the queue if necessary.
+      while (this.queue.length > 0) {
+        this.queue.shift();
+      }
+    }
+
+    // NOTE: watchdog observer stop/join skipped (see above).
+
+    if (this.dearpygui_imported && config.get("enable_gui")) {
+      // NOTE: DearPyGUI has no TypeScript equivalent (same limitation as
+      // _configure_pygui); the stop_dearpygui() call is skipped.
+    }
+
+    if (this.renderer?.window !== null && this.renderer?.window !== undefined && this.renderer.window.is_closing) {
+      this.renderer.window.destroy();
+    }
+  }
+
+  embed(): void {
+    // NOTE: Python asserts isinstance(self.renderer, OpenGLRenderer); the
+    // OpenGL renderer is not ported yet, so renderer access below is guarded.
+    if (!config.preview) {
+      console.warn("Called embed() while no preview window is available.");
+      return;
+    }
+    if (config.write_to_movie) {
+      console.warn("embed() is skipped while writing to a file.");
+      return;
+    }
+
+    if (this.renderer) {
+      this.renderer.animation_start_time = 0;
+      this.renderer.render(this, -1, this.moving_mobjects);
+    }
+
+    // NOTE: the IPython InteractiveShellEmbed session (post_run_cell render
+    // hook, caller-locals namespace, and the play/wait/add/remove/interact
+    // shortcuts) has no TS equivalent and is skipped; see
+    // .
+    console.warn("embed requires an IPython terminal session, which is not available in the TypeScript runtime.");
+
+    // End scene when exiting an embed.
+    throw new Error("Exiting scene.");
   }
 
   add_subcaption(content: string, duration = 1, offset = 0): void {

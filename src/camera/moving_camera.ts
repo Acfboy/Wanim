@@ -4,7 +4,7 @@ import { DOWN, LEFT, ORIGIN, RIGHT, UP } from "../constants.js";
 import { ManimColor, WHITE } from "../utils/color/core.js";
 import { Camera, type CameraOptions, type CaptureOptions } from "./camera.js";
 import { ScreenRectangle } from "../mobject/frame.js";
-import { Mobject } from "../mobject/mobject.js";
+import { Mobject, type _AnimationBuilder } from "../mobject/mobject.js";
 
 export interface MovingCameraOptions extends CameraOptions {
   fixed_dimension?: number;
@@ -143,6 +143,48 @@ export class MovingCamera extends Camera {
 
   get_mobjects_indicating_movement(): Mobject[] {
     return [this.frame];
+  }
+
+  auto_zoom(
+    mobjects: Iterable<Mobject>,
+    margin: number,
+    only_mobjects_in_frame: boolean,
+    animate: false,
+  ): Mobject;
+  auto_zoom(
+    mobjects: Iterable<Mobject>,
+    margin: number,
+    only_mobjects_in_frame: boolean,
+    animate: true,
+  ): _AnimationBuilder;
+  auto_zoom(
+    mobjects: Iterable<Mobject>,
+    margin = 0,
+    only_mobjects_in_frame = false,
+    animate = true,
+  ): _AnimationBuilder | Mobject {
+    const [
+      scene_critical_x_left,
+      scene_critical_x_right,
+      scene_critical_y_up,
+      scene_critical_y_down,
+    ] = this._get_bounding_box(mobjects, only_mobjects_in_frame);
+
+    // calculate center x and y
+    const x = (scene_critical_x_left + scene_critical_x_right) / 2;
+    const y = (scene_critical_y_up + scene_critical_y_down) / 2;
+
+    // calculate proposed width and height of zoomed scene
+    const new_width = Math.abs(scene_critical_x_left - scene_critical_x_right);
+    const new_height = Math.abs(scene_critical_y_up - scene_critical_y_down);
+
+    const m_target = (animate ? this.frame.animate : this.frame) as unknown as Mobject;
+    // zoom to fit all mobjects along the side that has the largest size
+    if (new_width / this.frame.width > new_height / this.frame.height) {
+      return m_target.set_x(x).set_y(y).set({ width: new_width + margin }) as unknown as _AnimationBuilder | Mobject;
+    } else {
+      return m_target.set_x(x).set_y(y).set({ height: new_height + margin }) as unknown as _AnimationBuilder | Mobject;
+    }
   }
 
   _get_bounding_box(

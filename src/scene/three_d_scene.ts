@@ -435,19 +435,32 @@ export class SpecialThreeDScene extends ThreeDScene {
   }
 
   get_sphere(kwargs: Record<string, unknown> = {}): Sphere {
+    // NOTE: Python returns Sphere(**merged_config); the TS Sphere takes its
+    // core geometry positionally plus an options bag, so known keys are
+    // routed positionally and the rest ride the options bag.
     const merged = merge_dicts_recursively(this.sphere_config, kwargs) as {
       radius?: number;
       resolution?: number | [number, number];
       center?: readonly number[];
       u_range?: [number, number];
       v_range?: [number, number];
+      [key: string]: unknown;
     };
+    const {
+      center = [0, 0, 0],
+      radius = 2,
+      resolution = [24, 48],
+      u_range,
+      v_range,
+      ...rest
+    } = merged;
     return new Sphere(
-      (merged.center as readonly number[] | undefined) ?? [0, 0, 0],
-      merged.radius ?? 2,
-      (merged.resolution as number | [number, number] | undefined) ?? [24, 48],
-      merged.u_range,
-      merged.v_range,
+      center as readonly number[],
+      radius as number,
+      resolution as number | [number, number],
+      u_range as [number, number] | undefined,
+      v_range as [number, number] | undefined,
+      rest as Record<string, unknown> & { surface_piece_config?: Record<string, unknown> },
     );
   }
 

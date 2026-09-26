@@ -253,12 +253,19 @@ export interface BarChartOptions {
   bar_width?: number;
   bar_fill_opacity?: number;
   bar_stroke_width?: number;
+  x_axis_config?: Record<string, unknown> | null;
+  y_axis_config?: Record<string, unknown> | null;
+  axis_config?: Record<string, unknown> | null;
+  tips?: boolean;
 }
 
-// NOTE: only the text-independent core of BarChart is ported here (range
-// computation plus _update_colors). Building the bars/labels/axes numbers
-// needs Rectangle (ported) but also Tex/DecimalNumber labels, which are out
-// of scope (text/tex not ported yet); see .
+// NOTE: the bar geometry (_create_bar/_add_bars/change_bar_values) is ported
+// in full. The x-axis/bar labels and y-axis numbers need Tex/DecimalNumber
+// (text/tex, out of scope for the entire port), so _add_x_axis_labels and
+// get_bar_labels throw TODO errors and the y_axis.add_numbers() tail of
+// __init__ binds once the NumberLine integration lands; the bars themselves
+// cannot join the axes group yet because the TS Axes hierarchy is not
+// Mobject-based (no add/add_to_back); see .
 export class BarChart extends Axes {
   values: number[];
   bar_names: string[] | null;
@@ -286,6 +293,10 @@ export class BarChart extends Axes {
       bar_width = 0.6,
       bar_fill_opacity = 0.7,
       bar_stroke_width = 3,
+      x_axis_config: passed_x_axis_config = null,
+      y_axis_config: passed_y_axis_config = null,
+      axis_config: passed_axis_config = null,
+      tips = false,
     } = options;
 
     const resolved_y_length = y_length ?? config.frame_height - 4;
@@ -304,7 +315,22 @@ export class BarChart extends Axes {
     }
     const resolved_x_length = x_length ?? Math.min(values.length, config.frame_width - 2);
 
-    super(x_range, resolved_y_range, resolved_x_length, resolved_y_length);
+    // NOTE: Python defaults x_axis_config to {"font_size": 24,
+    // "label_constructor": Tex}; Tex is out of scope, so the constructor is
+    // kept as an opaque placeholder until text lands.
+    const x_axis_config: Record<string, unknown> = { font_size: 24, label_constructor: "Tex" };
+    Axes._update_default_configs([x_axis_config], [passed_x_axis_config]);
+
+    super(
+      x_range,
+      resolved_y_range,
+      resolved_x_length,
+      resolved_y_length,
+      passed_axis_config,
+      x_axis_config,
+      passed_y_axis_config,
+      tips,
+    );
 
     this.values = [...values];
     this.bar_names = bar_names === null ? null : [...bar_names];
@@ -312,6 +338,17 @@ export class BarChart extends Axes {
     this.bar_width = bar_width;
     this.bar_fill_opacity = bar_fill_opacity;
     this.bar_stroke_width = bar_stroke_width;
+
+    this._add_bars();
+
+    if (this.bar_names !== null && this.bar_names !== undefined) {
+      this._add_x_axis_labels();
+    }
+
+    // NOTE: NumberLine.add_numbers builds DecimalNumber (text) labels and the
+    // TS Axes hierarchy is not Mobject-based yet, so this binds once the
+    // NumberLine integration lands.
+    (this as unknown as { y_axis?: { add_numbers?: () => void } }).y_axis?.add_numbers?.();
   }
 
   _update_colors(): void {
@@ -340,5 +377,88 @@ export class BarChart extends Axes {
     const anchor = pointRows(this.c2p(bar_number + 0.5, 0), 3)[0] ?? [0, 0, 0];
     bar.next_to(anchor, pos, 0);
     return bar;
+  }
+
+  _add_bars(): void {
+    for (let i = 0; i < this.values.length; i += 1) {
+      const tmp_bar = this._create_bar(i, this.values[i] ?? 0);
+      this.bars.add(tmp_bar);
+    }
+
+    this._update_colors();
+    // NOTE: Python calls self.add_to_back(self.bars); the TS Axes hierarchy
+    // is not Mobject-based (no add/add_to_back), so the bars live in
+    // self.bars until that integration lands.
+  }
+
+  _add_x_axis_labels(): void {
+    // NOTE: labels are built with self.x_axis.label_constructor (Tex) and
+    // positioned via NumberLine helpers; text/tex is out of scope.
+    throw new Error("TODO: text/tex not ported yet (BarChart._add_x_axis_labels needs Tex labels)");
+  }
+
+  get_bar_labels(
+    color: ParsableManimColor | null = null,
+    font_size = 24,
+    buff: number = MED_SMALL_BUFF,
+    label_constructor: unknown = "Tex",
+  ): VGroup {
+    void color;
+    void font_size;
+    void buff;
+    void label_constructor;
+    // NOTE: labels are MathTex/Tex mobjects (text/tex, out of scope).
+    throw new Error("TODO: text/tex not ported yet (BarChart.get_bar_labels needs Tex labels)");
+  }
+
+  change_bar_values(values: Iterable<number>, update_colors = true): this {
+    const values_list = [...values];
+    const bars = this.bars.submobjects as Rectangle[];
+    const count = Math.min(bars.length, values_list.length);
+    for (let i = 0; i < count; i += 1) {
+      const bar = bars[i] as Rectangle;
+      const value = values_list[i] ?? 0;
+      const chart_val = this.values[i] ?? 0;
+
+      let bar_lim: number[];
+      let aligned_edge: readonly number[];
+      if (chart_val > 0) {
+        bar_lim = bar.get_bottom();
+        aligned_edge = [...DOWN];
+      } else {
+        bar_lim = bar.get_top();
+        aligned_edge = [...UP];
+      }
+
+      // check if the bar has height
+      if (chart_val !== 0) {
+        const quotient = value / chart_val;
+        if (quotient < 0) {
+          aligned_edge = chart_val > 0 ? [...UP] : [...DOWN];
+
+          // if the bar is already positive, then we now want to move it
+          // so that it is negative. So, we move the top edge of the bar
+          // to the location of the previous bottom
+
+          // if already negative, then we move the bottom edge of the bar
+          // to the location of the previous top
+        }
+        bar.stretch_to_fit_height(Math.abs(quotient) * bar.height);
+      } else {
+        // create a new bar since the current one has a height of zero (doesn't exist)
+        const temp_bar = this._create_bar(i, value);
+        this.bars.remove(bar);
+        this.bars.insert(i, temp_bar);
+      }
+
+      bar.move_to(bar_lim, aligned_edge);
+    }
+
+    if (update_colors) {
+      this._update_colors();
+    }
+
+    this.values.splice(0, values_list.length, ...values_list);
+    return this;
   }
 }

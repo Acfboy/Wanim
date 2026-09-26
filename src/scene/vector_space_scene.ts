@@ -1,4 +1,8 @@
 import { array, type NDArray } from "numpy-ts";
+import { Arrow } from "../mobject/geometry/line.js";
+import { Dot } from "../mobject/geometry/arc.js";
+import { BLACK } from "../utils/color/core.js";
+import { rush_from, rush_into } from "../utils/rate_functions.js";
 import { Scene } from "./scene.js";
 import { matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
 import { update_dict_recursively } from "../utils/config_ops.js";
@@ -212,8 +216,36 @@ export class VectorScene extends Scene {
   }
 
   show_ghost_movement(vector: any): void {
-    void vector;
-    throw new Error("TODO: Dot (manim.mobject.geometry.arc) not ported yet");
+    let vector_cleaned: number[];
+    if (vector instanceof Arrow) {
+      const end = pointRows(vector.get_end(), 3)[0] ?? [0, 0, 0];
+      const start = pointRows(vector.get_start(), 3)[0] ?? [0, 0, 0];
+      vector_cleaned = end.map((value, index) => value - (start[index] ?? 0));
+    } else {
+      const raw: number[] = Array.isArray(vector)
+        ? [...vector]
+        : pointRows(vector as NDArray, 1).map((row) => row[0] ?? 0);
+      vector_cleaned = raw.length === 2 ? [...raw, 0] : raw;
+    }
+
+    const x_max = Math.trunc(Number(config.frame_x_radius) + Math.abs(vector_cleaned[0] ?? 0));
+    const y_max = Math.trunc(Number(config.frame_y_radius) + Math.abs(vector_cleaned[1] ?? 0));
+    // TODO:
+    // I think that this should be a VGroup instead of a VMobject.
+    const dots = new VMobject();
+    for (let x = -x_max; x < x_max; x += 1) {
+      for (let y = -y_max; y < y_max; y += 1) {
+        dots.add(new Dot([x, y, 0]));
+      }
+    }
+    dots.set_fill(BLACK, 0);
+    const halfway = (vector_cleaned ?? []).map((value) => (value ?? 0) / 2);
+    const dots_halfway = (dots.copy() as VMobject).shift(halfway).set_fill(WHITE, 1);
+    const dots_end = (dots.copy() as VMobject).shift(vector_cleaned);
+
+    this.play(new Transform(dots, dots_halfway as unknown as VMobject, { rate_func: rush_into }));
+    this.play(new Transform(dots, dots_end as unknown as VMobject, { rate_func: rush_from }));
+    this.remove(dots);
   }
 }
 
