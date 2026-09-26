@@ -50,7 +50,9 @@ function expectVecClose(actual: number[] | NDArray, expected: number[], tol = 1e
 // Line3D([0,0,0],[2,2,2]): len sqrt(12), dir [1,1,1]/sqrt(3)
 // Torus R=3 r=1; Tetrahedron faces=4; create_faces single tri -> 1 face, 12 pts
 // MobjectTable 2x2: elements=4, rows=2, cols=2
-// Union pts=16 w=3 h=2; Diff pts=20; Inter pts=16 w=1 h=2; Excl pts=36
+// Boolean ops need skia `pathops` (no TS equivalent): combinators throw
+// `TODO: boolean ops need the 'pathops' (skia) library`; only the <2-input
+// ValueError arity checks are ground-truth testable here.
 
 describe("Square", () => {
   it("side_length=2 gives width/height/side_length 2", () => {
