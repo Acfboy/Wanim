@@ -46,8 +46,10 @@ export class VectorField extends VGroup {
   rgbs: number[][];
   // NOTE: mirrors Python, where pos_to_rgb/pos_to_color only exist on
   // multi-color fields (single-color fields have neither attribute).
-  pos_to_rgb?: (position: number[] | NDArray) => number[];
-  pos_to_color?: (position: number[] | NDArray) => ManimColor;
+  // `declare` (no runtime field) so `"pos_to_rgb" in field` is false for
+  // single-color fields, exactly like Python's missing attribute.
+  declare pos_to_rgb?: (position: number[] | NDArray) => number[];
+  declare pos_to_color?: (position: number[] | NDArray) => ManimColor;
   submob_movement_updater: MobjectUpdater | null = null;
 
   constructor(func: VectorFunction, color: ParsableManimColor | VectorFieldOptions | null = {}, color_scheme?: ColorScheme | null, min_color_scheme_value = 0, max_color_scheme_value = 2, colors: ParsableManimColor[] = DEFAULT_SCALAR_FIELD_COLORS) {
