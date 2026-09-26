@@ -632,6 +632,12 @@ describe("VMobject curve queries", () => {
 
 // ---------------------------------------------------------------------------
 // ThreeDAxes._set_axis_shading.make_func
+// NOTE: Python's ThreeDAxes.__init__ ends with
+//   `if config.renderer == RendererType.CAIRO:
+//        self._add_3d_pieces(); self._set_axis_shading()`
+// so under the default cairo renderer the constructor already binds the
+// gradient/normal/sheen once; an explicit _set_axis_shading() call below
+// re-binds (idempotent), hence set_sheen is seen twice.
 // ---------------------------------------------------------------------------
 describe("ThreeDAxes._set_axis_shading", () => {
   it("binds gradient endpoints to +/- light_source edge centers", () => {
@@ -650,10 +656,12 @@ describe("ThreeDAxes._set_axis_shading", () => {
     };
     // Python default light_source is 9*DOWN + 7*LEFT + 10*OUT == [-7, -9, 10]
     const axes = new ThreeDAxes(null, null, null, null, [-7, -9, 10], [axis]);
+    // The constructor already applied shading once (see note above).
+    expect(seen).toEqual([[0.2]]);
     axes._set_axis_shading();
     expect(submob.get_gradient_start_and_end_points()).toEqual([[7, 9, -10], [-7, -9, 10]]);
     expect(submob.get_unit_normal(null)).toEqual([1, 1, 1]);
-    expect(seen).toEqual([[0.2]]);
+    expect(seen).toEqual([[0.2], [0.2]]);
   });
 });
 

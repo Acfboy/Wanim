@@ -60,6 +60,7 @@ import {
   delete_nonsvg_files,
 } from "../src/utils/tex_file_writing.js";
 import { ManimConfig, config } from "../src/_config/utils.js";
+import { RendererType } from "../src/constants.js";
 
 // NOTE: TexTemplate.from_file is covered by tests/batch-layer0-tex.test.ts.
 // tex_hash / delete_nonsvg_files are pure file utilities (no LaTeX needed)
@@ -537,9 +538,10 @@ describe("Mobject.set", () => {
 
 // ---------------------------------------------------------------------------
 // manim.scene.scene.Scene.remove.lambda_function (inner filter for meshes)
-// Python cairo path restructures mobjects/foreground; opengl path filters
-// meshes with `lambda_function(mesh) = mesh not in removed`. TS names the
-// closure lambda_function and filters this.meshes the same way.
+// Python cairo path only restructures mobjects/foreground and leaves
+// `meshes` untouched; only the opengl path filters meshes with
+// `lambda_function(mesh) = mesh not in removed` (verified against the
+// original: cairo Scene().remove(a) with meshes [a, b] keeps both).
 // ---------------------------------------------------------------------------
 describe("Scene.remove.lambda_function", () => {
   it("removes mobjects from the scene", () => {
@@ -551,13 +553,27 @@ describe("Scene.remove.lambda_function", () => {
     expect(s.mobjects.includes(m1)).toBe(false);
     expect(s.mobjects.includes(m2)).toBe(true);
   });
-  it("filters meshes not in the removal set", () => {
+  it("leaves meshes untouched on the cairo path", () => {
     const s = new Scene();
     const a = new Mobject();
     const b = new Mobject();
     s.meshes = [a, b];
     s.remove(a);
-    expect(s.meshes).toEqual([b]);
+    expect(s.meshes).toEqual([a, b]);
+  });
+  it("filters meshes not in the removal set on the opengl path", () => {
+    const prev = config.renderer;
+    config.renderer = RendererType.OPENGL;
+    try {
+      const s = new Scene();
+      const a = new Mobject();
+      const b = new Mobject();
+      s.meshes = [a, b];
+      s.remove(a);
+      expect(s.meshes).toEqual([b]);
+    } finally {
+      config.renderer = prev;
+    }
   });
 });
 
