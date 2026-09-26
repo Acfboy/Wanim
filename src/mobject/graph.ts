@@ -31,6 +31,18 @@ function edgeKey(u: GraphVertex, v: GraphVertex): string {
   return `${String(u)}\u0000${String(v)}`;
 }
 
+/** Format an edge like Python `f"{edge}"` for a tuple (u, v): "(u, v)". */
+function formatEdgeForMessage(edge: GraphEdge | string): string {
+  if (typeof edge === "string") {
+    if (edge.includes("\u0000")) {
+      const [u, v] = edge.split("\u0000");
+      return `(${u}, ${v})`;
+    }
+    return edge;
+  }
+  return `(${String(edge[0])}, ${String(edge[1])})`;
+}
+
 export class NetworkXGraph implements NetworkXGraphLike {
   nodes = new Map<GraphVertex, Record<string, unknown>>();
   edges = new Set<string>();
@@ -526,7 +538,10 @@ export class GenericGraph extends VMobject {
       const edge = this.edges.get(edgeKey(key[0] as GraphVertex, key[1] as GraphVertex));
       if (edge) return edge;
     }
-    const error = new Error(`Could not find ${String(key)} in vertices or edges`);
+    const missing = Array.isArray(key) && key.length === 2
+      ? formatEdgeForMessage(key as unknown as GraphEdge)
+      : String(key);
+    const error = new Error(`Could not find ${missing} in vertices or edges`);
     error.name = "ValueError";
     throw error;
   }
@@ -1033,7 +1048,7 @@ export class GenericGraph extends VMobject {
   _remove_edge(edge: GraphEdge | string): Mobject {
     const key = typeof edge === "string" ? edge : edgeKey(edge[0], edge[1]);
     if (!this.edges.has(key)) {
-      const error = new Error(`The graph does not contain a edge '${String(edge)}'`);
+      const error = new Error(`The graph does not contain a edge '${formatEdgeForMessage(edge)}'`);
       error.name = "ValueError";
       throw error;
     }
