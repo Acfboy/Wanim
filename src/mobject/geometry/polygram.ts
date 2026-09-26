@@ -177,6 +177,66 @@ export class RegularPolygon extends RegularPolygram {
   }
 }
 
+export interface StarOptions extends PolygramOptions {
+  outer_radius?: number;
+  inner_radius?: number | null;
+  density?: number;
+  start_angle?: number | null;
+}
+
+export class Star extends Polygon {
+  start_angle: number | null;
+
+  constructor(n = 5, options: StarOptions = {}) {
+    const {
+      outer_radius = 1,
+      inner_radius = null,
+      density = 2,
+      start_angle = TAU / 4,
+      ...rest
+    } = options;
+    const inner_angle = TAU / (2 * n);
+    let resolved_inner_radius = inner_radius;
+    if (resolved_inner_radius === null || resolved_inner_radius === undefined) {
+      // See https://math.stackexchange.com/a/2136292 for an overview of
+      // how to calculate the inner radius of a perfect star.
+      if (density <= 0 || density >= n / 2) {
+        const error = new Error(
+          `Incompatible density ${density} for number of points ${n}`,
+        );
+        error.name = "ValueError";
+        throw error;
+      }
+      const outer_angle = (TAU * density) / n;
+      const inverse_x =
+        1 -
+        Math.tan(inner_angle) *
+          ((Math.cos(outer_angle) - 1) / Math.sin(outer_angle));
+      resolved_inner_radius =
+        outer_radius / (Math.cos(inner_angle) * inverse_x);
+    }
+    const [outer_vertices, resolved_start_angle] = regular_vertices(
+      n,
+      outer_radius,
+      start_angle,
+    );
+    const [inner_vertices] = regular_vertices(
+      n,
+      resolved_inner_radius,
+      (resolved_start_angle ?? 0) + inner_angle,
+    );
+    const outer_rows = pointRows(outer_vertices, 3);
+    const inner_rows = pointRows(inner_vertices, 3);
+    const vertices: number[][] = [];
+    for (let index = 0; index < n; index += 1) {
+      vertices.push([...(outer_rows[index] ?? [0, 0, 0])]);
+      vertices.push([...(inner_rows[index] ?? [0, 0, 0])]);
+    }
+    super(...vertices, rest);
+    this.start_angle = resolved_start_angle;
+  }
+}
+
 export interface TriangleOptions extends RegularPolygonOptions {}
 
 export class Triangle extends RegularPolygon {

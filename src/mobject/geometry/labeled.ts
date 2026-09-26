@@ -1,7 +1,10 @@
 import { array, type NDArray } from "numpy-ts";
-import { isNDArray, pointRows } from "../../utils/arrays.js";
+import { LEFT, RIGHT } from "../../constants.js";
+import { isNDArray, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { polylabel } from "../../utils/polylabel.js";
+import type { Mobject } from "../mobject.js";
 import { VGroup } from "../types/vectorized_mobject.js";
+import { Line, type LineEndpoint, type LineOptions } from "./line.js";
 import { Polygram, type PolygramOptions } from "./polygram.js";
 
 /**
@@ -37,6 +40,94 @@ export class Label extends VGroup {
 /** Exact element-wise comparison of two points, mirroring np.array_equal. */
 function pointsEqual(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function isLineOptionsObject(value: unknown): value is LineOptions {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value instanceof VGroup) return false;
+  if (isNDArray(value)) return false;
+  return true;
+}
+
+export interface LabeledLineOptions extends LineOptions {
+  label_position?: number;
+  label_config?: Record<string, unknown> | null;
+  box_config?: Record<string, unknown> | null;
+  frame_config?: Record<string, unknown> | null;
+}
+
+export class LabeledLine extends Line {
+  label!: Label;
+
+  constructor(
+    label: string | unknown,
+    label_position = 0.5,
+    label_config: Record<string, unknown> | null = null,
+    box_config: Record<string, unknown> | null = null,
+    frame_config: Record<string, unknown> | null = null,
+    ...lineArgs: unknown[]
+  ) {
+    // NOTE: mirrors Python `LabeledLine(label, label_position=0.5,
+    // label_config=None, box_config=None, frame_config=None, *args,
+    // **kwargs)`: trailing line args are (start, end, buff/path_arc...,
+    // options). An options bag may also carry the label_* keys, which win
+    // over the positionals (same convention as Line/Arrow).
+    let start: LineEndpoint = [...LEFT];
+    let end: LineEndpoint = [...RIGHT];
+    let positionalBuff: number | undefined;
+    let positionalPathArc: number | undefined;
+    let lineOptions: LineOptions = {};
+    let resolved_position = label_position;
+    let resolved_label_config = label_config;
+    let resolved_box_config = box_config;
+    let resolved_frame_config = frame_config;
+    const positional = [...lineArgs];
+    const last = positional[positional.length - 1];
+    if (positional.length > 0 && isLineOptionsObject(last)) {
+      const {
+        label_position: optPosition,
+        label_config: optLabelConfig,
+        box_config: optBoxConfig,
+        frame_config: optFrameConfig,
+        ...rest
+      } = last as LabeledLineOptions;
+      lineOptions = rest as LineOptions;
+      if (optPosition !== undefined) resolved_position = optPosition;
+      if (optLabelConfig !== undefined) resolved_label_config = optLabelConfig as Record<string, unknown> | null;
+      if (optBoxConfig !== undefined) resolved_box_config = optBoxConfig as Record<string, unknown> | null;
+      if (optFrameConfig !== undefined) resolved_frame_config = optFrameConfig as Record<string, unknown> | null;
+      positional.pop();
+    }
+    if (positional.length > 0) start = positional[0] as LineEndpoint;
+    if (positional.length > 1) end = positional[1] as LineEndpoint;
+    if (positional.length > 2) {
+      if (typeof positional[2] === "number") positionalBuff = positional[2] as number;
+      else Object.assign(lineOptions, positional[2] as LineOptions);
+    }
+    if (positional.length > 3) {
+      if (typeof positional[3] === "number") positionalPathArc = positional[3] as number;
+      else Object.assign(lineOptions, positional[3] as LineOptions);
+    }
+    super(start, end, positionalBuff ?? lineOptions.buff ?? 0, positionalPathArc ?? lineOptions.path_arc ?? 0, lineOptions);
+
+    // Create Label (text/tex rendering is out of scope; the Label stub
+    // throws here exactly where Python would build MathTex/Text).
+    this.label = new Label(
+      label as string,
+      resolved_label_config,
+      resolved_box_config,
+      resolved_frame_config,
+    );
+
+    // Compute Label Position
+    const [line_start, line_end] = this.get_start_and_end();
+    const new_vec = subtractPoints(line_end, line_start, this.dim).map(
+      (value) => value * (resolved_position ?? 0.5),
+    );
+    const label_coords = line_start.map((value, index) => value + (new_vec[index] ?? 0));
+    this.label.move_to(label_coords);
+    this.add(this.label);
+  }
 }
 
 export interface LabeledPolygramOptions extends PolygramOptions {

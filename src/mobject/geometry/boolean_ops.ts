@@ -161,8 +161,38 @@ export class _BooleanOps extends VMobject {
     return path;
   }
 
-  _convert_skia_path_to_vmobject(_path: unknown): VMobject {
-    throw new Error("TODO: boolean ops need the `pathops` (skia) library, not ported yet");
+  _convert_skia_path_to_vmobject(path: SkiaPath): VMobject {
+    const vmobject = this as unknown as VMobject;
+    let current_path_start: number[] = [0, 0, 0];
+    for (const [path_verb, points] of path) {
+      if (path_verb === PathVerb.MOVE) {
+        const parts = pointRows(this._convert_2d_to_3d_array(points), this.dim);
+        for (const part of parts) {
+          current_path_start = [...part];
+          vmobject.start_new_path(part);
+        }
+      } else if (path_verb === PathVerb.CUBIC) {
+        const [n1 = [0, 0, 0], n2 = [0, 0, 0], n3 = [0, 0, 0]] = pointRows(
+          this._convert_2d_to_3d_array(points),
+          this.dim,
+        );
+        vmobject.add_cubic_bezier_curve_to(n1, n2, n3);
+      } else if (path_verb === PathVerb.LINE) {
+        const parts = pointRows(this._convert_2d_to_3d_array(points), this.dim);
+        vmobject.add_line_to(parts[0] ?? [0, 0, 0]);
+      } else if (path_verb === PathVerb.CLOSE) {
+        vmobject.add_line_to(current_path_start);
+      } else if (path_verb === PathVerb.QUAD) {
+        const [n1 = [0, 0, 0], n2 = [0, 0, 0]] = pointRows(
+          this._convert_2d_to_3d_array(points),
+          this.dim,
+        );
+        vmobject.add_quadratic_bezier_curve_to(n1, n2);
+      } else {
+        throw new Error(`Unsupported: ${path_verb}`);
+      }
+    }
+    return vmobject;
   }
 }
 

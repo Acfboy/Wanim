@@ -161,3 +161,22 @@ export class Cross extends VGroup {
     this.set_stroke(strokeColorOption ?? stroke_color, strokeWidthOption ?? stroke_width);
   }
 }
+
+export type UnderlineOptions = {
+  buff?: number;
+  [key: string]: unknown;
+};
+
+export class Underline extends Line {
+  constructor(
+    mobject: Mobject,
+    buff = SMALL_BUFF,
+    options: UnderlineOptions = {},
+  ) {
+    const { buff: buffOption, ...rest } = options;
+    const resolved_buff = buffOption ?? buff;
+    super([...LEFT], [...RIGHT], { buff: resolved_buff, ...rest });
+    this.match_width(mobject);
+    this.next_to(mobject, [...DOWN], this.buff);
+  }
+}

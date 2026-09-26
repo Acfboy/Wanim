@@ -194,6 +194,49 @@ export class Line extends TipableVMobject {
 // line.js directly: this module imports Arc from there).
 set_line_constructor(Line as unknown as Parameters<typeof set_line_constructor>[0]);
 
+export interface TangentLineOptions extends LineOptions {
+  d_alpha?: number;
+  length?: number;
+}
+
+export class TangentLine extends Line {
+  length: number;
+  d_alpha: number;
+
+  constructor(
+    vmob: VMobject,
+    alpha: number,
+    length = 1,
+    d_alpha = 1e-6,
+    options: TangentLineOptions = {},
+  ) {
+    const {
+      length: lengthOption,
+      d_alpha: dAlphaOption,
+      ...rest
+    } = options;
+    const resolved_length = lengthOption ?? length;
+    const resolved_d_alpha = dAlphaOption ?? d_alpha;
+    const da = resolved_d_alpha;
+    // NOTE: mirrors np.clip(alpha - da, 0, 1) / np.clip(alpha + da, 0, 1).
+    const a1 = Math.min(Math.max(alpha - da, 0), 1);
+    const a2 = Math.min(Math.max(alpha + da, 0), 1);
+    super(
+      vmob.point_from_proportion(a1),
+      vmob.point_from_proportion(a2),
+      rest,
+    );
+    // NOTE: Python assigns self.length/self.d_alpha before super().__init__()
+    // so generate_points() sees final attrs; TS requires super() first.
+    // Line.generate_points() already ran on the tangent segment, and the
+    // rescale below is the only post-super use, so late assignment is
+    // behaviorally identical.
+    this.length = resolved_length;
+    this.d_alpha = resolved_d_alpha;
+    this.scale(this.length / this.get_length());
+  }
+}
+
 export interface DashedLineOptions extends LineOptions {
   dash_length?: number;
   dashed_ratio?: number;
@@ -303,6 +346,11 @@ export class Arrow extends Line {
       subtractPoints(p2, p1, this.dim),
       subtractPoints(p1, p0, this.dim),
     ));
+  }
+
+  reset_normal_vector(): this {
+    this.normal_vector = this.get_normal_vector();
+    return this;
   }
 
   _set_stroke_width_from_length(): this {

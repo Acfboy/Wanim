@@ -610,22 +610,74 @@ export class Cylinder extends Surface {
     this._rotate_to_direction();
     return this;
   }
+
+  // NOTE: Python's Cylinder shadows VMobject.get_direction (which returns
+  // the winding direction "CW"/"CCW") with an incompatible vector return
+  // type; the `any` return type carries that shadowing into TS (same as
+  // Brace.get_direction).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  get_direction(): any {
+    return this.direction;
+  }
 }
 
-export class Torus {
+function torusPoint(u: number, v: number, R: number, r: number): SurfacePoint {
+  const px = Math.cos(u);
+  const py = Math.sin(u);
+  const ring = R - r * Math.cos(v);
+  // NOTE: mirrors `(R - r*cos(v)) * P - r*sin(v) * OUT` with
+  // P = [cos u, sin u, 0] and OUT = [0, 0, 1].
+  return point3([ring * px, ring * py, -r * Math.sin(v)]);
+}
+
+export interface TorusOptions {
+  resolution?: number | [number, number];
+  surface_piece_config?: Record<string, unknown>;
+  fill_color?: ParsableManimColor;
+  fill_opacity?: number;
+  checkerboard_colors?: Iterable<ParsableManimColor> | false;
+  stroke_color?: ParsableManimColor;
+  stroke_width?: number;
+  should_make_jagged?: boolean;
+  [key: string]: unknown;
+}
+
+export class Torus extends Surface {
   R: number;
   r: number;
 
-  constructor(major_radius = 3, minor_radius = 1) {
+  constructor(
+    major_radius = 3,
+    minor_radius = 1,
+    u_range: [number, number] = [0, TAU],
+    v_range: [number, number] = [0, TAU],
+    // NOTE: Python defaults the resolution from config.renderer
+    // ((101, 101) for OpenGL, (24, 24) for Cairo); the Cairo default is
+    // used here (same convention as Sphere/Cylinder in this port).
+    resolution: number | [number, number] = [24, 24],
+    options: TorusOptions = {},
+  ) {
+    // NOTE: same super()-first constraint as Cone/Cylinder (see above);
+    // the closure captures the radii params instead of `this`.
+    super(
+      (u: number, v: number) => torusPoint(u, v, major_radius, minor_radius),
+      u_range,
+      v_range,
+      resolution,
+      options.surface_piece_config ?? {},
+      options.fill_color ?? BLUE_D,
+      options.fill_opacity ?? 1.0,
+      options.checkerboard_colors ?? [BLUE_D, BLUE_E],
+      options.stroke_color ?? LIGHT_GREY,
+      options.stroke_width ?? 0.5,
+      options.should_make_jagged ?? false,
+    );
     this.R = major_radius;
     this.r = minor_radius;
   }
 
-  func(u: number, v: number): SurfacePoint {
-    const px = Math.cos(u);
-    const py = Math.sin(u);
-    const ring = this.R - this.r * Math.cos(v);
-    return point3([ring * px, ring * py, -this.r * Math.sin(v)]);
+  override func(u: number, v: number): SurfacePoint {
+    return torusPoint(u, v, this.R, this.r);
   }
 }
 

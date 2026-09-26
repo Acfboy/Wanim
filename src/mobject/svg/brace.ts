@@ -9,8 +9,10 @@ import {
   UP,
 } from "../../constants.js";
 import { BLACK, type ParsableManimColor } from "../../utils/color/core.js";
-import { addPoints, pointAt, pointRows } from "../../utils/arrays.js";
+import { addPoints, pointAt, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { Mobject } from "../mobject.js";
+import { Arc } from "../geometry/arc.js";
+import { Line } from "../geometry/line.js";
 import {
   VMobjectFromSVGPath,
   type VMobjectFromSVGPathOptions,
@@ -160,5 +162,66 @@ export class Brace extends VMobjectFromSVGPath {
     const vect = tip.map((value, dim) => value - (center[dim] ?? 0));
     const norm = Math.hypot(...vect);
     return vect.map((value) => value / norm);
+  }
+}
+
+export class BraceBetweenPoints extends Brace {
+  constructor(
+    point_1: readonly number[] | NDArray,
+    point_2: readonly number[] | NDArray,
+    direction: readonly number[] | NDArray = [...ORIGIN],
+    options: BraceOptions = {},
+  ) {
+    const { direction: directionOption, ...rest } = options;
+    let resolved_direction = [...(pointRows(directionOption ?? direction, 3)[0] ?? [...ORIGIN])];
+    // NOTE: mirrors `if all(direction == ORIGIN)`: every component equals.
+    if (resolved_direction.every((value, index) => value === (ORIGIN[index] ?? 0))) {
+      const p1 = pointRows(point_1, 3)[0] ?? [0, 0, 0];
+      const p2 = pointRows(point_2, 3)[0] ?? [0, 0, 0];
+      const line_vector = subtractPoints(p2, p1, 3);
+      resolved_direction = [line_vector[1] ?? 0, -(line_vector[0] ?? 0), 0];
+    }
+    super(new Line(point_1, point_2), { direction: resolved_direction, ...rest });
+  }
+}
+
+export interface ArcBraceOptions extends BraceOptions {}
+
+export class ArcBrace extends Brace {
+  constructor(
+    arc: Arc | null = null,
+    direction: readonly number[] | NDArray = [...RIGHT],
+    options: ArcBraceOptions = {},
+  ) {
+    const { direction: directionOption, ...rest } = options;
+    const resolved_direction = directionOption ?? direction;
+    const resolved_arc = arc ?? new Arc(1, -1, 2);
+    const arc_end_angle = resolved_arc.start_angle + resolved_arc.angle;
+    const line = new Line(
+      [0, resolved_arc.start_angle, 0],
+      [0, arc_end_angle, 0],
+    );
+    const scale_shift = (RIGHT as readonly number[]).map(
+      (value) => value * Math.log(resolved_arc.radius),
+    );
+    if (resolved_arc.radius >= 1) {
+      line.scale(resolved_arc.radius, [...ORIGIN]);
+      super(line, { direction: resolved_direction, ...rest });
+      this.scale(1 / resolved_arc.radius, [...ORIGIN]);
+    } else {
+      super(line, { direction: resolved_direction, ...rest });
+    }
+    if (resolved_arc.radius >= 0.3) {
+      this.shift(scale_shift);
+    } else {
+      this.shift((RIGHT as readonly number[]).map((value) => value * Math.log(0.3)));
+    }
+    // NOTE: mirrors `self.apply_complex_function(np.exp)`: map z = x + iy
+    // to exp(z) = e^x (cos y + i sin y), keeping z.
+    this.apply_complex_function(({ re, im }: { re: number; im: number }) => {
+      const magnitude = Math.exp(re);
+      return { re: magnitude * Math.cos(im), im: magnitude * Math.sin(im) };
+    });
+    this.shift(resolved_arc.get_arc_center());
   }
 }
