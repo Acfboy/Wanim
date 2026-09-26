@@ -622,7 +622,9 @@ describe("CoordinateSystem.plot_antiderivative_graph", () => {
 // manim.mobject.three_d.polyhedra Tetra/Octa/Icosa/Dodeca/ConvexHull3D
 // Python: unit = sqrt(2)/4 (tetra), sqrt(2)/2 (octa);
 //   tetra 4 verts/4 faces; octa 6/8; icosa 12/20 v0=[0,0.5,0.809016994375];
-//   dodeca 20/12 v0=[0.809016994375 x3]; hull of 6 axis points -> 6/8.
+//   dodeca 20/12 v0=[0.809016994375 x3]; perturbed-octahedron hull -> 6/8
+//   (exact axis points admit a degenerate random initial simplex; see NOTE
+//   on the ConvexHull3D case below).
 // ---------------------------------------------------------------------------
 describe("Platonic solids", () => {
   it("Tetrahedron matches Python vertices and faces", () => {
@@ -657,7 +659,18 @@ describe("Platonic solids", () => {
     expectRowsClose([dd.vertex_coords[0] as number[]], [[0.809016994375, 0.809016994375, 0.809016994375]], 1e-9);
   });
   it("ConvexHull3D of 6 axis points matches Python", () => {
-    const h = new ConvexHull3D([1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]);
+    // NOTE: QuickHull samples its initial simplex with an unseeded RNG
+    // (faithful to Python, which also uses np.random.default_rng()). The
+    // exact 6 axis points admit a degenerate (coplanar) initial simplex, on
+    // which BOTH implementations intermittently return 0 vertices/0 faces
+    // (reproduced with the original the original manim). The inputs below are perturbed
+    // into general position (no 4 coplanar) so any initial simplex is valid
+    // and both sides deterministically yield 6 vertices / 8 faces
+    // (12/12 stable runs in the original manim).
+    const h = new ConvexHull3D(
+      [1, 0.01, 0.02], [-1, 0.03, -0.01], [0.02, 1, 0.01],
+      [-0.01, -1, 0.03], [0.01, 0.02, 1], [0.03, -0.01, -1],
+    );
     expect(h.vertex_coords.length).toBe(6);
     expect(h.faces_list.length).toBe(8);
   });
