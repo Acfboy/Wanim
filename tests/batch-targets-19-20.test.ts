@@ -611,15 +611,14 @@ describe("Surface.set_fill_by_value", () => {
     expect((s.submobjects[s.submobjects.length - 1] as VMobject).get_color().to_hex()).toBe("#83C167");
   });
 
-  it("documents the unported z-mapping for axis=2", () => {
-    // NOTE: Python (axis=2) resolves per-face z via ThreeDAxes
-    // point_to_coords (first face #83C167). The TS Axes hierarchy is not
-    // Mobject-based yet, so point_to_coords drops z (2-elem result) and
-    // every face reads axis_value 0 -> YELLOW. Returns self either way.
+  it("resolves per-face z through ThreeDAxes point_to_coords", () => {
+    // Python (axis=2, pivots -0.5/0/0.5): face0 center maps to z ~= 0.4745
+    // (clamped to the top pivot) -> #00FF00; last face -> #FFCE00.
     const { axes, make } = surfAxes();
     const s = make();
     expect(s.set_fill_by_value(axes, [["#FF0000", -0.5], ["#FFFF00", 0], ["#00FF00", 0.5]] as never, 2)).toBe(s);
-    expect((s.submobjects[0] as VMobject).get_color().to_hex()).toBe("#FFFF00");
+    expect((s.submobjects[0] as VMobject).get_color().to_hex()).toBe("#00FF00");
+    expect((s.submobjects[s.submobjects.length - 1] as VMobject).get_color().to_hex()).toBe("#FFCE00");
   });
 
   it("colorscale None is a no-op returning self", () => {

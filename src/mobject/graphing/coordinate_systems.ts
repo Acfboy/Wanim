@@ -1799,6 +1799,81 @@ export class ThreeDAxes extends Axes {
     }
   }
 
+  get_z_unit_size(): number {
+    // NOTE: mirrors Python `get_z_axis().get_unit_size()` (a NumberLine of
+    // length z_length over z_range); computed directly like the
+    // NumberPlane x/y overrides until the NumberLine integration lands.
+    if (this.z_length === null || this.z_length === undefined) return 1;
+    const span = (this.z_range[1] ?? 0) - (this.z_range[0] ?? 0);
+    return span === 0 ? 0 : this.z_length / span;
+  }
+
+  override coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
+    // NOTE: mirrors Python ThreeDAxes.coords_to_point (per-axis NumberLine
+    // mapping over x/y/z). The TS hierarchy ships no NumberLine axes yet, so
+    // the linear NumberPlane-style mapping is extended to the z axis here —
+    // the inherited Axes/NumberPlane fallback only maps x/y and drops z.
+    if (coords.length === 0) return array([0, 0, 0]) as NDArray;
+    const mapPoint = (x: number, y: number, z: number): number[] => [
+      this.x_length === null || this.x_length === undefined
+        ? unitPosition(Number(x), this.x_range)
+        : axisPosition(Number(x), this.x_range, this.x_length),
+      this.y_length === null || this.y_length === undefined
+        ? unitPosition(Number(y), this.y_range)
+        : axisPosition(Number(y), this.y_range, this.y_length),
+      this.z_length === null || this.z_length === undefined
+        ? unitPosition(Number(z), this.z_range)
+        : axisPosition(Number(z), this.z_range, this.z_length),
+    ];
+    if (coords.length === 1) {
+      const rows = coordinateRows(coords[0]);
+      const points = rows.map((row) => mapPoint(row[0] ?? 0, row[1] ?? 0, row[2] ?? 0));
+      if (points.length === 1) return array(points[0]) as NDArray;
+      return array(points) as NDArray;
+    }
+    const xValues = axisValues(coords[0]);
+    const yValues = axisValues(coords[1]);
+    const zValues = coords.length > 2 ? axisValues(coords[2]) : [0];
+    const count = Math.max(xValues.length, yValues.length, zValues.length);
+    const lastOf = (values: number[]): number => values[values.length - 1] ?? 0;
+    const points = Array.from({ length: count }, (_, index) => mapPoint(
+      xValues[index] ?? lastOf(xValues),
+      yValues[index] ?? lastOf(yValues),
+      zValues[index] ?? lastOf(zValues),
+    ));
+    if (count === 1) return array(points[0]) as NDArray;
+    const transposed = points[0].map((_, col) => points.map((row) => row[col] ?? 0));
+    return array(transposed) as NDArray;
+  }
+
+  override point_to_coords(point: readonly number[]): number[] {
+    // NOTE: algebraic inverse of coords_to_point above (Python resolves this
+    // through the z NumberLine axis; the observable result is the same linear
+    // inverse). A list of points maps row-wise like NumberPlane.
+    if (
+      Array.isArray(point) &&
+      point.length > 0 &&
+      Array.isArray((point as unknown as unknown[])[0])
+    ) {
+      const single = (p: readonly number[]): number[] => this.point_to_coords(p);
+      return (point as unknown as number[][]).map((p) => single(p)) as unknown as number[];
+    }
+    const values = [...point].map(Number);
+    const xValue =
+      this.x_length === null || this.x_length === undefined
+        ? unitValue(values[0] ?? 0, this.x_range)
+        : axisValue(values[0] ?? 0, this.x_range, this.x_length);
+    const yValue =
+      this.y_length === null || this.y_length === undefined
+        ? unitValue(values[1] ?? 0, this.y_range)
+        : axisValue(values[1] ?? 0, this.y_range, this.y_length);
+    const zValue =
+      this.z_length === null || this.z_length === undefined
+        ? unitValue(values[2] ?? 0, this.z_range)
+        : axisValue(values[2] ?? 0, this.z_range, this.z_length);
+    return [xValue, yValue, zValue];
+  }
+
   *[Symbol.iterator](): Iterator<ShadedAxis> {
     // NOTE: mirrors Python `for axis in self` (ThreeDAxes is a VGroup of
     // axes); the TS port tracks the axes in `shaded_axes` until the Axes

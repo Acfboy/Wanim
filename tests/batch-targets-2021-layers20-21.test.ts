@@ -707,10 +707,9 @@ describe("CoordinateSystem.plot_implicit_curve", () => {
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem.plot_surface
 // original manim (cairo): Surface over (u, v) -> c2p(u, v, f(u, v)) with u_range,
 //   v_range stored and sampled faces built.
-// DEVIATION (D-surface-z): NumberPlane.coords_to_point maps (x, y) -> [x, y,
-//   0] and drops a third coordinate, so the TS surface keeps the faithful
-//   x/y placement but with z = 0 until the 3-D mapping lands. x/y are
-//   asserted against c2p ground truth here.
+// NOTE (was DEVIATION D-surface-z, now fixed): ThreeDAxes.coords_to_point
+//   maps all three coordinates, so plot_surface corners carry the faithful
+//   z = axisPosition(f(u,v)) exactly like the original manim (see rows below).
 // ---------------------------------------------------------------------------
 describe("CoordinateSystem.plot_surface", () => {
   it("stores ranges and places x/y through c2p like python", () => {
@@ -734,10 +733,23 @@ describe("CoordinateSystem.plot_surface", () => {
     const c2p00 = toRows(ax.c2p(face0.u1, face0.v1, 0))[0]!;
     expect(close(corners[0]?.[0] ?? NaN, c2p00[0] ?? NaN, 1e-9)).toBe(true);
     expect(close(corners[0]?.[1] ?? NaN, c2p00[1] ?? NaN, 1e-9)).toBe(true);
-    // NOTE (D-surface-z): original manim face z for f(u,v)=u+v is nonzero (e.g. face0
-    // p1 z ~= 0.0677); the TS NumberPlane mapping drops the third coordinate,
-    // so z stays 0 until the 3-D mapping lands.
-    for (const c of corners) expect(c[2]).toBe(0);
+    // original manim (resolution 4, f(u,v)=u+v) face0 corners, full rows:
+    // [[0,0,0],[1/12,0,~0.067708],[2/12,0,~0.135417],[3/12,0,0.203125]].
+    // Each corner (x, 0, z) satisfies [x, 0, z] == c2p(x, 0, x) exactly.
+    expect(corners.length).toBeGreaterThanOrEqual(4);
+    for (let i = 0; i < 4; i += 1) {
+      const corner = corners[i] ?? [NaN, NaN, NaN];
+      const expected = toRows(ax.c2p(corner[0] ?? 0, 0, corner[0] ?? 0))[0]!;
+      // NOTE: 1e-6, not 1e-9: Surface samples u/v on a float grid, so the
+      // corner x already carries ~6e-11 sampling noise that the z-mapping
+      // (slope 0.8125) propagates; the original manim print itself only gives 6dp.
+      expect(close(corner[0] ?? NaN, expected[0] ?? NaN, 1e-6)).toBe(true);
+      expect(close(corner[1] ?? NaN, expected[1] ?? NaN, 1e-6)).toBe(true);
+      expect(close(corner[2] ?? NaN, expected[2] ?? NaN, 1e-6)).toBe(true);
+    }
+    // Spot-check against the original manim print: p1 z ~= 0.067708 (absolute tol:
+    // the print itself only carries 6dp, so relative-1e-6 is meaningless).
+    expect(Math.abs((corners[1]?.[2] ?? NaN) - 0.067708) <= 1e-6).toBe(true);
   });
 });
 
