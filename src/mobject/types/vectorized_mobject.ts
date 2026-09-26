@@ -2,10 +2,10 @@ import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
-import { bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
+import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
-import { ORIGIN, OUT, RendererType, UL } from "../../constants.js";
+import { CapStyleType, ORIGIN, OUT, PI, RendererType, RIGHT, UL, UP } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 
 export interface VMobjectOptions extends MobjectOptions {
@@ -125,6 +125,7 @@ export class VMobject extends Mobject {
   shade_in_3d = false;
   tolerance_for_point_equality = 1e-6;
   n_points_per_cubic_curve: number;
+  _bezier_t_values: number[] = [];
   fill_rgbas: NDArray;
   stroke_rgbas: NDArray;
   background_stroke_rgbas: NDArray;
@@ -132,6 +133,7 @@ export class VMobject extends Mobject {
   constructor(options: VMobjectOptions = {}) {
     super(options);
     this.n_points_per_cubic_curve = options.n_points_per_cubic_curve ?? 4;
+    this._bezier_t_values = linspace(0, 1, this.n_points_per_cubic_curve);
     this.fill_color = new ManimColor(options.fill_color ?? options.color ?? WHITE);
     this.stroke_color = new ManimColor(options.stroke_color ?? options.color ?? WHITE);
     this.fill_opacity = options.fill_opacity ?? 0;
@@ -208,6 +210,29 @@ export class VMobject extends Mobject {
 
   get_sheen_factor(): number {
     return this.sheen_factor;
+  }
+
+  get_gradient_start_and_end_points(): [number[], number[]] {
+    if (this.shade_in_3d) {
+      return [get3dVmobStartCorner(this), get3dVmobEndCorner(this)];
+    }
+    const direction = this.get_sheen_direction();
+    const c = this.get_center();
+    const cols = [RIGHT, UP, OUT].map((vect) => {
+      const edge = this.get_edge_center(vect);
+      return edge.map((value, index) => value - (c[index] ?? 0));
+    });
+    const offset = [0, 1, 2].map((i) =>
+      cols.reduce((sum, col, j) => sum + (col[i] ?? 0) * (direction[j] ?? 0), 0),
+    );
+    return [
+      c.map((value, index) => value - (offset[index] ?? 0)),
+      c.map((value, index) => value + (offset[index] ?? 0)),
+    ];
+  }
+
+  getGradientStartAndEndPoints(): [number[], number[]] {
+    return this.get_gradient_start_and_end_points();
   }
 
   get_sheen_direction(): number[] {
@@ -497,13 +522,68 @@ export class VMobject extends Mobject {
     return this;
   }
 
-  set_stroke(color?: ParsableManimColor, width?: number, opacity?: number, family = true): this {
+  set_stroke(
+    color?: ParsableManimColor,
+    width?: number,
+    opacity?: number,
+    background_or_family: boolean | { background?: boolean; family?: boolean } = true,
+    familyMaybe?: boolean,
+  ): this {
+    // Python signature is set_stroke(color, width, opacity, background=False,
+    // family=True). The TS port historically exposed the 4th slot as `family`;
+    // both conventions are supported: when a 5th argument is present the 4th
+    // is `background` (Python order), otherwise the 4th is `family` unless it
+    // is an options object { background, family }.
+    let background = false;
+    let family = true;
+    if (familyMaybe !== undefined) {
+      background = Boolean(background_or_family);
+      family = familyMaybe;
+    } else if (typeof background_or_family === "object" && background_or_family !== null) {
+      background = background_or_family.background ?? false;
+      family = background_or_family.family ?? true;
+    } else {
+      family = Boolean(background_or_family);
+    }
+    if (family) {
+      for (const submob of this.submobjects) {
+        (submob as VMobject).set_stroke(color, width, opacity, background, family);
+      }
+    }
+    if (background) {
+      this.update_rgbas_array("background_stroke_rgbas", color ?? null, opacity ?? null);
+      if (width !== undefined) this.background_stroke_width = width;
+      if (opacity !== undefined) this.background_stroke_opacity = opacity;
+      if (color !== undefined && color !== null) {
+        this.background_stroke_color = new ManimColor(color);
+      }
+      return this;
+    }
     if (color !== undefined) this.stroke_color = new ManimColor(color);
     if (width !== undefined) this.stroke_width = width;
     if (opacity !== undefined) this.stroke_opacity = opacity;
     this.init_colors(family);
-    if (family) for (const submob of this.submobjects) submob.set_stroke(color, width, opacity, family);
     return this;
+  }
+
+  set_cap_style(cap_style: CapStyleType): this {
+    this.cap_style = cap_style as unknown as string;
+    return this;
+  }
+
+  setCapStyle(cap_style: CapStyleType): this {
+    return this.set_cap_style(cap_style);
+  }
+
+  nonempty_submobjects(): VMobject[] {
+    return this.submobjects.filter(
+      (submob) => submob.submobjects.length !== 0 || submob.get_num_points() !== 0,
+    ) as VMobject[];
+  }
+
+  override split(): VMobject[] {
+    const result: VMobject[] = this.get_num_points() > 0 ? [this] : [];
+    return [...result, ...(this.submobjects as VMobject[])];
   }
 
   set_background_stroke(options: {
@@ -851,19 +931,177 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  add_cubic_bezier_curve(
+    anchor1: unknown,
+    handle1: unknown,
+    handle2: unknown,
+    anchor2: unknown,
+  ): this {
+    // TODO, check the len(self.points) % 4 == 0?
+    const pts = [anchor1, handle1, handle2, anchor2].map(
+      (p) => pointRows(p, this.dim)[0] ?? new Array(this.dim).fill(0),
+    );
+    this.append_points(pts);
+    return this;
+  }
+
+  addCubicBezierCurve(
+    anchor1: unknown,
+    handle1: unknown,
+    handle2: unknown,
+    anchor2: unknown,
+  ): this {
+    return this.add_cubic_bezier_curve(anchor1, handle1, handle2, anchor2);
+  }
+
+  add_cubic_bezier_curves(curves: unknown): this {
+    // Python: self.append_points(curves.flatten()) — the flattened 1D array
+    // is assigned into the 2D points buffer, i.e. re-chunked by dim.
+    if (isNDArray(curves)) {
+      const flat = (curves.toArray() as unknown[]).flat(Infinity).map(numeric);
+      const chunked: number[][] = [];
+      for (let i = 0; i < flat.length; i += this.dim) {
+        const chunk = flat.slice(i, i + this.dim);
+        while (chunk.length < this.dim) chunk.push(0);
+        chunked.push(chunk);
+      }
+      this.append_points(chunked);
+    } else {
+      this.append_points(curves);
+    }
+    return this;
+  }
+
+  addCubicBezierCurves(curves: unknown): this {
+    return this.add_cubic_bezier_curves(curves);
+  }
+
+  add_cubic_bezier_curve_to(handle1: unknown, handle2: unknown, anchor: unknown): this {
+    this.throw_error_if_no_points("add_cubic_bezier_curve_to");
+    const h1 = pointRows(handle1, this.dim)[0] ?? new Array(this.dim).fill(0);
+    const h2 = pointRows(handle2, this.dim)[0] ?? new Array(this.dim).fill(0);
+    const a = pointRows(anchor, this.dim)[0] ?? new Array(this.dim).fill(0);
+    const new_points = [h1, h2, a];
+    if (this.has_new_path_started()) {
+      this.append_points(new_points);
+    } else {
+      this.append_points([pointAt(this.points, this.get_num_points() - 1, this.dim), ...new_points]);
+    }
+    return this;
+  }
+
+  addCubicBezierCurveTo(handle1: unknown, handle2: unknown, anchor: unknown): this {
+    return this.add_cubic_bezier_curve_to(handle1, handle2, anchor);
+  }
+
+  add_quadratic_bezier_curve_to(handle: unknown, anchor: unknown): this {
+    // How does one approximate a quadratic with a cubic?
+    // refer to the Wikipedia page on Bezier curves
+    // https://en.wikipedia.org/wiki/B%C3%A9zier_curve#Degree_elevation, accessed Jan 20, 2021
+    // 1. Copy the end points, and then
+    // 2. Place the 2 middle control points 2/3 along the line segments
+    // from the end points to the quadratic curve's middle control point.
+    const h = pointRows(handle, this.dim)[0] ?? new Array(this.dim).fill(0);
+    const a = pointRows(anchor, this.dim)[0] ?? new Array(this.dim).fill(0);
+    const last = pointAt(this.points, this.get_num_points() - 1, this.dim);
+    const lerp = (p: number[], q: number[], t: number): number[] =>
+      p.map((value, index) => (1 - t) * value + t * (q[index] ?? 0));
+    this.add_cubic_bezier_curve_to(lerp(last, h, 2 / 3), lerp(a, h, 2 / 3), a);
+    return this;
+  }
+
+  addQuadraticBezierCurveTo(handle: unknown, anchor: unknown): this {
+    return this.add_quadratic_bezier_curve_to(handle, anchor);
+  }
+
   add_line_to(point: unknown): this {
-    const end = pointFrom(point, this.dim).toArray() as number[];
-    const current = rows(this.points, this.dim);
-    if (current.length === 0) {
-      const error = new Error("Only call add_line_to with 1 or 2 points");
+    const end = pointRows(point, this.dim)[0] ?? new Array(this.dim).fill(0);
+    const start = pointAt(this.points, this.get_num_points() - 1, this.dim);
+    const interpolated = this._bezier_t_values
+      .slice(1)
+      .map((t) => start.map((value, index) => (1 - t) * value + t * (end[index] ?? 0)));
+    const [handle1, handle2, anchor] = interpolated;
+    this.add_cubic_bezier_curve_to(handle1, handle2, anchor);
+    return this;
+  }
+
+  addLineTo(point: unknown): this {
+    return this.add_line_to(point);
+  }
+
+  add_smooth_curve_to(...points: unknown[]): this {
+    // TODO remove the value error and just add two parameters with one optional
+    let handle2: number[] | null;
+    let new_anchor: number[];
+    if (points.length === 1) {
+      handle2 = null;
+      new_anchor = pointRows(points[0], this.dim)[0] ?? new Array(this.dim).fill(0);
+    } else if (points.length === 2) {
+      handle2 = pointRows(points[0], this.dim)[0] ?? new Array(this.dim).fill(0);
+      new_anchor = pointRows(points[1], this.dim)[0] ?? new Array(this.dim).fill(0);
+    } else {
+      const error = new Error(`Only call add_smooth_curve_to with 1 or 2 points`);
       error.name = "ValueError";
       throw error;
     }
-    const start = current[current.length - 1];
-    const handle1 = addPoints(start, scalePoint(subtractPoints(end, start, this.dim), 1 / 3, this.dim), this.dim);
-    const handle2 = addPoints(end, scalePoint(subtractPoints(start, end, this.dim), 1 / 3, this.dim), this.dim);
-    this.points = asPoints([...current, handle1, handle2, end], this.dim);
+
+    if (this.has_new_path_started()) {
+      this.add_line_to(new_anchor);
+    } else {
+      this.throw_error_if_no_points("add_smooth_curve_to");
+      const all = rows(this.points, this.dim);
+      const last_h2 = all[all.length - 2] ?? new Array(this.dim).fill(0);
+      const last_a2 = all[all.length - 1] ?? new Array(this.dim).fill(0);
+      const last_tangent = last_a2.map((value, index) => value - (last_h2[index] ?? 0));
+      const handle1 = last_a2.map((value, index) => value + (last_tangent[index] ?? 0));
+      if (handle2 === null) {
+        const to_anchor_vect = new_anchor.map((value, index) => value - (last_a2[index] ?? 0));
+        const rotated = pointRows(
+          rotate_vector(last_tangent, PI, to_anchor_vect),
+          this.dim,
+        )[0] ?? new Array(this.dim).fill(0);
+        handle2 = new_anchor.map((value, index) => value - (rotated[index] ?? 0));
+      }
+      this.append_points([last_a2, handle1, handle2, new_anchor]);
+    }
     return this;
+  }
+
+  addSmoothCurveTo(...points: unknown[]): this {
+    return this.add_smooth_curve_to(...points);
+  }
+
+  add_subpath(points: unknown): this {
+    const all = rows(points, this.dim);
+    if (all.length % 4 !== 0) {
+      const error = new Error("assert len(points) % 4 == 0");
+      error.name = "AssertionError";
+      throw error;
+    }
+    this.append_points(all);
+    return this;
+  }
+
+  addSubpath(points: unknown): this {
+    return this.add_subpath(points);
+  }
+
+  close_path(): this {
+    if (!this.is_closed()) {
+      const subpaths = this.get_subpaths();
+      const last = subpaths[subpaths.length - 1];
+      const first = last !== undefined ? pointRows(last, this.dim)[0] ?? [] : [];
+      this.add_line_to(first);
+    }
+    return this;
+  }
+
+  closePath(): this {
+    return this.close_path();
+  }
+
+  isClosed(): boolean {
+    return this.is_closed();
   }
 
   add_points_as_corners(points: unknown): this {
@@ -889,30 +1127,29 @@ export class VMobject extends Mobject {
   }
 
   set_points_as_corners(points: unknown): this {
-    // Mirrors Python set_points_as_corners via set_anchors_and_handles with
-    // _bezier_t_values: every segment contributes 4 points
-    // (anchor, handle@1/3, handle@2/3, anchor), so joint anchors are
-    // duplicated and n corners yield 4*(n-1) points.
+    // This sets the handles aligned with the anchors, i.e. each bezier
+    // curve is the segment between its two anchors.
     const corners = rows(points, this.dim);
-    const result: number[][] = [];
     if (corners.length === 0) {
       this.points = array([]) as NDArray;
       return this;
     }
-    for (let index = 1; index < corners.length; index += 1) {
-      const start = corners[index - 1] ?? new Array(this.dim).fill(0);
-      const end = corners[index] ?? [...start];
-      result.push([...start]);
-      result.push(addPoints(start, scalePoint(subtractPoints(end, start, this.dim), 1 / 3, this.dim), this.dim));
-      result.push(addPoints(start, scalePoint(subtractPoints(end, start, this.dim), 2 / 3, this.dim), this.dim));
-      result.push([...end]);
-    }
-    this.points = asPoints(result, this.dim);
+    const starts = corners.slice(0, -1);
+    const ends = corners.slice(1);
+    const at = (t: number): number[][] =>
+      pointRows(
+        interpolate(array(starts) as NDArray, array(ends) as NDArray, t) as NDArray,
+        this.dim,
+      );
+    const [a1, h1, h2, a2] = this._bezier_t_values.map(at);
+    this.set_anchors_and_handles(a1 ?? [], h1 ?? [], h2 ?? [], a2 ?? []);
     return this;
   }
 
   set_points_smoothly(points: unknown): this {
-    return this.set_points_as_corners(points);
+    this.set_points_as_corners(points);
+    this.make_smooth();
+    return this;
   }
 
   clear_points(): this {
@@ -1334,7 +1571,7 @@ export class VMobject extends Mobject {
 
   get_point_mobject(center?: readonly number[]): VectorizedPoint {
     const point = new VectorizedPoint(center ?? this.get_center());
-    point.color = this.color;
+    point.match_style(this);
     return point;
   }
 
@@ -1575,6 +1812,19 @@ function cloneAttribute(value: unknown): unknown {
 
 function fullRows(value: unknown): number[][] {
   return nestedRows(value).map((row) => (Array.isArray(row) ? row : [row]).map(numeric));
+}
+
+// Ported from manim.mobject.three_d.three_d_utils (dependency of
+// VMobject.get_gradient_start_and_end_points when shade_in_3d is set).
+function get3dVmobStartCorner(vmob: VMobject): number[] {
+  if (vmob.get_num_points() === 0) return [...ORIGIN];
+  return pointAt(vmob.points, 0, vmob.dim);
+}
+
+function get3dVmobEndCorner(vmob: VMobject): number[] {
+  if (vmob.get_num_points() === 0) return [...ORIGIN];
+  const index = Math.floor((vmob.get_num_points() - 1) / 6) * 3;
+  return pointAt(vmob.points, index, vmob.dim);
 }
 
 function callerFunctionName(): string {
