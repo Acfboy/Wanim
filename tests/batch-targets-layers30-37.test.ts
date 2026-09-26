@@ -348,7 +348,9 @@ describe("GenericGraph vertex/edge animations (python)", () => {
     const anim = g._add_edges_animation([2, 3]);
     expect(anim).toBeInstanceOf(AnimationGroup);
     expect(anim.animations.length).toBeGreaterThan(0);
-    expect(g.__getitem__([2, 3] as unknown as never)).toBeDefined();
+    const added = g.__getitem__([2, 3] as unknown as never);
+    expect([...g.edges.values()]).toContain(added);
+    expect(g.edges.size).toBe(2);
     expect(() => g.__getitem__([2, 3] as unknown as never)).not.toThrow();
   });
 
@@ -749,7 +751,7 @@ describe("VectorScene plane/axes helpers (python)", () => {
     // (get_axes throws NotImplementedError), so this currently throws.
     // Recorded here so the gap is visible; binds once NumberPlane axes land.
     const vs = new VectorScene();
-    expect(() => vs.lock_in_faded_grid()).toThrow();
+    expect(() => vs.lock_in_faded_grid()).toThrow(/get_axes/);
   });
 });
 
