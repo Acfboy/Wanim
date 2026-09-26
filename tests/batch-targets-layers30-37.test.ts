@@ -349,13 +349,14 @@ describe("GenericGraph vertex/edge animations (python)", () => {
     expect(anim).toBeInstanceOf(AnimationGroup);
     expect(anim.animations.length).toBeGreaterThan(0);
     expect(g.__getitem__([2, 3] as unknown as never)).toBeDefined();
+    expect(() => g.__getitem__([2, 3] as unknown as never)).not.toThrow();
   });
 
   it("_remove_edges_animation removes edges and returns a group (python)", () => {
     const g = smallGraph();
     const anim = g._remove_edges_animation([1, 2]);
     expect(anim).toBeInstanceOf(AnimationGroup);
-    expect(() => g.__getitem__([1, 2] as unknown as never)).toThrow();
+    expect(() => g.__getitem__([1, 2] as unknown as never)).toThrow(/Could not find/);
     expect(g.vertices.has(1)).toBe(true);
   });
 });
@@ -385,7 +386,7 @@ describe("GenericGraph.from_networkx / DiGraph (python)", () => {
     expect(d.edges.size).toBe(1);
     expect(d.toString()).toMatch(/Directed graph/);
     // directedness: (2,1) is not an edge.
-    expect(() => d.__getitem__([2, 1] as unknown as never)).toThrow();
+    expect(() => d.__getitem__([2, 1] as unknown as never)).toThrow(/Could not find/);
   });
 });
 
