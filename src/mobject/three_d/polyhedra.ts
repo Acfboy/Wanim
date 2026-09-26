@@ -1,9 +1,10 @@
 import { array, type NDArray } from "numpy-ts";
 import { Mobject } from "../mobject.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
-import { pointRows } from "../../utils/arrays.js";
+import { pointRows, isNDArray } from "../../utils/arrays.js";
 import { Polygon, type PolygramOptions } from "../geometry/polygram.js";
 import { Graph } from "../graph.js";
+import { QuickHull, QuickHullPoint, type HullPoints } from "../../utils/qhull.js";
 import { Dot3D } from "./three_dimensions.js";
 
 export class Polyhedron extends VGroup {
@@ -97,5 +98,228 @@ export class Polyhedron extends VGroup {
     return this.faces_list.map((face) =>
       face.map((vertex_index) => [...(layout.get(vertex_index) ?? [0, 0, 0])]),
     );
+  }
+}
+
+export interface PlatonicSolidOptions {
+  faces_config?: PolygramOptions;
+  graph_config?: Record<string, unknown>;
+}
+
+export class Tetrahedron extends Polyhedron {
+  constructor(
+    edge_length = 1,
+    faces_config: PolygramOptions = {},
+    graph_config: Record<string, unknown> = {},
+  ) {
+    const unit = (edge_length * Math.sqrt(2)) / 4;
+    super(
+      [
+        [unit, unit, unit],
+        [unit, -unit, -unit],
+        [-unit, unit, -unit],
+        [-unit, -unit, unit],
+      ],
+      [
+        [0, 1, 2],
+        [3, 0, 2],
+        [0, 1, 3],
+        [3, 1, 2],
+      ],
+      faces_config,
+      graph_config,
+    );
+  }
+}
+
+export class Octahedron extends Polyhedron {
+  constructor(
+    edge_length = 1,
+    faces_config: PolygramOptions = {},
+    graph_config: Record<string, unknown> = {},
+  ) {
+    const unit = (edge_length * Math.sqrt(2)) / 2;
+    super(
+      [
+        [unit, 0, 0],
+        [-unit, 0, 0],
+        [0, unit, 0],
+        [0, -unit, 0],
+        [0, 0, unit],
+        [0, 0, -unit],
+      ],
+      [
+        [2, 4, 1],
+        [0, 4, 2],
+        [4, 3, 0],
+        [1, 3, 4],
+        [3, 5, 0],
+        [1, 5, 3],
+        [2, 5, 1],
+        [0, 5, 2],
+      ],
+      faces_config,
+      graph_config,
+    );
+  }
+}
+
+export class Icosahedron extends Polyhedron {
+  constructor(
+    edge_length = 1,
+    faces_config: PolygramOptions = {},
+    graph_config: Record<string, unknown> = {},
+  ) {
+    const unit_a = (edge_length * (1 + Math.sqrt(5))) / 4;
+    const unit_b = edge_length * (1 / 2);
+    super(
+      [
+        [0, unit_b, unit_a],
+        [0, -unit_b, unit_a],
+        [0, unit_b, -unit_a],
+        [0, -unit_b, -unit_a],
+        [unit_b, unit_a, 0],
+        [unit_b, -unit_a, 0],
+        [-unit_b, unit_a, 0],
+        [-unit_b, -unit_a, 0],
+        [unit_a, 0, unit_b],
+        [unit_a, 0, -unit_b],
+        [-unit_a, 0, unit_b],
+        [-unit_a, 0, -unit_b],
+      ],
+      [
+        [1, 8, 0],
+        [1, 5, 7],
+        [8, 5, 1],
+        [7, 3, 5],
+        [5, 9, 3],
+        [8, 9, 5],
+        [3, 2, 9],
+        [9, 4, 2],
+        [8, 4, 9],
+        [0, 4, 8],
+        [6, 4, 0],
+        [6, 2, 4],
+        [11, 2, 6],
+        [3, 11, 2],
+        [0, 6, 10],
+        [10, 1, 0],
+        [10, 7, 1],
+        [11, 7, 3],
+        [10, 11, 7],
+        [10, 11, 6],
+      ],
+      faces_config,
+      graph_config,
+    );
+  }
+}
+
+export class Dodecahedron extends Polyhedron {
+  constructor(
+    edge_length = 1,
+    faces_config: PolygramOptions = {},
+    graph_config: Record<string, unknown> = {},
+  ) {
+    const unit_a = (edge_length * (1 + Math.sqrt(5))) / 4;
+    const unit_b = (edge_length * (3 + Math.sqrt(5))) / 4;
+    const unit_c = edge_length * (1 / 2);
+    super(
+      [
+        [unit_a, unit_a, unit_a],
+        [unit_a, unit_a, -unit_a],
+        [unit_a, -unit_a, unit_a],
+        [unit_a, -unit_a, -unit_a],
+        [-unit_a, unit_a, unit_a],
+        [-unit_a, unit_a, -unit_a],
+        [-unit_a, -unit_a, unit_a],
+        [-unit_a, -unit_a, -unit_a],
+        [0, unit_c, unit_b],
+        [0, unit_c, -unit_b],
+        [0, -unit_c, -unit_b],
+        [0, -unit_c, unit_b],
+        [unit_c, unit_b, 0],
+        [-unit_c, unit_b, 0],
+        [unit_c, -unit_b, 0],
+        [-unit_c, -unit_b, 0],
+        [unit_b, 0, unit_c],
+        [-unit_b, 0, unit_c],
+        [unit_b, 0, -unit_c],
+        [-unit_b, 0, -unit_c],
+      ],
+      [
+        [18, 16, 0, 12, 1],
+        [3, 18, 16, 2, 14],
+        [3, 10, 9, 1, 18],
+        [1, 9, 5, 13, 12],
+        [0, 8, 4, 13, 12],
+        [2, 16, 0, 8, 11],
+        [4, 17, 6, 11, 8],
+        [17, 19, 5, 13, 4],
+        [19, 7, 15, 6, 17],
+        [6, 15, 14, 2, 11],
+        [19, 5, 9, 10, 7],
+        [7, 10, 3, 14, 15],
+      ],
+      faces_config,
+      graph_config,
+    );
+  }
+}
+
+export interface ConvexHull3DOptions {
+  tolerance?: number;
+  faces_config?: PolygramOptions;
+  graph_config?: Record<string, unknown>;
+}
+
+export class ConvexHull3D extends Polyhedron {
+  constructor(...args: unknown[]) {
+    // Mirrors Python `ConvexHull3D(*points, tolerance=1e-5, **kwargs)`: a
+    // trailing plain-object argument is the options bag (tolerance /
+    // faces_config / graph_config); everything before it is a point.
+    let options: ConvexHull3DOptions = {};
+    let points: unknown[] = args;
+    const last = args[args.length - 1];
+    if (
+      last !== null &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      !isNDArray(last)
+    ) {
+      options = last as ConvexHull3DOptions;
+      points = args.slice(0, -1);
+    }
+    const { tolerance = 1e-5, faces_config = {}, graph_config = {} } = options;
+    // Build Convex Hull (mirrors Python: QuickHull(tolerance).build(array)).
+    const hull = new QuickHull(tolerance);
+    hull.build(points as unknown as HullPoints);
+
+    // Extract faces: for each surviving facet, collect the de-duplicated
+    // vertex indices of its subfacets' points.
+    // NOTE: Python keys vertices by QuickHullPoint identity; the TS qhull
+    // port stores only coordinate rows on SubFacet, so identity is the
+    // coordinates' byte key (same equality semantics).
+    const vertices: number[][] = [];
+    const faces: number[][] = [];
+    let c = 0;
+    const d = new Map<string, number>();
+    for (const facet of hull.facets) {
+      if (hull.removed.has(facet.key())) continue;
+      const tmp = new Set<string>();
+      for (const subfacet of facet.subfacets) {
+        for (const coordinates of subfacet.coordinates) {
+          const key = new QuickHullPoint(coordinates).key();
+          if (!d.has(key)) {
+            vertices.push([...coordinates]);
+            d.set(key, c);
+            c += 1;
+          }
+          tmp.add(key);
+        }
+      }
+      faces.push([...tmp].map((key) => d.get(key) as number));
+    }
+    super(vertices, faces, faces_config, graph_config);
   }
 }

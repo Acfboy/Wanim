@@ -7,6 +7,7 @@ import { SMALL_BUFF, DL, RIGHT, TAU, RendererType } from "../../constants.js";
 import { BLUE_D } from "../../utils/color/index.js";
 import { interpolate_color, ManimColor, type ParsableManimColor } from "../../utils/color/core.js";
 import { binary_search } from "../../utils/simple_functions.js";
+import { angle_of_vector } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
@@ -262,6 +263,14 @@ export class CoordinateSystem {
     return this.input_to_graph_point(x, graph);
   }
 
+  angle_of_tangent(x: number, graph: ParametricFunction, dx = 1e-8): number {
+    const p0 = this.input_to_graph_coords(x, graph);
+    const p1 = this.input_to_graph_coords(x + dx, graph);
+    return Number(
+      angle_of_vector([(p1[0] ?? 0) - (p0[0] ?? 0), (p1[1] ?? 0) - (p0[1] ?? 0)]),
+    );
+  }
+
   plot_antiderivative_graph(
     graph: ParametricFunction,
     y_intercept = 0,
@@ -429,6 +438,50 @@ export class Axes extends NumberPlane {
   // a later batch; the field exists here so get_axes() has its faithful
   // target to return.
   axes: VGroup = new VGroup();
+
+  override point_to_coords(point: readonly number[]): number[] {
+    // Mirrors Python Axes.point_to_coords: one number per axis via
+    // `axis.point_to_number(point)` (transposed for a list of points).
+    // NOTE: the TS Axes hierarchy is not Mobject-based yet, so `axes` is
+    // empty until the NumberLine integration lands; fall back to the linear
+    // NumberPlane mapping in that case.
+    const axes = this.get_axes().submobjects;
+    const hasAxes =
+      axes.length > 0 &&
+      axes.every(
+        (axis) =>
+          typeof (axis as unknown as { point_to_number?: unknown })
+            .point_to_number === "function",
+      );
+    if (!hasAxes) return super.point_to_coords(point);
+    type NumberLineLike = {
+      point_to_number(point: unknown): number | NDArray;
+    };
+    if (
+      Array.isArray(point) &&
+      point.length > 0 &&
+      Array.isArray((point as unknown as unknown[])[0])
+    ) {
+      const points = point as unknown as number[][];
+      const perAxis: number[][] = (axes as Mobject[]).map((axis) => {
+        const out = (axis as unknown as NumberLineLike).point_to_number(points);
+        if (isNDArray(out)) {
+          return ((out as NDArray).toArray() as unknown[]).map(numeric);
+        }
+        return (out as unknown as unknown[]).map(numeric);
+      });
+      return points.map((_, index) =>
+        perAxis.map((column) => column[index] ?? 0),
+      ) as unknown as number[];
+    }
+    return (axes as Mobject[]).map((axis) =>
+      numeric(
+        (axis as unknown as NumberLineLike).point_to_number([
+          ...point,
+        ]) as number,
+      ),
+    );
+  }
 
   override get_axes(): VGroup {
     return this.axes;

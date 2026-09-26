@@ -289,6 +289,51 @@ export class Cube extends VGroup {
   }
 }
 
+export interface PrismOptions extends CubeOptions {
+  side_length?: number;
+}
+
+export class Prism extends Cube {
+  dimensions: number[];
+
+  constructor(
+    dimensions: readonly number[] | NDArray = [3, 2, 1],
+    options: PrismOptions = {},
+  ) {
+    const { side_length = 2, ...rest } = options;
+    super(
+      side_length,
+      rest.fill_opacity ?? 0.75,
+      rest.fill_color ?? BLUE,
+      rest.stroke_width ?? 0,
+      rest,
+    );
+    this.dimensions = [...(pointRows(dimensions, 3)[0] ?? [3, 2, 1])];
+    // NOTE: Cube's constructor already built the (unscaled) faces through
+    // generate_points() — which early-returned on the rescale step while
+    // `dimensions` was still unassigned (TS requires super() first, whereas
+    // Python assigns dimensions before super().__init__()). Rescale the
+    // freshly built faces here instead of regenerating (which would add a
+    // second set of faces).
+    for (let dim = 0; dim < this.dimensions.length; dim += 1) {
+      this.rescale_to_fit(this.dimensions[dim] ?? 0, dim, true);
+    }
+  }
+
+  override generate_points(): this {
+    super.generate_points();
+    // Guard: the base Mobject constructor invokes generate_points() before
+    // this class assigns dimensions (TS requires super() first, whereas
+    // Python sets them before super().__init__()). Treat that early call as
+    // rescale-deferred; the constructor rescales afterwards.
+    if (!("dimensions" in this) || this.dimensions === undefined) return this;
+    for (let dim = 0; dim < this.dimensions.length; dim += 1) {
+      this.rescale_to_fit(this.dimensions[dim] ?? 0, dim, true);
+    }
+    return this;
+  }
+}
+
 function conePoint(u: number, v: number, theta: number): SurfacePoint {
   const r = u;
   const phi = v;
