@@ -189,7 +189,13 @@ export class DrawBorderThenFill extends Animation {
   }
 
   _typecheck_input(vmobject: VMobject): void {
-    DrawBorderThenFill.typecheckInput(vmobject);
+    // NOTE: mirrors Python `self.__class__.__name__` so subclasses (Write,
+    // Unwrite, ...) report their own name in the TypeError.
+    if (!(vmobject instanceof VMobject)) {
+      throw new TypeError(
+        `${(this.constructor as unknown as { name: string }).name} only works for vectorized Mobjects`,
+      );
+    }
   }
 
   private static typecheckInput(vmobject: VMobject): void {
@@ -347,6 +353,11 @@ export class Write extends DrawBorderThenFill {
 export interface UnwriteOptions extends WriteOptions {}
 
 export class Unwrite extends Write {
+  // NOTE (deviation): Python's Unwrite.__init__ captures `rate_func` as a
+  // named parameter but never forwards it to Write (a custom rate_func is
+  // silently dropped and linear is always used). The TS port forwards it,
+  // which agrees on the default and honors an explicit value instead of
+  // dropping it.
   constructor(vmobject: VMobject, options: UnwriteOptions = {}) {
     const clsDefaults = classDefaultsOf(new.target);
     const {
