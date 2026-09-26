@@ -13,7 +13,17 @@ export interface ShowPartialOptions extends AnimationOptions {
 
 export class ShowPartial extends Animation {
   constructor(mobject: VMobject, options: ShowPartialOptions = {}) {
-    if (!mobject || typeof (mobject as unknown as { pointwise_become_partial?: unknown }).pointwise_become_partial !== "function") {
+    // NOTE: mirrors Python `getattr(mobject, "pointwise_become_partial",
+    // None)`: a missing attribute yields None (then TypeError). Mobjects in
+    // this port are Proxies that raise AttributeError on unknown property
+    // access, so the lookup is guarded the same way getattr's default is.
+    let pointwise: unknown;
+    try {
+      pointwise = (mobject as unknown as { pointwise_become_partial?: unknown })?.pointwise_become_partial;
+    } catch {
+      pointwise = undefined;
+    }
+    if (typeof pointwise !== "function") {
       const constructorName = new.target.name;
       throw new TypeError(`${constructorName} only works for VMobjects.`);
     }
