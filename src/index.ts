@@ -61,6 +61,7 @@ export * from "./mobject/geometry/line.js";
 export * from "./mobject/geometry/polygram.js";
 export * from "./mobject/geometry/tips.js";
 export * from "./mobject/three_d/three_dimensions.js";
+export * from "./mobject/three_d/three_d_utils.js";
 export * from "./mobject/three_d/polyhedra.js";
 export * from "./scene/scene.js";
 export * from "./scene/three_d_scene.js";

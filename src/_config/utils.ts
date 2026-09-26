@@ -349,7 +349,19 @@ export class ManimConfig {
   }
 
   set renderer(value: RendererType | string) {
-    this.values.renderer = value === "cairo" || value === "opengl" ? value as RendererType : RendererType.CAIRO;
+    // NOTE: mirrors Python `RendererType(value)` (lookup by value, raising
+    // `ValueError: <value> is not a valid RendererType`): strings match
+    // case-insensitively, enum members pass through, anything else throws.
+    // Python additionally swaps Mobject/VMobject bases via the
+    // ConvertToOpenGL metaclass here; neither the metaclass nor the OpenGL
+    // classes are ported yet, so there are no bases to swap.
+    const normalized = typeof value === "string" ? value.toLowerCase() : value;
+    if (!Object.values(RendererType).includes(normalized as RendererType)) {
+      const error = new Error(`${String(value)} is not a valid RendererType`);
+      error.name = "ValueError";
+      throw error;
+    }
+    this.values.renderer = normalized as RendererType;
   }
 
   get quality(): string | null {

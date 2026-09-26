@@ -1,13 +1,13 @@
 import { platform } from "node:os";
 import { array, matmul, transpose, type NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
-import { OUT, RendererType, SHIFT_VALUE } from "../constants.js";
+import { DEFAULT_WAIT_TIME, OUT, RendererType, SHIFT_VALUE } from "../constants.js";
 import { MethodWithArgs } from "../data_structures.js";
-import { Mobject } from "../mobject/mobject.js";
+import { Mobject, _AnimationBuilder } from "../mobject/mobject.js";
 import { pointRows } from "../utils/arrays.js";
 import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
 import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
-import { Animation, prepare_animation } from "../animation/animation.js";
+import { Animation, Wait, prepare_animation } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
 import { DefaultSectionType } from "./section.js";
 
@@ -182,6 +182,56 @@ function isScenePlayOptions(value: unknown): value is ScenePlayOptions {
   return proto === Object.prototype || proto === null;
 }
 
+/**
+ * Local stand-in for `copy.deepcopy(value, memo)` used by
+ * `Scene.__deepcopy__` (the TS runtime has no `copy` module). Mobjects go
+ * through their memo-aware `copy_with_seen`; arrays, plain objects, Maps
+ * and Sets recurse; class instances exposing `copy()` (Animation, NDArray,
+ * ...) use it; anything else (functions, class references) is atomic.
+ */
+function sceneDeepClone(value: unknown, memo: Map<object, unknown>): unknown {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return value;
+  }
+  const known = memo.get(value as object);
+  if (known !== undefined) return known;
+  if (value instanceof Mobject) return value.copy_with_seen(memo);
+  if (Array.isArray(value)) {
+    const result: unknown[] = [];
+    memo.set(value, result);
+    for (const item of value) result.push(sceneDeepClone(item, memo));
+    return result;
+  }
+  if (value instanceof Map) {
+    const result = new Map<unknown, unknown>();
+    memo.set(value, result);
+    for (const [key, item] of value) result.set(key, sceneDeepClone(item, memo));
+    return result;
+  }
+  if (value instanceof Set) {
+    const result = new Set<unknown>();
+    memo.set(value, result);
+    for (const item of value) result.add(sceneDeepClone(item, memo));
+    return result;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) {
+    const result: Record<string, unknown> = {};
+    memo.set(value, result);
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = sceneDeepClone(item, memo);
+    }
+    return result;
+  }
+  const copyable = value as { copy?: () => unknown };
+  if (typeof copyable.copy === "function") {
+    const result = copyable.copy();
+    memo.set(value, result);
+    return result;
+  }
+  return value;
+}
+
 export class Scene {
   mobjects: Mobject[] = [];
   foreground_mobjects: Mobject[] = [];
@@ -265,6 +315,29 @@ export class Scene {
   /** The time since the start of the scene. */
   get time(): number {
     return (this.renderer?.time as number | undefined) ?? 0;
+  }
+
+  /**
+   * Deep-copy support mirroring Python's `Scene.__deepcopy__`: every field
+   * is cloned into a fresh instance of the same class except `renderer`
+   * and `time_progression` (skipped), while `camera_class` is kept by
+   * reference (Python's `copy.deepcopy` of a class is the identity).
+   */
+  __deepcopy__(clone_from_id: Map<object, unknown> = new Map()): this {
+    const raw = Object.create(Object.getPrototypeOf(this)) as this;
+    clone_from_id.set(this, raw);
+    for (const [key, value] of Object.entries(this)) {
+      if (key === "renderer" || key === "time_progression") continue;
+      if (key === "camera_class") {
+        (raw as unknown as Record<string, unknown>)[key] = value;
+        continue;
+      }
+      (raw as unknown as Record<string, unknown>)[key] = sceneDeepClone(
+        value,
+        clone_from_id,
+      );
+    }
+    return raw;
   }
 
   add(...mobjects: Mobject[]): this {
@@ -442,6 +515,98 @@ export class Scene {
     );
   }
 
+  compile_animations(
+    ...args: Array<Animation | Mobject | _AnimationBuilder | ScenePlayOptions>
+  ): Animation[] {
+    // NOTE: Python's signature is `compile_animations(self, *args, **kwargs)`
+    // where kwargs are play-level animation overrides. The TS port reads a
+    // trailing plain object as those overrides (Animation, Mobject and
+    // _AnimationBuilder instances carry class prototypes and never match),
+    // the same convention as `play` below.
+    let kwargs: Record<string, unknown> = {};
+    let animArgs = args;
+    const last = args[args.length - 1];
+    if (
+      last !== undefined &&
+      isScenePlayOptions(last) &&
+      !(last instanceof Animation) &&
+      !(last instanceof Mobject) &&
+      !(last instanceof _AnimationBuilder)
+    ) {
+      kwargs = last as Record<string, unknown>;
+      animArgs = args.slice(0, -1);
+    }
+    const animations: Animation[] = [];
+    // Allow passing a generator to self.play instead of comma separated arguments.
+    const arg_anims = flatten_iterable_parameters<
+      Animation | Mobject | _AnimationBuilder
+    >(animArgs as Array<Animation | Mobject | _AnimationBuilder>);
+    for (const arg of arg_anims) {
+      // NOTE: mirrors the `except TypeError: if inspect.ismethod(arg)` branch:
+      // a bound mobject method (carrying `__self__`, i.e. an already-bound
+      // `mobject.method` reference rather than an invocation result) is
+      // rejected up front with the "use Mobject.animate" error, since the TS
+      // `prepare_animation` would otherwise invoke the function.
+      if (
+        typeof arg === "function" &&
+        (arg as unknown as { __self__?: unknown }).__self__ instanceof Mobject
+      ) {
+        throw new TypeError(
+          "Passing Mobject methods to Scene.play is no longer supported. Use Mobject.animate instead.",
+        );
+      }
+      try {
+        animations.push(
+          prepare_animation(
+            arg as Animation | _AnimationBuilder | Mobject | (() => Animation),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof TypeError) {
+          throw new TypeError(
+            `Unexpected argument ${String(arg)} passed to Scene.play().`,
+          );
+        }
+        throw error;
+      }
+    }
+    for (const animation of animations) {
+      for (const [key, value] of Object.entries(kwargs)) {
+        (animation as unknown as Record<string, unknown>)[key] = value;
+      }
+    }
+    return animations;
+  }
+
+  _get_animation_time_progression(
+    animations: Animation[],
+    duration: number,
+  ): TimeProgression {
+    let time_progression: TimeProgression;
+    if (animations.length === 1 && animations[0] instanceof Wait) {
+      const stop_condition = (animations[0] as Wait).stop_condition;
+      if (stop_condition !== null && stop_condition !== undefined) {
+        time_progression = this.get_time_progression(
+          duration,
+          `Waiting for ${stop_condition.name}`,
+          -1,
+          true,
+        );
+      } else {
+        time_progression = this.get_time_progression(
+          duration,
+          `Waiting ${this.renderer.num_plays}`,
+        );
+      }
+    } else {
+      time_progression = this.get_time_progression(
+        duration,
+        `Animation ${this.renderer.num_plays}: ${String(animations[0])}${animations.length > 1 ? ", etc." : ""}`,
+      );
+    }
+    return time_progression;
+  }
+
   play(...args: Array<Animation | Mobject | ScenePlayOptions>): this {
     // NOTE: Python's signature is `play(*args, subcaption, subcaption_duration,
     // subcaption_offset, **kwargs)` with kwargs forwarded to the renderer.
@@ -511,7 +676,31 @@ export class Scene {
     target.push(new Subtitle(target.length, content, start, end));
   }
 
-  wait(_duration = 1): this { return this; }
+  add_sound(
+    sound_file: string,
+    time_offset = 0,
+    gain: number | null = null,
+    kwargs: Record<string, unknown> = {},
+  ): void {
+    if (this.renderer?.skip_animations) return;
+    const time = this.time + time_offset;
+    // NOTE: the file-writer/renderer backend is not ported yet, so this
+    // forwards to the renderer's writer the same way Python does
+    // (`add_sound(sound_file, time, gain, **kwargs)`); the kwargs bag rides
+    // as a trailing object since TS has no **kwargs channel.
+    this.renderer.file_writer.add_sound(sound_file, time, gain, kwargs);
+  }
+
+  wait(
+    duration: number = DEFAULT_WAIT_TIME,
+    stop_condition: (() => boolean) | null = null,
+    frozen_frame: boolean | null = null,
+  ): void {
+    duration = Scene.validate_run_time(duration, this.wait as (...args: unknown[]) => unknown, "duration");
+    this.play(
+      new Wait({ run_time: duration, stop_condition, frozen_frame }),
+    );
+  }
 
   updaters: Array<(dt: number) => void> = [];
 
@@ -903,5 +1092,13 @@ export class Scene {
     void scene_selection_callback;
     void update;
     console.warn("_configure_pygui requires DearPyGUI, which is not available in the TypeScript runtime.");
+  }
+
+  on_mouse_press(
+    _point: number[] | readonly number[] | NDArray,
+    _button: string,
+    _modifiers: number,
+  ): void {
+    for (const func of this.mouse_press_callbacks) func();
   }
 }

@@ -6,7 +6,7 @@ import { angle_between_vectors, cross, normalize, rotation_matrix } from "../uti
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
-import { addPoints, isNDArray, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString } from "../utils/arrays.js";
+import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
 import { config } from "../_config/utils.js";
 
@@ -1104,6 +1104,27 @@ export class Mobject {
 
   proportion_from_point(point: readonly number[]): number {
     throw new Error("Please override in a child class.");
+  }
+
+  get_pieces(n_pieces: number): Group {
+    const template = this.copy();
+    template.submobjects = [];
+    const alphas = linspace(0, 1, n_pieces + 1);
+    const parts = alphas.slice(0, -1).map((a1, index) => {
+      const a2 = alphas[index + 1] ?? 1;
+      // NOTE: pointwise_become_partial is defined on VMobject/PMobject, not
+      // on the Mobject base (same as Python, where it resolves at runtime on
+      // the concrete subclass); dispatch dynamically here.
+      const part = template.copy() as unknown as Mobject & {
+        pointwise_become_partial(mobject: Mobject, a: number, b: number): Mobject;
+      };
+      return part.pointwise_become_partial(this, a1, a2) as Mobject;
+    });
+    return new Group(...parts);
+  }
+
+  getPieces(n_pieces: number): Group {
+    return this.get_pieces(n_pieces);
   }
 
   interpolate_color(mobject1: Mobject, mobject2: Mobject, alpha: number): this {
