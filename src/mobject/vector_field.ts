@@ -424,16 +424,27 @@ export class StreamLines extends VectorField {
     }
   }
 
-  start_animation(warm_up = true, flow_speed = 1, time_width = 0.3, line_animation_class: any = null, options: AnimationOptions = {}): this {
+  start_animation(
+    warm_up = true,
+    flow_speed = 1,
+    time_width = 0.3,
+    rate_func: (alpha: number) => number = linear,
+    // NOTE: Python defaults line_animation_class to ShowPassingFlash, which
+    // is not ported yet; null falls back to the base Animation (which stores
+    // time_width as a plain field, mirroring Animation.__init__'s unknown-kwarg
+    // capture) until ShowPassingFlash lands.
+    line_animation_class: any = null,
+    kwargs: Record<string, unknown> = {},
+  ): this {
     for (const line of this.stream_lines) {
       const duration = (line as VMobject & { duration?: number }).duration ?? this.virtual_time;
       const AnimationClass = line_animation_class ?? Animation;
-      const animation = new AnimationClass(line, { run_time: duration / flow_speed, rate_func: options.rate_func ?? linear, ...options });
-      (animation as Animation & { time_width?: number }).time_width = time_width;
+      const animation = new AnimationClass(line, { run_time: duration / flow_speed, rate_func, time_width, ...kwargs });
       animation.begin();
       (line as VMobject & { time?: number; anim?: Animation }).anim = animation;
       (line as VMobject & { time?: number }).time = Math.random() * this.virtual_time;
       if (warm_up) (line as VMobject & { time?: number }).time = -(line as VMobject & { time?: number }).time!;
+      this.add(animation.mobject);
     }
     const stream = this;
     function updater(mob: StreamLines, dt: number): void {

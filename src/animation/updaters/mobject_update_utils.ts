@@ -1,5 +1,6 @@
 import { Mobject } from "../../mobject/mobject.js";
 import { normalize } from "../../utils/space_ops.js";
+import { clip } from "../../utils/simple_functions.js";
 import { isNDArray, pointRows } from "../../utils/arrays.js";
 import { RIGHT } from "../../constants.js";
 import { type NDArray } from "numpy-ts";
@@ -46,9 +47,74 @@ export function always_redraw(func: () => Mobject): Mobject {
   return mob;
 }
 
-export function turn_animation_into_updater(animation: any, mobject: Mobject): Mobject {
-  mobject.add_updater((_mob: Mobject) => animation.interpolate(animation.rate_func(0)));
+/** Structural surface of Animation needed by turn_animation_into_updater
+ * (mirrors the attributes/methods the Python updater touches). Kept
+ * structural to avoid a runtime import cycle with animation.ts. */
+export interface TurnableAnimation {
+  mobject: Mobject;
+  total_time: number;
+  suspend_mobject_updating: boolean;
+  begin(): void;
+  get_run_time(): number;
+  interpolate(alpha: number): void;
+  update_mobjects(dt: number): void;
+  finish(): void;
+}
+
+export function turn_animation_into_updater(
+  animation: TurnableAnimation,
+  cycle = false,
+  delay = 0,
+  kwargs: Record<string, unknown> = {},
+): Mobject {
+  // NOTE: mirrors Python, whose **kwargs are accepted but never used.
+  void kwargs;
+  const mobject = animation.mobject;
+  animation.suspend_mobject_updating = false;
+  animation.begin();
+  animation.total_time = -delay;
+
+  function update(m: Mobject, dt: number): void {
+    if (animation.total_time >= 0) {
+      const run_time = animation.get_run_time();
+
+      // handle zero/negative runtime safely
+      if (run_time <= 0) {
+        // instantly snap to final state once, then remove updater
+        animation.interpolate(1);
+        animation.update_mobjects(dt);
+        animation.finish();
+        m.remove_updater(update);
+        return;
+      }
+
+      const time_ratio = animation.total_time / run_time;
+      let alpha: number;
+      if (cycle) {
+        alpha = time_ratio % 1;
+      } else {
+        alpha = clip(time_ratio, 0, 1);
+        if (alpha >= 1) {
+          animation.finish();
+          m.remove_updater(update);
+          return;
+        }
+      }
+      animation.interpolate(alpha);
+      animation.update_mobjects(dt);
+    }
+    animation.total_time += dt;
+  }
+
+  mobject.add_updater(update);
   return mobject;
+}
+
+export function cycle_animation(
+  animation: TurnableAnimation,
+  kwargs: Record<string, unknown> = {},
+): Mobject {
+  return turn_animation_into_updater(animation, true, 0, kwargs);
 }
 
 export function always_shift<M extends Mobject>(

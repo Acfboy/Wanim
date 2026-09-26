@@ -38,6 +38,14 @@ export interface CoordinateAxisLike extends Mobject {
   number_to_point(number: unknown): NDArray;
   point_to_number(point: unknown): number | NDArray;
   _create_label_tex(label: unknown, label_constructor?: unknown, kwargs?: Record<string, unknown>): VMobject;
+  get_number_mobject(
+    x: number,
+    direction?: readonly number[] | NDArray | null,
+    buff?: number | null,
+    font_size?: number | null,
+    label_constructor?: unknown,
+    number_config?: Record<string, unknown>,
+  ): VMobject;
   add_labels(
     dict_values: Map<number, unknown> | Record<string, unknown>,
     direction?: readonly number[] | NDArray | null,
@@ -1910,6 +1918,64 @@ export class ComplexPlane extends NumberPlane {
 
   p2n(point: readonly number[]): ComplexPoint {
     return this.point_to_number(point);
+  }
+
+  _get_default_coordinate_values(): Array<number | ComplexPoint> {
+    const x_numbers = (this.get_x_axis().get_tick_range().toArray() as unknown[]).map(Number);
+    const y_numbers = (this.get_y_axis().get_tick_range().toArray() as unknown[]).map(Number);
+    const y_complex: ComplexPoint[] = y_numbers
+      .filter((y) => y !== 0)
+      .map((y) => ({ re: 0, im: y }));
+    return [...x_numbers, ...y_complex];
+  }
+
+  get_coordinate_labels(
+    ...args: Array<ComplexNumberLike | Record<string, unknown>>
+  ): VGroup {
+    // NOTE: mirrors Python get_coordinate_labels(*numbers, **kwargs): a
+    // trailing plain object is the kwargs bag. Each label is built with
+    // NumberLine.get_number_mobject (a DecimalNumber, i.e. text/tex, out of
+    // scope), so calls throw there with a TODO until text lands.
+    let kwargs: Record<string, unknown> = {};
+    let numbers: ComplexNumberLike[] = args as ComplexNumberLike[];
+    const last = args[args.length - 1];
+    if (last !== null && typeof last === "object" && !Array.isArray(last) && !("re" in (last as Record<string, unknown>) && "im" in (last as Record<string, unknown>))) {
+      kwargs = last as Record<string, unknown>;
+      numbers = (args.slice(0, -1) as ComplexNumberLike[]);
+    }
+    if (numbers.length === 0) {
+      numbers = this._get_default_coordinate_values();
+    }
+
+    this.coordinate_labels = new VGroup();
+    for (const number of numbers) {
+      const z = toComplexPoint(number);
+      let axis: CoordinateAxisLike;
+      let value: number;
+      if (Math.abs(z.im) > Math.abs(z.re)) {
+        axis = this.get_y_axis() as unknown as CoordinateAxisLike;
+        value = z.im;
+        kwargs = { ...kwargs, unit: "i" };
+      } else {
+        axis = this.get_x_axis() as unknown as CoordinateAxisLike;
+        value = z.re;
+      }
+      const number_mob = axis.get_number_mobject(value, null, null, null, null, kwargs);
+      this.coordinate_labels.add(number_mob as unknown as VMobject);
+    }
+    return this.coordinate_labels;
+  }
+
+  add_coordinates(
+    ...args: Array<ComplexNumberLike | Record<string, unknown>>
+  ): this {
+    // NOTE: mirrors Python `self.add(self.get_coordinate_labels(*numbers,
+    // **kwargs))`; the TS CoordinateSystem hierarchy is not Mobject-based
+    // yet (see the Axes note), so there is no `add` — storing the labels on
+    // coordinate_labels (as CoordinateSystem.add_coordinates does) is the
+    // observable part.
+    this.get_coordinate_labels(...args);
+    return this;
   }
 }
 

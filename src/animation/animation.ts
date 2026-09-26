@@ -64,6 +64,10 @@ export class Animation {
   suspend_mobject_updating!: boolean;
   on_finish!: (scene: any) => void;
   protected _run_time!: number;
+  // NOTE: Python's Animation defines no total_time in __init__; it is set
+  // dynamically by turn_animation_into_updater (animation.total_time =
+  // -delay). Declared here (initialized to 0) so that helper compiles.
+  total_time = 0;
 
   /**
    * Mirrors Python `Animation.__new__`: when `mobject` defines an animation

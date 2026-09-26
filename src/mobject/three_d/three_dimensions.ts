@@ -1,11 +1,12 @@
 import { array, type NDArray } from "numpy-ts";
-import { isNDArray, linspace, norm, pointRows } from "../../utils/arrays.js";
+import { arange, isNDArray, linspace, norm, pointRows } from "../../utils/arrays.js";
 import { IN, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, UP, DOWN, X_AXIS, Y_AXIS, Z_AXIS } from "../../constants.js";
 import { DEFAULT_DOT_RADIUS, LineJointType } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { RendererType } from "../../constants.js";
 import { normalize, z_to_vector } from "../../utils/space_ops.js";
-import { BLUE, BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLUE, BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
+import type { ThreeDAxes } from "../graphing/coordinate_systems.js";
 import { Mobject } from "../mobject.js";
 import { VGroup, VectorizedPoint, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Circle } from "../geometry/arc.js";
@@ -197,6 +198,93 @@ export class Surface extends VGroup {
     const u_values = linspace(this.u_range[0], this.u_range[1], u_res + 1);
     const v_values = linspace(this.v_range[0], this.v_range[1], v_res + 1);
     return [u_values, v_values];
+  }
+
+  set_fill_by_value(
+    axes: ThreeDAxes,
+    colorscale: Iterable<ParsableManimColor | [ParsableManimColor, number]> | null = null,
+    axis = 2,
+    kwargs: Record<string, unknown> = {},
+  ): this {
+    // NOTE: mirrors Python's legacy `colors` keyword (accepted only when
+    // colorscale is None, and only when it is the sole kwarg).
+    let resolvedColorscale = colorscale;
+    const rest = { ...kwargs };
+    if ("colors" in rest && resolvedColorscale === null) {
+      resolvedColorscale = rest["colors"] as Iterable<ParsableManimColor | [ParsableManimColor, number]>;
+      delete rest["colors"];
+      if (Object.keys(rest).length > 0) {
+        const error = new Error(
+          `Unsupported keyword argument(s): ${Object.keys(rest).join(", ")}`,
+        );
+        error.name = "ValueError";
+        throw error;
+      }
+    }
+    if (resolvedColorscale === null || resolvedColorscale === undefined) {
+      console.warn(
+        "The value passed to the colorscale keyword argument was None, "
+        + "the surface fill color has not been changed",
+      );
+      return this;
+    }
+    const colorscale_list = [...resolvedColorscale];
+
+    const ranges = [axes.x_range, axes.y_range, axes.z_range];
+    const first = colorscale_list[0] as ParsableManimColor | [ParsableManimColor, number];
+    let new_colors: ManimColor[];
+    let pivots: number[];
+    if (Array.isArray(first) && first.length === 2 && typeof first[1] === "number") {
+      new_colors = (colorscale_list as Array<[ParsableManimColor, number]>).map(([c]) => new ManimColor(c));
+      pivots = (colorscale_list as Array<[ParsableManimColor, number]>).map(([, p]) => p);
+    } else {
+      new_colors = (colorscale_list as ParsableManimColor[]).map((c) => new ManimColor(c));
+      const current_range = ranges[axis];
+      if (current_range === null || current_range === undefined) {
+        throw new TypeError("axis range is None");
+      }
+      const pivot_min = current_range[0] ?? 0;
+      const pivot_max = current_range[1] ?? 0;
+      const pivot_frequency = (pivot_max - pivot_min) / (new_colors.length - 1);
+      pivots = arange(pivot_min, pivot_max + pivot_frequency, pivot_frequency);
+    }
+
+    for (const mob of this.family_members_with_points()) {
+      const midpoint = mob.get_midpoint();
+      const axis_value = axes.point_to_coords(
+        (pointRows(midpoint, 3)[0] ?? [0, 0, 0]) as readonly number[],
+      )[axis] ?? 0;
+      if (axis_value <= (pivots[0] ?? 0)) {
+        mob.set_color(new_colors[0] as ParsableManimColor);
+      } else if (axis_value >= (pivots[pivots.length - 1] ?? 0)) {
+        mob.set_color(new_colors[new_colors.length - 1] as ParsableManimColor);
+      } else {
+        for (let i = 0; i < pivots.length; i += 1) {
+          if ((pivots[i] ?? 0) > axis_value) {
+            const prev = pivots[i - 1] ?? 0;
+            const curr = pivots[i] ?? 0;
+            let color_index = (axis_value - prev) / (curr - prev);
+            color_index = Math.min(color_index, 1);
+            const mob_color = interpolate_color(
+              new_colors[i - 1] as ManimColor,
+              new_colors[i] as ManimColor,
+              color_index,
+            );
+            // NOTE: mirrors Python's renderer branch (OpenGL:
+            // set_color(mob_color, recurse=False); Cairo: set_color(mob_color,
+            // family=False)); both are non-recursive.
+            if (config.renderer === RendererType.OPENGL) {
+              (mob as VMobject).set_color(mob_color, false);
+            } else if (config.renderer === RendererType.CAIRO) {
+              (mob as VMobject).set_color(mob_color, false);
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    return this;
   }
 }
 

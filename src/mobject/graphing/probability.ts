@@ -8,7 +8,7 @@ import { config } from "../../_config/utils.js";
 import { DOWN, LEFT, MED_SMALL_BUFF, RIGHT, SMALL_BUFF, UP } from "../../constants.js";
 import { isNDArray, pointRows } from "../../utils/arrays.js";
 import { tuplify } from "../../utils/iterables.js";
-import { BLUE_E, DARK_GREY, LIGHT_GREY, YELLOW, color_gradient, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLUE_E, DARK_GREY, GREEN_E, LIGHT_GREY, MAROON_B, YELLOW, color_gradient, type ParsableManimColor } from "../../utils/color/core.js";
 
 export const EPSILON = 0.0001;
 
@@ -101,7 +101,7 @@ export class SampleSpace extends Rectangle {
 
   get_horizontal_division(
     p_list: number | Iterable<number> | NDArray,
-    colors: Iterable<ParsableManimColor> = ["GREEN_E", BLUE_E],
+    colors: Iterable<ParsableManimColor> = [GREEN_E, BLUE_E],
     vect: readonly number[] | NDArray = [...DOWN],
   ): VGroup {
     return this.get_division_along_dimension(p_list, 1, colors, vect);
@@ -109,7 +109,7 @@ export class SampleSpace extends Rectangle {
 
   get_vertical_division(
     p_list: number | Iterable<number> | NDArray,
-    colors: Iterable<ParsableManimColor> = ["MAROON_B", YELLOW],
+    colors: Iterable<ParsableManimColor> = [MAROON_B, YELLOW],
     vect: readonly number[] | NDArray = [...RIGHT],
   ): VGroup {
     return this.get_division_along_dimension(p_list, 0, colors, vect);
@@ -117,7 +117,7 @@ export class SampleSpace extends Rectangle {
 
   divide_horizontally(
     p_list: number | Iterable<number> | NDArray,
-    colors: Iterable<ParsableManimColor> = ["GREEN_E", BLUE_E],
+    colors: Iterable<ParsableManimColor> = [GREEN_E, BLUE_E],
     vect: readonly number[] | NDArray = [...DOWN],
   ): this {
     this.horizontal_parts = this.get_horizontal_division(p_list, colors, vect) as SampleSpaceDivision;
@@ -127,7 +127,7 @@ export class SampleSpace extends Rectangle {
 
   divide_vertically(
     p_list: number | Iterable<number> | NDArray,
-    colors: Iterable<ParsableManimColor> = ["MAROON_B", YELLOW],
+    colors: Iterable<ParsableManimColor> = [MAROON_B, YELLOW],
     vect: readonly number[] | NDArray = [...RIGHT],
   ): this {
     this.vertical_parts = this.get_vertical_division(p_list, colors, vect) as SampleSpaceDivision;
