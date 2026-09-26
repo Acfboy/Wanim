@@ -289,6 +289,10 @@ export class Animation {
   toString(): string {
     return this.name ?? `${this.constructor.name}(${this.mobject.toString()})`;
   }
+
+  __str__(): string {
+    return this.toString();
+  }
 }
 
 export interface WaitOptions extends AnimationOptions {

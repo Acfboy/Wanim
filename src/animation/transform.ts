@@ -1,10 +1,11 @@
 import { array, type NDArray } from "numpy-ts";
-import { Animation, type AnimationOptions, linear } from "./animation.js";
+import { Animation, type AnimationOptions, type RateFunction, linear, smooth } from "./animation.js";
 import { Mobject, Group } from "../mobject/mobject.js";
-import { VMobject } from "../mobject/types/vectorized_mobject.js";
+import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
 import { identityMatrix, matrixRows, pointFrom, pointRows, pointsFrom } from "../utils/arrays.js";
 import { path_along_arc, path_along_circles, type PathFuncType } from "../utils/paths.js";
-import { ORIGIN, OUT } from "../constants.js";
+import { squish_rate_func } from "../utils/rate_functions.js";
+import { DEGREES, ORIGIN, OUT } from "../constants.js";
 
 export interface TransformOptions extends AnimationOptions {
   path_func?: PathFuncType | null;
@@ -290,8 +291,28 @@ export class FadeTransform extends Transform {
   dim_to_match: number;
   ending_mobject: Mobject;
 
-  constructor(mobject: Mobject, targetMobject: Mobject, options: AnimationOptions & { stretch?: boolean; dim_to_match?: number } = {}) {
-    const { stretch = true, dim_to_match: dimToMatch = 1, ...rest } = options;
+  constructor(
+    mobject: Mobject,
+    targetMobject: Mobject,
+    stretchOrOptions: boolean | (AnimationOptions & { stretch?: boolean; dim_to_match?: number }) = true,
+    dimToMatchOrUndefined: number = 1,
+    options: AnimationOptions & { stretch?: boolean; dim_to_match?: number } = {},
+  ) {
+    let stretch = true;
+    let dimToMatch = 1;
+    let rest: AnimationOptions = {};
+    if (typeof stretchOrOptions === "object" && stretchOrOptions !== null) {
+      const { stretch: s = true, dim_to_match: d = 1, ...r } = stretchOrOptions as AnimationOptions & { stretch?: boolean; dim_to_match?: number };
+      stretch = s;
+      dimToMatch = d;
+      rest = r;
+    } else {
+      stretch = stretchOrOptions as boolean;
+      dimToMatch = dimToMatchOrUndefined;
+      const { stretch: _s, dim_to_match: _d, ...r } = options;
+      void _s; void _d;
+      rest = r;
+    }
     mobject.save_state?.();
     super(new Group(mobject, targetMobject.copy()), rest);
     this.to_add_on_completion = targetMobject;
@@ -384,5 +405,159 @@ export class MoveToTarget extends Transform {
       error.name = "ValueError";
       throw error;
     }
+  }
+}
+
+export class ReplacementTransform extends Transform {
+  constructor(mobject: Mobject, targetMobject: Mobject, options: TransformOptions = {}) {
+    super(mobject, targetMobject, { replace_mobject_with_target_in_scene: true, ...options });
+  }
+}
+
+export class TransformFromCopy extends Transform {
+  constructor(mobject: Mobject, targetMobject: Mobject, options: TransformOptions = {}) {
+    super(targetMobject, mobject, options);
+  }
+
+  override interpolate(alpha: number): void {
+    super.interpolate(1 - alpha);
+  }
+}
+
+export class ClockwiseTransform extends Transform {
+  constructor(
+    mobject: Mobject,
+    targetMobject: Mobject,
+    path_arc = -Math.PI,
+    options: TransformOptions = {},
+  ) {
+    super(mobject, targetMobject, { path_arc, ...options });
+  }
+}
+
+export class CounterclockwiseTransform extends Transform {
+  constructor(
+    mobject: Mobject,
+    targetMobject: Mobject,
+    path_arc = Math.PI,
+    options: TransformOptions = {},
+  ) {
+    super(mobject, targetMobject, { path_arc, ...options });
+  }
+}
+
+export interface CyclicReplaceOptions extends TransformOptions {
+  path_arc?: number;
+}
+
+export class CyclicReplace extends Transform {
+  group: Group | VGroup;
+
+  constructor(...args: Array<Mobject | Group | VGroup | TransformOptions | number>) {
+    let options: CyclicReplaceOptions = {};
+    const last = args[args.length - 1];
+    if (
+      last !== undefined &&
+      !(last instanceof Mobject) &&
+      typeof last === "object" &&
+      !Array.isArray(last)
+    ) {
+      options = last as CyclicReplaceOptions;
+      args = args.slice(0, -1);
+    }
+    const { path_arc: pathArc = 90 * DEGREES, ...rest } = options;
+    let group: Group | VGroup;
+    if (args.length === 1 && (args[0] instanceof Group || args[0] instanceof VGroup)) {
+      group = args[0] as Group | VGroup;
+    } else {
+      group = new Group(...(args as Mobject[]));
+    }
+    super(group, { path_arc: pathArc, ...rest });
+    this.group = group;
+  }
+
+  override create_target(): Group | VGroup {
+    const target = this.group.copy() as unknown as Group | VGroup;
+    const subs = (target as unknown as Group).submobjects;
+    const groupSubs = (this.group as unknown as Group).submobjects;
+    const cycled = [subs[subs.length - 1] as Mobject, ...(subs.slice(0, -1) as Mobject[])];
+    if (cycled.length !== groupSubs.length) {
+      const error = new Error(`zip() argument 2 is shorter than argument 1 (strict=True)`);
+      error.name = "ValueError";
+      throw error;
+    }
+    for (let index = 0; index < cycled.length; index += 1) {
+      (cycled[index] as Mobject).move_to(groupSubs[index] as Mobject);
+    }
+    return target;
+  }
+}
+
+export class Swap extends CyclicReplace {}
+
+export class TransformAnimations extends Transform {
+  start_anim: Animation;
+  end_anim: Animation;
+
+  constructor(
+    startAnim: Animation,
+    endAnim: Animation,
+    rate_func: RateFunction = squish_rate_func(smooth),
+    options: TransformOptions = {},
+  ) {
+    let resolvedRateFunc = rate_func;
+    let rest: TransformOptions = { ...(options as TransformOptions) };
+    if (
+      rate_func !== null &&
+      typeof rate_func === "object" &&
+      typeof (rate_func as unknown as { call?: unknown }).call !== "function"
+    ) {
+      rest = { ...(rate_func as unknown as TransformOptions), ...options };
+      resolvedRateFunc = (rest.rate_func as RateFunction | undefined) ?? squish_rate_func(smooth);
+    }
+    let runTime: number;
+    if ("run_time" in rest && rest.run_time !== undefined) {
+      runTime = rest.run_time as number;
+      const { run_time: _rt, ...r } = rest;
+      void _rt;
+      rest = r;
+    } else {
+      runTime = Math.max(startAnim.run_time, endAnim.run_time);
+    }
+    for (const anim of [startAnim, endAnim]) {
+      anim.set_run_time(runTime);
+    }
+    if (
+      startAnim.starting_mobject !== undefined &&
+      startAnim.starting_mobject !== null &&
+      endAnim.starting_mobject !== undefined &&
+      endAnim.starting_mobject !== null &&
+      startAnim.starting_mobject.get_num_points() !==
+        endAnim.starting_mobject.get_num_points()
+    ) {
+      startAnim.starting_mobject.align_data(endAnim.starting_mobject);
+      for (const anim of [startAnim, endAnim]) {
+        if (
+          anim instanceof Transform &&
+          anim.starting_mobject !== undefined &&
+          anim.starting_mobject !== null
+        ) {
+          anim.starting_mobject.align_data((anim as Transform).target_mobject);
+        }
+      }
+    }
+    super(startAnim.mobject, endAnim.mobject, { rate_func: resolvedRateFunc, ...rest });
+    this.start_anim = startAnim;
+    this.end_anim = endAnim;
+    this.run_time = runTime;
+    // Rewire starting and ending mobjects
+    startAnim.mobject = this.starting_mobject;
+    endAnim.mobject = this.target_mobject;
+  }
+
+  override interpolate(alpha: number): void {
+    this.start_anim.interpolate(alpha);
+    this.end_anim.interpolate(alpha);
+    super.interpolate(alpha);
   }
 }
