@@ -314,8 +314,13 @@ export class Wait extends Animation {
       error.name = "ValueError";
       throw error;
     }
+    // NOTE: Python consumes run_time/stop_condition/frozen_frame/rate_func as
+    // named params (only the remainder flows into Animation as **kwargs), so
+    // they are stripped here to avoid stray attributes via the base-class
+    // unknown-key copy loop.
+    const { run_time: _rt, stop_condition: _sc, frozen_frame: _ff, ...rest } = merged;
     super(null, {
-      ...merged,
+      ...rest,
       run_time,
       rate_func: merged.rate_func ?? linear,
     });
