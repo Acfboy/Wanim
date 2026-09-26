@@ -578,16 +578,16 @@ export class CoordinateSystem {
       (o["pre_function_handle_to_anchor_scale_factor"] as number | undefined) ?? undefined,
     );
     if (colorscale) {
-      // NOTE: Surface.set_fill_by_value lives in a later layer (L20); call
-      // through a structural cast so this batch compiles. At runtime it
-      // resolves once that batch lands.
-      (surface as unknown as {
-        set_fill_by_value(opts: Record<string, unknown>): void;
-      }).set_fill_by_value({
-        axes: this,
+      // NOTE: Python calls surface.set_fill_by_value(axes=self.copy(),
+      // colorscale=colorscale, axis=colorscale_axis) positionally-by-keyword.
+      // set_fill_by_value only reads the axes (ranges + point_to_coords), and
+      // the TS CoordinateSystem hierarchy is not Mobject-based (no copy()),
+      // so `this` is passed directly — behaviorally identical.
+      surface.set_fill_by_value(
+        this as unknown as ThreeDAxes,
         colorscale,
-        axis: colorscale_axis,
-      });
+        colorscale_axis,
+      );
     }
     return surface;
   }
