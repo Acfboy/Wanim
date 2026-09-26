@@ -93,6 +93,10 @@ export class NumberLine extends VGroup {
   // the default arrow tip). The ArrowTip pipeline lives on TipableVMobject;
   // this VGroup-based port stores the option opaquely (see include_tip).
   tip_shape: (new (...args: never[]) => ArrowTip) | null = null;
+  // NOTE: populated by the include_tip branch (mirrors Python's `self.tip`
+  // / `self.start_tip` attributes installed by TipableVMobject.add_tip).
+  tip?: ArrowTip;
+  start_tip?: ArrowTip;
   font_size = 36;
   include_numbers = false;
   scaling: _ScaleBase = new LinearBase();
@@ -220,14 +224,19 @@ export class NumberLine extends VGroup {
       // tip_width=tip_width) (NumberLine is a TipableVMobject). This port
       // extends VGroup, so the tip is built through an equivalent Line (which
       // is a TipableVMobject) and the resulting tip geometry is attached to
-      // self at the same end. The baseline endpoints are left as-is, matching
-      // the observable geometry (get_start/get_end/unit_size are unchanged).
+      // self at the same end. `reset_endpoints_based_on_tip` shortens the
+      // baseline to the tip base (before the tip is added, as in Python); the
+      // logical endpoints stay at the original x_range ends via the
+      // get_start/get_end overrides below (mirroring TipableVMobject).
       const tipLine = new Line(this.get_start(), this.get_end());
       tipLine.add_tip(null, this.tip_shape as never, this.tip_height, this.tip_width);
       const tip = tipLine.tip;
       if (tip !== undefined) {
+        this.put_start_and_end_on(this.get_start(), tip.base);
+        // Python: self.tip.set_stroke(self.stroke_color, self.stroke_width)
+        tip.set_stroke(this.get_stroke_color(), this.get_stroke_width());
         this.add(tip as unknown as VMobject);
-        (this as unknown as { tip: ArrowTip }).tip = tip;
+        this.tip = tip;
       }
     }
     if (this.include_ticks) {
@@ -256,6 +265,32 @@ export class NumberLine extends VGroup {
         );
       }
     }
+  }
+
+  // NOTE: mirrors TipableVMobject.has_tip/has_start_tip (the tip is a
+  // submobject) and the get_start/get_end overrides, which keep the logical
+  // endpoints at the tip apex while the baseline points stop at the tip base.
+  has_tip(): boolean {
+    return this.tip !== undefined && this.submobjects.includes(this.tip as unknown as VMobject);
+  }
+
+  has_start_tip(): boolean {
+    return this.start_tip !== undefined && this.submobjects.includes(this.start_tip as unknown as VMobject);
+  }
+
+  override get_start(): number[] {
+    if (this.has_start_tip()) {
+      return (this.start_tip as ArrowTip).get_start();
+    }
+    return super.get_start();
+  }
+
+  override get_end(): number[] {
+    if (this.has_tip()) {
+      const tip = this.tip as ArrowTip;
+      return tip.get_start();
+    }
+    return super.get_end();
   }
 
   static _decimal_places_from_step(step: number): number {

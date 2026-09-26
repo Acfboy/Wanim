@@ -386,9 +386,9 @@ export class BarChart extends Axes {
     }
 
     this._update_colors();
-    // NOTE: Python calls self.add_to_back(self.bars); the TS Axes hierarchy
-    // is not Mobject-based (no add/add_to_back), so the bars live in
-    // self.bars until that integration lands.
+    // NOTE: Python calls self.add_to_back(self.bars); the Axes hierarchy is
+    // Mobject-based (VGroup), so the bars are added behind the axes.
+    this.add_to_back(this.bars);
   }
 
   _add_x_axis_labels(): void {

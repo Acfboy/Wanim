@@ -657,10 +657,21 @@ export class ConvexHull extends Polygram {
     });
     const hull = new QuickHull(tolerance);
     hull.build(matrix);
-    // Extract vertices: walk the hull boundary facet by facet. The TS
-    // QuickHull stores facets in an array keyed by string (instead of a
-    // Python object set), so set difference/pop become key-filtered pop.
-    const live = hull.facets.filter((facet) => !hull.removed.has(facet.key()));
+    // Extract vertices: walk the hull boundary facet by facet. Python uses
+    // `set(hull.facets) - hull.removed`, so duplicate facets (possible in the
+    // QuickHull facet list) must be collapsed by key before walking; without
+    // dedup the boundary walk expects more subfacets than exist and can run
+    // off the neighbor map. The TS QuickHull stores facets in an array keyed
+    // by string (instead of a Python object set), so set difference/pop
+    // become key-filtered, de-duplicated pop.
+    const seen = new Set<string>();
+    const live: Facet[] = [];
+    for (const candidate of hull.facets) {
+      const candidateKey = candidate.key();
+      if (hull.removed.has(candidateKey) || seen.has(candidateKey)) continue;
+      seen.add(candidateKey);
+      live.push(candidate);
+    }
     let facet = live.pop() as Facet;
     const subfacets: SubFacet[] = [...facet.subfacets];
     while (subfacets.length <= live.length) {

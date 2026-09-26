@@ -15,6 +15,13 @@ import { renderMarkupToSVGString } from "./pango/svg-renderer.js";
 export const TEXT_MOB_SCALE_FACTOR = 0.05;
 export const DEFAULT_LINE_SPACING_SCALE = 0.3;
 export const TEXT2SVG_ADJUSTMENT_FACTOR = 4.8;
+// Pango interprets the font size in points and converts to device units at the
+// default 96 dpi resolution (96/72 = 4/3); manimpango's SVG therefore carries
+// glyphs whose em is `font_size / TEXT2SVG_ADJUSTMENT_FACTOR * 4/3`. The
+// PangoJS port works in em units directly, so scale the requested size by this
+// factor to match real manim's glyph dimensions. Line spacing, in contrast, is
+// used by Pango verbatim in device units (no point conversion).
+export const PANGO_POINT_TO_PX_FACTOR = 96 / 72;
 
 export const PANGO_WEIGHT_MAP: Record<string, string> = {
   THIN: "100",
@@ -520,7 +527,8 @@ export class Text extends SVGMobject {
   _text2svg(color: ParsableManimColor): string {
     const markup = this._text_to_pango_markup(String(color));
     return renderMarkupToSVGString(markup, {
-      fontSize: this._font_size / TEXT2SVG_ADJUSTMENT_FACTOR,
+      fontSize: (this._font_size / TEXT2SVG_ADJUSTMENT_FACTOR) * PANGO_POINT_TO_PX_FACTOR,
+      lineSpacing: this.line_spacing / TEXT2SVG_ADJUSTMENT_FACTOR,
       color: String(color),
     });
   }
@@ -730,7 +738,8 @@ export class MarkupText extends SVGMobject {
     const outerAttrs = get_pango_attrs_markup(this.font, this.weight, this.slant);
     if (outerAttrs.length > 0) markup = `<span ${outerAttrs.join(" ")}>${markup}</span>`;
     return renderMarkupToSVGString(markup, {
-      fontSize: this._font_size / TEXT2SVG_ADJUSTMENT_FACTOR,
+      fontSize: (this._font_size / TEXT2SVG_ADJUSTMENT_FACTOR) * PANGO_POINT_TO_PX_FACTOR,
+      lineSpacing: this.line_spacing / TEXT2SVG_ADJUSTMENT_FACTOR,
       color: colorHex,
     });
   }

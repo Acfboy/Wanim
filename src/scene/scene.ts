@@ -747,10 +747,17 @@ export class Scene {
       // `mobject.method` reference rather than an invocation result) is
       // rejected up front with the "use Mobject.animate" error, since the TS
       // `prepare_animation` would otherwise invoke the function.
-      if (
-        typeof arg === "function" &&
-        (arg as unknown as { __self__?: unknown }).__self__ instanceof Mobject
-      ) {
+      // NOTE: a `_AnimationBuilder` is a callable Proxy whose unknown property
+      // reads raise AttributeError (Python's `inspect.ismethod` simply returns
+      // False for it), so the `__self__` probe must be guarded — reading it
+      // unguarded would reject every `.animate` call.
+      let boundSelf: unknown;
+      try {
+        boundSelf = (arg as unknown as { __self__?: unknown }).__self__;
+      } catch {
+        boundSelf = undefined;
+      }
+      if (typeof arg === "function" && boundSelf instanceof Mobject) {
         throw new TypeError(
           "Passing Mobject methods to Scene.play is no longer supported. Use Mobject.animate instead.",
         );
