@@ -85,20 +85,10 @@ function makeAxes(): Axes {
   return new Axes([-3, 3, 1], [-2, 2, 1], 6, 4);
 }
 
-// See (D1): wire Line-geometry axes (projection behavior identical to
-// Python's NumberLine axes, which subclass Line) plus a NumberLine label
-// factory standing in for Python's x_axis._create_label_tex.
+// Axes now builds its real NumberLine axes (which carry get_projection and
+// number_to_point), so no manual wiring is needed.
 function makeAxesWithLines(): Axes {
-  const ax = makeAxes();
-  ax.axes = new VGroup(
-    new Line([-3, 0, 0], [3, 0, 0]),
-    new Line([0, -2, 0], [0, 2, 0]),
-  );
-  (ax as unknown as { x_axis: unknown }).x_axis = new NumberLine({
-    x_range: [-3, 3, 1],
-    length: 6,
-  });
-  return ax;
+  return makeAxes();
 }
 
 // ---------------------------------------------------------------------------
@@ -190,10 +180,16 @@ describe("CoordinateSystem.get_graph_label", () => {
     expectRowsClose([(out as unknown as VMobject).get_center()], [[2.185000000000001, 3.6900000000000004, 0.0]]);
   });
 
-  it("marks string labels as tex-backed stubs", () => {
+  it("renders string labels via MathTex on the graph", () => {
     const ax = makeAxesWithLines();
     const g = ax.plot((x: number) => x ** 2);
-    expect(() => ax.get_graph_label(g, "f(x)", 1.0)).toThrowError(/text\/tex not ported/);
+    const out = ax.get_graph_label(g, "f(x)", 1.0);
+    expect(out).toBeInstanceOf(VMobject);
+    const center = (out as unknown as VMobject).get_center();
+    // python: next_to(graph point [1,1,0], RIGHT, MED_SMALL_BUFF) keeps the
+    // vertical center on the point and puts the label to its right.
+    expect(center[0] ?? NaN).toBeGreaterThan(1);
+    expect(close(center[1] ?? NaN, 1, 1e-9)).toBe(true);
   });
 });
 
@@ -311,14 +307,14 @@ describe("PolarPlane", () => {
     expect(pp.radius_config["font_size"]).toBe(24);
     expect(pp.background_line_style["stroke_width"]).toBe(2);
     expect(pp.background_line_style["stroke_opacity"]).toBe(1);
-    // (D3) faded style derived without building lines.
+    // (D3) faded style derived and the real background grid is built (25/0).
     expect(pp.faded_line_style?.["stroke_width"]).toBe(1.0);
     expect(pp.faded_line_style?.["stroke_opacity"]).toBe(0.5);
     expect(pp.faded_line_ratio).toBe(1);
     // (D2) net Python behavior is False (VGroup overwrite).
     expect(pp.make_smooth_after_applying_functions).toBe(false);
-    expect(pp.background_lines).toBeNull();
-    expect(pp.faded_lines).toBeNull();
+    expect(pp.background_lines?.submobjects.length).toBe(25);
+    expect(pp.faded_lines?.submobjects.length).toBe(0);
   });
 
   it("derives the faded style from a custom background style", () => {

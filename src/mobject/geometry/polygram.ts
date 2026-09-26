@@ -276,6 +276,22 @@ function isOptionsObject(value: unknown): boolean {
   return value !== null && typeof value === "object" && !Array.isArray(value) && !isNDArray(value);
 }
 
+/** True for a plain options bag (not an array, NDArray, or Mobject). Used to
+ * accept Python-style kwargs as a leading object in geometry constructors
+ * whose first positional parameter would otherwise bind the bag and yield
+ * NaN geometry. */
+export function isPlainOptionsBag(value: unknown): boolean {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && !isNDArray(value)
+    && !(value instanceof VMobject)
+    // Exclude any Mobject without importing the base class here (a direct
+    // mobject import would close the cycle mobject -> animation -> indication
+    // -> polygram -> mobject). Mobjects answer get_num_points().
+    && typeof (value as { get_num_points?: unknown }).get_num_points !== "function";
+}
+
 export interface RegularPolygramOptions extends PolygramOptions {
   density?: number;
   radius?: number;
@@ -285,8 +301,27 @@ export interface RegularPolygramOptions extends PolygramOptions {
 export class RegularPolygram extends Polygram {
   start_angle: number | null;
 
-  constructor(num_vertices: number, options: RegularPolygramOptions = {}) {
-    const { density = 2, radius = 1, start_angle = null, ...rest } = options;
+  constructor(
+    numVerticesOrOptions: number | (RegularPolygramOptions & { num_vertices?: number }),
+    options: RegularPolygramOptions = {},
+  ) {
+    // Python: RegularPolygram(num_vertices, *, density=2, radius=1,
+    // start_angle=None, **kwargs). Accept `{ num_vertices, density, ... }`.
+    let bag: RegularPolygramOptions & { num_vertices?: number };
+    let positional: number | undefined;
+    if (isPlainOptionsBag(numVerticesOrOptions)) {
+      bag = { ...(numVerticesOrOptions as RegularPolygramOptions & { num_vertices?: number }), ...options };
+    } else {
+      bag = options;
+      positional = numVerticesOrOptions as number;
+    }
+    const { num_vertices: nOption, density = 2, radius = 1, start_angle = null, ...rest } = bag;
+    const num_vertices = nOption ?? positional;
+    if (typeof num_vertices !== "number" || Number.isNaN(num_vertices)) {
+      const error = new Error("RegularPolygram requires a numeric num_vertices");
+      error.name = "ValueError";
+      throw error;
+    }
     // Regular polygrams can be expressed by the number of their vertices
     // and their density. This relation can be expressed as its Schläfli
     // symbol: {num_vertices/density}.
@@ -342,8 +377,18 @@ function gcd(a: number, b: number): number {
 export interface RegularPolygonOptions extends RegularPolygramOptions {}
 
 export class RegularPolygon extends RegularPolygram {
-  constructor(n = 6, options: RegularPolygonOptions = {}) {
-    super(n, { density: 1, ...options });
+  constructor(nOrOptions: number | (RegularPolygonOptions & { n?: number }) = 6, options: RegularPolygonOptions = {}) {
+    // Python: RegularPolygon(n=6, **kwargs).
+    let bag: RegularPolygonOptions & { n?: number };
+    let positional: number | undefined;
+    if (isPlainOptionsBag(nOrOptions)) {
+      bag = { ...(nOrOptions as RegularPolygonOptions & { n?: number }), ...options };
+    } else {
+      bag = options;
+      positional = nOrOptions as number;
+    }
+    const { n: nOption, ...rest } = bag;
+    super(nOption ?? positional ?? 6, { density: 1, ...rest });
   }
 }
 
@@ -357,14 +402,19 @@ export interface StarOptions extends PolygramOptions {
 export class Star extends Polygon {
   start_angle: number | null;
 
-  constructor(n = 5, options: StarOptions = {}) {
-    const {
-      outer_radius = 1,
-      inner_radius = null,
-      density = 2,
-      start_angle = TAU / 4,
-      ...rest
-    } = options;
+  constructor(nOrOptions: number | (StarOptions & { n?: number }) = 5, options: StarOptions = {}) {
+    // Python: Star(n=5, *, outer_radius=1, inner_radius=None, density=2,
+    // start_angle=PI/2, **kwargs).
+    let bag: StarOptions & { n?: number };
+    let positional: number | undefined;
+    if (isPlainOptionsBag(nOrOptions)) {
+      bag = { ...(nOrOptions as StarOptions & { n?: number }), ...options };
+    } else {
+      bag = options;
+      positional = nOrOptions as number;
+    }
+    const { n: nOption, outer_radius = 1, inner_radius = null, density = 2, start_angle = TAU / 4, ...rest } = bag;
+    const n = nOption ?? positional ?? 5;
     const inner_angle = TAU / (2 * n);
     let resolved_inner_radius = inner_radius;
     if (resolved_inner_radius === null || resolved_inner_radius === undefined) {
@@ -494,8 +544,22 @@ export interface RoundedRectangleOptions extends RectangleOptions {
 export class RoundedRectangle extends Rectangle {
   corner_radius: number | number[];
 
-  constructor(options: RoundedRectangleOptions = {}) {
-    const { corner_radius = 0.5, ...rest } = options;
+  constructor(
+    cornerRadiusOrOptions: number | number[] | RoundedRectangleOptions = 0.5,
+    options: RoundedRectangleOptions = {},
+  ) {
+    // Python: RoundedRectangle(corner_radius=0.5, **kwargs). Accept the
+    // radius positionally or inside a leading options bag.
+    let bag: RoundedRectangleOptions;
+    let positional: number | number[] | undefined;
+    if (isPlainOptionsBag(cornerRadiusOrOptions)) {
+      bag = { ...(cornerRadiusOrOptions as RoundedRectangleOptions), ...options };
+    } else {
+      bag = options;
+      positional = cornerRadiusOrOptions as number | number[];
+    }
+    const { corner_radius: cornerRadiusOption = 0.5, ...rest } = bag;
+    const corner_radius = cornerRadiusOption ?? positional ?? 0.5;
     super(rest);
     this.corner_radius = corner_radius;
     this.round_corners(this.corner_radius);
@@ -507,9 +571,20 @@ export interface SquareOptions extends RectangleOptions {
 }
 
 export class Square extends Rectangle {
-  constructor(side_length = 2.0, options: SquareOptions = {}) {
-    const { side_length: sideLengthOption, ...rest } = options;
-    const resolved = sideLengthOption ?? side_length;
+  constructor(sideLengthOrOptions: number | SquareOptions = 2.0, options: SquareOptions = {}) {
+    // Python: Square(side_length=2.0, **kwargs). Accept the kwargs bag either
+    // as a leading object (`new Square({ side_length: 3 })`) or as the
+    // trailing options argument (`new Square(3, { color: RED })`).
+    let bag: SquareOptions;
+    let positional: number | undefined;
+    if (isPlainOptionsBag(sideLengthOrOptions)) {
+      bag = { ...(sideLengthOrOptions as SquareOptions), ...options };
+    } else {
+      bag = options;
+      positional = sideLengthOrOptions as number;
+    }
+    const { side_length: sideLengthOption, ...rest } = bag;
+    const resolved = sideLengthOption ?? positional ?? 2.0;
     super({ height: resolved, width: resolved, ...rest });
   }
 

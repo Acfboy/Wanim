@@ -11,6 +11,7 @@ import { Mobject } from "../mobject.js";
 import { VGroup, VectorizedPoint, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Circle } from "../geometry/arc.js";
 import { Square } from "../geometry/polygram.js";
+import { isPlainOptionsBag } from "../geometry/polygram.js";
 
 export class ThreeDVMobject extends VMobject {
   u_index!: number;
@@ -312,7 +313,13 @@ export class Sphere extends Surface {
   radius: number;
 
   constructor(
-    center: readonly number[] | NDArray = [0, 0, 0],
+    centerOrOptions: readonly number[] | NDArray | (SphereOptions & {
+      center?: readonly number[] | NDArray;
+      radius?: number;
+      resolution?: number | [number, number];
+      u_range?: [number, number];
+      v_range?: [number, number];
+    }) = [0, 0, 0],
     radius = 1,
     // NOTE: Python defaults the resolution from config.renderer
     // ((101, 51) for OpenGL, (24, 12) for Cairo); renderers are out of scope
@@ -322,25 +329,41 @@ export class Sphere extends Surface {
     v_range: [number, number] = [0, Math.PI],
     options: SphereOptions = {},
   ) {
+    // Python: Sphere(center=ORIGIN, radius=1, resolution=None,
+    // u_range=(0,TAU), v_range=(0,PI), **kwargs). Accept a leading kwargs bag.
+    let bag: SphereOptions & Record<string, unknown>;
+    let positionalCenter: readonly number[] | NDArray | undefined;
+    if (isPlainOptionsBag(centerOrOptions)) {
+      bag = { ...(centerOrOptions as Record<string, unknown>), ...(options as Record<string, unknown>) };
+    } else {
+      bag = { ...(options as Record<string, unknown>) };
+      positionalCenter = centerOrOptions as readonly number[] | NDArray;
+    }
+    const resolvedCenter = (bag["center"] as readonly number[] | NDArray | undefined) ?? positionalCenter ?? [0, 0, 0];
+    const resolvedRadius = (bag["radius"] as number | undefined) ?? radius;
+    const resolvedResolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
+    const resolvedURange = (bag["u_range"] as [number, number] | undefined) ?? u_range;
+    const resolvedVRange = (bag["v_range"] as [number, number] | undefined) ?? v_range;
+    for (const key of ["center", "radius", "resolution", "u_range", "v_range"]) delete bag[key];
     // NOTE: the closure captures `radius` instead of `this.func` because
     // `this` cannot be referenced in a super() call.
     super(
-      (u: number, v: number): SurfacePoint => spherePoint(radius, u, v),
-      u_range,
-      v_range,
-      resolution,
-      options.surface_piece_config ?? {},
-      options.fill_color ?? BLUE_D,
-      options.fill_opacity ?? 1.0,
-      options.checkerboard_colors ?? [BLUE_D, BLUE_E],
-      options.stroke_color ?? LIGHT_GREY,
-      options.stroke_width ?? 0.5,
-      options.should_make_jagged ?? false,
-      options.pre_function_handle_to_anchor_scale_factor ?? 0.00001,
-      options,
+      (u: number, v: number): SurfacePoint => spherePoint(resolvedRadius, u, v),
+      resolvedURange,
+      resolvedVRange,
+      resolvedResolution,
+      (bag.surface_piece_config as Record<string, unknown> | undefined) ?? {},
+      (bag.fill_color as ParsableManimColor | undefined) ?? BLUE_D,
+      (bag.fill_opacity as number | undefined) ?? 1.0,
+      (bag.checkerboard_colors as Iterable<ParsableManimColor> | false | undefined) ?? [BLUE_D, BLUE_E],
+      (bag.stroke_color as ParsableManimColor | undefined) ?? LIGHT_GREY,
+      (bag.stroke_width as number | undefined) ?? 0.5,
+      (bag.should_make_jagged as boolean | undefined) ?? false,
+      (bag.pre_function_handle_to_anchor_scale_factor as number | undefined) ?? 0.00001,
+      bag as SphereOptions,
     );
-    this.radius = radius;
-    this.shift(pointRows(center, 3)[0] ?? [0, 0, 0]);
+    this.radius = resolvedRadius;
+    this.shift(pointRows(resolvedCenter, 3)[0] ?? [0, 0, 0]);
   }
 
   override func(u: number, v: number): SurfacePoint {
@@ -350,19 +373,36 @@ export class Sphere extends Surface {
 
 export class Dot3D extends Sphere {
   constructor(
-    point: readonly number[] | NDArray = [...ORIGIN],
+    pointOrOptions: readonly number[] | NDArray | (SphereOptions & {
+      point?: readonly number[] | NDArray;
+      radius?: number;
+      color?: ParsableManimColor;
+      resolution?: number | [number, number];
+    }) = [...ORIGIN],
     radius = DEFAULT_DOT_RADIUS,
     color: ParsableManimColor = WHITE,
     resolution: number | [number, number] = [8, 8],
     options: Record<string, unknown> = {},
   ) {
-    void options;
-    super(point, radius, resolution);
-    this.set_color(color);
+    // Python: Dot3D(point=ORIGIN, radius=0.08, color=WHITE,
+    // resolution=(8,8), **kwargs).
+    const isBag = isPlainOptionsBag(pointOrOptions);
+    const bag: Record<string, unknown> = isBag
+      ? { ...(pointOrOptions as Record<string, unknown>), ...options }
+      : { ...options };
+    const positionalPoint = isBag ? undefined : (pointOrOptions as readonly number[] | NDArray);
+    const resolvedPoint = (bag["point"] as readonly number[] | NDArray | undefined) ?? positionalPoint ?? [...ORIGIN];
+    const resolvedRadius = (bag["radius"] as number | undefined) ?? radius;
+    const resolvedColor = (bag["color"] as ParsableManimColor | undefined) ?? color;
+    const resolvedResolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
+    for (const key of ["point", "radius", "color", "resolution"]) delete bag[key];
+    super(resolvedPoint, resolvedRadius, resolvedResolution, [0, Math.PI * 2], [0, Math.PI], bag as SphereOptions);
+    this.set_color(resolvedColor);
   }
 }
 
 export interface CubeOptions {
+  side_length?: number;
   fill_opacity?: number;
   fill_color?: ParsableManimColor;
   stroke_width?: number;
@@ -373,17 +413,31 @@ export class Cube extends VGroup {
   side_length: number;
 
   constructor(
-    side_length = 2,
+    sideLengthOrOptions: number | CubeOptions = 2,
     fill_opacity = 0.75,
     fill_color: ParsableManimColor = BLUE,
     stroke_width = 0,
     options: CubeOptions = {},
   ) {
+    // Python: Cube(side_length=2, fill_opacity=0.75, fill_color=BLUE_D,
+    // stroke_width=0, **kwargs). Accept a leading kwargs bag.
+    const isBag = isPlainOptionsBag(sideLengthOrOptions);
+    const bag: CubeOptions = isBag
+      ? { ...(sideLengthOrOptions as CubeOptions), ...options }
+      : options;
+    const positionalSide = isBag ? undefined : (sideLengthOrOptions as number);
+    const {
+      side_length: sideLengthOption,
+      fill_opacity: fillOpacityOption,
+      fill_color: fillColorOption,
+      stroke_width: strokeWidthOption,
+      ...rest
+    } = bag;
+    void rest;
     super();
-    void options;
-    this.side_length = side_length;
-    this.set_fill(fill_color, fill_opacity);
-    this.set_stroke(undefined, stroke_width);
+    this.side_length = sideLengthOption ?? positionalSide ?? 2;
+    this.set_fill(fillColorOption ?? fill_color, fillOpacityOption ?? fill_opacity);
+    this.set_stroke(undefined, strokeWidthOption ?? stroke_width);
     this.generate_points();
   }
 
@@ -422,10 +476,19 @@ export class Prism extends Cube {
   dimensions: number[];
 
   constructor(
-    dimensions: readonly number[] | NDArray = [3, 2, 1],
+    dimensionsOrOptions: readonly number[] | NDArray | (PrismOptions & { dimensions?: readonly number[] | NDArray }) = [3, 2, 1],
     options: PrismOptions = {},
   ) {
-    const { side_length = 2, ...rest } = options;
+    // Python: Prism(dimensions=[3,2,1], **kwargs). Accept a leading kwargs bag.
+    let bag: PrismOptions & { dimensions?: readonly number[] | NDArray };
+    let positionalDimensions: readonly number[] | NDArray | undefined;
+    if (isPlainOptionsBag(dimensionsOrOptions)) {
+      bag = { ...(dimensionsOrOptions as PrismOptions & { dimensions?: readonly number[] | NDArray }), ...options };
+    } else {
+      bag = options;
+      positionalDimensions = dimensionsOrOptions as readonly number[] | NDArray;
+    }
+    const { dimensions: dimensionsOption, side_length = 2, ...rest } = bag;
     super(
       side_length,
       rest.fill_opacity ?? 0.75,
@@ -433,7 +496,7 @@ export class Prism extends Cube {
       rest.stroke_width ?? 0,
       rest,
     );
-    this.dimensions = [...(pointRows(dimensions, 3)[0] ?? [3, 2, 1])];
+    this.dimensions = [...(pointRows(dimensionsOption ?? positionalDimensions ?? [3, 2, 1], 3)[0] ?? [3, 2, 1])];
     // NOTE: Cube's constructor already built the (unscaled) faces through
     // generate_points() — which early-returned on the rescale step while
     // `dimensions` was still unassigned (TS requires super() first, whereas
@@ -491,7 +554,15 @@ export class Cone extends Surface {
   protected _current_phi = 0;
 
   constructor(
-    base_radius = 1,
+    baseRadiusOrOptions: number | (ConeOptions & {
+      base_radius?: number;
+      height?: number;
+      direction?: readonly number[] | NDArray;
+      show_base?: boolean;
+      v_range?: [number, number];
+      u_min?: number;
+      checkerboard_colors?: Iterable<ParsableManimColor> | false;
+    }) = 1,
     height = 1,
     direction: readonly number[] | NDArray = [...Z_AXIS],
     show_base = false,
@@ -500,6 +571,21 @@ export class Cone extends Surface {
     checkerboard_colors: Iterable<ParsableManimColor> | false = false,
     options: ConeOptions = {},
   ) {
+    // Python: Cone(base_radius=1, height=1, direction=OUT, show_base=False,
+    // v_range=(0,TAU), u_min=0, checkerboard_colors=False, **kwargs).
+    const isBag = isPlainOptionsBag(baseRadiusOrOptions);
+    const bag: Record<string, unknown> = isBag
+      ? { ...(baseRadiusOrOptions as Record<string, unknown>), ...(options as Record<string, unknown>) }
+      : { ...(options as Record<string, unknown>) };
+    const positionalBase = isBag ? undefined : (baseRadiusOrOptions as number);
+    const base_radius = (bag["base_radius"] as number | undefined) ?? positionalBase ?? 1;
+    height = (bag["height"] as number | undefined) ?? height;
+    direction = (bag["direction"] as readonly number[] | NDArray | undefined) ?? direction;
+    show_base = (bag["show_base"] as boolean | undefined) ?? show_base;
+    v_range = (bag["v_range"] as [number, number] | undefined) ?? v_range;
+    u_min = (bag["u_min"] as number | undefined) ?? u_min;
+    checkerboard_colors = (bag["checkerboard_colors"] as Iterable<ParsableManimColor> | false | undefined) ?? checkerboard_colors;
+    for (const key of ["base_radius", "height", "direction", "show_base", "v_range", "u_min", "checkerboard_colors"]) delete bag[key];
     // NOTE: Python assigns direction/theta before super().__init__() so the
     // bound self.func sees them. TS requires super() first; the closure
     // below captures the locals instead (identical values).
@@ -509,14 +595,14 @@ export class Cone extends Surface {
       (u: number, v: number) => conePoint(u, v, theta),
       u_range,
       v_range,
-      options.resolution ?? 32,
-      options.surface_piece_config ?? {},
-      options.fill_color ?? BLUE_D,
-      options.fill_opacity ?? 1.0,
+      (bag["resolution"] as number | [number, number] | undefined) ?? 32,
+      (bag["surface_piece_config"] as Record<string, unknown> | undefined) ?? {},
+      (bag["fill_color"] as ParsableManimColor | undefined) ?? BLUE_D,
+      (bag["fill_opacity"] as number | undefined) ?? 1.0,
       checkerboard_colors,
-      options.stroke_color ?? LIGHT_GREY,
-      options.stroke_width ?? 0.5,
-      options.should_make_jagged ?? false,
+      (bag["stroke_color"] as ParsableManimColor | undefined) ?? LIGHT_GREY,
+      (bag["stroke_width"] as number | undefined) ?? 0.5,
+      (bag["should_make_jagged"] as boolean | undefined) ?? false,
     );
     this.direction = [...(pointRows(direction, 3)[0] ?? [0, 0, 1])];
     this.theta = theta;
@@ -624,7 +710,14 @@ export class Cylinder extends Surface {
   protected _current_phi = 0;
 
   constructor(
-    radius = 1,
+    radiusOrOptions: number | (CylinderOptions & {
+      radius?: number;
+      height?: number;
+      direction?: readonly number[] | NDArray;
+      v_range?: [number, number];
+      show_ends?: boolean;
+      resolution?: number | [number, number];
+    }) = 1,
     height = 2,
     direction: readonly number[] | NDArray = [...Z_AXIS],
     v_range: [number, number] = [0, TAU],
@@ -632,6 +725,20 @@ export class Cylinder extends Surface {
     resolution: number | [number, number] = [24, 24],
     options: CylinderOptions = {},
   ) {
+    // Python: Cylinder(radius=1, height=2, direction=OUT, v_range=(0,TAU),
+    // show_ends=True, resolution=(24,24), **kwargs).
+    const isBag = isPlainOptionsBag(radiusOrOptions);
+    const bag: Record<string, unknown> = isBag
+      ? { ...(radiusOrOptions as Record<string, unknown>), ...(options as Record<string, unknown>) }
+      : { ...(options as Record<string, unknown>) };
+    const positionalRadius = isBag ? undefined : (radiusOrOptions as number);
+    const radius = (bag["radius"] as number | undefined) ?? positionalRadius ?? 1;
+    height = (bag["height"] as number | undefined) ?? height;
+    direction = (bag["direction"] as readonly number[] | NDArray | undefined) ?? direction;
+    v_range = (bag["v_range"] as [number, number] | undefined) ?? v_range;
+    show_ends = (bag["show_ends"] as boolean | undefined) ?? show_ends;
+    resolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
+    for (const key of ["radius", "height", "direction", "v_range", "show_ends", "resolution"]) delete bag[key];
     // NOTE: same super()-first constraint as Cone (see above); the closure
     // captures the radius/height params.
     super(
@@ -639,13 +746,13 @@ export class Cylinder extends Surface {
       [-height / 2, height / 2],
       v_range,
       resolution,
-      options.surface_piece_config ?? {},
-      options.fill_color ?? BLUE_D,
-      options.fill_opacity ?? 1.0,
+      (bag["surface_piece_config"] as Record<string, unknown> | undefined) ?? {},
+      (bag["fill_color"] as ParsableManimColor | undefined) ?? BLUE_D,
+      (bag["fill_opacity"] as number | undefined) ?? 1.0,
       false,
-      options.stroke_color ?? LIGHT_GREY,
-      options.stroke_width ?? 0.5,
-      options.should_make_jagged ?? false,
+      (bag["stroke_color"] as ParsableManimColor | undefined) ?? LIGHT_GREY,
+      (bag["stroke_width"] as number | undefined) ?? 0.5,
+      (bag["should_make_jagged"] as boolean | undefined) ?? false,
     );
     this._height = height;
     this.radius = radius;
@@ -772,7 +879,13 @@ export class Torus extends Surface {
   r: number;
 
   constructor(
-    major_radius = 3,
+    majorRadiusOrOptions: number | (TorusOptions & {
+      major_radius?: number;
+      minor_radius?: number;
+      u_range?: [number, number];
+      v_range?: [number, number];
+      resolution?: number | [number, number];
+    }) = 3,
     minor_radius = 1,
     u_range: [number, number] = [0, TAU],
     v_range: [number, number] = [0, TAU],
@@ -782,6 +895,19 @@ export class Torus extends Surface {
     resolution: number | [number, number] = [24, 24],
     options: TorusOptions = {},
   ) {
+    // Python: Torus(major_radius=3, minor_radius=1, u_range=(0,TAU),
+    // v_range=(0,TAU), resolution=None, **kwargs).
+    const isBag = isPlainOptionsBag(majorRadiusOrOptions);
+    const bag: Record<string, unknown> = isBag
+      ? { ...(majorRadiusOrOptions as Record<string, unknown>), ...(options as Record<string, unknown>) }
+      : { ...(options as Record<string, unknown>) };
+    const positionalMajor = isBag ? undefined : (majorRadiusOrOptions as number);
+    const major_radius = (bag["major_radius"] as number | undefined) ?? positionalMajor ?? 3;
+    minor_radius = (bag["minor_radius"] as number | undefined) ?? minor_radius;
+    u_range = (bag["u_range"] as [number, number] | undefined) ?? u_range;
+    v_range = (bag["v_range"] as [number, number] | undefined) ?? v_range;
+    resolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
+    for (const key of ["major_radius", "minor_radius", "u_range", "v_range", "resolution"]) delete bag[key];
     // NOTE: same super()-first constraint as Cone/Cylinder (see above);
     // the closure captures the radii params instead of `this`.
     super(
@@ -789,13 +915,13 @@ export class Torus extends Surface {
       u_range,
       v_range,
       resolution,
-      options.surface_piece_config ?? {},
-      options.fill_color ?? BLUE_D,
-      options.fill_opacity ?? 1.0,
-      options.checkerboard_colors ?? [BLUE_D, BLUE_E],
-      options.stroke_color ?? LIGHT_GREY,
-      options.stroke_width ?? 0.5,
-      options.should_make_jagged ?? false,
+      (bag["surface_piece_config"] as Record<string, unknown> | undefined) ?? {},
+      (bag["fill_color"] as ParsableManimColor | undefined) ?? BLUE_D,
+      (bag["fill_opacity"] as number | undefined) ?? 1.0,
+      (bag["checkerboard_colors"] as Iterable<ParsableManimColor> | false | undefined) ?? [BLUE_D, BLUE_E],
+      (bag["stroke_color"] as ParsableManimColor | undefined) ?? LIGHT_GREY,
+      (bag["stroke_width"] as number | undefined) ?? 0.5,
+      (bag["should_make_jagged"] as boolean | undefined) ?? false,
     );
     this.R = major_radius;
     this.r = minor_radius;
@@ -834,12 +960,31 @@ export class Line3D {
   end!: NDArray;
 
   constructor(
-    start: Line3DEndpoint = [...LEFT],
+    startOrOptions: Line3DEndpoint | {
+      start?: Line3DEndpoint;
+      end?: Line3DEndpoint;
+      thickness?: number;
+      color?: ParsableManimColor | null;
+      resolution?: number | [number, number];
+    } = [...LEFT],
     end: Line3DEndpoint = [...RIGHT],
     thickness = 0.02,
     color: ParsableManimColor | null = null,
     resolution: number | [number, number] = 24,
   ) {
+    // Python: Line3D(start=LEFT, end=RIGHT, thickness=0.02, color=None,
+    // resolution=24, **kwargs). Accept a leading kwargs bag.
+    const isBag = isPlainOptionsBag(startOrOptions);
+    const bag = isBag
+      ? { ...(startOrOptions as Record<string, unknown>) }
+      : {} as Record<string, unknown>;
+    const start = isBag
+      ? (bag["start"] as Line3DEndpoint | undefined) ?? [...LEFT]
+      : (startOrOptions as Line3DEndpoint);
+    end = isBag ? (bag["end"] as Line3DEndpoint | undefined) ?? end : end;
+    thickness = (bag["thickness"] as number | undefined) ?? thickness;
+    color = (bag["color"] as ParsableManimColor | null | undefined) ?? color;
+    resolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
     this.thickness = thickness;
     // NOTE: color is accepted (same position as Python's __init__) and stored,
     // but applying it to geometry awaits the Cylinder port, which needs the
@@ -945,7 +1090,7 @@ export class Arrow3D extends Line3D {
   end_point!: VectorizedPoint;
 
   constructor(
-    start: Line3DEndpoint = [...LEFT],
+    startOrOptions: Line3DEndpoint | Arrow3DOptions = [...LEFT],
     end: Line3DEndpoint = [...RIGHT],
     thickness = 0.02,
     height = 0.3,
@@ -954,8 +1099,22 @@ export class Arrow3D extends Line3D {
     resolution: number | [number, number] = 24,
     options: Arrow3DOptions = {},
   ) {
+    // Python: Arrow3D(start=LEFT, end=RIGHT, thickness=0.02, height=0.3,
+    // base_radius=0.08, color=WHITE, resolution=24, **kwargs).
+    const isBag = isPlainOptionsBag(startOrOptions);
+    const bag: Record<string, unknown> = isBag
+      ? { ...(startOrOptions as Record<string, unknown>), ...options }
+      : { ...options };
+    const positionalStart = isBag ? undefined : (startOrOptions as Line3DEndpoint);
+    const start = positionalStart ?? (bag["start"] as Line3DEndpoint | undefined) ?? [...LEFT];
+    end = (bag["end"] as Line3DEndpoint | undefined) ?? end;
+    thickness = (bag["thickness"] as number | undefined) ?? thickness;
+    height = (bag["height"] as number | undefined) ?? height;
+    base_radius = (bag["base_radius"] as number | undefined) ?? base_radius;
+    color = (bag["color"] as ParsableManimColor | undefined) ?? color;
+    resolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
     super(start, end, thickness, color, resolution);
-    void options;
+    void bag;
     this.length = norm(this.vect);
     const end_rows = pointRows(this.end, 3)[0] ?? [0, 0, 0];
     const shortened = end_rows.map((value, index) => value - height * (this.direction[index] ?? 0));

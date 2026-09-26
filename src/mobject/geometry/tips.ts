@@ -6,6 +6,7 @@ import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Circle } from "./arc.js";
 import { Square } from "./polygram.js";
 import { Triangle } from "./polygram.js";
+import { isPlainOptionsBag } from "./polygram.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
 
 export class ArrowTip extends VMobject {
@@ -74,13 +75,20 @@ export interface ArrowTriangleTipOptions extends VMobjectOptions {
 
 export class ArrowTriangleTip extends Triangle {
   constructor(
-    fill_opacity = 0,
+    fillOpacityOrOptions: number | ArrowTriangleTipOptions = 0,
     stroke_width = 3,
     length: number = DEFAULT_ARROW_TIP_LENGTH,
     width: number = DEFAULT_ARROW_TIP_LENGTH,
     start_angle: number = PI,
     options: ArrowTriangleTipOptions = {},
   ) {
+    // Python: ArrowTriangleTip(fill_opacity=0, stroke_width=3, length=0.35,
+    // width=0.35, start_angle=PI, **kwargs). Accept a leading kwargs bag.
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as ArrowTriangleTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
@@ -89,12 +97,12 @@ export class ArrowTriangleTip extends Triangle {
       start_angle: startAngleOption,
       color: colorOption,
       ...rest
-    } = options;
+    } = bag;
     const resolved_length = lengthOption ?? length;
     const resolved_width = widthOption ?? width;
     super({
       color: colorOption ?? undefined,
-      fill_opacity: fillOpacityOption ?? fill_opacity,
+      fill_opacity: fillOpacityOption ?? positionalFill ?? 0,
       stroke_width: strokeWidthOption ?? stroke_width,
       start_angle: startAngleOption ?? start_angle,
       ...rest,
@@ -147,12 +155,19 @@ export class ArrowCircleTip extends Circle {
   start_angle: number;
 
   constructor(
-    fill_opacity = 0,
+    fillOpacityOrOptions: number | ArrowCircleTipOptions = 0,
     stroke_width = 3,
     length: number = DEFAULT_ARROW_TIP_LENGTH,
     start_angle: number = PI,
     options: ArrowCircleTipOptions = {},
   ) {
+    // Python: ArrowCircleTip(fill_opacity=0, stroke_width=3, length=0.35,
+    // start_angle=PI, **kwargs). Accept a leading kwargs bag.
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as ArrowCircleTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
@@ -160,12 +175,12 @@ export class ArrowCircleTip extends Circle {
       start_angle: _droppedStartAngle,
       color: colorOption,
       ...rest
-    } = options;
+    } = bag;
     void _droppedStartAngle;
     const resolved_length = lengthOption ?? length;
     super(null, {
       color: colorOption ?? undefined,
-      fill_opacity: fillOpacityOption ?? fill_opacity,
+      fill_opacity: fillOpacityOption ?? positionalFill ?? 0,
       stroke_width: strokeWidthOption ?? stroke_width,
       ...rest,
     });
@@ -225,12 +240,19 @@ export class ArrowSquareTip extends Square {
   start_angle: number;
 
   constructor(
-    fill_opacity = 0,
+    fillOpacityOrOptions: number | ArrowSquareTipOptions = 0,
     stroke_width = 3,
     length: number = DEFAULT_ARROW_TIP_LENGTH,
     start_angle: number = PI,
     options: ArrowSquareTipOptions = {},
   ) {
+    // Python: ArrowSquareTip(fill_opacity=0, stroke_width=3, length=0.35,
+    // start_angle=PI, **kwargs). Accept a leading kwargs bag.
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as ArrowSquareTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
@@ -238,11 +260,11 @@ export class ArrowSquareTip extends Square {
       start_angle: startAngleOption,
       color: colorOption,
       ...rest
-    } = options;
+    } = bag;
     const resolved_length = lengthOption ?? length;
     super(resolved_length, {
       color: colorOption ?? undefined,
-      fill_opacity: fillOpacityOption ?? fill_opacity,
+      fill_opacity: fillOpacityOption ?? positionalFill ?? 0,
       stroke_width: strokeWidthOption ?? stroke_width,
       ...rest,
     });
@@ -297,12 +319,19 @@ export class StealthTip extends VMobject {
   start_angle: number;
 
   constructor(
-    fill_opacity = 1,
+    fillOpacityOrOptions: number | StealthTipOptions = 1,
     stroke_width = 3,
     length: number = DEFAULT_ARROW_TIP_LENGTH / 2,
     start_angle: number = PI,
     options: StealthTipOptions = {},
   ) {
+    // Python: StealthTip(fill_opacity=1, stroke_width=3, length=0.175,
+    // start_angle=PI, **kwargs). Accept a leading kwargs bag.
+    const isBag = isPlainOptionsBag(fillOpacityOrOptions);
+    const bag = isBag
+      ? { ...(fillOpacityOrOptions as StealthTipOptions), ...options }
+      : options;
+    const positionalFill = isBag ? undefined : (fillOpacityOrOptions as number);
     const {
       fill_opacity: fillOpacityOption,
       stroke_width: strokeWidthOption,
@@ -310,9 +339,9 @@ export class StealthTip extends VMobject {
       start_angle: startAngleOption,
       color: colorOption,
       ...rest
-    } = options;
+    } = bag;
     super({
-      fill_opacity: fillOpacityOption ?? fill_opacity,
+      fill_opacity: fillOpacityOption ?? positionalFill ?? 1,
       stroke_width: strokeWidthOption ?? stroke_width,
       color: colorOption ?? undefined,
       ...rest,

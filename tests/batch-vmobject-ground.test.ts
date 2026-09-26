@@ -146,12 +146,10 @@ describe("VMobject set_fill / set_stroke", () => {
   });
 
   it("sets background stroke via background flag", () => {
-    // NOTE deviation: Python's 4th positional arg is `background`, but the TS
-    // port uses the 4th slot for `family` when only 4 args are given (see
-    // set_stroke docstring); the 5-arg form recovers the Python meaning, so
-    // the ground-truth background values are asserted through it.
+    // Python signature: set_stroke(color, width, opacity, background=False,
+    // family=True); the 4th positional arg is `background`.
     const v = new VMobject();
-    v.set_stroke("green", 9, 0.8, true, true);
+    v.set_stroke("green", 9, 0.8, true);
     expect(String(v.get_stroke_color(true))).toBe("#83C167");
     expectClose(v.get_stroke_width(true), 9.0);
     expectClose(v.get_stroke_opacity(true), 0.8);

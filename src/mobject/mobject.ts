@@ -173,9 +173,42 @@ export function init_alignments(alignments: string | null | undefined, num: numb
 }
 
 function createMobjectProxy(target: Mobject): Mobject {
+  // Protocol / introspection probes that test runners, JS engines and
+  // `JSON.stringify` make on arbitrary values. Reading an unknown Mobject
+  // attribute raises a Python-like AttributeError; these must instead
+  // resolve to a safe value so that pretty-printing and serialization do not
+  // fall into unbounded attribute enumeration (which previously OOM'd
+  // vitest's pretty-printer).
+  const PROTOCOL_PROPS = new Set([
+    "then",
+    "asymmetricMatch",
+    "nodeType",
+    "tagName",
+    "$$typeof",
+    "toJSON",
+    "@@iterator",
+    "@@toStringTag",
+    "size",
+  ]);
   return new Proxy(target, {
     get: (object, property, receiver) => {
       if (property in object || typeof property === "symbol") return Reflect.get(object, property, receiver);
+      if (property === "toJSON") {
+        const typed = object as unknown as {
+          get_num_points?: () => number;
+          get_center?: () => number[];
+          submobjects?: unknown[];
+        };
+        return () => ({
+          name: (object as unknown as { name?: unknown }).name,
+          type: object.constructor.name,
+          num_points: typeof typed.get_num_points === "function" ? typed.get_num_points() : undefined,
+          // Include the center so callers that serialize mobjects (e.g. the
+          // render hash) still observe position changes.
+          center: typeof typed.get_center === "function" ? [...typed.get_center()] : undefined,
+          submobjects: Array.isArray(typed.submobjects) ? typed.submobjects.length : undefined,
+        });
+      }
       if (typeof property === "string" && property.startsWith("get_")) {
         return () => {
           const name = property.slice(4);
@@ -193,7 +226,7 @@ function createMobjectProxy(target: Mobject): Mobject {
           return receiver;
         };
       }
-      if (property === "size" || property === "nodeType" || property === "tagName" || property === "$$typeof" || property === "toJSON" || (typeof property === "string" && property.startsWith("@@"))) return undefined;
+      if (PROTOCOL_PROPS.has(property) || (typeof property === "string" && property.startsWith("@@"))) return undefined;
       const error = new Error(`${object.constructor.name} object has no attribute '${String(property)}'`);
       error.name = "AttributeError";
       throw error;
@@ -236,7 +269,16 @@ export class Mobject {
   submobjects: Mobject[] = [];
   updaters: MobjectUpdater[] = [];
   updating_suspended = false;
-  color: ManimColor;
+  /** Backing store for the ``color`` accessor.
+   *
+   * NOTE: Python's ``Mobject.color`` is a plain attribute, while
+   * ``VMobject.color`` is a live property. TS class fields are own data
+   * properties that would shadow a subclass prototype accessor, so the base
+   * class stores the value in ``_color`` and exposes ``color`` as an
+   * accessor pair; ``VMobject`` overrides the pair. */
+  protected _color!: ManimColor;
+  get color(): ManimColor { return this._color; }
+  set color(value: ManimColor) { this._color = value; }
   points: NDArray;
   saved_state: Mobject | null = null;
   original_id: string;
@@ -279,7 +321,10 @@ export class Mobject {
     this.dim = (merged.dim as number | undefined) ?? 3;
     this.target = (merged.target as Mobject | null | undefined) ?? null;
     this.z_index = (merged.z_index as number | undefined) ?? 0;
-    this.color = new ManimColor((merged.color as ParsableManimColor | undefined) ?? WHITE);
+    // NOTE: assign the backing field directly (not the accessor): VMobject
+    // overrides the `color` accessor to rebuild the rgba arrays, whose
+    // backing fields are not initialized yet while super() runs.
+    this._color = new ManimColor((merged.color as ParsableManimColor | undefined) ?? WHITE);
     this.points = array([]) as NDArray;
     this.original_id = String(Math.random());
     for (const [key, value] of Object.entries(merged)) {

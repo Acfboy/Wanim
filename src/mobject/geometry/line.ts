@@ -20,7 +20,7 @@ import { Arc, ArcBetweenPoints, Dot, TipableVMobject, set_line_constructor, type
 import { ArrowTriangleFilledTip } from "./tips.js";
 import type { ArrowTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
-import { set_grid_line_constructor, set_round_corners_constructors } from "./polygram.js";
+import { set_grid_line_constructor, set_round_corners_constructors, isPlainOptionsBag } from "./polygram.js";
 
 export type LineEndpoint = Mobject | readonly number[] | NDArray;
 
@@ -36,19 +36,28 @@ export class Line extends TipableVMobject {
   path_arc: number;
 
   constructor(
-    start: LineEndpoint = [...LEFT],
+    startOrOptions: LineEndpoint | LineOptions = [...LEFT],
     end: LineEndpoint = [...RIGHT],
     buffOrOptions: number | LineOptions = 0,
     pathArcOrOptions: number | LineOptions = 0,
     options: LineOptions = {},
   ) {
-    // NOTE: mirrors Python `Line(start, end, buff=0, path_arc=0, **kwargs)`:
-    // buff/path_arc may arrive positionally (as the transpiler will emit for
-    // manim-style user code) or inside an options bag. Explicit option keys
-    // win over positionals.
+    // NOTE: mirrors Python `Line(start, end, buff=0, path_arc=0, **kwargs)`.
+    // A leading kwargs bag (`new Line({ start: LEFT, end: RIGHT })`) is also
+    // accepted, as are buff/path_arc positionally or inside an options bag.
+    let start: LineEndpoint = startOrOptions as LineEndpoint;
+    let resolvedEnd: LineEndpoint = end;
+    let merged: LineOptions = { ...options };
+    if (isPlainOptionsBag(startOrOptions)) {
+      const bag = { ...(startOrOptions as LineOptions & { start?: LineEndpoint; end?: LineEndpoint }) };
+      if (bag.start !== undefined) start = bag.start;
+      if (bag.end !== undefined) resolvedEnd = bag.end;
+      delete bag.start;
+      delete bag.end;
+      merged = { ...bag, ...merged };
+    }
     let positionalBuff: number | undefined;
     let positionalPathArc: number | undefined;
-    let merged: LineOptions = { ...options };
     if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
     else merged = { ...buffOrOptions, ...merged };
     if (typeof pathArcOrOptions === "number") positionalPathArc = pathArcOrOptions;
@@ -61,7 +70,7 @@ export class Line extends TipableVMobject {
     // as a no-op below and points are (re)generated here instead.
     this.buff = buff;
     this.path_arc = path_arc;
-    this._set_start_and_end_attrs(start, end);
+    this._set_start_and_end_attrs(start, resolvedEnd);
     this.generate_points();
   }
 
@@ -262,12 +271,24 @@ export class DashedLine extends Line {
   dashed_ratio: number;
 
   constructor(
-    start: LineEndpoint = [...LEFT],
+    startOrOptions: LineEndpoint | DashedLineOptions = [...LEFT],
     end: LineEndpoint = [...RIGHT],
     options: DashedLineOptions = {},
   ) {
-    const { dash_length = DEFAULT_DASH_LENGTH, dashed_ratio = 0.5, ...rest } = options;
-    super(start, end, rest);
+    // Python: DashedLine(*args, dash_length=0.05, dashed_ratio=0.5, **kwargs).
+    let start: LineEndpoint = startOrOptions as LineEndpoint;
+    let resolvedEnd: LineEndpoint = end;
+    let bag: DashedLineOptions = { ...options };
+    if (isPlainOptionsBag(startOrOptions)) {
+      const raw = { ...(startOrOptions as DashedLineOptions & { start?: LineEndpoint; end?: LineEndpoint }) };
+      if (raw.start !== undefined) start = raw.start;
+      if (raw.end !== undefined) resolvedEnd = raw.end;
+      delete raw.start;
+      delete raw.end;
+      bag = { ...raw, ...bag };
+    }
+    const { dash_length = DEFAULT_DASH_LENGTH, dashed_ratio = 0.5, ...rest } = bag;
+    super(start, resolvedEnd, rest);
     this.dash_length = dash_length;
     this.dashed_ratio = dashed_ratio;
     const dashes = new DashedVMobject(
@@ -332,16 +353,26 @@ export class Arrow extends Line {
   initial_stroke_width: number;
 
   constructor(
-    start: LineEndpoint = [...LEFT],
+    startOrOptions: LineEndpoint | ArrowOptions = [...LEFT],
     end: LineEndpoint = [...RIGHT],
     buffOrOptions: number | ArrowOptions = MED_SMALL_BUFF,
     options: ArrowOptions = {},
   ) {
     // NOTE: mirrors Python `Arrow(*args, stroke_width=6,
-    // buff=MED_SMALL_BUFF, ...)`: buff may arrive positionally or inside an
-    // options bag; an explicit option key wins over the positional.
-    let positionalBuff: number | undefined;
+    // buff=MED_SMALL_BUFF, ...)`: args/options may arrive positionally or
+    // inside a leading options bag; an explicit option key wins.
+    let start: LineEndpoint = startOrOptions as LineEndpoint;
+    let resolvedEnd: LineEndpoint = end;
     let merged: ArrowOptions = { ...options };
+    if (isPlainOptionsBag(startOrOptions)) {
+      const bag = { ...(startOrOptions as ArrowOptions & { start?: LineEndpoint; end?: LineEndpoint }) };
+      if (bag.start !== undefined) start = bag.start;
+      if (bag.end !== undefined) resolvedEnd = bag.end;
+      delete bag.start;
+      delete bag.end;
+      merged = { ...bag, ...merged };
+    }
+    let positionalBuff: number | undefined;
     if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
     else merged = { ...buffOrOptions, ...merged };
     const {
@@ -355,7 +386,7 @@ export class Arrow extends Line {
     // NOTE: Python assigns the max_* fields before super().__init__();
     // TS requires super() first — they are assigned here instead, before
     // any method that reads them runs.
-    super(start, end, { buff, stroke_width, ...rest });
+    super(start, resolvedEnd, { buff, stroke_width, ...rest });
     this.max_tip_length_to_length_ratio = max_tip_length_to_length_ratio;
     this.max_stroke_width_to_length_ratio = max_stroke_width_to_length_ratio;
     const resolved_tip_shape = tip_shape ?? ArrowTriangleFilledTip;
@@ -388,10 +419,10 @@ export class Arrow extends Line {
     const width = Math.min(this.initial_stroke_width, max_ratio * this.get_length());
     if (config.renderer === RendererType.OPENGL) {
       // NOTE: the TS VMobject.set_stroke has no OpenGL `recurse` parameter;
-      // both branches set a non-propagating stroke width.
-      this.set_stroke(undefined, width, undefined, false);
+      // both branches set a non-propagating stroke width (family=false).
+      this.set_stroke(undefined, width, undefined, false, false);
     } else {
-      this.set_stroke(undefined, width, undefined, false);
+      this.set_stroke(undefined, width, undefined, false, false);
     }
     return this;
   }
@@ -450,7 +481,7 @@ export interface DoubleArrowOptions extends ArrowOptions {
 
 export class DoubleArrow extends Arrow {
   constructor(
-    start: LineEndpoint = [...LEFT],
+    startOrOptions: LineEndpoint | DoubleArrowOptions = [...LEFT],
     end: LineEndpoint = [...RIGHT],
     buffOrOptions: number | DoubleArrowOptions = MED_SMALL_BUFF,
     options: DoubleArrowOptions = {},
@@ -459,8 +490,18 @@ export class DoubleArrow extends Arrow {
     // `tip_shape_end` (when present) is renamed to `tip_shape` for the end
     // tip, and `tip_shape_start` (default ArrowTriangleFilledTip) becomes
     // the start tip added after construction.
-    let positionalBuff: number | undefined;
+    let start: LineEndpoint = startOrOptions as LineEndpoint;
+    let resolvedEnd: LineEndpoint = end;
     let merged: DoubleArrowOptions = { ...options };
+    if (isPlainOptionsBag(startOrOptions)) {
+      const bag = { ...(startOrOptions as DoubleArrowOptions & { start?: LineEndpoint; end?: LineEndpoint }) };
+      if (bag.start !== undefined) start = bag.start;
+      if (bag.end !== undefined) resolvedEnd = bag.end;
+      delete bag.start;
+      delete bag.end;
+      merged = { ...bag, ...merged };
+    }
+    let positionalBuff: number | undefined;
     if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
     else merged = { ...buffOrOptions, ...merged };
     const {
@@ -470,8 +511,8 @@ export class DoubleArrow extends Arrow {
     } = merged;
     const forwarded: ArrowOptions = { ...rest };
     if (tip_shape_end !== undefined) forwarded.tip_shape = tip_shape_end;
-    if (positionalBuff !== undefined) super(start, end, positionalBuff, forwarded);
-    else super(start, end, forwarded);
+    if (positionalBuff !== undefined) super(start, resolvedEnd, positionalBuff, forwarded);
+    else super(start, resolvedEnd, forwarded);
     this.add_tip(null, tip_shape_start, null, null, true);
   }
 }

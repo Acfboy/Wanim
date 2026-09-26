@@ -12,6 +12,7 @@ import {
 } from "../../utils/space_ops.js";
 import { BLACK, BLUE, RED, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { isPlainOptionsBag } from "./polygram.js";
 import type { Mobject } from "../mobject.js";
 import type { ArrowTip } from "./tips.js";
 // NOTE: type-only import (erased at compile time): line.js imports Arc from
@@ -290,13 +291,36 @@ export class Arc extends TipableVMobject {
   _failed_to_get_center = false;
 
   constructor(
-    radius: number | null = 1.0,
+    radiusOrOptions: number | null | (ArcOptions & {
+      radius?: number | null;
+      start_angle?: number;
+      angle?: number;
+      num_components?: number;
+      arc_center?: readonly number[] | NDArray;
+    }) = 1.0,
     start_angle = 0,
     angle = TAU / 4,
     num_components = 9,
     arc_center: readonly number[] | NDArray = [...ORIGIN],
     options: ArcOptions = {},
   ) {
+    // Python: Arc(radius=1.0, start_angle=0, angle=PI/2, num_components=9,
+    // arc_center=ORIGIN, **kwargs). Accept a leading kwargs bag so
+    // `new Arc({ radius: 2, num_components: 4 })` matches the positional call.
+    let bag: ArcOptions & Record<string, unknown>;
+    let radius: number | null | undefined;
+    if (isPlainOptionsBag(radiusOrOptions)) {
+      bag = { ...(radiusOrOptions as Record<string, unknown>), ...(options as Record<string, unknown>) };
+      radius = (bag["radius"] as number | null | undefined) ?? 1.0;
+      start_angle = (bag["start_angle"] as number | undefined) ?? start_angle;
+      angle = (bag["angle"] as number | undefined) ?? angle;
+      num_components = (bag["num_components"] as number | undefined) ?? num_components;
+      arc_center = (bag["arc_center"] as readonly number[] | NDArray | undefined) ?? arc_center;
+      for (const key of ["radius", "start_angle", "angle", "num_components", "arc_center"]) delete bag[key];
+      options = bag as ArcOptions;
+    } else {
+      radius = radiusOrOptions as number | null | undefined;
+    }
     super(options);
     // NOTE: Python assigns these fields before super().__init__() so that
     // the generate_points() call inside the base constructor already sees
@@ -425,15 +449,25 @@ export interface CircleOptions extends ArcOptions {
 }
 
 export class Circle extends Arc {
-  constructor(radius: number | null = null, options: CircleOptions = {}) {
+  constructor(radiusOrOptions: number | null | (CircleOptions & { radius?: number | null }) = null, options: CircleOptions = {}) {
+    // Python: Circle(radius=None, color=RED, **kwargs). Accept a leading
+    // kwargs bag (`new Circle({ radius: 2 })`).
+    let bag: CircleOptions & { radius?: number | null };
+    let positional: number | null | undefined;
+    if (isPlainOptionsBag(radiusOrOptions)) {
+      bag = { ...(radiusOrOptions as CircleOptions & { radius?: number | null }), ...options };
+    } else {
+      bag = options;
+      positional = radiusOrOptions as number | null | undefined;
+    }
     const {
       radius: radiusOption,
       arc_center = [...ORIGIN],
       num_components = 9,
       color = RED,
       ...rest
-    } = options;
-    super(radius ?? radiusOption ?? null, 0, TAU, num_components, arc_center, { color, ...rest });
+    } = bag;
+    super(positional ?? radiusOption ?? null, 0, TAU, num_components, arc_center, { color, ...rest });
   }
 
   surround(
@@ -480,13 +514,24 @@ export interface DotOptions extends CircleOptions {
 
 export class Dot extends Circle {
   constructor(
-    point: readonly number[] | NDArray = [...ORIGIN],
+    pointOrOptions: readonly number[] | NDArray | DotOptions = [...ORIGIN],
     radius = DEFAULT_DOT_RADIUS,
     stroke_width = 0,
     fill_opacity = 1.0,
     color: ParsableManimColor = WHITE,
     options: DotOptions = {},
   ) {
+    // Python: Dot(point=ORIGIN, radius=0.08, stroke_width=0,
+    // fill_opacity=1.0, color=WHITE, **kwargs). Accept a leading kwargs bag
+    // (`new Dot({ point: [1,2,3], radius: 0.2 })`).
+    let bag: DotOptions;
+    let positionalPoint: readonly number[] | NDArray | undefined;
+    if (isPlainOptionsBag(pointOrOptions)) {
+      bag = { ...(pointOrOptions as DotOptions), ...options };
+    } else {
+      bag = options;
+      positionalPoint = pointOrOptions as readonly number[] | NDArray;
+    }
     const {
       point: pointOption,
       radius: radiusOption,
@@ -494,9 +539,9 @@ export class Dot extends Circle {
       fill_opacity: fillOpacityOption,
       color: colorOption,
       ...rest
-    } = options;
+    } = bag;
     super(radiusOption ?? radius, {
-      arc_center: pointOption ?? point,
+      arc_center: pointOption ?? positionalPoint,
       stroke_width: strokeWidthOption ?? stroke_width,
       fill_opacity: fillOpacityOption ?? fill_opacity,
       color: colorOption ?? color,
@@ -590,7 +635,7 @@ export class AnnularSector extends Arc {
   outer_radius: number;
 
   constructor(
-    inner_radius = 1,
+    innerRadiusOrOptions: number | AnnularSectorOptions = 1,
     outer_radius = 2,
     angle = TAU / 4,
     start_angle = 0,
@@ -599,6 +644,17 @@ export class AnnularSector extends Arc {
     color: ParsableManimColor = WHITE,
     options: AnnularSectorOptions = {},
   ) {
+    // Python: AnnularSector(inner_radius=1, outer_radius=2, angle=PI/2,
+    // start_angle=0, ...). Accept a leading kwargs bag.
+    let bag: AnnularSectorOptions;
+    let inner_radius: number | undefined;
+    if (isPlainOptionsBag(innerRadiusOrOptions)) {
+      bag = { ...(innerRadiusOrOptions as AnnularSectorOptions), ...options };
+      options = bag;
+    } else {
+      bag = options;
+      inner_radius = innerRadiusOrOptions as number;
+    }
     const {
       inner_radius: innerOption,
       outer_radius: outerOption,
@@ -610,7 +666,7 @@ export class AnnularSector extends Arc {
       arc_center = [...ORIGIN],
       num_components = 9,
       ...rest
-    } = options;
+    } = bag;
     // NOTE: Python assigns inner/outer_radius before super().__init__() so
     // that generate_points() sees them; TS requires super() first, so the
     // base-constructor call is guarded as a no-op and fields are assigned
@@ -621,7 +677,7 @@ export class AnnularSector extends Arc {
       color: colorOption ?? color,
       ...rest,
     });
-    this.inner_radius = innerOption ?? inner_radius;
+    this.inner_radius = innerOption ?? inner_radius ?? 1;
     this.outer_radius = outerOption ?? outer_radius;
     this.generate_points();
   }
@@ -655,7 +711,16 @@ export interface SectorOptions extends AnnularSectorOptions {
 }
 
 export class Sector extends AnnularSector {
-  constructor(radius = 1, options: SectorOptions = {}) {
+  constructor(radiusOrOptions: number | (SectorOptions & { radius?: number }) = 1, options: SectorOptions = {}) {
+    // Python: Sector(radius=1, **kwargs).
+    let bag: SectorOptions & { radius?: number };
+    let positional: number | undefined;
+    if (isPlainOptionsBag(radiusOrOptions)) {
+      bag = { ...(radiusOrOptions as SectorOptions & { radius?: number }), ...options };
+    } else {
+      bag = options;
+      positional = radiusOrOptions as number;
+    }
     const {
       radius: radiusOption,
       angle = TAU / 4,
@@ -664,8 +729,8 @@ export class Sector extends AnnularSector {
       stroke_width = 0,
       color = WHITE,
       ...rest
-    } = options;
-    super(0, radiusOption ?? radius, angle, start_angle, fill_opacity, stroke_width, color, rest);
+    } = bag;
+    super(0, radiusOption ?? positional ?? 1, angle, start_angle, fill_opacity, stroke_width, color, rest);
   }
 }
 
@@ -682,7 +747,7 @@ export class Annulus extends Circle {
   mark_paths_closed: boolean;
 
   constructor(
-    inner_radius = 1,
+    innerRadiusOrOptions: number | AnnulusOptions = 1,
     outer_radius = 2,
     fill_opacity = 1,
     stroke_width = 0,
@@ -690,6 +755,17 @@ export class Annulus extends Circle {
     mark_paths_closed = false,
     options: AnnulusOptions = {},
   ) {
+    // Python: Annulus(inner_radius=1, outer_radius=2, fill_opacity=1,
+    // stroke_width=0, color=WHITE, mark_paths_closed=False, **kwargs).
+    let bag: AnnulusOptions;
+    let inner_radius: number | undefined;
+    if (isPlainOptionsBag(innerRadiusOrOptions)) {
+      bag = { ...(innerRadiusOrOptions as AnnulusOptions), ...options };
+      options = bag;
+    } else {
+      bag = options;
+      inner_radius = innerRadiusOrOptions as number;
+    }
     const {
       inner_radius: innerOption,
       outer_radius: outerOption,
@@ -698,7 +774,7 @@ export class Annulus extends Circle {
       color: colorOption,
       mark_paths_closed: markPathsClosedOption,
       ...rest
-    } = options;
+    } = bag;
     super(null, {
       fill_opacity: fillOpacityOption ?? fill_opacity,
       stroke_width: strokeWidthOption ?? stroke_width,
@@ -707,7 +783,7 @@ export class Annulus extends Circle {
     });
     // is this even used?
     this.mark_paths_closed = markPathsClosedOption ?? mark_paths_closed;
-    this.inner_radius = innerOption ?? inner_radius;
+    this.inner_radius = innerOption ?? inner_radius ?? 1;
     this.outer_radius = outerOption ?? outer_radius;
     this.generate_points();
   }

@@ -135,16 +135,18 @@ export class Transform extends Animation {
   }
 
   override get_all_families_zipped(): Mobject[][] {
+    // NOTE: mirrors `zip(*(mob.family_members_with_points() for mob in mobs))`
+    // stopping at the SHORTEST family (like animation.ts), rather than
+    // padding shorter families with the current mobject.
     const mobs = [
       this.mobject,
       this.starting_mobject,
       this.target_copy ?? this.target_mobject,
     ];
-    return (mobs[0] as Mobject).family_members_with_points().map((mob, index) => [
-      mob,
-      (mobs[1] as Mobject).family_members_with_points()[index] ?? mob,
-      (mobs[2] as Mobject).family_members_with_points()[index] ?? mob,
-    ]);
+    const families = mobs.map((mob) => (mob as Mobject).family_members_with_points());
+    if (families.length === 0) return [];
+    const length = Math.min(...families.map((family) => family.length));
+    return Array.from({ length }, (_, index) => families.map((family) => family[index] as Mobject));
   }
 
   clean_up_from_scene(scene: any): void {

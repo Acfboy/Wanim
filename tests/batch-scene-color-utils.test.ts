@@ -641,27 +641,21 @@ describe("VMobject curve queries", () => {
 // ---------------------------------------------------------------------------
 describe("ThreeDAxes._set_axis_shading", () => {
   it("binds gradient endpoints to +/- light_source edge centers", () => {
-    const seen: unknown[] = [];
-    const submob = {
-      get_gradient_start_and_end_points: null as unknown as () => [unknown, unknown],
-      get_unit_normal: null as unknown as (point: unknown) => number[],
-      set_sheen: (...args: unknown[]): void => {
-        seen.push(args);
-      },
-      family_members_with_points: (): AxisShadingSubmobject[] => [],
-    };
-    const axis: ShadedAxis = {
-      get_edge_center: (direction: readonly number[]): unknown => [...direction],
-      family_members_with_points: (): AxisShadingSubmobject[] => [submob],
-    };
     // Python default light_source is 9*DOWN + 7*LEFT + 10*OUT == [-7, -9, 10]
-    const axes = new ThreeDAxes(null, null, null, null, [-7, -9, 10], [axis]);
-    // The constructor already applied shading once (see note above).
-    expect(seen).toEqual([[0.2]]);
+    const axes = new ThreeDAxes();
+    const xAxis = axes.get_x_axis() as unknown as VMobject;
+    const fam = xAxis.family_members_with_points()[0]!;
+    // The constructor already applied shading once (see note above): the
+    // original manim gradient for the default light_source is
+    // [[5.25, 0.175, 0], [-5.25, -0.175, 0]].
+    expect(fam.get_sheen_factor()).toBe(0.2);
+    expect(
+      (fam.get_gradient_start_and_end_points() as number[][]).map((p) => p.map((v) => Math.round(v * 1e6) / 1e6)),
+    ).toEqual([[5.25, 0.175, 0], [-5.25, -0.175, 0]]);
+    // Explicit re-bind is idempotent.
     axes._set_axis_shading();
-    expect(submob.get_gradient_start_and_end_points()).toEqual([[7, 9, -10], [-7, -9, 10]]);
-    expect(submob.get_unit_normal(null)).toEqual([1, 1, 1]);
-    expect(seen).toEqual([[0.2], [0.2]]);
+    expect(fam.get_sheen_factor()).toBe(0.2);
+    expect(fam.get_unit_normal(null)).toEqual([1, 1, 1]);
   });
 });
 

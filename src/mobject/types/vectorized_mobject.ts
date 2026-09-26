@@ -91,8 +91,16 @@ export function singleOpacity(value: number | number[] | NDArray | null | undefi
   return found === undefined ? null : Number(found);
 }
 
-function interpolateArray(first: unknown, second: unknown, alpha: number): NDArray {
-  if (typeof first === "number" || typeof second === "number") return array(Number(first) * (1 - alpha) + Number(second) * alpha) as NDArray;
+/** Parse a stroke/fill color argument (which may be a per-point gradient
+ * list, matching Python's `ManimColor.parse`/`ManimColor`) down to a single
+ * color, used for the `background_stroke_color` field. */
+function parseSingleColor(value: ParsableManimColor | Iterable<ManimColor>): ManimColor {
+  const single = singleColor(value as ParsableManimColor | ManimColor[] | NDArray | null | undefined);
+  if (single instanceof ManimColor) return single;
+  return new ManimColor((single ?? BLACK) as ParsableManimColor);
+}
+
+function interpolateArray(first: unknown, second: unknown, alpha: number): NDArray {  if (typeof first === "number" || typeof second === "number") return array(Number(first) * (1 - alpha) + Number(second) * alpha) as NDArray;
   const left = Array.isArray(first) ? first : isNDArray(first) ? rows(first, 4) : [first];
   const right = Array.isArray(second) ? second : isNDArray(second) ? rows(second, 4) : [second];
   const result = left.map((value, index) => {
@@ -106,8 +114,16 @@ function interpolateArray(first: unknown, second: unknown, alpha: number): NDArr
 }
 
 export class VMobject extends Mobject {
-  fill_color: ManimColor;
-  stroke_color: ManimColor;
+  // NOTE: `fill_color`, `stroke_color` and `color` are live properties in
+  // Python (setters rewrite the rgba arrays). They are exposed as prototype
+  // accessors here; the base `Mobject.color` is itself an accessor backed by
+  // `_color`, so the override is not shadowed by an own data property.
+  get fill_color(): ManimColor { return this.get_fill_color(); }
+  set fill_color(value: ParsableManimColor | Iterable<ManimColor> | null) { this.set_fill(value); }
+  get stroke_color(): ManimColor | null { return this.get_stroke_color(); }
+  set stroke_color(value: ParsableManimColor | Iterable<ManimColor> | null) { this.set_stroke(value); }
+  override get color(): ManimColor { return this.get_color(); }
+  override set color(value: ManimColor) { this.set_color(value); }
   fill_opacity: number;
   stroke_opacity: number;
   stroke_width: number;
@@ -126,16 +142,14 @@ export class VMobject extends Mobject {
   tolerance_for_point_equality = 1e-6;
   n_points_per_cubic_curve: number;
   _bezier_t_values: number[] = [];
-  fill_rgbas: NDArray;
-  stroke_rgbas: NDArray;
-  background_stroke_rgbas: NDArray;
+  fill_rgbas!: NDArray;
+  stroke_rgbas!: NDArray;
+  background_stroke_rgbas!: NDArray;
 
   constructor(options: VMobjectOptions = {}) {
     super(options);
     this.n_points_per_cubic_curve = options.n_points_per_cubic_curve ?? 4;
     this._bezier_t_values = linspace(0, 1, this.n_points_per_cubic_curve);
-    this.fill_color = new ManimColor(options.fill_color ?? options.color ?? WHITE);
-    this.stroke_color = new ManimColor(options.stroke_color ?? options.color ?? WHITE);
     this.fill_opacity = options.fill_opacity ?? 0;
     this.stroke_opacity = options.stroke_opacity ?? 1;
     this.stroke_width = options.stroke_width ?? 4;
@@ -166,9 +180,23 @@ export class VMobject extends Mobject {
     if (options.background_stroke_width !== undefined) {
       this.background_stroke_width = options.background_stroke_width;
     }
-    this.fill_rgbas = array([]) as NDArray;
-    this.stroke_rgbas = array([]) as NDArray;
-    this.background_stroke_rgbas = array([]) as NDArray;
+    // NOTE: the TS styling pipeline keeps rgbas expanded to one row per point
+    // (a documented deviation from Python's single-row arrays; see
+    //  and the batch-layer4 header). Seed the arrays
+    // here so the live `fill_color`/`stroke_color` getters have data before
+    // `init_colors()` re-applies the resolved colors.
+    const pointCount = Math.max(1, this.get_num_points());
+    const fillColor = new ManimColor(options.fill_color ?? options.color ?? WHITE);
+    const strokeColor = new ManimColor(options.stroke_color ?? options.color ?? WHITE);
+    this.fill_rgbas = array(
+      Array.from({ length: pointCount }, () => [...(fillColor.toRgb().toArray() as number[]), this.fill_opacity]),
+    ) as NDArray;
+    this.stroke_rgbas = array(
+      Array.from({ length: pointCount }, () => [...(strokeColor.toRgb().toArray() as number[]), this.stroke_opacity]),
+    ) as NDArray;
+    this.background_stroke_rgbas = array(
+      Array.from({ length: pointCount }, () => [0, 0, 0, this.background_stroke_opacity]),
+    ) as NDArray;
     this.init_colors();
   }
 
@@ -284,6 +312,7 @@ export class VMobject extends Mobject {
             Math.abs(scale_factor) * mob.get_stroke_width(),
             undefined,
             false,
+            false,
           );
           mob.set_background_stroke({
             width: Math.abs(scale_factor) * mob.get_stroke_width(true),
@@ -369,8 +398,8 @@ export class VMobject extends Mobject {
     // Reset color to put sheen_factor into effect. A null stroke color means
     // "keep" (Python passes None through set_stroke the same way).
     if (factor !== 0) {
-      this.set_stroke(this.get_stroke_color() ?? undefined, undefined, undefined, family);
-      this.set_fill(this.get_fill_color() ?? undefined, undefined, family);
+      this.set_stroke(this.get_stroke_color(), undefined, undefined, false, family);
+      this.set_fill(this.get_fill_color(), undefined, family);
     }
     return this;
   }
@@ -497,53 +526,81 @@ export class VMobject extends Mobject {
     return this;
   }
 
+  /** Port deviation: keep one rgba row per point after a style update (see
+   * the constructor comment). Python keeps whatever length the gradient
+   * produced; the TS rendering pipeline expects point-aligned rgbas, and the
+   * historical port rebuilt all three arrays on any style change. */
+  private _expand_rgbas_to_points(): void {
+    const record = this as unknown as Record<string, NDArray | undefined>;
+    const target = Math.max(1, this.get_num_points());
+    for (const arrayName of ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"]) {
+      const current = record[arrayName];
+      if (current === undefined || current === null) continue;
+      const length = current.shape[0] ?? 0;
+      if (length === 0 || length >= target) continue;
+      record[arrayName] = stretch_array_to_length(current, target);
+    }
+  }
+
   init_colors(propagate_colors = true): this {
-    if (!this.fill_color) this.fill_color = new ManimColor(WHITE);
-    if (!this.stroke_color) this.stroke_color = new ManimColor(WHITE);
-    // NOTE: mirrors Python generate_rgbas_array, which always yields at least
-    // one row even when the mobject has no points yet.
-    const pointCount = Math.max(1, this.get_num_points());
-    this.fill_rgbas = array(Array.from({ length: pointCount }, () => [...this.fill_color.toRgb().toArray() as number[], this.fill_opacity])) as NDArray;
-    this.stroke_rgbas = array(Array.from({ length: pointCount }, () => [...this.stroke_color.toRgb().toArray() as number[], this.stroke_opacity])) as NDArray;
-    this.background_stroke_rgbas = array(Array.from({ length: pointCount }, () => [0, 0, 0, this.background_stroke_opacity])) as NDArray;
-    if (!propagate_colors) for (const submob of this.submobjects) (submob as VMobject).init_colors(false);
-    // NOTE: Python exposes `color` as a live property (get_color on read,
-    // set_fill+set_stroke on write). The TS port keeps a plain field for
-    // construction-order safety, so refresh it wherever the rgbas change.
-    this.color = this.get_color();
+    // Faithful port of Python VMobject.init_colors: re-apply the current
+    // style through the setters (which own the rgba arrays). The fill/stroke
+    // colors are read back from the arrays (live properties), so the arrays
+    // must have been seeded first (see the constructor).
+    this.set_fill(this.fill_color, this.fill_opacity, propagate_colors);
+    this.set_stroke(
+      this.stroke_color ?? undefined,
+      this.stroke_width,
+      this.stroke_opacity,
+      false,
+      propagate_colors,
+    );
+    this.set_background_stroke({
+      color: this.background_stroke_color,
+      width: this.background_stroke_width,
+      opacity: this.background_stroke_opacity,
+      family: propagate_colors,
+    });
+    this.set_sheen(this.sheen_factor, this.sheen_direction, propagate_colors);
+    if (!propagate_colors) {
+      for (const submob of this.submobjects) (submob as VMobject).init_colors(false);
+    }
     return this;
   }
 
-  set_fill(color?: ParsableManimColor, opacity?: number, family = true): this {
-    if (color !== undefined) this.fill_color = new ManimColor(color);
-    if (opacity !== undefined) this.fill_opacity = opacity;
-    this.init_colors(family);
-    if (family) for (const submob of this.submobjects) submob.set_fill(color, opacity, family);
+  set_fill(
+    color?: ParsableManimColor | Iterable<ManimColor> | null,
+    opacity?: number,
+    family = true,
+  ): this {
+    // Python: recurse first, then update this object's rgbas; only update the
+    // stored fill_opacity when an explicit opacity is given.
+    if (family) {
+      for (const submob of this.submobjects) (submob as VMobject).set_fill(color, opacity, family);
+    }
+    this.update_rgbas_array("fill_rgbas", color ?? null, opacity ?? null);
+    this._expand_rgbas_to_points();
+    if (opacity !== undefined && opacity !== null) this.fill_opacity = opacity;
     return this;
   }
 
   set_stroke(
-    color?: ParsableManimColor,
+    color?: ParsableManimColor | Iterable<ManimColor> | null,
     width?: number,
     opacity?: number,
-    background_or_family: boolean | { background?: boolean; family?: boolean } = true,
-    familyMaybe?: boolean,
+    backgroundOrOptions: boolean | { background?: boolean; family?: boolean } = false,
+    familyMaybe = true,
   ): this {
-    // Python signature is set_stroke(color, width, opacity, background=False,
-    // family=True). The TS port historically exposed the 4th slot as `family`;
-    // both conventions are supported: when a 5th argument is present the 4th
-    // is `background` (Python order), otherwise the 4th is `family` unless it
-    // is an options object { background, family }.
+    // Python signature: set_stroke(color, width, opacity, background=False,
+    // family=True). The 4th positional argument is unambiguously `background`;
+    // pass `{ family }` (or the 5th positional) to control propagation.
     let background = false;
-    let family = true;
-    if (familyMaybe !== undefined) {
-      background = Boolean(background_or_family);
-      family = familyMaybe;
-    } else if (typeof background_or_family === "object" && background_or_family !== null) {
-      background = background_or_family.background ?? false;
-      family = background_or_family.family ?? true;
+    let family = familyMaybe;
+    if (typeof backgroundOrOptions === "object" && backgroundOrOptions !== null) {
+      background = backgroundOrOptions.background ?? false;
+      family = backgroundOrOptions.family ?? true;
     } else {
-      family = Boolean(background_or_family);
+      background = Boolean(backgroundOrOptions);
     }
     if (family) {
       for (const submob of this.submobjects) {
@@ -555,14 +612,14 @@ export class VMobject extends Mobject {
       if (width !== undefined) this.background_stroke_width = width;
       if (opacity !== undefined) this.background_stroke_opacity = opacity;
       if (color !== undefined && color !== null) {
-        this.background_stroke_color = new ManimColor(color);
+        this.background_stroke_color = parseSingleColor(color);
       }
       return this;
     }
-    if (color !== undefined) this.stroke_color = new ManimColor(color);
+    this.update_rgbas_array("stroke_rgbas", color ?? null, opacity ?? null);
+    this._expand_rgbas_to_points();
     if (width !== undefined) this.stroke_width = width;
     if (opacity !== undefined) this.stroke_opacity = opacity;
-    this.init_colors(family);
     return this;
   }
 
@@ -667,30 +724,21 @@ export class VMobject extends Mobject {
   fade(darkness = 0.5, family = true): this {
     const factor = 1.0 - darkness;
     this.set_fill(undefined, factor * this.get_fill_opacity(), false);
-    this.set_stroke(undefined, undefined, factor * this.get_stroke_opacity(), false);
-    this.background_stroke_opacity = factor * this.get_stroke_opacity(true);
-    this.init_colors(false);
+    this.set_stroke(undefined, undefined, factor * this.get_stroke_opacity(), false, false);
+    this.set_background_stroke({
+      opacity: factor * this.get_stroke_opacity(true),
+      family: false,
+    });
     super.fade(darkness, family);
     return this;
   }
 
   override set_opacity(opacity: number, family = true): this {
-    // Python VMobject.set_opacity: set_fill + set_stroke + background set_stroke.
-    // (Python Mobject has no set_opacity; the TS base-class version only tints
-    // Mobject.color, so VMobject must override it. The TS port has no
-    // background flag on set_stroke, so the background opacity is applied
-    // directly to every family member instead.)
+    // Python VMobject.set_opacity: set_fill + set_stroke + background
+    // set_stroke (all family-aware).
     this.set_fill(undefined, opacity, family);
-    this.set_stroke(undefined, undefined, opacity, family);
-    const members = family ? this.get_family() : [this];
-    for (const member of members) {
-      if (member instanceof VMobject) {
-        member.background_stroke_opacity = opacity;
-        member.init_colors(false);
-      } else {
-        member.set_opacity(opacity, false);
-      }
-    }
+    this.set_stroke(undefined, undefined, opacity, false, family);
+    this.set_stroke(undefined, undefined, opacity, true, family);
     return this;
   }
 
@@ -726,9 +774,9 @@ export class VMobject extends Mobject {
     return (opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color()) as ManimColor;
   }
 
-  set_color(color: ParsableManimColor, family?: boolean): this;
-  set_color(color: ParsableManimColor, alpha?: unknown, family?: boolean): this;
-  set_color(color: ParsableManimColor, familyOrAlpha: unknown = true, familyMaybe?: boolean): this {
+  set_color(color?: ParsableManimColor | Iterable<ManimColor>, family?: boolean): this;
+  set_color(color?: ParsableManimColor | Iterable<ManimColor>, alpha?: unknown, family?: boolean): this;
+  set_color(color?: ParsableManimColor | Iterable<ManimColor>, familyOrAlpha: unknown = true, familyMaybe?: boolean): this {
     // Python: set_color(self, color, family=True) -> set_fill + set_stroke.
     // The extra `alpha` parameter exists only for compatibility with
     // Mobject.set_color(color, alpha, family), which forwards positionally
@@ -742,13 +790,13 @@ export class VMobject extends Mobject {
       family = true;
     }
     this.set_fill(color, undefined, family);
-    this.set_stroke(color, undefined, undefined, family);
+    this.set_stroke(color, undefined, undefined, false, family);
     return this;
   }
 
-  setColor(color: ParsableManimColor, family?: boolean): this;
-  setColor(color: ParsableManimColor, alpha?: unknown, family?: boolean): this;
-  setColor(color: ParsableManimColor, familyOrAlpha: unknown = true, familyMaybe?: boolean): this {
+  setColor(color?: ParsableManimColor | Iterable<ManimColor>, family?: boolean): this;
+  setColor(color?: ParsableManimColor | Iterable<ManimColor>, alpha?: unknown, family?: boolean): this;
+  setColor(color: ParsableManimColor | Iterable<ManimColor>, familyOrAlpha: unknown = true, familyMaybe?: boolean): this {
     return this.set_color(color, familyOrAlpha as boolean, familyMaybe as boolean);
   }
 
@@ -806,14 +854,15 @@ export class VMobject extends Mobject {
       family = true,
     } = options;
     this.set_fill(
-      singleColor(fill_color) ?? undefined,
+      (fill_color ?? undefined) as ParsableManimColor | Iterable<ManimColor> | undefined,
       singleOpacity(fill_opacity) ?? undefined,
       family,
     );
     this.set_stroke(
-      singleColor(stroke_color) ?? undefined,
+      (stroke_color ?? undefined) as ParsableManimColor | Iterable<ManimColor> | undefined,
       stroke_width ?? undefined,
       singleOpacity(stroke_opacity) ?? undefined,
+      false,
       family,
     );
     this.set_background_stroke({
@@ -1476,7 +1525,6 @@ export class VMobject extends Mobject {
       const result = typeof first === "number" || typeof second === "number" ? Number(first) * (1 - alpha) + Number(second) * alpha : interpolateArray(first, second, alpha);
       (this as unknown as Record<string, unknown>)[attribute] = alpha === 1 ? cloneAttribute(second) : result;
     }
-    this.color = this.get_color();
     return this;
   }
 

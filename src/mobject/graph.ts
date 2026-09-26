@@ -2,8 +2,9 @@ import { Mobject, Group, override_animate } from "./mobject.js";
 import { VMobject, VGroup } from "./types/vectorized_mobject.js";
 import { array } from "numpy-ts";
 import type { NDArray } from "numpy-ts";
-import { isNDArray, pointRows } from "../utils/arrays.js";
+import { isNDArray, linspace, pointRows } from "../utils/arrays.js";
 import { BLACK, type ParsableManimColor } from "../utils/color/core.js";
+import { PI } from "../constants.js";
 import { Dot, LabeledDot } from "./geometry/arc.js";
 import { Line } from "./geometry/line.js";
 import type { Animation } from "../animation/animation.js";
@@ -1398,6 +1399,348 @@ export function tree_layout(
 
 export const _tree_layout = tree_layout;
 
+// ---------------------------------------------------------------------------
+// Pure-TS automatic layouts
+//
+// These mirror the networkx functions manim's `_layouts` map delegates to
+// (circular/random/shell/spiral/spectral/spring). networkx's spring and
+// random layouts are not bit-deterministic without a seed, so callers should
+// assert structural invariants rather than exact coordinates.
+// ---------------------------------------------------------------------------
+
+function layoutNodes(graph: NetworkXGraphLike): GraphVertex[] {
+  return [...graph.nodes.keys()];
+}
+
+function scalarScale(scale: number | number[]): number {
+  return typeof scale === "number" ? scale : (scale[0] ?? scale[1] ?? 1);
+}
+
+function layoutCenter(config: Record<string, unknown>): [number, number] {
+  const center = config["center"] as readonly number[] | undefined;
+  if (center === undefined || center === null) return [0, 0];
+  return [center[0] ?? 0, center[1] ?? 0];
+}
+
+/** networkx `rescale_layout` for 2D positions. */
+function rescaleLayout2D(pos: number[][], scale: number | number[]): number[][] {
+  const n = pos.length;
+  if (n === 0) return pos;
+  const meanX = pos.reduce((sum, p) => sum + (p[0] ?? 0), 0) / n;
+  const meanY = pos.reduce((sum, p) => sum + (p[1] ?? 0), 0) / n;
+  const centered = pos.map((p) => [(p[0] ?? 0) - meanX, (p[1] ?? 0) - meanY]);
+  let lim = 0;
+  for (const p of centered) for (const value of p) lim = Math.max(lim, Math.abs(value));
+  const s = scalarScale(scale);
+  if (lim > 0) for (const p of centered) { p[0] = (p[0] ?? 0) * s / lim; p[1] = (p[1] ?? 0) * s / lim; }
+  return centered;
+}
+
+/** Deterministic PRNG when a numeric seed is given (networkx `seed`), else
+ * Math.random. */
+function makeRng(seed: unknown): () => number {
+  if (typeof seed !== "number") return Math.random;
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Dense adjacency matrix in `nodes` order (symmetric for undirected
+ * graphs). */
+function adjacencyMatrix(graph: NetworkXGraphLike, nodes: GraphVertex[]): number[][] {
+  const index = new Map(nodes.map((node, i) => [node, i]));
+  const n = nodes.length;
+  const matrix = Array.from({ length: n }, () => new Array<number>(n).fill(0));
+  for (let i = 0; i < n; i += 1) {
+    for (const neighbor of graph.neighbors(nodes[i])) {
+      const j = index.get(neighbor);
+      if (j !== undefined && j !== i) {
+        matrix[i][j] = 1;
+        if (!(graph as NetworkXGraph).directed) matrix[j][i] = 1;
+      }
+    }
+  }
+  return matrix;
+}
+
+export function circular_layout(
+  graph: NetworkXGraphLike,
+  scale: number | number[] = 2,
+  config: Record<string, unknown> = {},
+): Map<GraphVertex, NDArray> {
+  const nodes = layoutNodes(graph);
+  const center = layoutCenter(config);
+  const dim = Number(config["dim"] ?? 2);
+  if (dim < 2) {
+    const error = new Error("cannot handle dimensions < 2");
+    error.name = "ValueError";
+    throw error;
+  }
+  const result = new Map<GraphVertex, NDArray>();
+  if (nodes.length === 0) return result;
+  if (nodes.length === 1) {
+    result.set(nodes[0], array([...center]) as NDArray);
+    return result;
+  }
+  const theta = linspace(0, 1, nodes.length + 1).slice(0, -1).map((t) => t * 2 * PI);
+  const raw = theta.map((t) => [Math.cos(t), Math.sin(t)]);
+  const pos = rescaleLayout2D(raw, scale).map((p) => [p[0] + center[0], p[1] + center[1]]);
+  nodes.forEach((node, i) => result.set(node, array(pos[i] as number[]) as NDArray));
+  return result;
+}
+
+export function random_layout(
+  graph: NetworkXGraphLike,
+  scale: number | number[] = 2,
+  config: Record<string, unknown> = {},
+): Map<GraphVertex, NDArray> {
+  const nodes = layoutNodes(graph);
+  const center = layoutCenter(config);
+  const s = scalarScale(scale);
+  const rng = makeRng(config["seed"]);
+  const result = new Map<GraphVertex, NDArray>();
+  for (const node of nodes) {
+    const x = rng();
+    const y = rng();
+    // `_random_layout`: 2*scale*(v - [0.5, 0.5]) then append 0.
+    result.set(node, array([2 * s * (x - 0.5) + center[0], 2 * s * (y - 0.5) + center[1], 0]) as NDArray);
+  }
+  return result;
+}
+
+export function shell_layout(
+  graph: NetworkXGraphLike,
+  scale: number | number[] = 2,
+  config: Record<string, unknown> = {},
+): Map<GraphVertex, NDArray> {
+  const nodes = layoutNodes(graph);
+  const center = layoutCenter(config);
+  const result = new Map<GraphVertex, NDArray>();
+  if (nodes.length === 0) return result;
+  if (nodes.length === 1) {
+    result.set(nodes[0], array([...center]) as NDArray);
+    return result;
+  }
+  const nlist = (config["nlist"] as GraphVertex[][] | undefined) ?? [nodes];
+  const rotate = (config["rotate"] as number | undefined) ?? PI / nlist.length;
+  const radiusBump = scalarScale(scale) / nlist.length;
+  let radius = (nlist[0]?.length ?? 0) === 1 ? 0 : radiusBump;
+  let firstTheta = rotate;
+  for (const shellNodes of nlist) {
+    const count = shellNodes.length;
+    for (let i = 0; i < count; i += 1) {
+      const theta = (2 * PI * i) / count + firstTheta;
+      result.set(
+        shellNodes[i],
+        array([radius * Math.cos(theta) + center[0], radius * Math.sin(theta) + center[1]]) as NDArray,
+      );
+    }
+    radius += radiusBump;
+    firstTheta += rotate;
+  }
+  return result;
+}
+
+export function spiral_layout(
+  graph: NetworkXGraphLike,
+  scale: number | number[] = 2,
+  config: Record<string, unknown> = {},
+): Map<GraphVertex, NDArray> {
+  const nodes = layoutNodes(graph);
+  const center = layoutCenter(config);
+  const result = new Map<GraphVertex, NDArray>();
+  if (nodes.length === 0) return result;
+  if (nodes.length === 1) {
+    result.set(nodes[0], array([...center]) as NDArray);
+    return result;
+  }
+  const resolution = (config["resolution"] as number | undefined) ?? 0.35;
+  const equidistant = (config["equidistant"] as boolean | undefined) ?? false;
+  let raw: number[][];
+  if (equidistant) {
+    const chord = 1;
+    const step = 0.5;
+    let theta = resolution;
+    theta += chord / (step * theta);
+    raw = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      const r = step * theta;
+      theta += chord / r;
+      raw.push([Math.cos(theta) * r, Math.sin(theta) * r]);
+    }
+  } else {
+    const dist = Array.from({ length: nodes.length }, (_, i) => i);
+    const angle = dist.map((d) => resolution * d);
+    raw = dist.map((d, i) => [d * Math.cos(angle[i] as number), d * Math.sin(angle[i] as number)]);
+  }
+  const pos = rescaleLayout2D(raw, scale).map((p) => [p[0] + center[0], p[1] + center[1]]);
+  nodes.forEach((node, i) => result.set(node, array(pos[i] as number[]) as NDArray));
+  return result;
+}
+
+/** Jacobi eigenvalue decomposition for a symmetric matrix. Returns
+ * eigenvalues and eigenvectors (columns of `vectors`). */
+function jacobiEigen(matrix: number[][]): { values: number[]; vectors: number[][] } {
+  const n = matrix.length;
+  const a = matrix.map((row) => [...row]);
+  const v = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)),
+  );
+  for (let sweep = 0; sweep < 100; sweep += 1) {
+    let off = 0;
+    for (let p = 0; p < n; p += 1) for (let q = p + 1; q < n; q += 1) off += (a[p]?.[q] ?? 0) ** 2;
+    if (off < 1e-20) break;
+    for (let p = 0; p < n - 1; p += 1) {
+      for (let q = p + 1; q < n; q += 1) {
+        const apq = a[p]?.[q] ?? 0;
+        if (Math.abs(apq) < 1e-18) continue;
+        const theta = ((a[q]?.[q] ?? 0) - (a[p]?.[p] ?? 0)) / (2 * apq);
+        const t = theta >= 0
+          ? 1 / (theta + Math.sqrt(theta * theta + 1))
+          : -1 / (-theta + Math.sqrt(theta * theta + 1));
+        const c = 1 / Math.sqrt(t * t + 1);
+        const s = t * c;
+        for (let k = 0; k < n; k += 1) {
+          const akp = a[k]?.[p] ?? 0;
+          const akq = a[k]?.[q] ?? 0;
+          (a[k] as number[])[p] = c * akp - s * akq;
+          (a[k] as number[])[q] = s * akp + c * akq;
+        }
+        for (let k = 0; k < n; k += 1) {
+          const apk = a[p]?.[k] ?? 0;
+          const aqk = a[q]?.[k] ?? 0;
+          (a[p] as number[])[k] = c * apk - s * aqk;
+          (a[q] as number[])[k] = s * apk + c * aqk;
+        }
+        for (let k = 0; k < n; k += 1) {
+          const vkp = v[k]?.[p] ?? 0;
+          const vkq = v[k]?.[q] ?? 0;
+          (v[k] as number[])[p] = c * vkp - s * vkq;
+          (v[k] as number[])[q] = s * vkp + c * vkq;
+        }
+      }
+    }
+  }
+  return { values: a.map((row, i) => row[i] ?? 0), vectors: v };
+}
+
+export function spectral_layout(
+  graph: NetworkXGraphLike,
+  scale: number | number[] = 2,
+  config: Record<string, unknown> = {},
+): Map<GraphVertex, NDArray> {
+  const nodes = layoutNodes(graph);
+  const center = layoutCenter(config);
+  const dim = Number(config["dim"] ?? 2);
+  const result = new Map<GraphVertex, NDArray>();
+  const n = nodes.length;
+  if (n === 0) return result;
+  if (n === 1) {
+    result.set(nodes[0], array([...center]) as NDArray);
+    return result;
+  }
+  if (n === 2) {
+    result.set(nodes[0], array([0, 0]) as NDArray);
+    result.set(nodes[1], array([2 * center[0], 2 * center[1]]) as NDArray);
+    return result;
+  }
+  const A = adjacencyMatrix(graph, nodes);
+  // Laplacian L = D - A (symmetrize directed graphs).
+  const L = Array.from({ length: n }, () => new Array<number>(n).fill(0));
+  for (let i = 0; i < n; i += 1) {
+    let degree = 0;
+    for (let j = 0; j < n; j += 1) {
+      const value = (A[i]?.[j] ?? 0) + ((graph as NetworkXGraph).directed ? (A[j]?.[i] ?? 0) : 0);
+      degree += value;
+      L[i]![j] = -value;
+    }
+    L[i]![i] = (graph as NetworkXGraph).directed
+      ? degree
+      : degree;
+  }
+  const { values, vectors } = jacobiEigen(L);
+  const order = values.map((value, index) => [value, index] as [number, number])
+    .sort((x, y) => x[0] - y[0])
+    .map(([, index]) => index);
+  const components = Math.max(1, Math.min(dim, n - 1));
+  const raw = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: components }, (_, k) => vectors[i]?.[order[k + 1] ?? 0] ?? 0),
+  );
+  const pos = rescaleLayout2D(raw, scale).map((p) => [p[0] + center[0], p[1] + center[1]]);
+  nodes.forEach((node, i) => result.set(node, array(pos[i] as number[]) as NDArray));
+  return result;
+}
+
+export function spring_layout(
+  graph: NetworkXGraphLike,
+  scale: number | number[] = 2,
+  config: Record<string, unknown> = {},
+): Map<GraphVertex, NDArray> {
+  const nodes = layoutNodes(graph);
+  const center = layoutCenter(config);
+  const result = new Map<GraphVertex, NDArray>();
+  const n = nodes.length;
+  if (n === 0) return result;
+  if (n === 1) {
+    result.set(nodes[0], array([...center]) as NDArray);
+    return result;
+  }
+  const k = (config["k"] as number | undefined) ?? Math.sqrt(1 / n);
+  const iterations = (config["iterations"] as number | undefined) ?? 50;
+  const threshold = (config["threshold"] as number | undefined) ?? 1e-4;
+  const rng = makeRng(config["seed"]);
+  const pos: number[][] = Array.from({ length: n }, () => [rng(), rng()]);
+  const A = adjacencyMatrix(graph, nodes);
+  const span = (axis: 0 | 1): number => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const p of pos) {
+      min = Math.min(min, p[axis] ?? 0);
+      max = Math.max(max, p[axis] ?? 0);
+    }
+    return max - min;
+  };
+  let t = Math.max(span(0), span(1)) * 0.1;
+  const dt = t / (iterations + 1);
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const displacement: number[][] = Array.from({ length: n }, () => [0, 0]);
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < n; j += 1) {
+        if (i === j) continue;
+        const dx = (pos[i]?.[0] ?? 0) - (pos[j]?.[0] ?? 0);
+        const dy = (pos[i]?.[1] ?? 0) - (pos[j]?.[1] ?? 0);
+        let distance = Math.sqrt(dx * dx + dy * dy);
+        distance = Math.max(distance, 0.01);
+        const force = (k * k) / (distance * distance) - (A[i]?.[j] ?? 0) * distance / k;
+        (displacement[i] as number[])[0] += dx * force;
+        (displacement[i] as number[])[1] += dy * force;
+      }
+    }
+    let deltaNorm = 0;
+    for (let i = 0; i < n; i += 1) {
+      const dx = displacement[i]?.[0] ?? 0;
+      const dy = displacement[i]?.[1] ?? 0;
+      let length = Math.sqrt(dx * dx + dy * dy);
+      length = Math.max(length, 0.01);
+      const stepX = dx * t / length;
+      const stepY = dy * t / length;
+      (pos[i] as number[])[0] += stepX;
+      (pos[i] as number[])[1] += stepY;
+      deltaNorm += stepX * stepX + stepY * stepY;
+    }
+    t -= dt;
+    if (Math.sqrt(deltaNorm) / n < threshold) break;
+  }
+  const finalPos = rescaleLayout2D(pos, scale).map((p) => [p[0] + center[0], p[1] + center[1]]);
+  nodes.forEach((node, i) => result.set(node, array(finalPos[i] as number[]) as NDArray));
+  return result;
+}
+
 export type LayoutName = "circular" | "kamada_kawai" | "multipartite" | "partite" | "planar" | "random" | "shell" | "spectral" | "spiral" | "spring" | "tree";
 
 function notPortedLayout(name: string): LayoutFunction {
@@ -1407,18 +1750,18 @@ function notPortedLayout(name: string): LayoutFunction {
 }
 
 export const _layouts: Record<LayoutName, LayoutFunction> = {
-  circular: notPortedLayout("circular"),
+  circular: circular_layout,
   kamada_kawai: notPortedLayout("kamada_kawai"),
   multipartite: notPortedLayout("multipartite"),
   // NOTE: Python names this layout "partite"; the "multipartite" key above is
   // kept for backwards compatibility with the earlier TS port.
   partite: notPortedLayout("partite"),
   planar: notPortedLayout("planar"),
-  random: notPortedLayout("random"),
-  shell: notPortedLayout("shell"),
-  spectral: notPortedLayout("spectral"),
-  spiral: notPortedLayout("spiral"),
-  spring: notPortedLayout("spring"),
+  random: random_layout,
+  shell: shell_layout,
+  spectral: spectral_layout,
+  spiral: spiral_layout,
+  spring: spring_layout,
   tree: tree_layout as unknown as LayoutFunction,
 };
 

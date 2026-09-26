@@ -8,7 +8,7 @@
 // and BarChart axis labels need LaTeX; the TS port throws
 // `TODO: text/tex not ported yet` there and these tests assert exactly that.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { array } from "numpy-ts";
 // NOTE: mobject.js must be imported before scene/animation modules (circular
 // import: mobject.ts extends Animation at module level; entering through
@@ -20,6 +20,7 @@ import { RerunSceneException } from "../src/utils/exceptions.js";
 import { SpecialThreeDScene } from "../src/scene/three_d_scene.js";
 import { VectorScene, LinearTransformationScene } from "../src/scene/vector_space_scene.js";
 import { Axes, ThreeDAxes } from "../src/mobject/graphing/coordinate_systems.js";
+import { NumberLine } from "../src/mobject/graphing/number_line.js";
 import { Line, Arrow, Vector } from "../src/mobject/geometry/line.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
 import { Dot } from "../src/mobject/geometry/arc.js";
@@ -86,40 +87,35 @@ describe("CoordinateSystem.get_axis / get_z_axis", () => {
     expect(ax.x_range).toEqual([-3, 3, 1]);
     expect(ax.y_range).toEqual([-2, 2, 1]);
   });
-  it("get_axis indexes get_axes (empty until the NumberLine integration)", () => {
-    // Python ground truth: Axes(...).get_axis(0) is ax.x_axis.
-    // DEVIATION (known,  item 4): TS Axes.__init__ does
-    // not build NumberLine axes yet, so get_axes() is an empty VGroup and
-    // get_axis rethrows the __getitem__ IndexError.
+  it("get_axis indexes the real axes like python", () => {
     const ax = new Axes([-3, 3, 1], [-2, 2, 1]);
-    expect(ax.get_axes().submobjects).toEqual([]);
-    expect(() => ax.get_axis(0)).toThrowError(/index out of range/);
+    expect(ax.get_axis(0)).toBe(ax.x_axis);
+    expect(ax.get_axis(1)).toBe(ax.y_axis);
+    expect(ax.get_x_axis()).toBe(ax.x_axis);
+    expect(ax.get_y_axis()).toBe(ax.y_axis);
   });
-  it("get_z_axis indexes position 2 (same limitation)", () => {
-    // Python ground truth: ThreeDAxes().get_z_axis() is a3.z_axis.
+  it("get_z_axis returns the ThreeDAxes z-axis like python", () => {
     const a3 = new ThreeDAxes();
-    expect(() => a3.get_z_axis()).toThrowError(/index out of range/);
+    expect(a3.get_z_axis()).toBe(a3.z_axis);
   });
 });
 
 // ---------------------------------------------------------------------------
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem._get_axis_label
 // ---------------------------------------------------------------------------
-// Python builds a MathTex label -> needs LaTeX. TS throws the tex TODO stub.
-describe("CoordinateSystem._get_axis_label (tex out of scope)", () => {
-  it("cannot build labels without axes/text support", () => {
-    // Python builds a MathTex label (needs LaTeX). The TS port additionally
-    // has no x_axis yet (NumberLine integration, see above), so the call
-    // fails on the missing axis before reaching label construction.
+describe("CoordinateSystem._get_axis_label", () => {
+  it("positioned VMobject labels bind; str labels render via MathTex", () => {
     const ax = new Axes([-3, 3, 1], [-2, 2, 1]);
-    // _get_axis_label reads self.x_axis._create_label_tex; with no NumberLine
-    // axes built yet x_axis is undefined, so a TypeError is raised before any
-    // label construction (which would need MathTex in any case).
-    expect(() =>
-      (ax as unknown as { _get_axis_label: (...a: unknown[]) => unknown })._get_axis_label(
-        "x", new Square(), [...RIGHT], [...UR],
-      ),
-    ).toThrowError(TypeError);
+    const strLabel = (ax as unknown as { _get_axis_label: (...a: unknown[]) => unknown })._get_axis_label(
+      "x", new Square(), [...RIGHT], [...UR],
+    );
+    expect(strLabel).toBeInstanceOf(VMobject);
+    // A VMobject label is returned and positioned as-is.
+    const label = new Square();
+    const out = (ax as unknown as { _get_axis_label: (...a: unknown[]) => unknown })._get_axis_label(
+      label, ax.get_x_axis(), [...RIGHT], [...UR],
+    );
+    expect(out).toBe(label);
   });
 });
 
@@ -251,11 +247,9 @@ describe("TransformAnimations.interpolate", () => {
     // both sub-anims are resized to max(1, 1) == 1.0. begin + interpolate(0.5)
     // gives s1.points[0] == [2.5,1,0] and s2.points[0] == [4,1,0]; at the end
     // s1 is fully morphed onto s2 (center [3,0,0], corner [4,1,0]).
-    // DEVIATION (documented): Python leaves s2 itself at 16 points because
-    // the end_anim's empty starting_mobject truncates the base-class zip;
-    // the TS base zip pads empty families, so s2 ends up partially revealed.
-    // The padding is load-bearing for earlier batches (layer4 expects padded
-    // rows), so it is kept; only the agreed states are asserted here.
+    // The base-class zip now stops at the shortest family (like
+    // Animation.get_all_families_zipped), so the end_anim's empty
+    // starting_mobject no longer pads/reveals s2: it keeps all 16 points.
     const s1 = new Square();
     const s2 = new Square().shift([3, 0, 0]);
     const a1 = new Create(s1);
@@ -270,6 +264,7 @@ describe("TransformAnimations.interpolate", () => {
       ((m.points as unknown as { toArray: () => number[][] }).toArray());
     expect(rows(s1)[0]).toEqual([2.5, 1, 0]);
     expect(rows(s2)[0]).toEqual([4, 1, 0]);
+    expect(s2.get_num_points()).toBe(16);
     ta.interpolate(1);
     expect(rows(s1)[0]).toEqual([4, 1, 0]);
     expect(closeArr(s1.get_center(), [3, 0, 0])).toBe(true);
@@ -643,34 +638,55 @@ describe("SampleSpace.get_division_along_dimension", () => {
 });
 
 describe("BarChart / _add_bars / change_bar_values", () => {
-  it("builds one bar per value with axis-derived heights", () => {
-    const ch = new BarChart([1, 2, 3]);
-    expect(ch.bars.submobjects.length).toBe(3);
-    expect([...ch.values]).toEqual([1, 2, 3]);
-    const hs = ch.bars.submobjects.map((b) => Math.round((b as VMobject).height * 1e9) / 1e9);
-    expect(hs).toEqual([1.333333333, 2.666666667, 4.0]);
-    for (const b of ch.bars.submobjects) {
-      expect(close((b as VMobject).width, 0.6)).toBe(true);
+  // The y-axis DecimalNumber/Tex labels are out of scope; stub the number
+  // mobject so the ported bar geometry can be exercised.
+  function withStubbedNumbers<T>(fn: () => T): T {
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      return fn();
+    } finally {
+      spy.mockRestore();
     }
+  }
+
+  it("builds one bar per value with axis-derived heights", () => {
+    withStubbedNumbers(() => {
+      const ch = new BarChart([1, 2, 3]);
+      expect(ch.bars.submobjects.length).toBe(3);
+      expect([...ch.values]).toEqual([1, 2, 3]);
+      const hs = ch.bars.submobjects.map((b) => Math.round((b as VMobject).height * 1e9) / 1e9);
+      expect(hs).toEqual([1.333333333, 2.666666667, 4.0]);
+      for (const b of ch.bars.submobjects) {
+        expect(close((b as VMobject).width, 0.6)).toBe(true);
+      }
+    });
   });
   it("_add_bars output matches values length", () => {
-    const ch = new BarChart([5, -2]);
-    expect(ch.bars.submobjects.length).toBe(2);
+    withStubbedNumbers(() => {
+      const ch = new BarChart([5, -2]);
+      expect(ch.bars.submobjects.length).toBe(2);
+    });
   });
   it("change_bar_values rescales bars and updates values", () => {
-    const ch = new BarChart([1, 2, 3]);
-    ch.change_bar_values([3, 2, 1]);
-    expect([...ch.values]).toEqual([3, 2, 1]);
-    const hs = ch.bars.submobjects.map((b) => Math.round((b as VMobject).height * 1e9) / 1e9);
-    expect(hs).toEqual([4.0, 2.666666667, 1.333333333]);
+    withStubbedNumbers(() => {
+      const ch = new BarChart([1, 2, 3]);
+      ch.change_bar_values([3, 2, 1]);
+      expect([...ch.values]).toEqual([3, 2, 1]);
+      const hs = ch.bars.submobjects.map((b) => Math.round((b as VMobject).height * 1e9) / 1e9);
+      expect(hs).toEqual([4.0, 2.666666667, 1.333333333]);
+    });
   });
   it("change_bar_values handles sign flips and zero-height bars", () => {
     // Python: [2,-1,0] -> [-2,1,5] gives heights [2.667, 1.333, 6.667].
-    const ch = new BarChart([2, -1, 0]);
-    ch.change_bar_values([-2, 1, 5]);
-    expect([...ch.values]).toEqual([-2, 1, 5]);
-    const hs = ch.bars.submobjects.map((b) => Math.round((b as VMobject).height * 1e9) / 1e9);
-    expect(hs).toEqual([2.666666667, 1.333333333, 6.666666667]);
+    withStubbedNumbers(() => {
+      const ch = new BarChart([2, -1, 0]);
+      ch.change_bar_values([-2, 1, 5]);
+      expect([...ch.values]).toEqual([-2, 1, 5]);
+      const hs = ch.bars.submobjects.map((b) => Math.round((b as VMobject).height * 1e9) / 1e9);
+      expect(hs).toEqual([2.666666667, 1.333333333, 6.666666667]);
+    });
   });
 });
 
@@ -711,13 +727,20 @@ describe("integration (layers 18..19 with earlier batches)", () => {
   });
   it("BarChart bars stay consistent with the axes c2p mapping", () => {
     // Python _create_bar: bar_h = |c2p(0,v)[1] - c2p(0,0)[1]|.
-    const ch = new BarChart([1, 2, 3]);
-    const flat = (arr: unknown): number[] => {
-      const a = (arr as { toArray: () => unknown }).toArray();
-      return (Array.isArray(a[0]) ? (a[0] as number[]) : (a as number[])).map(Number);
-    };
-    const h = Math.abs(flat(ch.c2p(0, 2))[1]! - flat(ch.c2p(0, 0))[1]!);
-    expect(close((ch.bars.submobjects[1] as VMobject).height, h, 1e-6)).toBe(true);
+    const spy = vi
+      .spyOn(NumberLine.prototype, "get_number_mobject")
+      .mockImplementation(() => new Square() as unknown as VMobject);
+    try {
+      const ch = new BarChart([1, 2, 3]);
+      const flat = (arr: unknown): number[] => {
+        const a = (arr as { toArray: () => unknown }).toArray();
+        return (Array.isArray(a[0]) ? (a[0] as number[]) : (a as number[])).map(Number);
+      };
+      const h = Math.abs(flat(ch.c2p(0, 2))[1]! - flat(ch.c2p(0, 0))[1]!);
+      expect(close((ch.bars.submobjects[1] as VMobject).height, h, 1e-6)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
   it("TransformMatchingShapes round-trips through a real Scene", () => {
     const scene = new Scene();
