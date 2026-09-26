@@ -732,6 +732,37 @@ export class Scene {
     );
   }
 
+  update_mobjects(dt: number): void {
+    for (const mobj of this.mobjects) mobj.update(dt);
+  }
+
+  pause(duration: number = DEFAULT_WAIT_TIME): void {
+    duration = Scene.validate_run_time(duration, this.pause as (...args: unknown[]) => unknown, "duration");
+    this.wait(duration, null, true);
+  }
+
+  wait_until(stop_condition: () => boolean, max_time = 60): void {
+    max_time = Scene.validate_run_time(max_time, this.wait_until as (...args: unknown[]) => unknown, "max_time");
+    this.wait(max_time, stop_condition);
+  }
+
+  is_current_animation_frozen_frame(): boolean {
+    if (this.animations === null || this.animations === undefined) {
+      throw new Error("assert self.animations is not None");
+    }
+    const first = this.animations[0];
+    if (first === undefined) {
+      const error = new RangeError("list index out of range");
+      error.name = "IndexError";
+      throw error;
+    }
+    return (
+      first instanceof Wait &&
+      this.animations.length === 1 &&
+      (first as Wait).is_static_wait === true
+    );
+  }
+
   updaters: Array<(dt: number) => void> = [];
 
   setup(): void {}

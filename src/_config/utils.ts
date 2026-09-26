@@ -1331,21 +1331,99 @@ export function _determine_quality(qual: string | null | undefined): string | nu
   return qual ?? null;
 }
 
+const MANIM_FRAME_OPTS = [
+  "pixel_width",
+  "pixel_height",
+  "aspect_ratio",
+  "frame_height",
+  "frame_width",
+  "frame_y_radius",
+  "frame_x_radius",
+  "top",
+  "bottom",
+  "left_side",
+  "right_side",
+] as const;
+
+const MANIM_FRAME_CONSTANTS: Record<string, readonly number[]> = {
+  UP, DOWN, RIGHT, LEFT, IN, OUT, ORIGIN, X_AXIS, Y_AXIS, Z_AXIS, UL, UR, DL, DR,
+};
+
 export class ManimFrame {
+  static readonly _OPTS: ReadonlySet<string> = new Set<string>(MANIM_FRAME_OPTS);
+  static readonly _CONSTANTS: Record<string, readonly number[]> = MANIM_FRAME_CONSTANTS;
+
   private readonly configObject: ManimConfig;
+
   constructor(configObject: ManimConfig = config) {
     if (!(configObject instanceof ManimConfig)) throw new TypeError("argument must be instance of 'ManimConfig'");
+    // NOTE: mirrors Python's `self.__dict__["_c"] = c` (bypassing the
+    // immutable __setattr__); the instance is frozen below so later
+    // attribute assignment raises, matching Python.
     this.configObject = configObject;
+    Object.freeze(this);
   }
 
   __getitem__(key: string): any {
-    if (key === "top") return 1;
-    if (key === "bottom") return -1;
-    if (key === "left_side") return -1;
-    if (key === "right_side") return 1;
-    if (key === "frame_x_radius" || key === "frame_y_radius" || key === "frame_width" || key === "frame_height") return this.configObject[key];
-    const constants: Record<string, unknown> = { UP, DOWN, RIGHT, LEFT, IN, OUT, ORIGIN, X_AXIS, Y_AXIS, Z_AXIS, UL, UR, DL, DR };
-    if (Object.prototype.hasOwnProperty.call(constants, key)) return constants[key];
-    throw new Error(String(key));
+    if ((ManimFrame._OPTS as ReadonlySet<string>).has(key)) return this.configObject.get(key);
+    if (Object.prototype.hasOwnProperty.call(MANIM_FRAME_CONSTANTS, key)) return MANIM_FRAME_CONSTANTS[key];
+    const error = new Error(`'${key}'`);
+    error.name = "KeyError";
+    throw error;
   }
+
+  get(key: string): any {
+    return this.__getitem__(key);
+  }
+
+  *[Symbol.iterator](): IterableIterator<string> {
+    yield* MANIM_FRAME_OPTS;
+    yield* Object.keys(MANIM_FRAME_CONSTANTS);
+  }
+
+  __len__(): number {
+    return MANIM_FRAME_OPTS.length;
+  }
+
+  get __length__(): number {
+    return this.__len__();
+  }
+
+  __setitem__(key: unknown, _value: unknown): never {
+    void key;
+    throw new TypeError("'ManimFrame' object does not support item assignment");
+  }
+
+  __delitem__(key: unknown): never {
+    void key;
+    throw new TypeError("'ManimFrame' object does not support item deletion");
+  }
+
+  // NOTE: mirrors Python's `setattr(ManimFrame, opt, property(...))` loop:
+  // every _OPTS/_CONSTANTS key is readable as an attribute.
+  get pixel_width(): unknown { return this.__getitem__("pixel_width"); }
+  get pixel_height(): unknown { return this.__getitem__("pixel_height"); }
+  get aspect_ratio(): unknown { return this.__getitem__("aspect_ratio"); }
+  get frame_height(): unknown { return this.__getitem__("frame_height"); }
+  get frame_width(): unknown { return this.__getitem__("frame_width"); }
+  get frame_y_radius(): unknown { return this.__getitem__("frame_y_radius"); }
+  get frame_x_radius(): unknown { return this.__getitem__("frame_x_radius"); }
+  get top(): unknown { return this.__getitem__("top"); }
+  get bottom(): unknown { return this.__getitem__("bottom"); }
+  get left_side(): unknown { return this.__getitem__("left_side"); }
+  get right_side(): unknown { return this.__getitem__("right_side"); }
+  get UP(): unknown { return this.__getitem__("UP"); }
+  get DOWN(): unknown { return this.__getitem__("DOWN"); }
+  get RIGHT(): unknown { return this.__getitem__("RIGHT"); }
+  get LEFT(): unknown { return this.__getitem__("LEFT"); }
+  get IN(): unknown { return this.__getitem__("IN"); }
+  get OUT(): unknown { return this.__getitem__("OUT"); }
+  get ORIGIN(): unknown { return this.__getitem__("ORIGIN"); }
+  get X_AXIS(): unknown { return this.__getitem__("X_AXIS"); }
+  get Y_AXIS(): unknown { return this.__getitem__("Y_AXIS"); }
+  get Z_AXIS(): unknown { return this.__getitem__("Z_AXIS"); }
+  get UL(): unknown { return this.__getitem__("UL"); }
+  get UR(): unknown { return this.__getitem__("UR"); }
+  get DL(): unknown { return this.__getitem__("DL"); }
+  get DR(): unknown { return this.__getitem__("DR"); }
 }

@@ -67,6 +67,7 @@ export * from "./mobject/three_d/three_dimensions.js";
 export * from "./mobject/three_d/three_d_utils.js";
 export * from "./mobject/three_d/polyhedra.js";
 export * from "./scene/scene.js";
+export * from "./scene/moving_camera_scene.js";
 export * from "./scene/three_d_scene.js";
 export * from "./scene/vector_space_scene.js";
 export * from "./scene/zoomed_scene.js";

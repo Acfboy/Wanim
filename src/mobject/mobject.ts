@@ -1691,6 +1691,15 @@ export class Mobject {
     return this;
   }
 
+  get_point_mobject(center: number[] | readonly number[] | null = null): Mobject {
+    void center;
+    const error = new Error(
+      `get_point_mobject not implemented for ${(this.constructor as unknown as { name: string }).name}`,
+    );
+    error.name = "NotImplementedError";
+    throw error;
+  }
+
   null_point_align(other: Mobject): this {
     if (this.has_no_points() && other.has_points()) other.push_self_into_submobjects();
     if (other.has_no_points() && this.has_points()) this.push_self_into_submobjects();
