@@ -1942,6 +1942,46 @@ export class VGroup extends VMobject {
     super.add(...valid);
     return this;
   }
+
+  __repr__(): string {
+    return `${this.constructor.name}(${this.submobjects.map((mob) => String(mob)).join(", ")})`;
+  }
+
+  __str__(): string {
+    const count = this.submobjects.length;
+    return `${this.constructor.name} of ${count} submobject${count === 1 ? "" : "s"}`;
+  }
+
+  override toString(): string {
+    return this.__str__();
+  }
+
+  __add__(vmobject: VMobject): VGroup {
+    return new VGroup(...(this.submobjects as VMobject[]), vmobject);
+  }
+
+  __iadd__(vmobject: VMobject): this {
+    return this.add(vmobject);
+  }
+
+  __sub__(vmobject: VMobject): VGroup {
+    const copy = new VGroup(...(this.submobjects as VMobject[]));
+    copy.remove(vmobject);
+    return copy;
+  }
+
+  __isub__(vmobject: VMobject): this {
+    return this.remove(vmobject);
+  }
+
+  __setitem__(key: number, value: VMobject | VMobject[]): void {
+    this._assert_valid_submobjects(tuplify(value) as VMobject[]);
+    this.submobjects[key] = value as VMobject;
+  }
+
+  override __getitem__(key: number | { start: number; end: number }): VMobject | Mobject[] {
+    return super.__getitem__(key) as VMobject | Mobject[];
+  }
 }
 
 export function vmobjectFrom(value: unknown, dim = 3): VMobject {
@@ -2016,6 +2056,14 @@ export class VDict extends VMobject {
 
   has(key: unknown): boolean {
     return this.submob_dict.has(key);
+  }
+
+  __getitem__(key: unknown): VMobject {
+    return this.get(key);
+  }
+
+  __contains__(key: unknown): boolean {
+    return this.has(key);
   }
 
   get_all_submobjects(): VMobject[] {
