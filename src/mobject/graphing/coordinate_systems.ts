@@ -14,6 +14,7 @@ import { Polygon, Rectangle, RegularPolygon } from "../geometry/polygram.js";
 import { Dot } from "../geometry/arc.js";
 import { Arrow, DashedLine, Line } from "../geometry/line.js";
 import { ImplicitFunction, ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
+import { NumberLine } from "./number_line.js";
 import { Surface } from "../three_d/three_dimensions.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
@@ -1888,6 +1889,8 @@ function toComplexPoint(value: ComplexNumberLike): ComplexPoint {
 }
 
 export class ComplexPlane extends NumberPlane {
+  private _complexAxes: VGroup | null = null;
+
   constructor(
     x_range: number[] | null = null,
     y_range: number[] | null = null,
@@ -1898,6 +1901,29 @@ export class ComplexPlane extends NumberPlane {
     // only forwards to NumberPlane); the TS CoordinateSystem hierarchy
     // takes explicit range/length params instead of a kwargs bag.
     super(x_range, y_range, x_length, y_length);
+  }
+
+  override get_axes(): VGroup {
+    // NOTE: Python ComplexPlane is a NumberPlane (hence an Axes, i.e. a
+    // VGroup of two NumberLine axes). The TS Axes hierarchy is not
+    // Mobject-based yet, so NumberPlane/ComplexPlane ship no axes and the
+    // base get_axes throws NotImplementedError. ComplexPlane methods that
+    // only need tick ranges (notably _get_default_coordinate_values) build
+    // the two NumberLines on demand here, cached per instance, with the
+    // origin tick excluded exactly like Python's LinearBase axes.
+    if (this._complexAxes === null) {
+      this._complexAxes = new VGroup(
+        new NumberLine({
+          x_range: [...this.x_range] as [number, number, number],
+          exclude_origin_tick: true,
+        }),
+        new NumberLine({
+          x_range: [...this.y_range] as [number, number, number],
+          exclude_origin_tick: true,
+        }),
+      );
+    }
+    return this._complexAxes;
   }
 
   number_to_point(number: ComplexNumberLike): NDArray {
