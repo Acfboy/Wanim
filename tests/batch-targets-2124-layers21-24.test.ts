@@ -576,12 +576,16 @@ describe("ZoomedScene extras", { timeout: 60000 }, () => {
     expectClose(z.zoomed_camera.frame.stroke_width, 0, 1e-12);
   });
 
-  it("get_zoomed_display_pop_out_animation forwards kwargs", () => {
+  it("get_zoomed_display_pop_out_animation drops kwargs like python", () => {
     const z = new ZoomedScene();
     z.setup();
+    // NOTE: python's `get_zoomed_display_pop_out_animation(**kwargs)`
+    // accepts kwargs but returns a plain `ApplyMethod(display.restore)`
+    // without forwarding them, so extra kwargs must not leak onto the
+    // animation (run_time stays at the default 1).
     const anim = z.get_zoomed_display_pop_out_animation({ run_time: 4 } as never);
     expect(anim instanceof ApplyMethod).toBe(true);
-    expectClose(anim.run_time, 4);
+    expectClose(anim.run_time, 1);
   });
 
   it("activate_zooming(true) plays both animations then foregrounds", () => {

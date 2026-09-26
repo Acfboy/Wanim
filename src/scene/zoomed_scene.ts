@@ -187,13 +187,15 @@ export class ZoomedScene extends MovingCameraScene {
   get_zoomed_display_pop_out_animation(
     kwargs: Record<string, unknown> = {},
   ): ApplyMethod {
+    // NOTE: mirrors Python `get_zoomed_display_pop_out_animation(**kwargs)`,
+    // which accepts **kwargs but drops them: it returns a plain
+    // `ApplyMethod(display.restore)` with default options. The parameter is
+    // kept for signature compatibility but intentionally ignored.
+    void kwargs;
     const display = this.zoomed_display;
     display.save_state();
     display.replace(this.zoomed_camera.frame, 0, true);
     const animation = new ApplyMethod(boundMethodOf(display, "restore"));
-    for (const [key, value] of Object.entries(kwargs)) {
-      (animation as unknown as Record<string, unknown>)[key] = value;
-    }
     return animation;
   }
 
