@@ -1677,6 +1677,84 @@ export class ThreeDAxes extends Axes {
 export type AzimuthUnits = "PI radians" | "TAU radians" | "degrees" | "gradians" | null;
 export type AzimuthDirection = "CW" | "CCW";
 
+/** Exact binary expansion of a float, mirroring `Fraction(float)` in
+ * Python (which uses the exact binary value, not the decimal spelling).
+ * BigInt keeps the expansion exact; PolarPlane.get_radian_label only feeds
+ * small non-negative azimuth fractions here. */
+function floatToExactFraction(value: number): [bigint, bigint] {
+  if (value === 0) return [0n, 1n];
+  const negative = value < 0;
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, Math.abs(value));
+  const hi = view.getUint32(0);
+  const lo = view.getUint32(4);
+  const expBits = (hi >>> 20) & 0x7ff;
+  const mantissa52 = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo);
+  if (expBits === 0) {
+    // Subnormal: value = mantissa52 * 2^-1074.
+    const num = negative ? -mantissa52 : mantissa52;
+    return [num, 1n << 1074n];
+  }
+  const full = (1n << 52n) | mantissa52;
+  const signed = negative ? -full : full;
+  const exp = expBits - 1075;
+  if (exp >= 0) return [signed * (1n << BigInt(exp)), 1n];
+  return [signed, 1n << BigInt(-exp)];
+}
+
+function bigintGcd(a: bigint, b: bigint): bigint {
+  let x = a < 0n ? -a : a;
+  let y = b < 0n ? -b : b;
+  while (y !== 0n) {
+    const rest = x % y;
+    x = y;
+    y = rest;
+  }
+  return x;
+}
+
+/** Mirrors `Fraction.limit_denominator(max_denominator)` from CPython
+ * (continued-fraction convergents, closest–with–bound2–on–ties choice), so
+ * PolarPlane.get_radian_label recovers e.g. 1/3 from repeating decimals
+ * exactly the way the Python original does. Inputs here are non-negative,
+ * so truncating BigInt division coincides with floor division. */
+function limitFractionDenominator(
+  numerator: bigint,
+  denominator: bigint,
+  maxDenominator: number,
+): { numerator: number; denominator: number } {
+  if (maxDenominator < 1) {
+    const error = new Error(`max_denominator should be at least 1, got ${maxDenominator}`);
+    error.name = "ValueError";
+    throw error;
+  }
+  const common = bigintGcd(numerator, denominator);
+  const p = numerator / common;
+  const q = denominator / common;
+  if (q <= BigInt(maxDenominator)) return { numerator: Number(p), denominator: Number(q) };
+  let p0 = 0n;
+  let q0 = 1n;
+  let p1 = 1n;
+  let q1 = 0n;
+  let n = p;
+  let d = q;
+  for (;;) {
+    const a = n / d;
+    const q2 = q0 + a * q1;
+    if (q2 > BigInt(maxDenominator)) break;
+    [p0, q0, p1, q1] = [p1, q1, p0 + a * p1, q2];
+    [n, d] = [d, n - a * d];
+  }
+  const k = (BigInt(maxDenominator) - q0) / q1;
+  const b1n = p0 + k * p1;
+  const b1d = q0 + k * q1;
+  // Compare |p1/q1 - p/q| <= |b1n/b1d - p/q| via cross-multiplication.
+  const left = (p1 * q >= p * q1 ? p1 * q - p * q1 : p * q1 - p1 * q) * b1d;
+  const right = (b1n * q >= p * b1d ? b1n * q - p * b1d : p * b1d - b1n * q) * q1;
+  if (left <= right) return { numerator: Number(p1), denominator: Number(q1) };
+  return { numerator: Number(b1n), denominator: Number(b1d) };
+}
+
 export interface PolarPlaneOptions {
   radius_config?: Record<string, unknown> | null;
   background_line_style?: Record<string, unknown> | null;
@@ -1871,6 +1949,135 @@ export class PolarPlane extends Axes {
 
   override get_axes(): VGroup {
     return this.axes;
+  }
+
+  get_coordinate_labels(
+    r_values: Iterable<number> | null = null,
+    a_values: Iterable<number> | null = null,
+    kwargs: Record<string, unknown> = {},
+  ): VGroup {
+    // NOTE: Python annotates `-> VDict` but actually builds and returns a
+    // VGroup of (radius labels, azimuth labels); mirrored here. **kwargs is
+    // accepted and ignored, exactly like the original.
+    void kwargs;
+    let resolved_r: number[];
+    if (r_values === null || r_values === undefined) {
+      resolved_r = ((this.get_x_axis().get_tick_range().toArray() as unknown[]).map(Number))
+        .filter((r) => r >= 0);
+    } else {
+      resolved_r = [...r_values];
+    }
+    let resolved_a: number[];
+    if (a_values === null || a_values === undefined) {
+      resolved_a = [...arange(0, 1, 1 / this.azimuth_step)];
+    } else {
+      resolved_a = [...a_values];
+    }
+    const r_mobs = this.get_x_axis().add_numbers(resolved_r) as unknown as VMobject;
+    let d: number;
+    if (this.azimuth_direction === "CCW") {
+      d = 1;
+    } else if (this.azimuth_direction === "CW") {
+      d = -1;
+    } else {
+      const error = new Error("Invalid azimuth direction. Expected one of: CW, CCW");
+      error.name = "ValueError";
+      throw error;
+    }
+    // NOTE: mirrors `self.get_right()[0]` (the plane's right edge); the TS
+    // hierarchy is not Mobject-based, so the same geometric value is read
+    // off the coordinate mapping at the top of the radius range instead.
+    const right_point = pointRows(this.coords_to_point(this.x_range[1] ?? 0, 0), 3)[0] ?? [0, 0, 0];
+    const right_x = right_point[0] ?? 0;
+    const a_points = resolved_a.map((i) => ({
+      label: i,
+      point: [
+        right_x * Math.cos(d * (i * TAU) + this.azimuth_offset),
+        right_x * Math.sin(d * (i * TAU) + this.azimuth_offset),
+        0,
+      ] as number[],
+    }));
+    let a_tex: VMobject[];
+    if (this.azimuth_units === "PI radians" || this.azimuth_units === "TAU radians") {
+      a_tex = a_points.map((entry) =>
+        this.get_radian_label(entry.label, this.azimuth_label_font_size).next_to(
+          entry.point,
+          entry.point,
+          this.azimuth_label_buff,
+          entry.point,
+        ),
+      );
+    } else if (this.azimuth_units === "degrees") {
+      // NOTE: Python builds MathTex(f"{360 * label:g}^{\\circ}") labels here
+      // (gradians: 400 * label with ^{g}; None: plain {label:g}); MathTex
+      // needs the LaTeX pipeline that is out of scope for this port.
+      throw new Error("TODO: text/tex not ported yet (PolarPlane.get_coordinate_labels needs MathTex)");
+    } else if (this.azimuth_units === "gradians") {
+      throw new Error("TODO: text/tex not ported yet (PolarPlane.get_coordinate_labels needs MathTex)");
+    } else if (this.azimuth_units === null || this.azimuth_units === undefined) {
+      throw new Error("TODO: text/tex not ported yet (PolarPlane.get_coordinate_labels needs MathTex)");
+    } else {
+      // NOTE: unreachable in Python (the constructor rejects any other unit
+      // string with ValueError); kept so the TS return type stays total.
+      const error = new Error(
+        "Invalid azimuth units. Expected one of: PI radians, TAU radians, degrees, gradians or None.",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    const a_mobs = new VGroup(...a_tex);
+    this.coordinate_labels = new VGroup(r_mobs, a_mobs);
+    return this.coordinate_labels;
+  }
+
+  get_radian_label(
+    number: number,
+    font_size = 24,
+    kwargs: Record<string, unknown> = {},
+  ): VMobject {
+    // NOTE: mirrors the Python dict lookups (KeyError for any other unit).
+    const constantLabels: Record<string, string> = { "PI radians": "\\pi", "TAU radians": "\\tau" };
+    const multipliers: Record<string, number> = { "PI radians": 2, "TAU radians": 1 };
+    const constant_label = constantLabels[String(this.azimuth_units)];
+    const multiplier = multipliers[String(this.azimuth_units)];
+    if (constant_label === undefined || multiplier === undefined) {
+      const error = new Error(`'${String(this.azimuth_units)}'`);
+      error.name = "KeyError";
+      throw error;
+    }
+    const [rawNum, rawDen] = floatToExactFraction(number * multiplier);
+    const frac = limitFractionDenominator(rawNum, rawDen, 100);
+    let string: string;
+    // NOTE: mirrors Python `if frac.numerator == 0 & frac.denominator == 0:`
+    // — `&` binds tighter than `==` (and `0 & anything` is 0), so with
+    // chaining this is just `numerator == 0`.
+    if (frac.numerator === (0 & frac.denominator)) {
+      string = "0";
+    } else if (frac.numerator === 1 && frac.denominator === 1) {
+      string = constant_label;
+    } else if (frac.numerator === 1) {
+      if (this.azimuth_compact_fraction) {
+        string = "\\tfrac{" + constant_label + "}{" + String(frac.denominator) + "}";
+      } else {
+        string = "\\tfrac{1}{" + String(frac.denominator) + "}" + constant_label;
+      }
+    } else if (frac.denominator === 1) {
+      string = String(frac.numerator) + constant_label;
+    } else {
+      if (this.azimuth_compact_fraction) {
+        string = "\\tfrac{" + String(frac.numerator) + constant_label + "}{" + String(frac.denominator) + "}";
+      } else {
+        string = "\\tfrac{" + String(frac.numerator) + "}{" + String(frac.denominator) + "}" + constant_label;
+      }
+    }
+    void string;
+    void font_size;
+    void kwargs;
+    // NOTE: Python returns `MathTex(string, font_size=font_size, **kwargs)`
+    // (the label string above is computed verbatim so only this line needs
+    // to change once text lands); MathTex needs the LaTeX pipeline that is
+    // out of scope for this port.
+    throw new Error("TODO: text/tex not ported yet (PolarPlane.get_radian_label needs MathTex)");
   }
 }
 

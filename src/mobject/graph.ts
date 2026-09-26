@@ -229,6 +229,33 @@ export class GenericGraph extends VMobject {
     this.add(this.vertices.get(vertex) as Mobject);
     return this.vertices.get(vertex) as Mobject;
   }
+
+  _add_vertex(
+    vertex: GraphVertex,
+    position: number[] | readonly number[] | NDArray | null = null,
+    label: boolean | Mobject | unknown = false,
+    label_fill_color: ParsableManimColor = BLACK,
+    vertex_type: typeof Dot | typeof LabeledDot | (new (config?: Record<string, unknown>) => Mobject) | null = null,
+    vertex_config: Record<string, unknown> | null = null,
+    vertex_mobject: Mobject | null = null,
+  ): Mobject {
+    // NOTE: mirrors Python `GenericGraph._add_vertex`, which unpacks
+    // `self._create_vertex(...)` positionally into `self._add_created_vertex`.
+    // (Python defaults vertex_type to Dot and annotates vertex_mobject as
+    // dict|None; the TS port follows the sibling _create_vertex instead —
+    // null resolves to Dot there, which is behaviorally identical — and
+    // types vertex_mobject as the Mobject it actually is.)
+    const [, createdPosition, createdConfig, createdMobject] = this._create_vertex(
+      vertex,
+      position,
+      label,
+      label_fill_color,
+      vertex_type,
+      vertex_config,
+      vertex_mobject,
+    );
+    return this._add_created_vertex(vertex, createdPosition, createdConfig, createdMobject);
+  }
 }
 
 export class Graph extends GenericGraph {
