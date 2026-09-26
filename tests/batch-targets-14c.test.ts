@@ -678,9 +678,15 @@ describe("_BooleanOps", () => {
     expect(b._convert_2d_to_3d_array([]).shape[0]).toBe(0);
   });
 
-  it("skia converters are clearly-marked TODO stubs", () => {
+  it("skia converters: to-path is ported, to-vmobject stays a TODO stub", () => {
+    // NOTE (batch-14d ground truth): _convert_vmobject_to_skia_path is
+    // implemented via the local SkiaPath shim and verified against Python
+    // pathops output in tests/batch-targets-14d.test.ts (Square -> 6 cmds,
+    // Circle -> 10 cmds; coords at 1e-6 due to Skia float32 rounding), so an
+    // empty VMobject yields an empty path instead of throwing. Only the
+    // reverse converter still needs pathops and stays a TODO stub.
     const b = new _BooleanOps();
-    expect(() => b._convert_vmobject_to_skia_path(new VMobject())).toThrowError(/pathops|not ported/);
+    expect(b._convert_vmobject_to_skia_path(new VMobject()).commands.length).toBe(0);
     expect(() => b._convert_skia_path_to_vmobject({})).toThrowError(/pathops|not ported/);
   });
 });
