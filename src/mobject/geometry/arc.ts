@@ -1,5 +1,5 @@
 import { array, type NDArray } from "numpy-ts";
-import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, UP } from "../../constants.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DEFAULT_DOT_RADIUS, LEFT, ORIGIN, OUT, PI, RIGHT, SMALL_BUFF, TAU, UP } from "../../constants.js";
 import { linspace, isNDArray, norm, pointAt, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { adjacent_pairs } from "../../utils/iterables.js";
 import {
@@ -10,7 +10,7 @@ import {
   perpendicular_bisector,
   rotate_vector,
 } from "../../utils/space_ops.js";
-import { BLUE, RED, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
+import { BLACK, BLUE, RED, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import type { Mobject } from "../mobject.js";
 import type { ArrowTip } from "./tips.js";
@@ -537,6 +537,39 @@ export class AnnotationDot extends Dot {
         ...rest,
       },
     );
+  }
+}
+
+export interface LabeledDotOptions extends DotOptions {
+  buff?: number;
+}
+
+export class LabeledDot extends Dot {
+  constructor(
+    label: string | Mobject,
+    radius: number | null = null,
+    buff = SMALL_BUFF,
+    options: LabeledDotOptions = {},
+  ) {
+    const { buff: buffOption, ...rest } = options;
+    const resolvedBuff = buffOption ?? buff;
+    // NOTE: Python renders a `str` label as `MathTex(label, color=BLACK)`;
+    // text/tex rendering is out of scope for the entire port, so only
+    // pre-rendered mobject labels are supported here.
+    let renderedLabel: Mobject;
+    if (typeof label === "string") {
+      void BLACK;
+      throw new Error("TODO: text/tex not ported yet (LabeledDot string label needs MathTex)");
+    } else {
+      renderedLabel = label;
+    }
+    let resolvedRadius = radius;
+    if (resolvedRadius === null || resolvedRadius === undefined) {
+      resolvedRadius = resolvedBuff + norm([renderedLabel.width, renderedLabel.height]) / 2;
+    }
+    super([...ORIGIN], resolvedRadius, 0, 1.0, WHITE, rest);
+    renderedLabel.move_to(this.get_center());
+    this.add(renderedLabel);
   }
 }
 

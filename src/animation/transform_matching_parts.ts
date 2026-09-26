@@ -224,6 +224,25 @@ export class TransformMatchingAbstractBase extends AnimationGroup {
 }
 
 export class TransformMatchingShapes extends TransformMatchingAbstractBase {
+  constructor(
+    mobject: Mobject,
+    target_mobject: Mobject,
+    options: TransformMatchingOptions = {},
+  ) {
+    const {
+      transform_mismatches = false,
+      fade_transform_mismatches = false,
+      key_map = null,
+      ...kwargs
+    } = options;
+    super(mobject, target_mobject, {
+      transform_mismatches,
+      fade_transform_mismatches,
+      key_map,
+      ...kwargs,
+    });
+  }
+
   static override get_mobject_parts(mobject: Mobject): Mobject[] {
     return mobject.family_members_with_points();
   }
@@ -266,6 +285,25 @@ function readTexString(mobject: Mobject): unknown {
 }
 
 export class TransformMatchingTex extends TransformMatchingAbstractBase {
+  constructor(
+    mobject: Mobject,
+    target_mobject: Mobject,
+    options: TransformMatchingOptions = {},
+  ) {
+    const {
+      transform_mismatches = false,
+      fade_transform_mismatches = false,
+      key_map = null,
+      ...kwargs
+    } = options;
+    super(mobject, target_mobject, {
+      transform_mismatches,
+      fade_transform_mismatches,
+      key_map,
+      ...kwargs,
+    });
+  }
+
   static override get_mobject_parts(mobject: Mobject): Mobject[] {
     // NOTE: Python also accepts the OpenGL Group/VGroup variants; only the
     // Cairo Group/VGroup branch applies here (OpenGL is not ported).

@@ -11,7 +11,39 @@ import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
 import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { Animation, Wait, prepare_animation } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
+import { EndSceneEarlyException, RerunSceneException } from "../utils/exceptions.js";
+import { is_gif_format, open_file } from "../utils/file_ops.js";
 import { DefaultSectionType } from "./section.js";
+
+/**
+ * Mirrors `manim.utils.file_ops.open_media_file`: opens the files produced
+ * by `file_writer` (last-frame image and/or movie) in a viewer or file
+ * browser, driven by `config.preview` / `config.show_in_file_browser`.
+ */
+function open_media_file(file_writer: any): void {
+  const file_paths: string[] = [];
+  if (config.save_last_frame) {
+    file_paths.push(file_writer.image_file_path);
+  }
+  if (config.get("write_to_movie") && !is_gif_format()) {
+    file_paths.push(file_writer.movie_file_path);
+  }
+  if (config.get("write_to_movie") && is_gif_format()) {
+    file_paths.push(file_writer.gif_file_path);
+  }
+  for (const file_path of file_paths) {
+    if (config.show_in_file_browser) {
+      open_file(file_path, true);
+    }
+    if (config.preview) {
+      open_file(file_path, false);
+      // NOTE: mirrors Python `logger.info(...)`; the TS port has no shared
+      // global logger, so the message goes to the console (same convention
+      // as the `console.warn` calls elsewhere in this file).
+      console.info(`Previewed File at: '${file_path}'`);
+    }
+  }
+}
 
 export type SceneInteractAction = SceneInteractRerun | SceneInteractContinue | MethodWithArgs | string;
 
@@ -389,6 +421,21 @@ export class Scene {
 
   remove_foreground_mobjects(...to_remove: Mobject[]): this {
     this.restructure_mobjects(to_remove, "foreground_mobjects");
+    return this;
+  }
+
+  remove_foreground_mobject(mobject: Mobject): this {
+    return this.remove_foreground_mobjects(mobject);
+  }
+
+  bring_to_front(...mobjects: Mobject[]): this {
+    this.add(...mobjects);
+    return this;
+  }
+
+  bring_to_back(...mobjects: Mobject[]): this {
+    this.remove(...mobjects);
+    this.mobjects = [...mobjects, ...this.mobjects];
     return this;
   }
 
@@ -853,6 +900,61 @@ export class Scene {
   }
 
   updaters: Array<(dt: number) => void> = [];
+
+  render(preview = false): boolean {
+    this.setup();
+    try {
+      this.construct();
+    } catch (error) {
+      if (error instanceof EndSceneEarlyException) {
+        // pass
+      } else if (error instanceof RerunSceneException) {
+        this.remove(...this.mobjects);
+        // TODO: The CairoRenderer does not have the method clear_screen()
+        this.renderer.clear_screen();
+        this.renderer.num_plays = 0;
+        // The rerun replaces the file writer; tear down its encode jobs so
+        // no worker is still writing a partial file the new writer may
+        // reuse. Encoder failures propagate: a rerun must not silently
+        // continue past corrupt output.
+        this.renderer.file_writer.abort_encode_jobs({
+          reraise_encoder_failures: true,
+        });
+        return true;
+      } else {
+        // A mid-play exception leaves an unsealed encode job whose
+        // non-daemon worker would hang the process at exit.
+        this.renderer.file_writer.abort_encode_jobs();
+        throw error;
+      }
+    }
+    this.tear_down();
+    // We have to reset these settings in case of multiple renders.
+    this.renderer.scene_finished(this);
+
+    // Show info only if animations are rendered or to get image
+    if (
+      this.renderer.num_plays ||
+      config.get("format") === "png" ||
+      config.save_last_frame
+    ) {
+      // NOTE: mirrors Python `logger.info(...)`; see open_media_file above.
+      console.info(
+        `Rendered ${String(this)}\nPlayed ${this.renderer.num_plays} animations`,
+      );
+    }
+
+    // If preview open up the render after rendering.
+    if (preview) {
+      config.preview = true;
+    }
+
+    if (config.preview || config.show_in_file_browser) {
+      open_media_file(this.renderer.file_writer);
+    }
+
+    return false;
+  }
 
   setup(): void {}
 

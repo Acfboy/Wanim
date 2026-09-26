@@ -1,6 +1,6 @@
 import type { NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
-import { ORIGIN } from "../constants.js";
+import { DOWN, LEFT, ORIGIN, RIGHT, UP } from "../constants.js";
 import { ManimColor, WHITE } from "../utils/color/core.js";
 import { Camera, type CameraOptions, type CaptureOptions } from "./camera.js";
 import { ScreenRectangle } from "../mobject/frame.js";
@@ -143,5 +143,58 @@ export class MovingCamera extends Camera {
 
   get_mobjects_indicating_movement(): Mobject[] {
     return [this.frame];
+  }
+
+  _get_bounding_box(
+    mobjects: Iterable<Mobject>,
+    only_mobjects_in_frame: boolean,
+  ): [number, number, number, number] {
+    let bounding_box_located = false;
+    let scene_critical_x_left = 0;
+    let scene_critical_x_right = 1;
+    let scene_critical_y_up = 1;
+    let scene_critical_y_down = 0;
+
+    for (const m of mobjects) {
+      if (m === this.frame || (only_mobjects_in_frame && !this.is_in_frame(m))) {
+        // detected camera frame, should not be used to calculate final position of camera
+        continue;
+      }
+
+      // initialize scene critical points with first mobjects critical points
+      if (!bounding_box_located) {
+        scene_critical_x_left = m.get_critical_point(LEFT)[0] ?? 0;
+        scene_critical_x_right = m.get_critical_point(RIGHT)[0] ?? 1;
+        scene_critical_y_up = m.get_critical_point(UP)[1] ?? 1;
+        scene_critical_y_down = m.get_critical_point(DOWN)[1] ?? 0;
+        bounding_box_located = true;
+      } else {
+        if ((m.get_critical_point(LEFT)[0] ?? 0) < scene_critical_x_left) {
+          scene_critical_x_left = m.get_critical_point(LEFT)[0] ?? scene_critical_x_left;
+        }
+
+        if ((m.get_critical_point(RIGHT)[0] ?? 0) > scene_critical_x_right) {
+          scene_critical_x_right = m.get_critical_point(RIGHT)[0] ?? scene_critical_x_right;
+        }
+
+        if ((m.get_critical_point(UP)[1] ?? 0) > scene_critical_y_up) {
+          scene_critical_y_up = m.get_critical_point(UP)[1] ?? scene_critical_y_up;
+        }
+
+        if ((m.get_critical_point(DOWN)[1] ?? 0) < scene_critical_y_down) {
+          scene_critical_y_down = m.get_critical_point(DOWN)[1] ?? scene_critical_y_down;
+        }
+      }
+    }
+
+    if (!bounding_box_located) {
+      throw new Error(
+        "Could not determine bounding box of the mobjects given to 'auto_zoom'.",
+      );
+    }
+
+    return (
+      [scene_critical_x_left, scene_critical_x_right, scene_critical_y_up, scene_critical_y_down]
+    );
   }
 }
