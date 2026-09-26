@@ -13,6 +13,73 @@ import { config } from "../_config/utils.js";
 export type MobjectUpdater = ((mobject: Mobject) => void) | ((mobject: Mobject, dt: number) => void);
 export type MobjectArray = Mobject[];
 
+/** TS mirror of a Python ``slice`` (as passed to ``Mobject.__getitem__``). */
+export interface MobjectSlice {
+  start?: number | null;
+  stop?: number | null;
+  step?: number | null;
+}
+
+/**
+ * Mirrors ``slice.indices(length)``: normalizes start/stop/step exactly like
+ * Python (including the ``-1`` stop sentinel for negative steps).
+ */
+export function sliceRange(
+  length: number,
+  slice: MobjectSlice,
+): { start: number; stop: number; step: number } {
+  let step = slice.step ?? null;
+  if (step === null || step === undefined) step = 1;
+  if (step === 0) {
+    const error = new Error("slice step cannot be zero");
+    error.name = "ValueError";
+    throw error;
+  }
+  let lower: number;
+  let upper: number;
+  if (step > 0) {
+    lower = 0;
+    upper = length;
+  } else {
+    lower = -1;
+    upper = length - 1;
+  }
+  let start = slice.start ?? null;
+  if (start === null || start === undefined) {
+    start = step < 0 ? upper : lower;
+  } else {
+    if (!Number.isInteger(start)) start = Math.trunc(start);
+    if (start < 0) start = Math.max(start + length, lower);
+    else start = Math.min(start, upper);
+  }
+  let stop = slice.stop ?? null;
+  if (stop === null || stop === undefined) {
+    stop = step < 0 ? lower : upper;
+  } else {
+    if (!Number.isInteger(stop)) stop = Math.trunc(stop);
+    if (stop < 0) stop = Math.max(stop + length, lower);
+    else stop = Math.min(stop, upper);
+  }
+  return { start, stop, step };
+}
+
+/** Materializes ``range(start, stop, step)`` values (mirrors Python ``range``). */
+export function rangeValues(start: number, stop: number, step: number): number[] {
+  const result: number[] = [];
+  if (step > 0) {
+    for (let i = start; i < stop; i += step) result.push(i);
+  } else if (step < 0) {
+    for (let i = start; i > stop; i += step) result.push(i);
+  }
+  return result;
+}
+
+/** Applies Python slice semantics to an array (mirrors ``list[slice]``). */
+export function applySlice<T>(items: T[], slice: MobjectSlice): T[] {
+  const r = sliceRange(items.length, slice);
+  return rangeValues(r.start, r.stop, r.step).map((i) => items[i] as T);
+}
+
 export interface MobjectOptions {
   color?: ParsableManimColor | null;
   name?: string;
@@ -175,6 +242,33 @@ export class Mobject {
   original_id: string;
   background_rectangle: Mobject | null = null;
   readonly animation_overrides: Map<unknown, FunctionLike> = new Map();
+  /** Per-class animation override table (mirrors Python's ``animation_overrides`` class attribute).
+   *
+   * NOTE: declared without an initializer (like Python's bare annotation):
+   * each class gets its OWN table either via ``__init_subclass__`` or
+   * lazily on the first ``add_animation_override`` call, so subclass
+   * registrations never leak into the base class.
+   */
+  static declare animation_overrides: Map<unknown, FunctionLike>;
+  /** Saved pre-``set_default`` constructor (mirrors Python's ``_original__init__``). */
+  static _original__init__: unknown = undefined;
+
+  /**
+   * Mirrors Python ``Mobject.__init_subclass__``: resets the per-class
+   * animation override table, registers intrinsic (decorated) animation
+   * overrides, and records the original constructor.
+   *
+   * NOTE: Python invokes this hook automatically on subclass creation; TS
+   * has no subclass-creation hook, so subclasses (or test harnesses
+   * emulating class creation) call it explicitly, e.g.
+   * ``MyMobject.__init_subclass__()``.
+   */
+  static __init_subclass__(..._kwargs: unknown[]): void {
+    const cls = this as unknown as Record<string, unknown>;
+    cls["animation_overrides"] = new Map();
+    (this as unknown as typeof Mobject)._add_intrinsic_animation_overrides();
+    cls["_original__init__"] = this;
+  }
 
   constructor(options: MobjectOptions = {}) {
     const normalized = typeof options === "string" || Array.isArray(options) ? { color: options as ParsableManimColor } : options;
@@ -1747,13 +1841,51 @@ export class Mobject {
     return this;
   }
 
-  __getitem__(index: number | { start: number; end: number }): Mobject | Mobject[] {
-    if (typeof index === "number") {
-      const value = this.submobjects[index];
-      if (!value) throw new Error("Mobject index out of range");
-      return value;
+  __getitem__(value: number | MobjectSlice): Mobject | Group {
+    if (typeof value === "object" && value !== null) {
+      const GroupClass = this.get_group_class();
+      if (this.has_no_points()) {
+        return new GroupClass(...applySlice(this.submobjects, value));
+      }
+      // Mirrors `r = range(*value.indices(len(self)))`.
+      const r = sliceRange(this.__len__(), value);
+      const indices = rangeValues(r.start, r.stop, r.step);
+      if (indices.length === 0) {
+        // If slice is empty
+        return new GroupClass();
+      }
+      if (!indices.includes(0)) {
+        // If self is not included in the slice, we can gain a small speed boost
+        // by indexing directly into the submobjects list.
+        // (Python slices `self.submobjects[r.start - 1 : stop : r.step]`
+        // with an adjusted stop; since slice.indices() never yields negative
+        // values this is exactly `submobjects[i - 1]` for each `i` in `r`.)
+        return new GroupClass(
+          ...indices.map((i) => this.submobjects[i - 1] as Mobject),
+        );
+      }
+      return new GroupClass(
+        ...indices.map((i) => (i === 0 ? this : (this.submobjects[i - 1] as Mobject))),
+      );
     }
-    return this.submobjects.slice(index.start, index.end);
+    // Mirrors `index = range(len(self))[value]` (normalizes negatives,
+    // raises IndexError out of range).
+    let index = value;
+    if (!Number.isInteger(index)) {
+      const error = new Error("range object index out of range");
+      error.name = "TypeError";
+      throw error;
+    }
+    if (index < 0) index += this.__len__();
+    if (index < 0 || index >= this.__len__()) {
+      const error = new Error("range object index out of range");
+      error.name = "IndexError";
+      throw error;
+    }
+    if (this.has_no_points()) {
+      return this.submobjects[index] as Mobject;
+    }
+    return index === 0 ? this : (this.submobjects[index - 1] as Mobject);
   }
 
   toString(): string { return this.name; }
@@ -1820,7 +1952,11 @@ export class _AnimationBuilder {
     callableProxy = new Proxy(builder, {
       get: (target, property, receiver) => {
         if (property in target || typeof property === "symbol") return Reflect.get(target, property, receiver);
-        return (...args: any[]) => target.update_target(String(property), args, {});
+        // NOTE: mirrors Python, where any unknown attribute access on the
+        // builder goes through `__getattr__` (which resolves the method on
+        // the target mobject, checks overrides, and marks chaining state).
+        const update = (target as _AnimationBuilder).__getattr__(String(property));
+        return (...args: any[]) => update(...args);
       },
     });
     (builder as unknown as { _callable_proxy: _AnimationBuilder })._callable_proxy = callableProxy;
@@ -1828,7 +1964,39 @@ export class _AnimationBuilder {
   }
 
   __getattr__(method_name: string): (...args: any[]) => this {
-    return (...args: any[]) => this.update_target(method_name, args, {});
+    // NOTE: mirrors Python `method = getattr(self.mobject.target,
+    // method_name)` — resolved eagerly at access time (missing attributes
+    // raise AttributeError here, not at call time).
+    const target = this.mobject.target ?? this.mobject;
+    const method = (target as unknown as Record<string, unknown>)[method_name] as FunctionLike | undefined;
+    if (typeof method !== "function") {
+      const error = new Error(
+        `${target.constructor.name} object has no attribute '${method_name}'`,
+      );
+      error.name = "AttributeError";
+      throw error;
+    }
+    const has_overridden_animation = get_animation_override(method) !== undefined;
+
+    if ((this.is_chaining && has_overridden_animation) || this.overridden_animation) {
+      const error = new Error(
+        "Method chaining is currently not supported for overridden animations",
+      );
+      error.name = "NotImplementedError";
+      throw error;
+    }
+
+    const self = this;
+    const bound_method: FunctionLike = method;
+    function update_target(...method_args: any[]): _AnimationBuilder {
+      self.apply_method_update(bound_method, has_overridden_animation, method_args, {});
+      return ((self as unknown as { _callable_proxy?: _AnimationBuilder })._callable_proxy ?? self) as _AnimationBuilder;
+    }
+
+    this.is_chaining = true;
+    this.cannot_pass_args = true;
+
+    return update_target as unknown as (...args: any[]) => this;
   }
 
   call(args: Record<string, unknown> = {}): this {
@@ -1847,15 +2015,28 @@ export class _AnimationBuilder {
     const method = (target as unknown as Record<string, unknown>)[method_name];
     if (typeof method !== "function") throw new Error(`${this.mobject.constructor.name} has no method '${method_name}'`);
     const override = get_animation_override(method as FunctionLike);
-    if ((this.is_chaining && override) || this.overridden_animation) {
-      const error = new Error("Method chaining is currently not supported for overridden animations");
-      error.name = "NotImplementedError";
-      throw error;
-    }
-    if (override) this.overridden_animation = override(this.mobject, ...method_args, { anim_args: this.anim_args, ...method_kwargs });
-    else {
-      this.methods.push(new MethodWithArgs(method as FunctionLike, method_args, method_kwargs));
-      (method as FunctionLike).apply(target, Object.keys(method_kwargs).length > 0 ? [...method_args, method_kwargs] : method_args);
+    this.apply_method_update(method as FunctionLike, override !== undefined, method_args, method_kwargs);
+    return ((this as unknown as { _callable_proxy?: _AnimationBuilder })._callable_proxy ?? this) as this;
+  }
+
+  /** Shared body of the ``update_target`` closures (mirrors Python's inner ``update_target``). */
+  apply_method_update(
+    method: FunctionLike,
+    has_overridden_animation: boolean,
+    method_args: any[] = [],
+    method_kwargs: Record<string, any> = {},
+  ): this {
+    const target = this.mobject.target ?? this.mobject;
+    if (has_overridden_animation) {
+      const override = get_animation_override(method);
+      this.overridden_animation = (override as FunctionLike)(
+        this.mobject,
+        ...method_args,
+        { anim_args: this.anim_args, ...method_kwargs },
+      );
+    } else {
+      this.methods.push(new MethodWithArgs(method, method_args, method_kwargs));
+      method.apply(target, Object.keys(method_kwargs).length > 0 ? [...method_args, method_kwargs] : method_args);
     }
     this.is_chaining = true;
     this.cannot_pass_args = true;

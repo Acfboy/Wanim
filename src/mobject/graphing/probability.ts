@@ -1,5 +1,7 @@
 import { type NDArray } from "numpy-ts";
-import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
+import { Axes } from "./coordinate_systems.js";
+import { config } from "../../_config/utils.js";
 import { isNDArray, pointRows } from "../../utils/arrays.js";
 import { tuplify } from "../../utils/iterables.js";
 import { DARK_GREY, LIGHT_GREY, type ParsableManimColor } from "../../utils/color/core.js";
@@ -71,5 +73,80 @@ export class SampleSpace extends VMobject {
 
   addBracesAndLabels(): this {
     return this.add_braces_and_labels();
+  }
+}
+
+export interface BarChartOptions {
+  bar_names?: string[] | null;
+  y_range?: number[] | null;
+  x_length?: number | null;
+  y_length?: number | null;
+  bar_colors?: ParsableManimColor[];
+  bar_width?: number;
+  bar_fill_opacity?: number;
+  bar_stroke_width?: number;
+}
+
+// NOTE: only the text-independent core of BarChart is ported here (range
+// computation plus _update_colors). Building the bars/labels/axes numbers
+// needs Rectangle (ported) but also Tex/DecimalNumber labels, which are out
+// of scope (text/tex not ported yet); see .
+export class BarChart extends Axes {
+  values: number[];
+  bar_names: string[] | null;
+  bar_colors: ParsableManimColor[];
+  bar_width: number;
+  bar_fill_opacity: number;
+  bar_stroke_width: number;
+  bars: VGroup = new VGroup();
+  x_labels: VGroup | null = null;
+  bar_labels: VGroup | null = null;
+
+  constructor(values: number[] = [], options: BarChartOptions = {}) {
+    const {
+      bar_names = null,
+      y_range = null,
+      x_length = null,
+      y_length = null,
+      bar_colors = [
+        "#003f5c",
+        "#58508d",
+        "#bc5090",
+        "#ff6361",
+        "#ffa600",
+      ],
+      bar_width = 0.6,
+      bar_fill_opacity = 0.7,
+      bar_stroke_width = 3,
+    } = options;
+
+    const resolved_y_length = y_length ?? config.frame_height - 4;
+    const x_range = [0, values.length, 1];
+    let resolved_y_range: number[];
+    if (y_range === null) {
+      const lo = values.length > 0 ? Math.min(0, Math.min(...values)) : 0;
+      const hi = values.length > 0 ? Math.max(0, Math.max(...values)) : 0;
+      const peak = values.length > 0 ? Math.max(...values) : 0;
+      resolved_y_range = [lo, hi, Math.round((peak / resolved_y_length) * 100) / 100];
+    } else if (y_range.length === 2) {
+      const peak = values.length > 0 ? Math.max(...values) : 0;
+      resolved_y_range = [...y_range, Math.round((peak / resolved_y_length) * 100) / 100];
+    } else {
+      resolved_y_range = [...y_range];
+    }
+    const resolved_x_length = x_length ?? Math.min(values.length, config.frame_width - 2);
+
+    super(x_range, resolved_y_range, resolved_x_length, resolved_y_length);
+
+    this.values = [...values];
+    this.bar_names = bar_names === null ? null : [...bar_names];
+    this.bar_colors = [...bar_colors];
+    this.bar_width = bar_width;
+    this.bar_fill_opacity = bar_fill_opacity;
+    this.bar_stroke_width = bar_stroke_width;
+  }
+
+  _update_colors(): void {
+    this.bars.set_color_by_gradient(...this.bar_colors);
   }
 }

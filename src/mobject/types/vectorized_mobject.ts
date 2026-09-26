@@ -1,5 +1,5 @@
 import { allclose, array, NDArray } from "numpy-ts";
-import { Mobject, type MobjectOptions, type MobjectUpdater } from "../mobject.js";
+import { Mobject, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
@@ -1986,8 +1986,8 @@ export class VGroup extends VMobject {
     this.submobjects[key] = value as VMobject;
   }
 
-  override __getitem__(key: number | { start: number; end: number }): VMobject | Mobject[] {
-    return super.__getitem__(key) as VMobject | Mobject[];
+  override __getitem__(key: number | MobjectSlice): VMobject | VGroup {
+    return super.__getitem__(key) as VMobject | VGroup;
   }
 }
 

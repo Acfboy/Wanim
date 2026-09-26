@@ -124,10 +124,10 @@ export class ParametricFunction extends VMobject {
             );
         }
       } else {
-        // NOTE: Python calls self.function(t) here; the TS FunctionGraph
-        // restores self.function to the raw user function after super(),
-        // so the polymorphic get_point_from_function (which yields the
-        // parametric form for FunctionGraph) is used instead.
+        // NOTE: Python calls self.function(t) here; for FunctionGraph that
+        // is the wrapped parametric form, so the polymorphic
+        // get_point_from_function (which yields the parametric form for
+        // FunctionGraph) is used instead.
         point_list = t_values.map(
           (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
         );
@@ -176,6 +176,12 @@ export class FunctionGraph extends ParametricFunction {
       config.frame_x_radius,
     ];
     // NOTE: mirrors Python `lambda t: np.array([t, function(t), 0])`.
+    // Python assigns this wrapped form to ParametricFunction (which stores
+    // it as self.function) and ALSO keeps it as self.parametric_function;
+    // self.function is therefore the wrapped form (NOT the raw user
+    // function) after construction. The TS port does the same: super()
+    // stores the wrapped form as self.function; only parametric_function
+    // is (re)assigned below.
     const parametric_function = (t: number): NDArray =>
       array([t, function_(t) as number, 0]) as NDArray;
     // NOTE: Python stores the raw user function as self.function and passes
@@ -202,9 +208,10 @@ export class FunctionGraph extends ParametricFunction {
     });
     this.x_range = resolved_range;
     this.parametric_function = parametric_function;
-    // NOTE: ParametricFunction.__init__ overwrites self.function with the
-    // wrapped form; restore the raw user function like Python does.
-    this.function = function_ as unknown as (t: number) => NDArray;
+    // NOTE: super() already stored the wrapped parametric form as
+    // self.function (exactly like Python, where ParametricFunction.__init__
+    // overwrites the raw assignment); get_function() therefore returns the
+    // wrapped form and get_point_from_function the parametric point.
     // Regenerate now that x_range/parametric_function are assigned (see the
     // super-first note on ParametricFunction above).
     this.generate_points();

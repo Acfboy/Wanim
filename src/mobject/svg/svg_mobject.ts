@@ -505,6 +505,193 @@ export interface SVGPathSegment {
   control2?: [number, number];
 }
 
+/**
+ * Parses SVG path data (the ``d`` attribute content, or equivalently the
+ * string form accepted by ``svgelements.Path`` in the Python implementation)
+ * into pre-parsed segments.
+ *
+ * Supports ``M/m L/l H/h V/v C/c S/s Q/q T/t Z/z``. Arc commands (``A/a``)
+ * are not supported — the Python implementation converts arcs to quads via
+ * ``svgelements`` (``approximate_arcs_with_quads``), which is not ported.
+ */
+export function parse_svg_path_data(d: string): SVGPathSegment[] {
+  const tokens = d.match(/[AaCcHhLlMmQqSsTtVvZz]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) ?? [];
+  const isCommand = (token: string): boolean => /^[AaCcHhLlMmQqSsTtVvZz]$/.test(token);
+  const segments: SVGPathSegment[] = [];
+  let command = "";
+  let relative = false;
+  let current: [number, number] = [0, 0];
+  let subpathStart: [number, number] = [0, 0];
+  let prevCubicControl2: [number, number] | null = null;
+  let prevQuadControl: [number, number] | null = null;
+  let index = 0;
+
+  const readNumber = (): number => {
+    const token = tokens[index];
+    if (token === undefined || isCommand(token)) {
+      throw new Error(`Invalid SVG path data: expected a number but found '${token ?? "end of path"}'`);
+    }
+    index += 1;
+    return parseFloat(token);
+  };
+  const reflect = (point: [number, number]): [number, number] => [
+    2 * current[0] - point[0],
+    2 * current[1] - point[1],
+  ];
+
+  // Parses one parameter group for the active command; returns whether the
+  // command accepts further implicit groups (i.e. more numbers followed).
+  const parseGroup = (): void => {
+    switch (command) {
+      case "M": {
+        const x = readNumber();
+        const y = readNumber();
+        const point: [number, number] = relative
+          ? [current[0] + x, current[1] + y]
+          : [x, y];
+        segments.push({ kind: "Move", end: point });
+        current = point;
+        subpathStart = point;
+        prevCubicControl2 = null;
+        prevQuadControl = null;
+        // NOTE: per the SVG spec, subsequent implicit coordinate pairs after
+        // a moveto are treated as lineto commands.
+        command = "L";
+        break;
+      }
+      case "L": {
+        const x = readNumber();
+        const y = readNumber();
+        const point: [number, number] = relative
+          ? [current[0] + x, current[1] + y]
+          : [x, y];
+        segments.push({ kind: "Line", end: point });
+        current = point;
+        prevCubicControl2 = null;
+        prevQuadControl = null;
+        break;
+      }
+      case "H": {
+        const x = readNumber();
+        const point: [number, number] = relative ? [current[0] + x, current[1]] : [x, current[1]];
+        segments.push({ kind: "Line", end: point });
+        current = point;
+        prevCubicControl2 = null;
+        prevQuadControl = null;
+        break;
+      }
+      case "V": {
+        const y = readNumber();
+        const point: [number, number] = relative ? [current[0], current[1] + y] : [current[0], y];
+        segments.push({ kind: "Line", end: point });
+        current = point;
+        prevCubicControl2 = null;
+        prevQuadControl = null;
+        break;
+      }
+      case "C": {
+        const x1 = readNumber();
+        const y1 = readNumber();
+        const x2 = readNumber();
+        const y2 = readNumber();
+        const x = readNumber();
+        const y = readNumber();
+        const control1: [number, number] = relative
+          ? [current[0] + x1, current[1] + y1]
+          : [x1, y1];
+        const control2: [number, number] = relative
+          ? [current[0] + x2, current[1] + y2]
+          : [x2, y2];
+        const point: [number, number] = relative
+          ? [current[0] + x, current[1] + y]
+          : [x, y];
+        segments.push({ kind: "CubicBezier", control1, control2, end: point });
+        current = point;
+        prevCubicControl2 = control2;
+        prevQuadControl = null;
+        break;
+      }
+      case "S": {
+        const x2 = readNumber();
+        const y2 = readNumber();
+        const x = readNumber();
+        const y = readNumber();
+        const control1 = prevCubicControl2 === null ? [...current] as [number, number] : reflect(prevCubicControl2);
+        const control2: [number, number] = relative
+          ? [current[0] + x2, current[1] + y2]
+          : [x2, y2];
+        const point: [number, number] = relative
+          ? [current[0] + x, current[1] + y]
+          : [x, y];
+        segments.push({ kind: "CubicBezier", control1, control2, end: point });
+        current = point;
+        prevCubicControl2 = control2;
+        prevQuadControl = null;
+        break;
+      }
+      case "Q": {
+        const x1 = readNumber();
+        const y1 = readNumber();
+        const x = readNumber();
+        const y = readNumber();
+        const control: [number, number] = relative
+          ? [current[0] + x1, current[1] + y1]
+          : [x1, y1];
+        const point: [number, number] = relative
+          ? [current[0] + x, current[1] + y]
+          : [x, y];
+        segments.push({ kind: "QuadraticBezier", control, end: point });
+        current = point;
+        prevCubicControl2 = null;
+        prevQuadControl = control;
+        break;
+      }
+      case "T": {
+        const x = readNumber();
+        const y = readNumber();
+        const control = prevQuadControl === null ? [...current] as [number, number] : reflect(prevQuadControl);
+        const point: [number, number] = relative
+          ? [current[0] + x, current[1] + y]
+          : [x, y];
+        segments.push({ kind: "QuadraticBezier", control, end: point });
+        current = point;
+        prevCubicControl2 = null;
+        prevQuadControl = control;
+        break;
+      }
+      default:
+        throw new Error(`Invalid SVG path data: unexpected command '${command}'`);
+    }
+  };
+
+  while (index < tokens.length) {
+    const token = tokens[index] as string;
+    if (isCommand(token)) {
+      index += 1;
+      const upper = token.toUpperCase();
+      relative = token !== upper;
+      if (upper === "Z") {
+        segments.push({ kind: "Close" });
+        current = subpathStart;
+        prevCubicControl2 = null;
+        prevQuadControl = null;
+        command = "";
+        continue;
+      }
+      if (upper === "A") {
+        throw new Error("TODO: SVG arc commands (A/a) are not ported yet");
+      }
+      command = upper;
+      continue;
+    }
+    if (command === "") {
+      throw new Error(`Invalid SVG path data: expected a command but found '${token}'`);
+    }
+    parseGroup();
+  }
+  return segments;
+}
+
 export interface VMobjectFromSVGPathOptions extends VMobjectOptions {
   long_lines?: boolean;
   should_subdivide_sharp_curves?: boolean;
@@ -517,9 +704,9 @@ export class VMobjectFromSVGPath extends VMobject {
   should_subdivide_sharp_curves: boolean;
   should_remove_null_curves: boolean;
 
-  constructor(path_obj: SVGPathSegment[], options: VMobjectFromSVGPathOptions = {}) {
+  constructor(path_obj: SVGPathSegment[] | string, options: VMobjectFromSVGPathOptions = {}) {
     super(options);
-    this.path_obj = path_obj;
+    this.path_obj = typeof path_obj === "string" ? parse_svg_path_data(path_obj) : path_obj;
     this.long_lines = options.long_lines ?? false;
     this.should_subdivide_sharp_curves = options.should_subdivide_sharp_curves ?? false;
     this.should_remove_null_curves = options.should_remove_null_curves ?? false;
