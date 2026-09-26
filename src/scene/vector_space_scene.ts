@@ -246,8 +246,8 @@ export class VectorScene extends Scene {
     void vector;
     void integer_labels;
     void clean_up;
-    // NOTE: in addition to Matrix/MathTex labels (text, out of scope), this
-    // needs Arrow/Vector/Line which have not been ported yet.
+    // NOTE: needs Matrix/Integer labels (text, out of scope) plus the
+    // played component-line/vector display sequence around them.
     throw new Error("TODO: text/tex not ported yet");
   }
 
