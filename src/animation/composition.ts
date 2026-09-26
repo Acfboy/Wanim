@@ -162,7 +162,41 @@ export class AnimationGroup extends Animation {
 export class Succession extends AnimationGroup {
   active_index = 0;
   active_animation: Animation | null = null;
+  active_start_time: number | null = null;
+  active_end_time: number | null = null;
   scene: unknown = null;
+
+  constructor(...args: any[]) {
+    const last = args[args.length - 1];
+    if (isAnimationGroupOptions(last) && !("lag_ratio" in (last as Record<string, unknown>))) {
+      super(...args.slice(0, -1), { ...(last as AnimationGroupOptions), lag_ratio: 1 });
+    } else if (!isAnimationGroupOptions(last)) {
+      super(...args, { lag_ratio: 1 });
+    } else {
+      super(...args);
+    }
+  }
+
+  override begin(): void {
+    if (!this.animations || this.animations.length === 0) {
+      const error = new Error(`Trying to play ${this.toString()} without animations, this is not supported. Please add at least one subanimation.`);
+      error.name = "ValueError";
+      throw error;
+    }
+    this.update_active_animation(0);
+  }
+
+  override finish(): void {
+    while (this.active_animation !== null) {
+      this.next_animation();
+    }
+  }
+
+  override update_mobjects(dt: number): void {
+    if (this.active_animation) {
+      this.active_animation.update_mobjects(dt);
+    }
+  }
 
   override _setup_scene(scene: any): void {
     if (scene === null || scene === undefined) return;
@@ -176,42 +210,39 @@ export class Succession extends AnimationGroup {
     this.scene = scene;
   }
 
-  begin(): void {
-    if (this.animations.length === 0) {
-      const error = new Error("A Succession must contain at least one animation.");
-      error.name = "ValueError";
-      throw error;
+  update_active_animation(index: number): void {
+    this.active_index = index;
+    if (index >= this.animations.length) {
+      this.active_animation = null;
+      this.active_start_time = null;
+      this.active_end_time = null;
+    } else {
+      this.active_animation = this.animations[index];
+      this.active_animation._setup_scene(this.scene);
+      this.active_animation.begin();
+      this.active_start_time = this.anims_with_timings[index]?.start ?? null;
+      this.active_end_time = this.anims_with_timings[index]?.end ?? null;
     }
-    this.active_index = 0;
-    this.update_active_animation();
-  }
-
-  update_active_animation(): void {
-    this.active_animation = this.animations[this.active_index] ?? null;
-    if (!this.active_animation) return;
-    this.active_animation.begin();
-    const start = this.anims_with_timings[this.active_index]?.start ?? 0;
-    const end = this.anims_with_timings[this.active_index]?.end ?? 0;
-    this.anim_group_time = start;
-    this.max_end_time = end;
   }
 
   next_animation(): void {
-    this.active_animation?.finish();
-    this.active_index += 1;
-    if (this.active_index >= this.animations.length) {
-      this.active_animation = null;
-      this.anim_group_time = 0;
-      this.max_end_time = 0;
-    } else this.update_active_animation();
+    if (this.active_animation !== null) {
+      this.active_animation.finish();
+    }
+    this.update_active_animation(this.active_index + 1);
   }
 
-  interpolate(alpha: number): void {
-    if (!this.active_animation) return;
-    const timing = this.anims_with_timings[this.active_index];
-    if (!timing) return;
-    const runTime = timing.end - timing.start;
-    this.active_animation.interpolate(runTime === 0 ? 1 : (this.rate_func(alpha) * (timing.end - timing.start)) / runTime);
+  override interpolate(alpha: number): void {
+    const current_time = this.rate_func(alpha) * this.max_end_time;
+    while (this.active_end_time !== null && this.active_end_time !== undefined && current_time >= this.active_end_time) {
+      this.next_animation();
+    }
+    if (this.active_animation !== null && this.active_start_time !== null && this.active_start_time !== undefined) {
+      const elapsed = current_time - this.active_start_time;
+      const active_run_time = this.active_animation.run_time;
+      const subalpha = active_run_time !== 0.0 ? elapsed / active_run_time : 1.0;
+      this.active_animation.interpolate(subalpha);
+    }
   }
 }
 

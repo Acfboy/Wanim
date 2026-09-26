@@ -1,10 +1,11 @@
 import { Animation, classDefaultsOf, type AnimationOptions } from "./animation.js";
-import { Mobject } from "../mobject/mobject.js";
+import { Mobject, Group } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
+import { config } from "../_config/utils.js";
 import { TAU } from "../constants.js";
 import { integer_interpolate } from "../utils/bezier.js";
-import { double_smooth } from "../utils/rate_functions.js";
+import { double_smooth, linear } from "../utils/rate_functions.js";
 import { pointRows, addPoints, scalePoint, subtractPoints } from "../utils/arrays.js";
 
 export interface ShowPartialOptions extends AnimationOptions {
@@ -95,10 +96,67 @@ export class ShowIncreasingSubsets extends Animation {
 }
 
 export class ShowSubmobjectsOneByOne extends ShowIncreasingSubsets {
+  constructor(group: Iterable<Mobject>, options: AnimationOptions & { int_func?: (value: number) => number } = {}) {
+    const { int_func = Math.ceil, ...rest } = options;
+    const newGroup = new Group(...group);
+    super(newGroup, { int_func, ...rest });
+  }
+
   update_submobject_list(index: number): void {
     const current = this.all_submobs.slice(0, index);
     for (const mobject of current.slice(0, -1)) mobject.set_opacity(0);
     if (current.length > 0) current[current.length - 1].set_opacity(1);
+  }
+}
+
+export interface AddTextLetterByLetterOptions extends AnimationOptions {
+  suspend_mobject_updating?: boolean;
+  int_func?: (value: number) => number;
+  rate_func?: AnimationOptions["rate_func"];
+  time_per_char?: number;
+  run_time?: number;
+  reverse_rate_function?: boolean;
+  introducer?: boolean;
+}
+
+// NOTE: text/tex rendering is out of scope for this port (see system rules),
+// but AddTextLetterByLetter itself is pure ShowIncreasingSubsets logic over
+// an existing mobject's submobjects, so it is ported faithfully with the
+// `Text` parameter typed as Mobject.
+export class AddTextLetterByLetter extends ShowIncreasingSubsets {
+  time_per_char: number;
+
+  constructor(text: Mobject, options: AddTextLetterByLetterOptions = {}) {
+    const clsDefaults = classDefaultsOf(new.target);
+    const {
+      suspend_mobject_updating = (clsDefaults.suspend_mobject_updating as boolean | undefined) ?? false,
+      int_func = (clsDefaults.int_func as ((value: number) => number) | undefined) ?? Math.ceil,
+      rate_func = (clsDefaults.rate_func as AnimationOptions["rate_func"] | undefined) ?? linear,
+      time_per_char = (clsDefaults.time_per_char as number | undefined) ?? 0.1,
+      run_time = (clsDefaults.run_time as number | undefined) ?? null,
+      reverse_rate_function = (clsDefaults.reverse_rate_function as boolean | undefined) ?? false,
+      introducer = (clsDefaults.introducer as boolean | undefined) ?? true,
+      ...rest
+    } = options;
+    if (!text.family_members_with_points() || text.family_members_with_points().length === 0) {
+      const error = new Error(`The text mobject ${text.toString()} does not seem to contain any characters.`);
+      error.name = "ValueError";
+      throw error;
+    }
+    let resolvedRunTime = run_time;
+    if (resolvedRunTime === null || resolvedRunTime === undefined) {
+      resolvedRunTime = Math.max(1 / config.frame_rate, time_per_char) * text.submobjects.length;
+    }
+    super(text, {
+      ...rest,
+      suspend_mobject_updating,
+      int_func,
+      rate_func,
+      run_time: resolvedRunTime,
+      reverse_rate_function,
+      introducer,
+    });
+    this.time_per_char = time_per_char;
   }
 }
 

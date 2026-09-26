@@ -67,6 +67,7 @@ export * from "./scene/three_d_scene.js";
 export * from "./scene/vector_space_scene.js";
 export * from "./scene/zoomed_scene.js";
 export * from "./animation/animation.js";
+export * from "./animation/changing.js";
 export * from "./animation/composition.js";
 export * from "./animation/creation.js";
 export * from "./animation/fading.js";

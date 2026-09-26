@@ -1,13 +1,197 @@
 import { Animation, classDefaultsOf, smooth, type AnimationOptions, type RateFunction } from "./animation.js";
+import { AnimationGroup, type AnimationGroupOptions } from "./composition.js";
 import { ShowPartial, type ShowPartialOptions } from "./creation.js";
 import { Homotopy } from "./movement.js";
-import { type Mobject } from "../mobject/mobject.js";
-import { VMobject } from "../mobject/types/vectorized_mobject.js";
+import { Transform, type TransformOptions } from "./transform.js";
+import { Mobject } from "../mobject/mobject.js";
+import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
+import { Dot } from "../mobject/geometry/arc.js";
+import { Line } from "../mobject/geometry/line.js";
+import { config } from "../_config/utils.js";
 import { interpolate, inverse_interpolate } from "../utils/bezier.js";
-import { cloneNumericArray } from "../utils/arrays.js";
+import { cloneNumericArray, linspace } from "../utils/arrays.js";
 import { there_and_back, wiggle } from "../utils/rate_functions.js";
 import { normalize } from "../utils/space_ops.js";
-import { TAU, UP } from "../constants.js";
+import { GREY, ManimColor, type ParsableManimColor } from "../utils/color/core.js";
+import { ORIGIN, RIGHT, TAU, UP } from "../constants.js";
+
+export interface FocusOnOptions extends TransformOptions {
+  opacity?: number;
+  color?: ParsableManimColor;
+  run_time?: number;
+}
+
+export class FocusOn extends Transform {
+  focus_point: number[] | Mobject;
+  color: ParsableManimColor;
+  opacity: number;
+
+  constructor(
+    focus_point: number[] | Mobject,
+    opacity = 0.2,
+    color: ParsableManimColor = GREY,
+    run_time = 2,
+    options: FocusOnOptions = {},
+  ) {
+    const { opacity: _o, color: _c, run_time: _r, ...rest } = options;
+    void _o; void _c; void _r;
+    const starting_dot = new Dot(
+      [...ORIGIN],
+      Number(config.frame_x_radius) + Number(config.frame_y_radius),
+      0,
+      0,
+      color,
+    );
+    super(starting_dot, { ...rest, run_time, remover: true });
+    this.focus_point = focus_point;
+    this.color = color;
+    this.opacity = opacity;
+  }
+
+  override create_target(): Dot {
+    const little_dot = new Dot([...ORIGIN], 0, 0, 1, this.color);
+    little_dot.set_fill(this.color, this.opacity);
+    const focusPoint = this.focus_point;
+    little_dot.add_updater((d: Mobject) => d.move_to(focusPoint as Mobject));
+    return little_dot;
+  }
+}
+
+export interface IndicateOptions extends TransformOptions {
+  scale_factor?: number;
+  color?: ParsableManimColor;
+  rate_func?: RateFunction;
+}
+
+export class Indicate extends Transform {
+  color: ParsableManimColor;
+  scale_factor: number;
+
+  constructor(
+    mobject: Mobject,
+    scale_factor = 1.2,
+    color: ParsableManimColor = new ManimColor("PURE_YELLOW"),
+    rate_func: RateFunction = there_and_back,
+    options: IndicateOptions = {},
+  ) {
+    const { scale_factor: _s, color: _c, rate_func: _r, ...rest } = options;
+    void _s; void _c; void _r;
+    super(mobject, { ...rest, rate_func });
+    this.color = color;
+    this.scale_factor = scale_factor;
+  }
+
+  override create_target(): Mobject {
+    const target = this.mobject.copy();
+    target.scale(this.scale_factor);
+    target.set_color(this.color);
+    return target;
+  }
+}
+
+export interface FlashOptions extends AnimationGroupOptions {
+  line_length?: number;
+  num_lines?: number;
+  flash_radius?: number;
+  line_stroke_width?: number;
+  color?: ParsableManimColor;
+  time_width?: number;
+  run_time?: number;
+}
+
+export class Flash extends AnimationGroup {
+  point: number[];
+  color: ParsableManimColor;
+  line_length: number;
+  num_lines: number;
+  flash_radius: number;
+  line_stroke_width: number;
+  time_width: number;
+  lines: VGroup;
+  animation_config: Record<string, unknown>;
+
+  constructor(
+    point: number[] | Mobject,
+    line_length = 0.2,
+    num_lines = 12,
+    flash_radius = 0.1,
+    line_stroke_width = 3,
+    color: ParsableManimColor = new ManimColor("PURE_YELLOW"),
+    time_width = 1,
+    run_time = 1.0,
+    options: FlashOptions = {},
+  ) {
+    const {
+      line_length: _ll, num_lines: _nl, flash_radius: _fr,
+      line_stroke_width: _lw, color: _c, time_width: _tw, run_time: _rt,
+      ...rest
+    } = options;
+    void _ll; void _nl; void _fr; void _lw; void _c; void _tw; void _rt;
+    const resolvedPoint = point instanceof Mobject ? [...point.get_center()] : [...point];
+    // NOTE: Python assigns these pre-super().__init__ attributes (point,
+    // color, line_length, ..., run_time) before delegating; TS requires
+    // super() first, so locals carry the values until assignment below.
+    // Python's pre-super `self.run_time` is overwritten by
+    // init_run_time(None) -> max_end_time, which the base constructor
+    // already computes, so it is not re-applied here.
+    const lines = Flash.createLines(resolvedPoint, line_length, num_lines, flash_radius, line_stroke_width, color);
+    const animations = Flash.createLineAnims(lines, time_width, run_time, rest);
+    super(...animations, { ...rest, group: lines });
+    this.point = resolvedPoint;
+    this.color = color;
+    this.line_length = line_length;
+    this.num_lines = num_lines;
+    this.flash_radius = flash_radius;
+    this.line_stroke_width = line_stroke_width;
+    this.time_width = time_width;
+    this.animation_config = { ...rest };
+    this.lines = lines;
+  }
+
+  private static createLines(
+    point: number[],
+    line_length: number,
+    num_lines: number,
+    flash_radius: number,
+    line_stroke_width: number,
+    color: ParsableManimColor,
+  ): VGroup {
+    const lines = new VGroup();
+    const step = TAU / num_lines;
+    for (let index = 0; index < num_lines; index += 1) {
+      const angle = index * step;
+      const end = [point[0] + line_length * RIGHT[0], point[1] + line_length * RIGHT[1], point[2] + line_length * RIGHT[2]];
+      const line = new Line(point, end);
+      line.shift([flash_radius * RIGHT[0], flash_radius * RIGHT[1], flash_radius * RIGHT[2]]);
+      line.rotate(angle, undefined, point);
+      lines.add(line);
+    }
+    lines.set_color(color);
+    lines.set_stroke(undefined, line_stroke_width);
+    return lines;
+  }
+
+  private static createLineAnims(
+    lines: VGroup,
+    time_width: number,
+    run_time: number,
+    animation_config: Record<string, unknown>,
+  ): ShowPassingFlash[] {
+    return [...lines.submobjects].map(
+      (line) => new ShowPassingFlash(line as VMobject, time_width, { ...(animation_config as ShowPartialOptions), run_time }),
+    );
+  }
+
+  create_lines(): VGroup {
+    const lines = Flash.createLines(this.point, this.line_length, this.num_lines, this.flash_radius, this.line_stroke_width, this.color);
+    this.lines = lines;
+    return lines;
+  }
+
+  create_line_anims(): ShowPassingFlash[] {
+    return Flash.createLineAnims(this.lines, this.time_width, this.run_time, this.animation_config);
+  }
+}
 
 export class ShowPassingFlash extends ShowPartial {
   time_width: number;
@@ -31,6 +215,43 @@ export class ShowPassingFlash extends ShowPartial {
     for (const [submob, start] of this.get_all_families_zipped()) {
       (submob as VMobject).pointwise_become_partial(start as VMobject, 0, 1);
     }
+  }
+}
+
+export class ShowPassingFlashWithThinningStrokeWidth extends AnimationGroup {
+  n_segments: number;
+  time_width: number;
+
+  constructor(
+    vmobject: VMobject,
+    n_segments = 10,
+    time_width = 0.1,
+    remover = true,
+    options: AnimationGroupOptions & { time_width?: number } = {},
+  ) {
+    const { time_width: _tw, ...rest } = options;
+    void _tw;
+    // NOTE: Python assigns n_segments/time_width/remover pre-super(); the
+    // base constructor overwrites remover via its defaults (it is not
+    // forwarded), so only n_segments/time_width survive — mirrored here by
+    // assigning after super().
+    // Mirrors `kwargs.pop("time_width", self.time_width)`.
+    const max_time_width = (options.time_width as number | undefined) ?? time_width;
+    const max_stroke_width = vmobject.get_stroke_width();
+    const stroke_widths = linspace(0, max_stroke_width, n_segments);
+    const time_widths = linspace(max_time_width, 0, n_segments);
+    const animations = stroke_widths.map(
+      (stroke_width, index) =>
+        new ShowPassingFlash(
+          (vmobject.copy() as VMobject).set_stroke(undefined, stroke_width),
+          time_widths[index] ?? 0,
+          { ...(rest as ShowPartialOptions) },
+        ),
+    );
+    super(...animations);
+    this.n_segments = n_segments;
+    this.time_width = time_width;
+    void remover;
   }
 }
 
