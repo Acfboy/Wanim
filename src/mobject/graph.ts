@@ -1191,6 +1191,10 @@ export class Graph extends GenericGraph {
   }
 
   toString(): string {
+    return this.__repr__();
+  }
+
+  __repr__(): string {
     return `Undirected graph on ${this.vertices.size} vertices and ${this.edges.size} edges`;
   }
 }
@@ -1253,6 +1257,10 @@ export class DiGraph extends GenericGraph {
   }
 
   toString(): string {
+    return this.__repr__();
+  }
+
+  __repr__(): string {
     return `Directed graph on ${this.vertices.size} vertices and ${this.edges.size} edges`;
   }
 }
