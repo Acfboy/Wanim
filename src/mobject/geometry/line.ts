@@ -570,3 +570,47 @@ export class RightAngle extends Angle {
     super(line1, line2, { radius: lengthOption ?? length, elbow: true, ...rest });
   }
 }
+
+export interface VectorOptions extends ArrowOptions {
+  buff?: number;
+}
+
+export class Vector extends Arrow {
+  buff: number;
+
+  constructor(
+    direction: readonly number[] | NDArray | number[] = [...RIGHT],
+    buffOrOptions: number | VectorOptions = 0,
+    options: VectorOptions = {},
+  ) {
+    // NOTE: mirrors Python `Vector(direction=RIGHT, buff=0, **kwargs)` which
+    // extends 2-D directions to 3-D (`np.hstack([direction, 0])`) and calls
+    // `Arrow(ORIGIN, direction, buff=buff, **kwargs)`.
+    let positionalBuff: number | undefined;
+    let merged: VectorOptions = { ...options };
+    if (typeof buffOrOptions === "number") positionalBuff = buffOrOptions;
+    else merged = { ...(buffOrOptions as VectorOptions), ...merged };
+    const { buff: buffOption, ...rest } = merged;
+    const buff = buffOption ?? positionalBuff ?? 0;
+    let dir: readonly number[] | NDArray | number[] = direction;
+    if (!Array.isArray(dir) && typeof (dir as NDArray).toArray === "function") {
+      const raw = (dir as NDArray).toArray() as unknown;
+      dir = (Array.isArray(raw) ? raw : [raw]).map(Number);
+    }
+    const dirArray = [...(dir as number[])];
+    if (dirArray.length === 2) dirArray.push(0);
+    super([...ORIGIN], dirArray, { buff, ...rest });
+    this.buff = buff;
+  }
+
+  coordinate_label(
+    _integer_labels = true,
+    _n_dim = 2,
+    _color?: ParsableManimColor | null,
+    _options: Record<string, unknown> = {},
+  ): never {
+    // NOTE: Python builds a `Matrix` (LaTeX-rendered) label here; text/tex
+    // is out of scope for the entire port.
+    throw new Error("TODO: text/tex not ported yet");
+  }
+}

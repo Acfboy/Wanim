@@ -1,5 +1,7 @@
 import type { NDArray } from "numpy-ts";
 import { Transform, type TransformOptions } from "./transform.js";
+import { PI } from "../constants.js";
+import { spiral_path } from "../utils/paths.js";
 import type { Mobject } from "../mobject/mobject.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 
@@ -141,5 +143,66 @@ export class GrowArrow extends GrowFromPoint {
       startArrow.set_color(this.point_color);
     }
     return startArrow;
+  }
+}
+
+export interface SpinInFromNothingOptions extends GrowFromCenterOptions {
+  angle?: number;
+}
+
+export class SpinInFromNothing extends GrowFromCenter {
+  angle: number;
+
+  constructor(
+    mobject: Mobject,
+    angle: number | SpinInFromNothingOptions = PI / 2,
+    pointColorOrOptions: ParsableManimColor | null | SpinInFromNothingOptions = null,
+    options: SpinInFromNothingOptions = {},
+  ) {
+    // NOTE: mirrors Python `(mobject, angle=PI/2, point_color=None,
+    // **kwargs)`; `angle`/`point_color` may also arrive inside options bags.
+    let resolvedAngle = PI / 2;
+    let rest: SpinInFromNothingOptions = { ...options };
+    if (typeof angle === "number") {
+      resolvedAngle = angle;
+    } else if (angle !== null && typeof angle === "object") {
+      const { angle: a, ...r } = angle;
+      if (a !== undefined) resolvedAngle = a;
+      rest = { ...r, ...rest };
+    }
+    let resolvedColor: ParsableManimColor | null = null;
+    if (
+      pointColorOrOptions !== null &&
+      typeof pointColorOrOptions === "object" &&
+      !Array.isArray(pointColorOrOptions) &&
+      ("angle" in (pointColorOrOptions as Record<string, unknown>) ||
+        "point_color" in (pointColorOrOptions as Record<string, unknown>) ||
+        looksLikeOptions(pointColorOrOptions))
+    ) {
+      const { angle: a, point_color: pc, ...r } = pointColorOrOptions as SpinInFromNothingOptions;
+      if (a !== undefined) resolvedAngle = a;
+      if (pc !== undefined) resolvedColor = (pc as ParsableManimColor | null) ?? null;
+      rest = { ...r, ...rest };
+    } else {
+      resolvedColor = (pointColorOrOptions as ParsableManimColor | null) ?? null;
+    }
+    if (rest.angle !== undefined) {
+      resolvedAngle = rest.angle;
+      const { angle: _a, ...r } = rest;
+      void _a;
+      rest = r;
+    }
+    if (rest.point_color !== undefined && resolvedColor === null) {
+      resolvedColor = (rest.point_color as ParsableManimColor | null) ?? null;
+      const { point_color: _pc, ...r } = rest;
+      void _pc;
+      rest = r;
+    }
+    super(
+      mobject,
+      resolvedColor,
+      { path_func: spiral_path(resolvedAngle), ...rest } as GrowFromCenterOptions,
+    );
+    this.angle = resolvedAngle;
   }
 }

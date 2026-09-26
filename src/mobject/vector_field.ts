@@ -5,11 +5,13 @@ import { CoordinateSystem } from "./graphing/coordinate_systems.js";
 import { Animation, type AnimationOptions, linear } from "../animation/animation.js";
 import { AnimationGroup, Succession } from "../animation/composition.js";
 import { UpdateFromAlphaFunc } from "../animation/updaters/update.js";
-import { Create, ShowPartial } from "../animation/creation.js";
+import { Create, ShowPartial, type ShowPartialOptions } from "../animation/creation.js";
 import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, color_to_rgb, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
 import { inverse_interpolate } from "../utils/bezier.js";
 import { addPoints, arange, linspace, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
 import { clip as _clip } from "../utils/simple_functions.js";
+import { sigmoid } from "../utils/simple_functions.js";
+import { Vector, type VectorOptions } from "./geometry/line.js";
 import { ease_out_sine } from "../utils/rate_functions.js";
 import { config } from "../_config/utils.js";
 import { OUT, RIGHT, UP } from "../constants.js";
@@ -223,6 +225,83 @@ export class VectorField extends VGroup {
   }
 }
 
+export interface ArrowVectorFieldOptions extends VectorFieldOptions {
+  x_range?: number[] | null;
+  y_range?: number[] | null;
+  z_range?: number[] | null;
+  three_dimensions?: boolean;
+  length_func?: (normValue: number) => number;
+  opacity?: number;
+  vector_config?: VectorOptions | null;
+}
+
+export class ArrowVectorField extends VectorField {
+  x_range: number[];
+  y_range: number[];
+  z_range: number[];
+  ranges: number[][];
+  length_func: (normValue: number) => number;
+  opacity: number;
+  vector_config: VectorOptions;
+
+  constructor(func: VectorFunction, options: ArrowVectorFieldOptions = {}) {
+    super(func, options);
+    // NOTE: mirrors Python: `x_range or [floor(-frame_width/2),
+    // ceil(frame_width/2)]`, 2-element ranges gain a 0.5 step, and the upper
+    // bound is extended by one step (`ranges[i][1] += ranges[i][2]`).
+    this.x_range = options.x_range && options.x_range.length > 0 ? [...options.x_range] : [Math.floor(-config.frame_width / 2), Math.ceil(config.frame_width / 2)];
+    this.y_range = options.y_range && options.y_range.length > 0 ? [...options.y_range] : [Math.floor(-config.frame_height / 2), Math.ceil(config.frame_height / 2)];
+    this.ranges = [this.x_range, this.y_range];
+    if (options.three_dimensions || (options.z_range && options.z_range.length > 0)) {
+      this.z_range = options.z_range && options.z_range.length > 0 ? [...options.z_range] : [...this.y_range];
+      this.ranges.push(this.z_range);
+    } else {
+      this.z_range = [0, 0];
+      this.ranges.push(this.z_range);
+    }
+    for (const range of this.ranges) {
+      if (range.length === 2) range.push(0.5);
+      range[1] += range[2];
+    }
+    this.x_range = this.ranges[0];
+    this.y_range = this.ranges[1];
+    this.z_range = this.ranges[2];
+    this.length_func = options.length_func ?? ((normValue: number) => 0.45 * sigmoid(normValue));
+    this.opacity = options.opacity ?? 1.0;
+    this.vector_config = options.vector_config ? { ...options.vector_config } : {};
+    this.func = func;
+    const xs = arange(this.x_range[0], this.x_range[1], this.x_range[2]);
+    const ys = arange(this.y_range[0], this.y_range[1], this.y_range[2]);
+    const zs = arange(this.z_range[0], this.z_range[1], this.z_range[2]);
+    for (const x of xs) {
+      for (const y of ys) {
+        for (const z of zs) {
+          // NOTE: mirrors Python `x * RIGHT + y * UP + z * OUT`.
+          this.add(this.get_vector([x ?? 0, y ?? 0, z ?? 0]));
+        }
+      }
+    }
+    this.set_opacity(this.opacity);
+  }
+
+  get_vector(point: number[] | NDArray): Vector {
+    const output = vectorOf(this.func(point));
+    const vectorNorm = norm(output);
+    let direction = [...output];
+    if (vectorNorm !== 0) {
+      direction = output.map((component) => component * (this.length_func(vectorNorm) / vectorNorm));
+    }
+    const vect = new Vector(direction, { ...this.vector_config } as VectorOptions);
+    vect.shift(vectorOf(point));
+    if (this.single_color) {
+      vect.set_color(this.color);
+    } else if (this.pos_to_color) {
+      vect.set_color(this.pos_to_color(point));
+    }
+    return vect;
+  }
+}
+
 export interface StreamLinesOptions extends VectorFieldOptions {
   x_range?: number[] | null;
   y_range?: number[] | null;
@@ -411,6 +490,27 @@ export class StreamLines extends VectorField {
       }
     }
     return new AnimationGroup(...animations);
+  }
+
+  create(
+    lag_ratio?: number | null,
+    run_time?: number | null,
+    options: ShowPartialOptions = {},
+  ): AnimationGroup {
+    // NOTE: mirrors Python `StreamLines.create`: per-line `Create`
+    // animations (defaulting to `virtual_time` run time) in random order,
+    // grouped with a lag ratio defaulting to `run_time / 2 / len(submobjects)`.
+    // (Python annotates `run_time` as a Callable, but uses it as a float.)
+    const resolvedRunTime = run_time ?? this.virtual_time;
+    const resolvedLagRatio = lag_ratio ?? resolvedRunTime / 2 / this.submobjects.length;
+    const animations: Animation[] = this.stream_lines.map(
+      (line) => new Create(line, { run_time: resolvedRunTime, ...options }),
+    );
+    for (let index = animations.length - 1; index > 0; index -= 1) {
+      const other = Math.floor(Math.random() * (index + 1));
+      [animations[index], animations[other]] = [animations[other]!, animations[index]!];
+    }
+    return new AnimationGroup(...animations, { lag_ratio: resolvedLagRatio });
   }
 }
 

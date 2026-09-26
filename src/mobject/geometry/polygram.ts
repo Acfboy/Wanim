@@ -215,7 +215,9 @@ export class Rectangle extends Polygon {
 
     if (grid_xstep || grid_ystep) {
       // NOTE: grid lines need Line (manim.mobject.geometry.line), which
-      // lives in another translation batch.
+      // would be a circular import here (line -> tips -> polygram; Python
+      // uses a lazy import inside __init__ for the same reason), so grid
+      // lines stay unported for now.
       throw new Error("TODO: Rectangle grid lines need Line, not ported yet");
     }
   }

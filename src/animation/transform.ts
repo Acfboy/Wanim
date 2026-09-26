@@ -345,6 +345,38 @@ export class ApplyPointwiseFunction extends ApplyMethod {
   }
 }
 
+export class ApplyPointwiseFunctionToCenter extends ApplyPointwiseFunction {
+  function: (center: number[]) => number[] | unknown;
+
+  constructor(
+    function_: (center: number[]) => number[] | unknown,
+    mobject: Mobject,
+    options: AnimationOptions = {},
+  ) {
+    // NOTE: mirrors Python `self.function = function;
+    // super().__init__(mobject.move_to, **kwargs)`. Python's super call passes
+    // only the bound `move_to` method (dropping `function`, which becomes a
+    // method_arg in begin()); the TS ApplyPointwiseFunction constructor needs
+    // an explicit (function, mobject) pair, so a dummy pointwise function is
+    // threaded through and the method facade is then rewired to `move_to`
+    // (same bound-method pattern as ApplyPointwiseFunction above).
+    super((point: number[]) => point, mobject, options);
+    this.function = function_;
+    const unbound = (mobject as unknown as { move_to: (...args: never[]) => unknown }).move_to;
+    const bound = function (...args: unknown[]): unknown {
+      return (unbound as (...callArgs: unknown[]) => unknown).apply(mobject, args);
+    } as MobjectBoundMethod;
+    bound.__self__ = mobject;
+    bound.__func__ = unbound as (...args: never[]) => unknown;
+    this.method = bound;
+    this.method_args = [];
+  }
+
+  override begin(): void {
+    this.method_args = [(this.function as (center: number[]) => unknown)(this.mobject.get_center())];
+    super.begin();
+  }
+}
 export class ApplyMatrix extends ApplyPointwiseFunction {
   constructor(matrix: unknown, mobject: Mobject, about_point: readonly number[] = ORIGIN, options: AnimationOptions = {}) {
     const initialized = ApplyMatrix.initialize_matrix(matrix);
@@ -402,6 +434,12 @@ export class ScaleInPlace extends ApplyMethod {
     // **kwargs)`; see FadeToColor for the facade/options pattern.
     super(boundMethodOf(mobject, "scale"), scale_factor);
     forwardAnimationOptions(this, new.target ?? ScaleInPlace, options);
+  }
+}
+
+export class ShrinkToCenter extends ScaleInPlace {
+  constructor(mobject: Mobject, options: AnimationOptions = {}) {
+    super(mobject, 0, options);
   }
 }
 
