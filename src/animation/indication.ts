@@ -1,20 +1,23 @@
 import { Animation, classDefaultsOf, smooth, type AnimationOptions, type RateFunction } from "./animation.js";
 import { AnimationGroup, Succession, type AnimationGroupOptions } from "./composition.js";
-import { ShowPartial, type ShowPartialOptions } from "./creation.js";
+import { Create, ShowPartial, Uncreate, type ShowPartialOptions } from "./creation.js";
+import { FadeIn, FadeOut } from "./fading.js";
 import { Homotopy } from "./movement.js";
 import { Transform, type TransformOptions } from "./transform.js";
 import { UpdateFromFunc } from "./updaters/update.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VMobject, VGroup } from "../mobject/types/vectorized_mobject.js";
-import { Dot } from "../mobject/geometry/arc.js";
+import { Circle, Dot } from "../mobject/geometry/arc.js";
 import { Line } from "../mobject/geometry/line.js";
+import { Rectangle } from "../mobject/geometry/polygram.js";
+import { SurroundingRectangle } from "../mobject/geometry/shape_matchers.js";
 import { config } from "../_config/utils.js";
 import { interpolate, inverse_interpolate } from "../utils/bezier.js";
 import { cloneNumericArray, linspace } from "../utils/arrays.js";
 import { there_and_back, wiggle } from "../utils/rate_functions.js";
 import { normalize } from "../utils/space_ops.js";
 import { GREY, ManimColor, type ParsableManimColor } from "../utils/color/core.js";
-import { ORIGIN, RIGHT, TAU, UP } from "../constants.js";
+import { DEFAULT_STROKE_WIDTH, ORIGIN, RIGHT, SMALL_BUFF, TAU, UP } from "../constants.js";
 
 export interface FocusOnOptions extends TransformOptions {
   opacity?: number;
@@ -387,6 +390,99 @@ export class Wiggle extends Animation {
       undefined,
       this.get_rotate_about_point(),
     );
+  }
+}
+
+export interface CircumscribeOptions extends AnimationGroupOptions {
+  shape?: typeof Rectangle | typeof Circle;
+  fade_in?: boolean;
+  fade_out?: boolean;
+  time_width?: number;
+  buff?: number;
+  color?: ParsableManimColor;
+  run_time?: number;
+  stroke_width?: number;
+}
+
+export class Circumscribe extends Succession {
+  constructor(
+    mobject: Mobject,
+    shape: typeof Rectangle | typeof Circle = Rectangle,
+    fade_in = false,
+    fade_out = false,
+    time_width = 0.3,
+    buff = SMALL_BUFF,
+    color: ParsableManimColor = new ManimColor("PURE_YELLOW"),
+    run_time = 1,
+    stroke_width = DEFAULT_STROKE_WIDTH,
+    options: CircumscribeOptions = {},
+  ) {
+    const {
+      shape: shapeOption,
+      fade_in: fadeInOption,
+      fade_out: fadeOutOption,
+      time_width: timeWidthOption,
+      buff: buffOption,
+      color: colorOption,
+      run_time: runTimeOption,
+      stroke_width: strokeWidthOption,
+      ...rest
+    } = options;
+    const resolvedShape = shapeOption ?? shape;
+    const resolvedFadeIn = fadeInOption ?? fade_in;
+    const resolvedFadeOut = fadeOutOption ?? fade_out;
+    const resolvedTimeWidth = timeWidthOption ?? time_width;
+    const resolvedBuff = buffOption ?? buff;
+    const resolvedColor = colorOption ?? color;
+    const resolvedRunTime = runTimeOption ?? run_time;
+    const resolvedStrokeWidth = strokeWidthOption ?? stroke_width;
+    let frame: SurroundingRectangle | Circle;
+    if (resolvedShape === Rectangle) {
+      frame = new SurroundingRectangle(mobject, {
+        color: resolvedColor,
+        buff: resolvedBuff,
+        stroke_width: resolvedStrokeWidth,
+      });
+    } else if (resolvedShape === Circle) {
+      const circle = new Circle(null, {
+        color: resolvedColor,
+        stroke_width: resolvedStrokeWidth,
+      });
+      circle.surround(mobject, 0, false, 1);
+      const radius = circle.width / 2;
+      circle.scale((radius + resolvedBuff) / radius);
+      frame = circle;
+    } else {
+      const error = new Error("shape should be either Rectangle or Circle.");
+      error.name = "ValueError";
+      throw error;
+    }
+
+    if (resolvedFadeIn && resolvedFadeOut) {
+      super(
+        new FadeIn(frame, { run_time: resolvedRunTime / 2 }),
+        new FadeOut(frame, { run_time: resolvedRunTime / 2 }),
+        rest,
+      );
+    } else if (resolvedFadeIn) {
+      frame.reverse_direction();
+      super(
+        new FadeIn(frame, { run_time: resolvedRunTime / 2 }),
+        new Uncreate(frame as VMobject, { run_time: resolvedRunTime / 2 }),
+        rest,
+      );
+    } else if (resolvedFadeOut) {
+      super(
+        new Create(frame as VMobject, { run_time: resolvedRunTime / 2 }),
+        new FadeOut(frame, { run_time: resolvedRunTime / 2 }),
+        rest,
+      );
+    } else {
+      super(
+        new ShowPassingFlash(frame as VMobject, resolvedTimeWidth, { run_time: resolvedRunTime }),
+        rest,
+      );
+    }
   }
 }
 

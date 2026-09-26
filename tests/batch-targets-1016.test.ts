@@ -23,6 +23,7 @@
 // OUT OF SCOPE (text/tex): none of these symbols touch text/tex.
 import { describe, expect, it } from "vitest";
 import { Mobject } from "../src/mobject/mobject.js";
+import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
 import { Polygon, Rectangle, Square } from "../src/mobject/geometry/polygram.js";
 import { Line } from "../src/mobject/geometry/line.js";
 import { Dot } from "../src/mobject/geometry/arc.js";
@@ -183,12 +184,18 @@ describe("Rectangle", () => {
     expectRowsClose(r.get_vertices(), [[1, 0.5, 0], [-1, 0.5, 0], [-1, -0.5, 0], [1, -0.5, 0]]);
   });
 
-  it("marks grid lines as an unported TODO stub (Python builds 2 groups)", () => {
+  it("builds grid line groups (Python builds 2 groups of Lines)", () => {
     // Python: Rectangle(width=4, height=2, grid_xstep=1, grid_ystep=1)
-    //   .grid_lines has 2 VGroup children. The port cannot build them yet.
-    expect(() => new Rectangle({ grid_xstep: 1.0, grid_ystep: 1.0 })).toThrowError(
-      "TODO: Rectangle grid lines need Line, not ported yet",
-    );
+    //   .grid_lines has 2 VGroup children: range(1, int(4/1)) = 3 vertical
+    //   lines and range(1, int(2/1)) = 1 horizontal line.
+    const r = new Rectangle({ width: 4.0, height: 2.0, grid_xstep: 1.0, grid_ystep: 1.0 });
+    expect(r.grid_lines.submobjects.length).toBe(2);
+    const [gx, gy] = r.grid_lines.submobjects as VGroup[];
+    expect(gx.submobjects.length).toBe(3);
+    expect(gy.submobjects.length).toBe(1);
+    for (const line of [...gx.submobjects, ...gy.submobjects]) {
+      expect(line instanceof Line).toBe(true);
+    }
   });
 });
 

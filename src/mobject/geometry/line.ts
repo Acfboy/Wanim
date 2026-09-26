@@ -20,6 +20,7 @@ import { Arc, ArcBetweenPoints, Dot, TipableVMobject, set_line_constructor, type
 import { ArrowTriangleFilledTip } from "./tips.js";
 import type { ArrowTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
+import { set_grid_line_constructor } from "./polygram.js";
 
 export type LineEndpoint = Mobject | readonly number[] | NDArray;
 
@@ -196,6 +197,10 @@ export class Line extends TipableVMobject {
 // Registers Line for ArcPolygonFromArcs gap-filling (arc.js must not import
 // line.js directly: this module imports Arc from there).
 set_line_constructor(Line as unknown as Parameters<typeof set_line_constructor>[0]);
+
+// Registers Line for Rectangle grid lines (polygram.js must not import
+// line.js directly: this module reaches polygram.js via tips.js).
+set_grid_line_constructor(Line as unknown as Parameters<typeof set_grid_line_constructor>[0]);
 
 export interface TangentLineOptions extends LineOptions {
   d_alpha?: number;

@@ -1,10 +1,24 @@
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
-import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
+import { addPoints, isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { regular_vertices } from "../../utils/space_ops.js";
 import { QuickHull, type Facet, type SubFacet } from "../../utils/qhull.js";
-import { TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
+import { DOWN, RIGHT, TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
 import { BLUE, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import type { NDArray } from "numpy-ts";
+
+// Lazy Line access for Rectangle grid lines (mirrors Python's lazy
+// `from manim.mobject.geometry.line import Line` inside
+// Rectangle.__init__; a top-level import would cycle via
+// line -> tips -> polygram and break module evaluation order, depending on
+// entry point). line.ts registers its Line class via
+// set_grid_line_constructor; grid lines require line.ts to be loaded.
+export type GridLineConstructor = new (...args: any[]) => VMobject;
+
+let gridLineConstructor: GridLineConstructor | null = null;
+
+export function set_grid_line_constructor(ctor: GridLineConstructor): void {
+  gridLineConstructor = ctor;
+}
 
 export interface PolygramOptions extends VMobjectOptions {
   color?: ParsableManimColor;
@@ -271,14 +285,48 @@ export class Rectangle extends Polygon {
     this.stretch_to_fit_width(width);
     this.stretch_to_fit_height(height);
 
+    let v = this.get_vertices();
     this.grid_lines = new VGroup();
 
     if (grid_xstep || grid_ystep) {
-      // NOTE: grid lines need Line (manim.mobject.geometry.line), which
-      // would be a circular import here (line -> tips -> polygram; Python
-      // uses a lazy import inside __init__ for the same reason), so grid
-      // lines stay unported for now.
-      throw new Error("TODO: Rectangle grid lines need Line, not ported yet");
+      // NOTE: mirrors Python's lazy `from manim.mobject.geometry.line
+      // import Line` (see module hook above).
+      if (gridLineConstructor === null) {
+        throw new Error(
+          "TODO: Rectangle grid lines need line.ts to be imported (register Line via set_grid_line_constructor)",
+        );
+      }
+      v = this.get_vertices();
+    }
+    // NOTE: guarded non-null by the throw above whenever grid lines are built.
+    const lineCtor = gridLineConstructor as GridLineConstructor;
+
+    if (grid_xstep) {
+      const step = Math.abs(grid_xstep);
+      const count = Math.trunc(width / step);
+      const grid = new VGroup();
+      for (let i = 1; i < count; i += 1) {
+        const start = addPoints(v[1] ?? [0, 0, 0], scalePoint(RIGHT, i * step, 3), 3);
+        const end = addPoints(start, scalePoint(DOWN, height, 3), 3);
+        grid.add(new lineCtor(start, end, { color }));
+      }
+      this.grid_lines.add(grid);
+    }
+
+    if (grid_ystep) {
+      const step = Math.abs(grid_ystep);
+      const count = Math.trunc(height / step);
+      const grid = new VGroup();
+      for (let i = 1; i < count; i += 1) {
+        const start = addPoints(v[1] ?? [0, 0, 0], scalePoint(DOWN, i * step, 3), 3);
+        const end = addPoints(start, scalePoint(RIGHT, width, 3), 3);
+        grid.add(new lineCtor(start, end, { color }));
+      }
+      this.grid_lines.add(grid);
+    }
+
+    if (this.grid_lines.submobjects.length > 0) {
+      this.add(this.grid_lines);
     }
   }
 }

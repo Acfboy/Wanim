@@ -20,6 +20,41 @@ interface NonlinearTransformable {
   insert_n_curves(n: number): void;
 }
 
+/** Structural surface an axis mobject must provide for
+ * CoordinateSystem.add_coordinates (mirrors NumberLine.add_labels /
+ * add_numbers, NumberLine.scaling, NumberLine.get_tick_range and the
+ * labels/numbers attributes those calls populate). */
+export interface CoordinateAxisLike extends Mobject {
+  scaling: _ScaleBase;
+  get_tick_range(): NDArray;
+  add_labels(
+    dict_values: Map<number, unknown> | Record<string, unknown>,
+    direction?: readonly number[] | NDArray | null,
+    buff?: number | null,
+    font_size?: number | null,
+    label_constructor?: unknown,
+  ): unknown;
+  add_numbers(
+    x_values?: Iterable<number> | null,
+    excluding?: Iterable<number> | null,
+    font_size?: number | null,
+    label_constructor?: unknown,
+    number_config?: Record<string, unknown>,
+  ): unknown;
+  labels: VGroup | null;
+  numbers: VGroup | null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) return false;
+  if (value instanceof Mobject) return false;
+  if (value instanceof Map) return false;
+  if (isNDArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]> {
   const length = Math.min(first.length, second.length);
   return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
@@ -96,6 +131,102 @@ export class CoordinateSystem {
     const error = new Error();
     error.name = "NotImplementedError";
     throw error;
+  }
+
+  coordinate_labels!: VGroup;
+
+  add_coordinates(...args: unknown[]): this {
+    // NOTE: mirrors Python `add_coordinates(*axes_numbers, **kwargs)`. A
+    // trailing plain object is treated as the kwargs bag only when it carries
+    // at least one known keyword (direction/buff/font_size/label_constructor/
+    // x_values/excluding); a labels dict (numeric keys) stays an axes_number.
+    const KNOWN_KWARGS = new Set([
+      "direction",
+      "buff",
+      "font_size",
+      "label_constructor",
+      "x_values",
+      "excluding",
+    ]);
+    let kwargs: Record<string, unknown> = {};
+    let axes_numbers: unknown[] = args;
+    const last = args[args.length - 1];
+    if (
+      isPlainRecord(last) &&
+      Object.keys(last).some((key) => KNOWN_KWARGS.has(key))
+    ) {
+      kwargs = last;
+      axes_numbers = args.slice(0, -1);
+    }
+    this.coordinate_labels = new VGroup();
+    // if nothing is passed to axes_numbers, produce axes with default labelling
+    if (axes_numbers.length === 0) {
+      axes_numbers = Array.from({ length: this.dimension }, () => null);
+    }
+
+    const axes = [...this.get_axes().submobjects] as CoordinateAxisLike[];
+    // NOTE: mirrors zip(self.axes, axes_numbers, strict=False) — stops at
+    // the shorter of the two.
+    const count = Math.min(axes.length, axes_numbers.length);
+    for (let index = 0; index < count; index += 1) {
+      const axis = axes[index] as CoordinateAxisLike;
+      const values = axes_numbers[index];
+      let labels: VGroup;
+      if (values instanceof Map || isPlainRecord(values)) {
+        // NOTE: Python add_labels() takes no **kwargs, so unexpected keywords
+        // raise TypeError there; mirrored here.
+        for (const key of Object.keys(kwargs)) {
+          if (!["direction", "buff", "font_size", "label_constructor"].includes(key)) {
+            throw new TypeError(`add_labels() got an unexpected keyword argument '${key}'`);
+          }
+        }
+        axis.add_labels(
+          values as Map<number, unknown> | Record<string, unknown>,
+          (kwargs["direction"] as readonly number[] | NDArray | null | undefined) ?? null,
+          (kwargs["buff"] as number | null | undefined) ?? null,
+          (kwargs["font_size"] as number | null | undefined) ?? null,
+          kwargs["label_constructor"] ?? null,
+        );
+        labels = axis.labels as VGroup;
+      } else if ((values === null || values === undefined) && axis.scaling.custom_labels) {
+        const tick_range = (axis.get_tick_range().toArray() as unknown[]).map(Number);
+        const custom_labels = [
+          ...(axis.scaling.get_custom_labels(tick_range) as Iterable<unknown>),
+        ];
+        // NOTE: mirrors dict(zip(tick_range, custom_labels, strict=True)).
+        if (custom_labels.length !== tick_range.length) {
+          const error = new Error(
+            `zip() argument 2 is ${custom_labels.length < tick_range.length ? "shorter" : "longer"} than argument 1`,
+          );
+          error.name = "ValueError";
+          throw error;
+        }
+        axis.add_labels(
+          new Map<number, unknown>(
+            tick_range.map((tick, tickIndex) => [tick, custom_labels[tickIndex]]),
+          ),
+          (kwargs["direction"] as readonly number[] | NDArray | null | undefined) ?? null,
+          (kwargs["buff"] as number | null | undefined) ?? null,
+          (kwargs["font_size"] as number | null | undefined) ?? null,
+          kwargs["label_constructor"] ?? null,
+        );
+        labels = axis.labels as VGroup;
+      } else {
+        // NOTE: mirrors `axis.add_numbers(values, **kwargs)` — values binds
+        // positionally to x_values, the whole kwargs bag forwards as **kwargs.
+        axis.add_numbers(
+          values as Iterable<number> | null | undefined,
+          null,
+          null,
+          null,
+          kwargs,
+        );
+        labels = axis.numbers as VGroup;
+      }
+      this.coordinate_labels.add(labels);
+    }
+
+    return this;
   }
 
   plot(

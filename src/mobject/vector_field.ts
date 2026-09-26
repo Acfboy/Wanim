@@ -1,4 +1,4 @@
-import { array, NDArray } from "numpy-ts";
+import { array, random, NDArray } from "numpy-ts";
 import { VGroup, VMobject, VectorizedPoint } from "./types/vectorized_mobject.js";
 import { Mobject } from "./mobject.js";
 import { CoordinateSystem } from "./graphing/coordinate_systems.js";
@@ -8,7 +8,7 @@ import { UpdateFromAlphaFunc } from "../animation/updaters/update.js";
 import { Create, ShowPartial, type ShowPartialOptions } from "../animation/creation.js";
 import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, color_to_rgb, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
 import { inverse_interpolate } from "../utils/bezier.js";
-import { addPoints, arange, linspace, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
+import { addPoints, arange, isNDArray, linspace, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
 import { clip as _clip } from "../utils/simple_functions.js";
 import { sigmoid } from "../utils/simple_functions.js";
 import { Vector, type VectorOptions } from "./geometry/line.js";
@@ -375,11 +375,30 @@ export class StreamLines extends VectorField {
 
   private generate_stream_lines(dt: number): void {
     const maxSteps = Math.ceil(this.virtual_time / dt) + 1;
+    // NOTE: mirrors Python `(x - half_noise) * RIGHT + (y - half_noise) * UP
+    // + (z - half_noise) * OUT + self.noise_factor * rng.random(3)` with
+    // `rng = np.random.default_rng(0)` (RIGHT/UP/OUT are unit axes, so this
+    // is a per-coordinate jitter).
+    const halfNoise = this.noise_factor / 2;
+    const rng = random.default_rng(0);
     const startPoints: number[][] = [];
     for (let repeat = 0; repeat < this.n_repeats; repeat += 1) {
       for (const x of arange(this.x_range[0], this.x_range[1], this.x_range[2])) {
         for (const y of arange(this.y_range[0], this.y_range[1], this.y_range[2])) {
-          for (const z of arange(this.z_range[0], this.z_range[1], this.z_range[2])) startPoints.push([x, y, z]);
+          for (const z of arange(this.z_range[0], this.z_range[1], this.z_range[2])) {
+            const draw = rng.random(3);
+            const rawDraw: unknown[] = isNDArray(draw)
+              ? ((draw as NDArray).toArray() as unknown[])
+              : Array.isArray(draw)
+                ? (draw as unknown[])
+                : [draw];
+            const jitter = rawDraw.flat().map(Number);
+            startPoints.push([
+              (x - halfNoise) + this.noise_factor * (jitter[0] ?? 0),
+              (y - halfNoise) + this.noise_factor * (jitter[1] ?? 0),
+              (z - halfNoise) + this.noise_factor * (jitter[2] ?? 0),
+            ]);
+          }
         }
       }
     }

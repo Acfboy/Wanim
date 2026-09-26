@@ -1,10 +1,10 @@
 import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
-import { DEFAULT_ARROW_TIP_LENGTH } from "../../constants.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DOWN, MED_SMALL_BUFF } from "../../constants.js";
 import { isNDArray, norm, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
 import { normalize } from "../../utils/space_ops.js";
-import { VGroup } from "../types/vectorized_mobject.js";
+import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Mobject } from "../mobject.js";
 import { LinearBase, _ScaleBase } from "./scale.js";
 
@@ -70,6 +70,20 @@ export class NumberLine extends VGroup {
   font_size = 36;
   include_numbers = false;
   scaling: _ScaleBase = new LinearBase();
+  // NOTE: mirrors Python NumberLine.__init__ (label_direction defaults to
+  // DOWN, label_constructor to MathTex). The MathTex/Text pipeline is out of
+  // scope for this port, so label_constructor is stored opaquely (null until
+  // set) and only consulted when label mobjects must be constructed.
+  label_direction: readonly number[] | NDArray = [...DOWN];
+  label_constructor: unknown = null;
+  line_to_number_buff = MED_SMALL_BUFF;
+  decimal_number_config: Record<string, unknown> = {};
+  numbers_to_exclude: number[] = [];
+  numbers_to_include: number[] | null = null;
+  // NOTE: populated by add_numbers()/add_labels() (mirrors Python, where the
+  // attributes only exist after those calls).
+  numbers: VGroup | null = null;
+  labels: VGroup | null = null;
   // NOTE: populated by add_ticks() (a later batch); the field exists here so
   // get_tick_marks() has its faithful target to return.
   ticks: VGroup = new VGroup();
@@ -90,6 +104,12 @@ export class NumberLine extends VGroup {
     include_numbers?: boolean;
     font_size?: number;
     scaling?: _ScaleBase;
+    label_direction?: readonly number[] | NDArray;
+    label_constructor?: unknown;
+    line_to_number_buff?: number;
+    decimal_number_config?: Record<string, unknown> | null;
+    numbers_to_exclude?: Iterable<number> | null;
+    numbers_to_include?: Iterable<number> | null;
   } = {}) {
     super();
     const frame_x_radius = Number(config.get("frame_x_radius") ?? 7.111111111111111);
@@ -125,6 +145,24 @@ export class NumberLine extends VGroup {
     if (options.tip_height !== undefined) this.tip_height = options.tip_height;
     if (options.include_numbers !== undefined) this.include_numbers = options.include_numbers;
     if (options.font_size !== undefined) this.font_size = options.font_size;
+    if (options.label_direction !== undefined) this.label_direction = options.label_direction;
+    if (options.label_constructor !== undefined) this.label_constructor = options.label_constructor;
+    if (options.line_to_number_buff !== undefined) this.line_to_number_buff = options.line_to_number_buff;
+    if (options.decimal_number_config !== undefined && options.decimal_number_config !== null) {
+      this.decimal_number_config = { ...options.decimal_number_config };
+    } else {
+      // NOTE: mirrors Python `decimal_number_config = {"num_decimal_places":
+      // self._decimal_places_from_step(x_range[2])}`.
+      this.decimal_number_config = {
+        num_decimal_places: NumberLine._decimal_places_from_step(x_range[2] ?? 1),
+      };
+    }
+    if (options.numbers_to_exclude !== undefined && options.numbers_to_exclude !== null) {
+      this.numbers_to_exclude = [...options.numbers_to_exclude];
+    }
+    if (options.numbers_to_include !== undefined && options.numbers_to_include !== null) {
+      this.numbers_to_include = [...options.numbers_to_include];
+    }
     // Baseline line geometry (mirrors Python NumberLine.__init__: a Line from
     // x_range[0]*RIGHT to x_range[1]*RIGHT, then set_length(length) (which
     // also refreshes unit_size) or scale(unit_size), then center()).
@@ -238,5 +276,122 @@ export class NumberLine extends VGroup {
     const length = norm(subtractPoints(end, start, this.dim));
     const val: number = length / ((this.x_range[1] ?? 0) - (this.x_range[0] ?? 0));
     return val;
+  }
+
+  get_number_mobject(
+    _x: number,
+    _direction?: readonly number[] | NDArray | null,
+    _buff?: number | null,
+    _font_size?: number | null,
+    _label_constructor?: unknown,
+    _number_config: Record<string, unknown> = {},
+  ): VMobject {
+    // NOTE: mirrors Python NumberLine.get_number_mobject, which builds a
+    // positioned DecimalNumber. DecimalNumber (like the Tex label pipeline)
+    // is out of scope for this port, so construction throws.
+    throw new Error("TODO: text/tex not ported yet (NumberLine.get_number_mobject needs DecimalNumber)");
+  }
+
+  get_number_mobjects(...numbers: number[]): VGroup {
+    let resolved: number[] = numbers;
+    if (resolved.length === 0) {
+      // NOTE: Python calls self.default_numbers_to_display(), which is not
+      // defined anywhere in manim 0.21.0 (only referenced) — calling it
+      // raises AttributeError. Mirrored here.
+      const fallback = (this as unknown as { default_numbers_to_display?: unknown }).default_numbers_to_display;
+      if (typeof fallback !== "function") {
+        const error = new Error("'NumberLine' object has no attribute 'default_numbers_to_display'");
+        error.name = "AttributeError";
+        throw error;
+      }
+      resolved = (fallback as () => number[]).call(this);
+    }
+    return new VGroup(...resolved.map((number) => this.get_number_mobject(number)));
+  }
+
+  get_labels(): VGroup {
+    return this.get_number_mobjects();
+  }
+
+  add_numbers(
+    x_values: Iterable<number> | null = null,
+    excluding: Iterable<number> | null = null,
+    font_size: number | null = null,
+    label_constructor: unknown = null,
+    number_config: Record<string, unknown> = {},
+  ): this {
+    let values: number[];
+    if (x_values === null || x_values === undefined) {
+      values = (this.get_tick_range().toArray() as unknown[]).map(Number);
+    } else if (isNDArray(x_values)) {
+      values = ((x_values as NDArray).toArray() as unknown[]).map(Number);
+    } else {
+      values = [...x_values];
+    }
+    const resolvedExcluding = excluding ?? this.numbers_to_exclude;
+    const resolvedFontSize = font_size ?? this.font_size;
+    const resolvedConstructor = label_constructor ?? this.label_constructor;
+    const numbers = new VGroup();
+    for (const x of values) {
+      if ([...resolvedExcluding].includes(x)) continue;
+      numbers.add(
+        this.get_number_mobject(
+          x,
+          undefined,
+          undefined,
+          resolvedFontSize,
+          resolvedConstructor,
+          number_config,
+        ),
+      );
+    }
+    this.add(numbers);
+    this.numbers = numbers;
+    return this;
+  }
+
+  add_labels(
+    dict_values: Map<number, string | number | VMobject> | Record<string, string | number | VMobject>,
+    direction: readonly number[] | NDArray | null = null,
+    buff: number | null = null,
+    font_size: number | null = null,
+    label_constructor: unknown = null,
+  ): this {
+    const resolvedDirection = direction ?? this.label_direction;
+    const resolvedBuff = buff ?? this.line_to_number_buff;
+    const resolvedFontSize = font_size ?? this.font_size;
+    const resolvedConstructor = label_constructor ?? this.label_constructor;
+    const labels = new VGroup();
+    const entries: Array<[number, string | number | VMobject]> = dict_values instanceof Map
+      ? [...dict_values.entries()]
+      : Object.entries(dict_values).map(([key, value]) => [Number(key), value]);
+    for (const [x, label] of entries) {
+      const mob = this._create_label_tex(label, resolvedConstructor);
+      if ("font_size" in (mob as unknown as object)) {
+        ((mob as unknown as Record<string, unknown>)["font_size"] as number) = resolvedFontSize;
+      } else {
+        const error = new Error(`${mob} is not compatible with add_labels.`);
+        error.name = "AttributeError";
+        throw error;
+      }
+      mob.next_to(this.number_to_point(x), resolvedDirection, resolvedBuff);
+      labels.add(mob);
+    }
+    this.labels = labels;
+    this.add(labels);
+    return this;
+  }
+
+  _create_label_tex(
+    label_tex: string | number | VMobject,
+    _label_constructor: unknown = null,
+    _kwargs: Record<string, unknown> = {},
+  ): VMobject {
+    // NOTE: mirrors Python NumberLine._create_label_tex: VMobject inputs are
+    // returned as-is; anything else is passed to the label_constructor
+    // (MathTex/Tex by default), which needs the text pipeline that is out of
+    // scope for this port.
+    if (label_tex instanceof VMobject) return label_tex;
+    throw new Error("TODO: text/tex not ported yet (NumberLine._create_label_tex needs a label_constructor)");
   }
 }
