@@ -1039,15 +1039,20 @@ describe("batch integration", () => {
     ]);
   });
   it("Animation lagged interpolate_mobject path against a VMobject family", () => {
-    // Python: Animation(m, lag_ratio=0.5) over a 2-member pointful family at
-    // alpha=0.5 gives sub-alphas [smooth(0.75), smooth(0.25)] =
-    // [0.929896283455, 0.070103716545].
+    // Python: Animation(m, lag_ratio=0.5) over a 2-member pointful family:
+    // before begin() the empty starting mobject contributes an empty
+    // family, so zip(strict=False) yields 0 rows; after begin()
+    // (starting_mobject = mobject.copy()) it yields 2 rows with sub-alphas
+    // [smooth(0.75), smooth(0.25)] = [0.929896283455, 0.070103716545]
+    // at alpha=0.5.
     const m = new VMobject();
     setPoints(m, [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]);
     const sub = new VMobject();
     setPoints(sub, [[2, 2, 0], [3, 2, 0], [3, 3, 0], [2, 3, 0]]);
     m.add(sub);
     const a = new Animation(m, { lag_ratio: 0.5 });
+    expect(a.get_all_families_zipped().length).toBe(0);
+    a.begin();
     const fams = a.get_all_families_zipped();
     expect(fams.length).toBe(2);
     const got = fams.map((_, i) => a.get_sub_alpha(0.5, i, fams.length));

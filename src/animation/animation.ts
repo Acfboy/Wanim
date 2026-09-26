@@ -224,12 +224,13 @@ export class Animation {
     // NOTE: mirrors Python `zip(*(mob.family_members_with_points() for mob
     // in self.get_all_mobjects()), strict=False)`: the zip runs over ALL
     // mobjects (subclasses such as FadeTransform extend that list), not just
-    // the (mobject, starting_mobject) pair. Shorter families are padded with
-    // the first family's member, matching the `?? mobject` convention used
-    // by the subclass zips in this codebase.
+    // the (mobject, starting_mobject) pair, and stops at the SHORTEST
+    // family (e.g. Create(Square()) zips to zero rows because the empty
+    // starting mobject contributes an empty family).
     const families = this.get_all_mobjects().map((mob) => mob.family_members_with_points());
-    const first = families[0] ?? [];
-    return first.map((mobject, index) => families.map((family) => family[index] ?? mobject));
+    if (families.length === 0) return [];
+    const length = Math.min(...families.map((family) => family.length));
+    return Array.from({ length }, (_, index) => families.map((family) => family[index] as Mobject));
   }
 
   get_all_mobjects_to_update(): Mobject[] {
