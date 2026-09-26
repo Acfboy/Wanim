@@ -1437,7 +1437,9 @@ export class PolarPlane extends Axes {
   azimuth_step: number;
   faded_line_style: Record<string, unknown> | null;
   faded_line_ratio: number;
-  make_smooth_after_applying_functions = true;
+  // NOTE: always False after construction (see the VGroup-overwrite note in
+  // the constructor); the initializer matches that net Python behavior.
+  make_smooth_after_applying_functions = false;
   azimuth_offset: number;
   azimuth_label_buff: number;
   azimuth_label_font_size: number;
@@ -1470,6 +1472,14 @@ export class PolarPlane extends Axes {
       size,
       size,
     );
+    // NOTE: mirrors Python, which passes x_length=size / y_length=size
+    // (None by default) straight through Axes.__init__ to
+    // CoordinateSystem.__init__ (stored as-is). The TS Axes constructor
+    // substitutes frame-derived defaults for null, so restore the
+    // pass-through values here; null lengths select the unit-sized
+    // midpoint-centered mapping in coords_to_point/point_to_coords.
+    this.x_length = size;
+    this.y_length = size;
     void options;
     if (
       azimuth_units !== "PI radians" &&
@@ -1554,9 +1564,31 @@ export class PolarPlane extends Axes {
     this.x_axis_config = merge_dicts_recursively(this.axis_config, this.x_axis_config);
     this.y_axis_config = merge_dicts_recursively(this.axis_config, this.y_axis_config);
     void tipsOption;
-    this.faded_line_style = faded_line_style;
+    // NOTE: mirrors Python _init_background_lines' first half: when no faded
+    // style is given, it defaults to a faded copy of background_line_style
+    // with every numeric value halved (stroke_width 2 -> 1.0, opacity 1 ->
+    // 0.5; colors kept). Only the line *construction* half is deferred (see
+    // below); the style derivation is pure dict math so it is ported.
+    // (typeof boolean is not "number" here, unlike Python's
+    // isinstance(bool, numbers.Number); a boolean style value would halve to
+    // 0.5 in Python but is kept as-is here.)
+    if (faded_line_style === null || faded_line_style === undefined) {
+      const derived: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(this.background_line_style)) {
+        derived[key] = typeof value === "number" ? value * 0.5 : value;
+      }
+      this.faded_line_style = derived;
+    } else {
+      this.faded_line_style = faded_line_style;
+    }
     this.faded_line_ratio = faded_line_ratio;
-    this.make_smooth_after_applying_functions = make_smooth_after_applying_functions;
+    // NOTE: mirrors Python, where PolarPlane sets this field to True and then
+    // Axes.__init__ runs VGroup.__init__(**kwargs), which unconditionally
+    // overwrites it with the VMobject default False (the named parameter never
+    // reaches VGroup since it binds in PolarPlane.__init__). Net Python
+    // behavior: always False, even when True is passed explicitly.
+    void make_smooth_after_applying_functions;
+    this.make_smooth_after_applying_functions = false;
     this.azimuth_offset = azimuth_offset;
     this.azimuth_label_buff = azimuth_label_buff;
     this.azimuth_label_font_size = azimuth_label_font_size;
