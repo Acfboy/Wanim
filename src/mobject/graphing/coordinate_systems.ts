@@ -2030,6 +2030,18 @@ export class PolarPlane extends Axes {
     return this.coordinate_labels;
   }
 
+  add_coordinates(
+    r_values: Iterable<number> | null = null,
+    a_values: Iterable<number> | null = null,
+  ): this {
+    // NOTE: mirrors Python `self.add(self.get_coordinate_labels(r_values,
+    // a_values))`; the TS CoordinateSystem hierarchy is not Mobject-based
+    // yet (see ComplexPlane.add_coordinates), so storing the labels on
+    // coordinate_labels is the observable part.
+    this.get_coordinate_labels(r_values, a_values);
+    return this;
+  }
+
   get_radian_label(
     number: number,
     font_size = 24,
