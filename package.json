@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc && node -e \"require('node:fs').cpSync('src/mobject/text/pango/fonts','dist/mobject/text/pango/fonts',{recursive:true})\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
   },
   "dependencies": {
     "mathjax-full": "^3.2.2",
