@@ -375,6 +375,16 @@ export class NumberPlane extends CoordinateSystem {
     // Mirrors Axes.point_to_coords for the linear mapping implemented by
     // coords_to_point above (Python resolves this through NumberLine axes;
     // the observable result is the algebraic inverse of the linear map).
+    // Like Python (`point.ndim == 2 -> result.T`), a list of points maps
+    // row-wise to a list of coordinate pairs.
+    if (
+      Array.isArray(point) &&
+      point.length > 0 &&
+      Array.isArray((point as unknown as unknown[])[0])
+    ) {
+      const single = (p: readonly number[]): number[] => this.point_to_coords(p);
+      return (point as unknown as number[][]).map((p) => single(p)) as unknown as number[];
+    }
     const values = [...point].map(Number);
     const xLength = this.x_length ?? Math.round(config.frame_width) - 2;
     const yLength = this.y_length ?? Math.round(config.frame_height) - 2;
