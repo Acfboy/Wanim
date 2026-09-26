@@ -1,10 +1,11 @@
 import { array, type NDArray } from "numpy-ts";
-import { RendererType } from "../../constants.js";
+import { RIGHT, RendererType } from "../../constants.js";
 import { get_quadratic_approximation_of_cubic } from "../../utils/bezier.js";
 import { hash_obj } from "../../utils/iterables.js";
 import { get_full_vector_image_path } from "../../utils/images.js";
 import { pointRows } from "../../utils/arrays.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
+import { ManimColor } from "../../utils/color/core.js";
 import { VMobject, VGroup, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Circle } from "../geometry/arc.js";
 import { Line } from "../geometry/line.js";
@@ -26,6 +27,10 @@ export interface SVGMobjectOptions extends VMobjectOptions {
   svg_default?: Record<string, unknown> | null;
   path_string_config?: Record<string, unknown> | null;
   use_svg_cache?: boolean;
+  /** SVG content as a string (bypasses file I/O). */
+  svg_string?: string | null;
+  /** Split the parsed SVG by `<g id="...">` groups (used by MathTex). */
+  split_by_id?: boolean;
 }
 
 /**
@@ -117,6 +122,12 @@ export class SVGMobject extends VMobject {
   svg_default: Record<string, unknown>;
   path_string_config: Record<string, unknown>;
   id_to_vgroup_dict: Map<string, VGroup> = new Map();
+  _svg_string: string | null;
+  _split_by_id: boolean;
+  _id_to_vgroup: Map<string, VGroup> = new Map();
+  _all_vgroups: VGroup[] = [];
+  _vgroup_stack: VGroup[] = [];
+  _root_vgroup: VGroup = new VGroup();
 
   constructor(options: SVGMobjectOptions = {}) {
     // NOTE: the svg-specific style keys accept null ("keep file value",
@@ -144,8 +155,10 @@ export class SVGMobject extends VMobject {
     });
     this.file_name = options.file_name ?? null;
     this.should_center = options.should_center ?? true;
-    this.svg_height = options.height ?? 2;
-    this.svg_width = options.width ?? null;
+    this.svg_height = options.height === undefined ? 2 : options.height;
+    this.svg_width = options.width === undefined ? null : options.width;
+    this._svg_string = options.svg_string ?? null;
+    this._split_by_id = options.split_by_id ?? false;
     this.svg_default =
       options.svg_default ??
       ({
@@ -158,13 +171,13 @@ export class SVGMobject extends VMobject {
         stroke_opacity: null,
       } as Record<string, unknown>);
     this.path_string_config = options.path_string_config ?? {};
-    void options.use_svg_cache;
-    // NOTE: the Python __init__ parses the SVG file here
-    // (init_svg_mobject), then applies set_style with the explicit style
-    // arguments and moves into position. File parsing needs the ElementTree
-    // + svgelements pipeline (unported), so construction stays lazy; only
-    // the explicit non-null style overrides are applied, mirroring the
-    // Python set_style call where None means "keep what the file set".
+    const use_svg_cache = options.use_svg_cache ?? false;
+    // NOTE: mirrors Python `SVGMobject.__init__`: parse the SVG (from a string
+    // in this port; file parsing is still unported), then apply `set_style`
+    // with the explicit style arguments, then `move_into_position`.
+    if (this._svg_string !== null) {
+      this.init_svg_mobject(use_svg_cache);
+    }
     const style_override: {
       fill_color?: ParsableManimColor | null;
       fill_opacity?: number | null;
@@ -190,18 +203,24 @@ export class SVGMobject extends VMobject {
     if (Object.keys(style_override).length > 0) {
       this.set_style(style_override);
     }
-    // NOTE: Python also calls move_into_position() here; with no parsed
-    // points yet that is a no-op in practice, so it is left to the caller
-    // (mirroring how generate_mobject callers behave once parsing lands).
+    // Keep the requested color for `init_colors` (MathTex recolor) while
+    // leaving per-shape colors from the SVG intact.
+    if (options.color !== undefined && options.color !== null) {
+      this.color = new ManimColor(options.color);
+    }
+    if (this._svg_string !== null) {
+      this.move_into_position();
+    }
   }
 
-  get hash_seed(): [string, Record<string, unknown>, Record<string, unknown>, string | null, RendererType] {
+  get hash_seed(): [string, Record<string, unknown>, Record<string, unknown>, string | null, RendererType, string | null] {
     return [
       this.constructor.name,
       this.svg_default,
       this.path_string_config,
       this.file_name,
       get_config_renderer(),
+      this._svg_string,
     ];
   }
 
@@ -286,13 +305,139 @@ export class SVGMobject extends VMobject {
   }
 
   generate_mobject(): this {
-    // NOTE: mirrors Python `SVGMobject.generate_mobject` (parse the SVG
-    // file at get_file_path, rewrite it with the default-style XML tree,
-    // hand it to svgelements, convert the elements via get_mobjects_from,
-    // then flip y). File parsing needs the ElementTree + svgelements
-    // pipeline (third-party, unported), so only the post-parse tail is
-    // available: call get_mobjects_from with pre-parsed SVGElementData.
+    // NOTE: mirrors Python `SVGMobject.generate_mobject`. In this port the SVG
+    // is supplied as a string (used by Text / MarkupText / MathTex); parsing
+    // an SVG *file* still needs the ElementTree + svgelements pipeline and is
+    // not ported, so that branch keeps throwing.
+    if (this._svg_string !== null) {
+      this._generate_from_svg_string(this._svg_string);
+      return this;
+    }
     throw new Error("TODO: SVGMobject.generate_mobject needs the SVG file-parsing pipeline (ElementTree + svgelements), not ported yet");
+  }
+
+  /** Parse an SVG string into submobjects (Node equivalent of svgelements). */
+  _generate_from_svg_string(svgString: string): this {
+    const root = parse_svg_xml(svgString);
+    this._id_to_vgroup = new Map();
+    this._all_vgroups = [];
+    this._vgroup_stack = [];
+    this._root_vgroup = new VGroup();
+    const allMobjects: VMobject[] = [];
+    this._walk_svg_node(root, {}, IDENTITY_AFFINE, allMobjects, 0);
+
+    if (this._root_vgroup.submobjects.length > 0) {
+      this._all_vgroups.push(this._root_vgroup);
+    }
+    this.id_to_vgroup_dict = this._id_to_vgroup;
+
+    if (this._split_by_id) {
+      this.add(...this._all_vgroups);
+    } else {
+      this.add(...allMobjects);
+    }
+
+    // SVG coordinates are y-down; manim works in y-up.
+    this.flip(RIGHT);
+    return this;
+  }
+
+  _walk_svg_node(
+    node: SvgXmlNode,
+    inheritedAttrs: Record<string, string>,
+    parentTransform: AffineMatrix,
+    allMobjects: VMobject[],
+    idDepth: number,
+  ): void {
+    const tag = node.tag;
+    if (tag === "#document") {
+      for (const child of node.children) {
+        this._walk_svg_node(child, inheritedAttrs, parentTransform, allMobjects, idDepth);
+      }
+      return;
+    }
+    if (SVG_SKIP_TAGS.has(tag)) return;
+
+    const attrs = effective_svg_attrs(node, inheritedAttrs);
+    const localTransform = parse_svg_transform(attrs["transform"]);
+    const totalTransform = multiply_affine(parentTransform, localTransform);
+    const id = attrs["id"];
+
+    if (tag === "g" || tag === "svg") {
+      if (tag === "g" && id !== undefined && id !== "") {
+        const vg = new VGroup();
+        this._vgroup_stack.push(vg);
+        for (const child of node.children) {
+          this._walk_svg_node(child, attrs, totalTransform, allMobjects, idDepth + 1);
+        }
+        this._vgroup_stack.pop();
+        this._id_to_vgroup.set(id, vg);
+        if (idDepth === 0 && !id.endsWith("substring")) this._all_vgroups.push(vg);
+      } else {
+        for (const child of node.children) {
+          this._walk_svg_node(child, attrs, totalTransform, allMobjects, idDepth);
+        }
+      }
+      return;
+    }
+
+    const mob = this._mob_from_svg_node(tag, attrs, totalTransform);
+    if (mob !== null) {
+      allMobjects.push(mob);
+      if (this._vgroup_stack.length > 0) {
+        (this._vgroup_stack[this._vgroup_stack.length - 1] as VGroup).add(mob);
+      } else {
+        this._root_vgroup.add(mob);
+      }
+    }
+  }
+
+  _mob_from_svg_node(tag: string, attrs: Record<string, string>, transform: AffineMatrix): VMobject | null {
+    const shape: SVGElementData = {
+      kind: tag,
+      id: attrs["id"],
+      stroke_width: parse_svg_float(attrs["stroke-width"], 0),
+      stroke_color: svg_color_to_manim(attrs["stroke"]),
+      stroke_opacity: parse_svg_float(attrs["stroke-opacity"], 1),
+      fill_color: svg_color_to_manim(attrs["fill"]),
+      fill_opacity: attrs["fill"] === undefined || svg_color_to_manim(attrs["fill"]) === null
+        ? 0
+        : parse_svg_float(attrs["fill-opacity"], 1),
+      transform,
+      apply_transform: true,
+    };
+    if (tag === "path") {
+      const d = attrs["d"] ?? "";
+      shape.segments = parse_svg_path_data(d);
+      if (shape.segments.length === 0) return null;
+    } else if (tag === "line") {
+      shape.x1 = parse_svg_float(attrs["x1"], 0);
+      shape.y1 = parse_svg_float(attrs["y1"], 0);
+      shape.x2 = parse_svg_float(attrs["x2"], 0);
+      shape.y2 = parse_svg_float(attrs["y2"], 0);
+    } else if (tag === "rect") {
+      shape.x = parse_svg_float(attrs["x"], 0);
+      shape.y = parse_svg_float(attrs["y"], 0);
+      shape.width = parse_svg_float(attrs["width"], 0);
+      shape.height = parse_svg_float(attrs["height"], 0);
+      shape.rx = parse_svg_float(attrs["rx"], 0);
+      shape.ry = parse_svg_float(attrs["ry"], 0);
+    } else if (tag === "circle") {
+      shape.cx = parse_svg_float(attrs["cx"], 0);
+      shape.cy = parse_svg_float(attrs["cy"], 0);
+      shape.rx = parse_svg_float(attrs["r"], 0);
+      shape.ry = shape.rx;
+    } else if (tag === "ellipse") {
+      shape.cx = parse_svg_float(attrs["cx"], 0);
+      shape.cy = parse_svg_float(attrs["cy"], 0);
+      shape.rx = parse_svg_float(attrs["rx"], 0);
+      shape.ry = parse_svg_float(attrs["ry"], 0);
+    } else if (tag === "polygon" || tag === "polyline") {
+      shape.points = parse_svg_points(attrs["points"]);
+    } else {
+      return null;
+    }
+    return this.get_mob_from_shape_element(shape);
   }
 
   get_mobjects_from(
@@ -912,4 +1057,240 @@ export class VMobjectFromSVGPath extends VMobject {
     ) as NDArray;
     return this;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal SVG-string parsing (Node has no DOMParser). The SVG strings consumed
+// here are generated by this port (PangoJS markup renderer, MathJax), so a
+// small non-validating parser is sufficient.
+// ---------------------------------------------------------------------------
+
+/** A parsed XML element (attribute values are entity-decoded). */
+export interface SvgXmlNode {
+  tag: string;
+  attrib: Record<string, string>;
+  children: SvgXmlNode[];
+}
+
+const SVG_SKIP_TAGS = new Set(["style", "defs", "title", "desc", "metadata"]);
+
+/** 2D affine transform in SVG's a/b/c/d/e/f representation. */
+export interface AffineMatrix {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+export const IDENTITY_AFFINE: AffineMatrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+
+function decode_svg_entities(value: string): string {
+  return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, body: string) => {
+    if (body.startsWith("#x") || body.startsWith("#X")) {
+      const code = parseInt(body.slice(2), 16);
+      return Number.isNaN(code) ? match : String.fromCodePoint(code);
+    }
+    if (body.startsWith("#")) {
+      const code = parseInt(body.slice(1), 10);
+      return Number.isNaN(code) ? match : String.fromCodePoint(code);
+    }
+    const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+    return named[body] ?? match;
+  });
+}
+
+function parse_svg_attributes(attributeString: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrRegex = /([^\s=/]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRegex.exec(attributeString)) !== null) {
+    const name = (match[1] as string).toLowerCase();
+    attrs[name] = decode_svg_entities(match[2] ?? match[3] ?? "");
+  }
+  return attrs;
+}
+
+function strip_svg_namespace(tag: string): string {
+  const colon = tag.indexOf(":");
+  return (colon === -1 ? tag : tag.slice(colon + 1)).toLowerCase();
+}
+
+/** Parse an SVG/XML string into a lightweight element tree. */
+export function parse_svg_xml(xml: string): SvgXmlNode {
+  const root: SvgXmlNode = { tag: "#document", attrib: {}, children: [] };
+  const stack: SvgXmlNode[] = [root];
+  let i = 0;
+  const n = xml.length;
+
+  while (i < n) {
+    const lt = xml.indexOf("<", i);
+    if (lt === -1) break;
+    if (xml.startsWith("<!--", lt)) {
+      const end = xml.indexOf("-->", lt);
+      i = end === -1 ? n : end + 3;
+      continue;
+    }
+    if (xml.startsWith("<![CDATA[", lt)) {
+      const end = xml.indexOf("]]>", lt);
+      i = end === -1 ? n : end + 3;
+      continue;
+    }
+    if (xml.startsWith("<?", lt) || xml.startsWith("<!", lt)) {
+      const end = xml.indexOf(">", lt);
+      i = end === -1 ? n : end + 1;
+      continue;
+    }
+
+    let j = lt + 1;
+    let quote = "";
+    while (j < n) {
+      const ch = xml[j] as string;
+      if (quote) {
+        if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === ">") {
+        break;
+      }
+      j += 1;
+    }
+    let inner = xml.slice(lt + 1, j);
+    i = j + 1;
+
+    if (inner.startsWith("/")) {
+      const name = strip_svg_namespace(inner.slice(1).trim());
+      for (let k = stack.length - 1; k > 0; k -= 1) {
+        if ((stack[k] as SvgXmlNode).tag === name) {
+          stack.length = k;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const selfClosing = inner.endsWith("/");
+    if (selfClosing) inner = inner.slice(0, -1);
+    const spaceIndex = inner.search(/\s/);
+    const rawTag = (spaceIndex === -1 ? inner : inner.slice(0, spaceIndex)).trim();
+    if (rawTag === "") continue;
+    const attributeString = spaceIndex === -1 ? "" : inner.slice(spaceIndex + 1);
+    const node: SvgXmlNode = {
+      tag: strip_svg_namespace(rawTag),
+      attrib: parse_svg_attributes(attributeString),
+      children: [],
+    };
+    (stack[stack.length - 1] as SvgXmlNode).children.push(node);
+    if (!selfClosing) stack.push(node);
+  }
+
+  return root;
+}
+
+function effective_svg_attrs(node: SvgXmlNode, inherited: Record<string, string>): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (const [key, value] of Object.entries(inherited)) {
+    if (key !== "transform" && key !== "id") attrs[key] = value;
+  }
+  for (const [key, value] of Object.entries(node.attrib)) attrs[key] = value;
+  const style = node.attrib["style"];
+  if (style) {
+    for (const part of style.split(";")) {
+      const colon = part.indexOf(":");
+      if (colon === -1) continue;
+      const key = part.slice(0, colon).trim().toLowerCase();
+      const value = part.slice(colon + 1).trim();
+      if (key !== "") attrs[key] = value;
+    }
+  }
+  return attrs;
+}
+
+export function multiply_affine(first: AffineMatrix, second: AffineMatrix): AffineMatrix {
+  return {
+    a: first.a * second.a + first.c * second.b,
+    b: first.b * second.a + first.d * second.b,
+    c: first.a * second.c + first.c * second.d,
+    d: first.b * second.c + first.d * second.d,
+    e: first.a * second.e + first.c * second.f + first.e,
+    f: first.b * second.e + first.d * second.f + first.f,
+  };
+}
+
+/** Parse an SVG `transform` attribute into a single affine matrix. */
+export function parse_svg_transform(transform: string | undefined): AffineMatrix {
+  let result: AffineMatrix = { ...IDENTITY_AFFINE };
+  if (!transform) return result;
+
+  const regex = /([a-zA-Z]+)\s*\(([^)]*)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(transform)) !== null) {
+    const name = (match[1] as string).toLowerCase();
+    const args = (match[2] as string)
+      .split(/[\s,]+/)
+      .map((value) => parseFloat(value))
+      .filter((value) => !Number.isNaN(value));
+    let local: AffineMatrix = { ...IDENTITY_AFFINE };
+    if (name === "translate") {
+      local = { ...IDENTITY_AFFINE, e: args[0] ?? 0, f: args[1] ?? 0 };
+    } else if (name === "scale") {
+      const sx = args[0] ?? 1;
+      const sy = args[1] ?? sx;
+      local = { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
+    } else if (name === "matrix") {
+      local = {
+        a: args[0] ?? 1,
+        b: args[1] ?? 0,
+        c: args[2] ?? 0,
+        d: args[3] ?? 1,
+        e: args[4] ?? 0,
+        f: args[5] ?? 0,
+      };
+    } else if (name === "rotate") {
+      const angle = ((args[0] ?? 0) * Math.PI) / 180;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      local = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
+      if (args.length >= 3) {
+        const cx = args[1] ?? 0;
+        const cy = args[2] ?? 0;
+        result = multiply_affine(result, { ...IDENTITY_AFFINE, e: cx, f: cy });
+        result = multiply_affine(result, local);
+        result = multiply_affine(result, { ...IDENTITY_AFFINE, e: -cx, f: -cy });
+        continue;
+      }
+    }
+    result = multiply_affine(result, local);
+  }
+  return result;
+}
+
+function parse_svg_float(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = parseFloat(value);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function svg_color_to_manim(value: string | undefined): ParsableManimColor | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "" || trimmed === "none") return null;
+  // MathJax emits `currentColor`; map it to black so `SingleStringMathTex`'s
+  // init_colors can recolor it (matching real manim's black LaTeX output).
+  if (trimmed === "currentcolor") return "#000000";
+  return value.trim();
+}
+
+function parse_svg_points(value: string | undefined): Array<[number, number]> {
+  if (!value) return [];
+  const numbers = value
+    .split(/[\s,]+/)
+    .map((entry) => parseFloat(entry))
+    .filter((entry) => !Number.isNaN(entry));
+  const points: Array<[number, number]> = [];
+  for (let index = 0; index + 1 < numbers.length; index += 2) {
+    points.push([numbers[index] as number, numbers[index + 1] as number]);
+  }
+  return points;
 }

@@ -1,14 +1,12 @@
 // Port of manim.mobject.text.numbers (DecimalNumber, Integer, Variable).
 //
-// NOTE (text/tex out of scope): digit/unit glyphs are rendered with
-// MathTex/SingleStringMathTex in Python (needs a LaTeX install). The default
-// `mob_class` factory — and the SingleStringMathTex spots for the ellipsis
-// and the unit — therefore throw `TODO: text/tex not ported yet`, mirroring
-// how Matrix's default `element_to_mobject` throws (see
-// src/mobject/matrix.ts). All pure-numeric behavior (format specs,
-// num-string building, get/set/increment_value, the ValueTracker wiring of
-// Variable) is ported faithfully; pass a custom `mob_class` factory to
-// exercise construction without LaTeX.
+// NOTE (text/tex): digit/unit glyphs are rendered with MathTex/
+// SingleStringMathTex in Python. The TS port renders the same MathTex classes
+// through MathJax (no local LaTeX install needed), so the default `mob_class`
+// factory and the SingleStringMathTex spots for the ellipsis and the unit all
+// work in Node. All pure-numeric behavior (format specs, num-string building,
+// get/set/increment_value, the ValueTracker wiring of Variable) is ported
+// faithfully; a custom `mob_class` factory can still be passed.
 import type { NDArray } from "numpy-ts";
 import {
   DEFAULT_FONT_SIZE,
@@ -24,6 +22,7 @@ import { scalePoint, type ComplexPoint } from "../../utils/arrays.js";
 import { Mobject } from "../mobject.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { ValueTracker } from "../value_tracker.js";
+import { MathTex, SingleStringMathTex } from "./tex_mobject.js";
 
 export type DecimalNumberValue = number | ComplexPoint;
 
@@ -34,11 +33,12 @@ export type DecimalNumberMobFactory = (
   kwargs?: Record<string, unknown>,
 ) => VMobject;
 
-function texNotPorted(name: string): DecimalNumberMobFactory {
-  return () => {
-    throw new Error(`TODO: text/tex not ported yet (${name})`);
-  };
-}
+/** Glyph factories backed by the ported MathTex/SingleStringMathTex
+ * (LaTeX is rendered through MathJax, so no local LaTeX is needed). */
+const mathTexFactory: DecimalNumberMobFactory = (text, kwargs = {}) =>
+  new MathTex(text, kwargs as never);
+const singleStringMathTexFactory: DecimalNumberMobFactory = (text, kwargs = {}) =>
+  new SingleStringMathTex(text, kwargs as never);
 
 export const string_to_mob_map = new Map<string, VMobject>();
 
@@ -190,7 +190,7 @@ export class DecimalNumber extends VMobject {
   constructor(numberValue: DecimalNumberValue = 0, options: DecimalNumberOptions = {}) {
     const {
       num_decimal_places = 2,
-      mob_class = texNotPorted("DecimalNumber mob_class defaults to MathTex"),
+      mob_class = mathTexFactory,
       include_sign = false,
       group_with_commas = true,
       digit_buff_per_font_unit = 0.001,
@@ -270,7 +270,7 @@ export class DecimalNumber extends VMobject {
     // Add non-numerical bits
     if (this.show_ellipsis) {
       this.add(
-        this._string_to_mob("\\dots", texNotPorted("SingleStringMathTex"), {
+        this._string_to_mob("\\dots", singleStringMathTexFactory, {
           color: this.color,
         }),
       );
@@ -293,7 +293,7 @@ export class DecimalNumber extends VMobject {
     if (this.unit !== null && this.unit !== undefined) {
       this.unit_sign = this._string_to_mob(
         this.unit,
-        texNotPorted("SingleStringMathTex"),
+        singleStringMathTexFactory,
       );
       this.add(
         (this.unit_sign as VMobject).next_to(
@@ -503,12 +503,14 @@ export class Variable extends VMobject {
     // constraint with no observable effect here). The label/equals steps
     // below still run before the tracker/value steps, as in Python.
     super(options);
+    // NOTE: mirrors Python `self.label = MathTex(label) if isinstance(label,
+    // str) else label`.
     if (typeof label === "string") {
-      throw new Error("TODO: text/tex not ported yet (Variable label needs MathTex)");
+      this.label = mathTexFactory(label);
     } else {
       this.label = label;
     }
-    const equals = texNotPorted("Variable '=' label needs MathTex")("=");
+    const equals = mathTexFactory("=");
     equals.next_to(this.label, RIGHT);
     this.label.add(equals);
 

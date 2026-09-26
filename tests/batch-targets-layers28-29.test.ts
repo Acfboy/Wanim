@@ -62,7 +62,7 @@ import {
   VMobject,
 } from "../src/mobject/types/vectorized_mobject.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
-import * as textMod from "../src/mobject/text.js";
+import * as textMod from "../src/mobject/text/index.js";
 
 function close(a: number, b: number, tol = 1e-9): boolean {
   const denom = Math.max(1, Math.abs(a), Math.abs(b));
@@ -98,30 +98,28 @@ describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
         }),
     ).toThrow(/text\/tex/);
   });
-  it("PolarPlane.get_coordinate_labels with explicit values throws IndexError from the unported Axes integration", () => {
-    // Same pre-existing gap as the default path: get_x_axis() itself indexes
-    // the not-yet-Mobject-integrated (empty) axes, so TS fails before it can
-    // reach the MathTex/DecimalNumber step where Python fails with
-    // FileNotFoundError 'latex'. Both implementations throw; only the error
-    // category differs until Axes integration lands.
+  it("PolarPlane.get_coordinate_labels with explicit values reaches the text/tex TODO", () => {
+    // Python reaches MathTex/DecimalNumber label construction and fails on
+    // missing latex; the port builds the real axes and reaches the same
+    // DecimalNumber label path (unported text pipeline).
     const pp = new PolarPlane();
     expect(() => pp.get_coordinate_labels([1, 2], [0.25])).toThrow(
-      /range object index out of range/,
+      /text\/tex not ported/,
     );
   });
-  it("PolarPlane.get_coordinate_labels defaults throw IndexError from the unported Axes integration", () => {
-    // Same documented deviation as add_coordinates (see header): Python
-    // reaches MathTex/DecimalNumber label construction and fails on missing
-    // latex; TS fails earlier indexing the not-yet-Mobject-integrated axes.
+  it("PolarPlane.get_coordinate_labels defaults reach the text/tex TODO", () => {
+    // Same documented deviation as add_coordinates (see header).
     const pp = new PolarPlane();
-    expect(() => pp.get_coordinate_labels()).toThrow(
-      /range object index out of range/,
-    );
+    expect(() => pp.get_coordinate_labels()).toThrow(/text\/tex not ported/);
   });
-  it("NumberLine.get_number_mobject throws (python default path: DecimalNumber -> latex)", () => {
+  it("NumberLine.get_number_mobject builds a positioned DecimalNumber", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl.get_number_mobject(1)).toThrow(/text\/tex/);
-    expect(() => nl.get_number_mobject(-2)).toThrow(/text\/tex/);
+    const one = nl.get_number_mobject(1);
+    const neg = nl.get_number_mobject(-2);
+    expect(one.get_family().length).toBeGreaterThan(0);
+    expect(neg.get_family().length).toBeGreaterThan(0);
+    // Labels sit below the line (label_direction defaults to DOWN).
+    expect(one.get_center()[1]).toBeLessThan(nl.number_to_point(1)[1]);
   });
 });
 
@@ -140,10 +138,13 @@ describe("LabeledPolygram missing-label TypeError parity", () => {
   });
 });
 
-describe("text/tex absence conformance (BulletedList/Title/DecimalNumber/Integer)", () => {
-  it("src/mobject/text.ts exposes only the out-of-scope flag", () => {
-    expect(textMod.TEXT_TEX_OUT_OF_SCOPE).toBe(true);
-    expect(Object.keys(textMod)).toEqual(["TEXT_TEX_OUT_OF_SCOPE"]);
+describe("text/tex conformance (BulletedList/Title/DecimalNumber/Integer)", () => {
+  it("text module exposes the real text/tex classes", () => {
+    expect(typeof textMod.Text).toBe("function");
+    expect(typeof textMod.MathTex).toBe("function");
+    expect(typeof textMod.Tex).toBe("function");
+    expect(typeof textMod.BulletedList).toBe("function");
+    expect(typeof textMod.Title).toBe("function");
   });
 });
 

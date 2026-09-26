@@ -27,7 +27,7 @@ import { Square } from "../src/mobject/geometry/polygram.js";
 import { BackgroundRectangle } from "../src/mobject/geometry/shape_matchers.js";
 import { Line, Vector } from "../src/mobject/geometry/line.js";
 import { LEFT, DOWN } from "../src/constants.js";
-import { TEXT_TEX_OUT_OF_SCOPE } from "../src/mobject/text.js";
+import { Text, MathTex, Tex } from "../src/mobject/text/index.js";
 
 function close(a: number, b: number, tol = 1e-9): boolean {
   const denom = Math.max(1, Math.abs(a), Math.abs(b));
@@ -219,9 +219,11 @@ describe("NumberLine._create_label_tex", () => {
     const vm = new VMobject();
     expect(nl._create_label_tex(vm)).toBe(vm); // python: True
   });
-  it("string without label_constructor throws tex TODO (python: latex error)", () => {
+  it("string builds a MathTex label via the default constructor", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });
-    expect(() => nl._create_label_tex("hello")).toThrow(/text\/tex/);
+    const rendered = nl._create_label_tex("hello");
+    expect(rendered).toBeInstanceOf(VMobject);
+    expect(rendered.submobjects.length).toBeGreaterThan(0);
   });
 });
 
@@ -313,10 +315,11 @@ describe("SampleSpace braces/labels + add_title", () => {
 });
 
 describe("text/tex out-of-scope symbols throw TODO (or are unported stubs)", () => {
-  it("text.ts exposes only the out-of-scope marker (no MathTex/Tex/Code/etc)", async () => {
-    expect(TEXT_TEX_OUT_OF_SCOPE).toBe(true);
-    const mod = (await import("../src/mobject/text.js")) as Record<string, unknown>;
-    expect(Object.keys(mod)).toEqual(["TEXT_TEX_OUT_OF_SCOPE"]);
+  it("text module exposes the real Text/MathTex/Tex classes", () => {
+    expect(typeof Text).toBe("function");
+    expect(typeof MathTex).toBe("function");
+    expect(typeof Tex).toBe("function");
+    expect(new Text("hi").get_family().length).toBeGreaterThan(0);
   });
   it("Label.__init__ throws (python: MathTex -> latex)", () => {
     expect(() => new Label("hi")).toThrow(/text\/tex/);

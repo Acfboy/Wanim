@@ -52,7 +52,7 @@ export * from "./mobject/types/point_cloud_mobject.js";
 export * from "./mobject/types/image_mobject.js";
 export * from "./mobject/graph.js";
 export * from "./mobject/vector_field.js";
-export * from "./mobject/text.js";
+export * from "./mobject/text/index.js";
 export * from "./mobject/text/numbers.js";
 export * from "./mobject/logo.js";
 export * from "./mobject/svg/svg_mobject.js";
