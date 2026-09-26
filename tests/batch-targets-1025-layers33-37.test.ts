@@ -462,8 +462,12 @@ describe("VectorScene.add_axes / add_plane (python ground truth)", () => {
     // NOTE deviation: python fades the VGroup plane/axes in place; the TS
     // CoordinateSystem hierarchy is not Mobject-based yet (get_axes throws),
     // so this binds once the NumberLine integration lands.
+    // Pins the specific deferred error (NumberPlane has no Mobject axes yet),
+    // not just any throw, so a different failure mode can't masquerade as it.
     const vs = new VectorScene();
-    expect(() => vs.lock_in_faded_grid()).toThrow();
+    expect(() => vs.lock_in_faded_grid()).toThrow(
+      /CoordinateSystem\.get_axes must be implemented by a subclass/,
+    );
   });
 });
 
