@@ -1,10 +1,11 @@
 import { array, type NDArray } from "numpy-ts";
-import { Arrow } from "../mobject/geometry/line.js";
+import { Arrow, Vector, type ArrowOptions, type VectorOptions } from "../mobject/geometry/line.js";
+import { GrowArrow } from "../animation/growing.js";
 import { Dot } from "../mobject/geometry/arc.js";
 import { BLACK } from "../utils/color/core.js";
 import { rush_from, rush_into } from "../utils/rate_functions.js";
 import { Scene } from "./scene.js";
-import { matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
+import { isNDArray, matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
 import { update_dict_recursively } from "../utils/config_ops.js";
 import { config } from "../_config/utils.js";
 import { RIGHT, UP } from "../constants.js";
@@ -109,23 +110,47 @@ export class VectorScene extends Scene {
     this.clear();
   }
 
-  get_vector(numerical_vector: number[] | readonly number[] | NDArray, kwargs: Record<string, unknown> = {}): any {
-    void numerical_vector;
-    void kwargs;
-    throw new Error("TODO: Arrow (manim.mobject.geometry.line) not ported yet");
+  get_vector(numerical_vector: number[] | readonly number[] | NDArray, kwargs: Record<string, unknown> = {}): Arrow {
+    // NOTE: mirrors Python `Arrow(self.plane.coords_to_point(0, 0),
+    // self.plane.coords_to_point(*numerical_vector[:2]), buff=0, **kwargs)`
+    // (including the type-ignore: VectorScene never assigns self.plane
+    // itself; only LinearTransformationScene.setup does).
+    const plane = this.plane as unknown as {
+      coords_to_point(...coords: Array<number | number[] | NDArray>): NDArray;
+    };
+    const coords = isNDArray(numerical_vector)
+      ? [...(numerical_vector.toArray() as number[])].map(Number)
+      : [...(numerical_vector as readonly number[])].map(Number);
+    return new Arrow(
+      plane.coords_to_point(0, 0),
+      plane.coords_to_point(...coords.slice(0, 2)),
+      0,
+      { ...(kwargs as ArrowOptions) },
+    );
   }
 
   add_vector(
-    vector: any,
+    vector: Arrow | number[] | readonly number[] | NDArray,
     color: ParsableManimColor | Iterable<ParsableManimColor> = new ManimColor("PURE_YELLOW"),
     animate = true,
     kwargs: Record<string, unknown> = {},
-  ): any {
-    void vector;
-    void color;
-    void animate;
-    void kwargs;
-    throw new Error("TODO: Vector/GrowArrow (manim.mobject.geometry.line, manim.animation.growing) not ported yet");
+  ): Arrow {
+    // NOTE: mirrors Python `VectorScene.add_vector`: a pre-made Arrow is
+    // used as-is, anything else is converted with np.asarray semantics.
+    let arrow: Arrow;
+    if (vector instanceof Arrow) {
+      arrow = vector;
+    } else {
+      arrow = new Vector(vector as number[] | NDArray, {
+        color: color as VectorOptions["color"],
+        ...(kwargs as VectorOptions),
+      });
+    }
+    if (animate) {
+      this.play(new GrowArrow(arrow));
+    }
+    this.add(arrow);
+    return arrow;
   }
 
   write_vector_coordinates(vector: any, kwargs: Record<string, unknown> = {}): any {
@@ -137,10 +162,21 @@ export class VectorScene extends Scene {
   get_basis_vectors(
     i_hat_color: ParsableManimColor | Iterable<ParsableManimColor> = X_COLOR,
     j_hat_color: ParsableManimColor | Iterable<ParsableManimColor> = Y_COLOR,
-  ): any {
-    void i_hat_color;
-    void j_hat_color;
-    throw new Error("TODO: Vector (manim.mobject.geometry.line) not ported yet");
+  ): VGroup {
+    return new VGroup(
+      ...(
+        [
+          [[1, 0], i_hat_color],
+          [[0, 1], j_hat_color],
+        ] as Array<[number[], ParsableManimColor | Iterable<ParsableManimColor>]>
+      ).map(
+        ([vect, color]) =>
+          new Vector(array(vect) as NDArray, {
+            color: color as VectorOptions["color"],
+            stroke_width: this.basis_vector_stroke_width,
+          }) as unknown as VMobject,
+      ),
+    );
   }
 
   get_basis_vector_labels(kwargs: Record<string, unknown> = {}): any {
@@ -583,12 +619,14 @@ export class LinearTransformationScene extends VectorScene {
   }
 
   get_vector_movement(func: MappingFunction): Transform {
-    for (const v of this.moving_vectors as Array<any>) {
-      // NOTE: Vector (manim.mobject.geometry.line) is not ported yet; this
-      // goes through `any` so it binds once Vector lands.
-      const end = func(v.get_end());
-      v.target = new ((v as { constructor: { Vector?: new (...args: any[]) => any } }).constructor.Vector as new (...args: any[]) => any)(end, { color: v.get_color() });
-      const norm = Math.hypot(...((v.target.get_end() as number[]) ?? []));
+    for (const v of this.moving_vectors as Array<Arrow & { target: Arrow }>) {
+      v.target = new Vector(func(v.get_end()), {
+        color: v.get_color() as VectorOptions["color"],
+      });
+      // NOTE: mirrors Python `float(np.linalg.norm(v.target.get_end()))`
+      // — the norm of the end *point* (not the arrow length).
+      const end = v.target.get_end();
+      const norm = Math.hypot(...(Array.isArray(end) ? end : [...(end as unknown as number[])]));
       if (norm < 0.1) {
         v.target.get_tip().scale(norm);
       }

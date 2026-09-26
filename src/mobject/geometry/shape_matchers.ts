@@ -1,7 +1,7 @@
 import { config } from "../../_config/utils.js";
 import { SMALL_BUFF, UP, LEFT, DOWN, RIGHT } from "../../constants.js";
 import { BLACK, RED, type ParsableManimColor } from "../../utils/color/core.js";
-import { Group, Mobject } from "../mobject.js";
+import { Group, Mobject, setBackgroundRectangleFactory } from "../mobject.js";
 import { singleOpacity, VGroup, type VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { Line } from "./line.js";
 import { RoundedRectangle, type RoundedRectangleOptions } from "./polygram.js";
@@ -180,3 +180,15 @@ export class Underline extends Line {
     this.next_to(mobject, [...DOWN], this.buff);
   }
 }
+
+// NOTE: registers the BackgroundRectangle constructor for
+// Mobject.add_background_rectangle (mirrors Python's local import inside
+// that method, which exists to avoid a module cycle: this module already
+// imports mobject.js, while mobject.js never imports this module).
+setBackgroundRectangleFactory((mobject, color, fill_opacity, kwargs) =>
+  new BackgroundRectangle(mobject, {
+    color,
+    fill_opacity,
+    ...kwargs,
+  }),
+);

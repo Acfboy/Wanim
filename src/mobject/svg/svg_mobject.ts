@@ -224,8 +224,29 @@ export class SVGMobject extends VMobject {
     return result;
   }
 
-  init_svg_mobject(_use_svg_cache: boolean): this {
-    throw new Error("TODO: text/tex not ported yet");
+  init_svg_mobject(use_svg_cache: boolean): this {
+    // NOTE: mirrors Python `SVGMobject.init_svg_mobject`: on a cache hit
+    // the cached mobject is copied, its submobjects are added here, and its
+    // id->vgroup dict is adopted. On a miss `generate_mobject` parses the
+    // SVG file (which needs the ElementTree + svgelements file pipeline,
+    // not ported yet) and the result is cached.
+    let hash_val: number | null = null;
+    if (use_svg_cache) {
+      hash_val = hash_obj(this.hash_seed);
+      const cached = SVG_HASH_TO_MOB_MAP.get(hash_val);
+      if (cached !== undefined) {
+        const mob = cached.copy();
+        this.add(...mob.submobjects);
+        this.id_to_vgroup_dict = mob.id_to_vgroup_dict;
+        return this;
+      }
+    }
+
+    this.generate_mobject();
+    if (use_svg_cache && hash_val !== null) {
+      SVG_HASH_TO_MOB_MAP.set(hash_val, this.copy());
+    }
+    return this;
   }
 
   get_file_path(): string {
@@ -265,7 +286,13 @@ export class SVGMobject extends VMobject {
   }
 
   generate_mobject(): this {
-    throw new Error("TODO: text/tex not ported yet");
+    // NOTE: mirrors Python `SVGMobject.generate_mobject` (parse the SVG
+    // file at get_file_path, rewrite it with the default-style XML tree,
+    // hand it to svgelements, convert the elements via get_mobjects_from,
+    // then flip y). File parsing needs the ElementTree + svgelements
+    // pipeline (third-party, unported), so only the post-parse tail is
+    // available: call get_mobjects_from with pre-parsed SVGElementData.
+    throw new Error("TODO: SVGMobject.generate_mobject needs the SVG file-parsing pipeline (ElementTree + svgelements), not ported yet");
   }
 
   get_mobjects_from(

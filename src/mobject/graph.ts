@@ -3,6 +3,8 @@ import { VMobject, VGroup } from "./types/vectorized_mobject.js";
 import { array } from "numpy-ts";
 import type { NDArray } from "numpy-ts";
 import { addPoints, isNDArray, norm, pointRows, pointsFrom } from "../utils/arrays.js";
+import { BLACK, type ParsableManimColor } from "../utils/color/core.js";
+import { Dot, LabeledDot } from "./geometry/arc.js";
 
 export type GraphVertex = string | number | boolean | object;
 export type GraphEdge = readonly [GraphVertex, GraphVertex];
@@ -116,6 +118,93 @@ export class GenericGraph extends VMobject {
     const error = new Error("To be implemented in concrete subclasses");
     error.name = "NotImplementedError";
     throw error;
+  }
+
+  _create_vertex(
+    vertex: GraphVertex,
+    position: number[] | readonly number[] | NDArray | null = null,
+    label: boolean | Mobject | unknown = false,
+    label_fill_color: ParsableManimColor = BLACK,
+    vertex_type: typeof Dot | typeof LabeledDot | (new (config?: Record<string, unknown>) => Mobject) | null = null,
+    vertex_config: Record<string, unknown> | null = null,
+    vertex_mobject: Mobject | null = null,
+  ): [GraphVertex, NDArray, Record<string, unknown>, Mobject] {
+    // NOTE: mirrors Python `GenericGraph._create_vertex`: the position
+    // defaults to the graph's center, the config starts from a copy of
+    // default_vertex_config, and a non-null label upgrades Dot to
+    // LabeledDot. `label=True` renders MathTex in Python (text/tex, out of
+    // scope); a custom vertex_type is constructed with the config bag.
+    const np_position: NDArray = position === null || position === undefined
+      ? array([...this.get_center()]) as NDArray
+      : isNDArray(position)
+        ? position
+        : array([...(position as readonly number[])].map(Number)) as NDArray;
+
+    let resolved_config: Record<string, unknown> = vertex_config ?? {};
+    void label_fill_color;
+
+    if (this.vertices.has(vertex)) {
+      const error = new Error(
+        `Vertex identifier '${String(vertex)}' is already used for a vertex in this graph.`,
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+
+    let resolvedLabel: unknown;
+    if (label === true) {
+      // NOTE: Python renders `MathTex(vertex, color=label_fill_color)`;
+      // text/tex rendering is out of scope for the entire port.
+      throw new Error("TODO: text/tex not ported yet (Graph vertex label=True needs MathTex)");
+    } else if (this._labels.has(vertex)) {
+      resolvedLabel = this._labels.get(vertex);
+    } else if (!(label instanceof Mobject)) {
+      resolvedLabel = null;
+    } else {
+      resolvedLabel = label;
+    }
+
+    const base_vertex_config: Record<string, unknown> = { ...this.default_vertex_config };
+    Object.assign(base_vertex_config, resolved_config);
+    resolved_config = base_vertex_config;
+
+    let ctor = vertex_type ?? Dot;
+    if (resolvedLabel !== null && resolvedLabel !== undefined) {
+      resolved_config["label"] = resolvedLabel;
+      if (ctor === Dot) {
+        ctor = LabeledDot;
+      }
+    }
+
+    let mobject: Mobject;
+    if (vertex_mobject !== null && vertex_mobject !== undefined) {
+      mobject = vertex_mobject;
+    } else if (ctor === LabeledDot) {
+      const { label: cfgLabel, radius: cfgRadius, buff: cfgBuff, ...rest } = resolved_config as {
+        label?: string | Mobject;
+        radius?: number | null;
+        buff?: number;
+        [key: string]: unknown;
+      };
+      mobject = new LabeledDot(
+        cfgLabel as string | Mobject,
+        (cfgRadius as number | null) ?? null,
+        (cfgBuff as number | undefined) ?? undefined,
+        rest,
+      );
+    } else if (ctor === Dot) {
+      // NOTE: Dot reads every constructor parameter from the trailing
+      // options bag as well, so the whole config can go there (mirrors
+      // Python `Dot(**vertex_config)`).
+      mobject = new Dot(undefined, undefined, undefined, undefined, undefined, resolved_config);
+    } else {
+      const custom = ctor as new (config?: Record<string, unknown>) => Mobject;
+      mobject = new custom({ ...resolved_config });
+    }
+
+    mobject.move_to(np_position);
+
+    return [vertex, np_position, resolved_config, mobject];
   }
 
   _add_created_vertex(
