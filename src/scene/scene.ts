@@ -5,6 +5,7 @@ import { DEFAULT_WAIT_TIME, OUT, RendererType, SHIFT_VALUE } from "../constants.
 import { MethodWithArgs } from "../data_structures.js";
 import { Mobject, _AnimationBuilder } from "../mobject/mobject.js";
 import { pointRows } from "../utils/arrays.js";
+import { extract_mobject_family_members } from "../utils/family.js";
 import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
 import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { Animation, Wait, prepare_animation } from "../animation/animation.js";
@@ -448,7 +449,16 @@ export class Scene {
   }
 
   get_mobject_family_members(): Mobject[] {
-    return this.mobjects.flatMap((mobject) => mobject.get_family());
+    if (config.renderer === RendererType.OPENGL) {
+      return this.mobjects.flatMap((mobject) => mobject.get_family());
+    }
+    // NOTE: the Python original asserts the Cairo renderer here; any
+    // non-OpenGL renderer takes this path. With no renderer attached yet
+    // (plain `new Scene()`), there is no camera, so z-index sorting is off.
+    return extract_mobject_family_members(
+      this.mobjects,
+      this.renderer?.camera?.use_z_index ?? false,
+    );
   }
 
   get_moving_mobjects(...animations: Animation[]): Mobject[] {
@@ -478,6 +488,26 @@ export class Scene {
     };
     const index = mobjects.findIndex((mob) => consider_moving(mob));
     return index === -1 ? [] : mobjects.slice(index);
+  }
+
+  restructure_mobjects(
+    to_remove: Iterable<Mobject>,
+    mobject_list_name = "mobjects",
+    extract_families = true,
+  ): this {
+    // NOTE: with no renderer attached yet (plain `new Scene()`), there is
+    // no camera, so z-index sorting is off.
+    let removed: Iterable<Mobject> = to_remove;
+    if (extract_families) {
+      removed = extract_mobject_family_members(
+        to_remove,
+        this.renderer?.camera?.use_z_index ?? false,
+      );
+    }
+    const list = (this as unknown as Record<string, Mobject[]>)[mobject_list_name] ?? [];
+    (this as unknown as Record<string, Mobject[]>)[mobject_list_name] =
+      this.get_restructured_mobject_list(list, removed);
+    return this;
   }
 
   get_restructured_mobject_list(

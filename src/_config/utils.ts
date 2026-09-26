@@ -248,6 +248,54 @@ export class ManimConfig {
     this.__setitem__(key, value);
   }
 
+  update(obj: ManimConfig | Record<string, unknown>): void {
+    if (obj instanceof ManimConfig) {
+      const renderer = obj.renderer;
+      Object.assign(this.values, obj.values);
+      if (renderer !== null && renderer !== undefined) {
+        // Apply the renderer through its setter so that the
+        // ConvertToOpenGL class bases stay in sync with the config value.
+        this.renderer = renderer;
+      }
+      // NOTE: the stored value is read directly because the tex_template
+      // property getter is a text/tex stub (out of scope for the entire port).
+      if (obj.values["tex_template"]) {
+        this.tex_template = obj.values["tex_template"];
+      }
+    } else if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
+      // First update the underlying store, then other properties
+      for (const [key, value] of Object.entries(obj)) {
+        if (Object.prototype.hasOwnProperty.call(this.values, key)) {
+          this.set(key, value);
+        }
+      }
+      for (const [key, value] of Object.entries(obj)) {
+        if (!Object.prototype.hasOwnProperty.call(this.values, key)) {
+          this.set(key, value);
+        }
+      }
+    }
+  }
+
+  // don't allow to delete anything
+  __delitem__(key: string): never {
+    void key;
+    const error = new Error(
+      "'ManimConfig' object does not support item deletion",
+    );
+    error.name = "AttributeError";
+    throw error;
+  }
+
+  __delattr__(key: string): never {
+    void key;
+    const error = new Error(
+      "'ManimConfig' object does not support item deletion",
+    );
+    error.name = "AttributeError";
+    throw error;
+  }
+
   get background_color(): ManimColor {
     return this.__getitem__("background_color");
   }
@@ -334,6 +382,26 @@ export class ManimConfig {
       if ((error as Error).name === "AttributeError") return false;
       throw error;
     }
+  }
+
+  *[Symbol.iterator](): IterableIterator<string> {
+    yield* Object.keys(this.values);
+  }
+
+  __len__(): number {
+    return Object.keys(this.values).length;
+  }
+
+  __repr__(): string {
+    let rep = "";
+    for (const key of Object.keys(this.values).sort()) {
+      rep += `${key}: ${String(this.values[key])}, `;
+    }
+    return rep;
+  }
+
+  toString(): string {
+    return this.__repr__();
   }
 
   __copy__(): ManimConfig {
