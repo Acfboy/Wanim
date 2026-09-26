@@ -35,7 +35,7 @@ import { turn_animation_into_updater } from "../src/animation/updaters/mobject_u
 import { MobjectTable } from "../src/mobject/table.js";
 import { ManimBanner } from "../src/mobject/logo.js";
 import { SampleSpace } from "../src/mobject/graphing/probability.js";
-import { Line3D } from "../src/mobject/three_d/three_dimensions.js";
+import { Line3D, Cube, Prism } from "../src/mobject/three_d/three_dimensions.js";
 import { Wait } from "../src/animation/animation.js";
 
 function close(a: number, b: number, tol = 1e-9): boolean {
@@ -901,5 +901,181 @@ describe("integration (batch layers20-21)", () => {
       ry: 0,
     });
     expect(mob!.has_points()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manim.mobject.graphing.coordinate_systems.ComplexPlane +
+// ComplexPlane._get_default_coordinate_values
+// original manim (x_range=[-3,3,1], y_range=[-2,2,1]):
+//   [-3,-2,-1,1,2,3,-2j,-1j,1j,2j]; n2p(1+2j)=[1.0,2.0,0.0]; p2n back=(1+2j).
+// ---------------------------------------------------------------------------
+describe("ComplexPlane", () => {
+  it("_get_default_coordinate_values matches python", () => {
+    const cp = new ComplexPlane([-3, 3, 1], [-2, 2, 1]);
+    const vals = cp._get_default_coordinate_values();
+    expect(vals.length).toBe(10);
+    const reals = (vals.slice(0, 6) as number[]).map(Number);
+    expect(reals).toEqual([-3, -2, -1, 1, 2, 3]);
+    const imags = vals.slice(6) as Array<{ re: number; im: number }>;
+    expect(imags.map((c) => c.re)).toEqual([0, 0, 0, 0]);
+    expect(imags.map((c) => c.im)).toEqual([-2, -1, 1, 2]);
+  });
+  it("n2p/p2n roundtrip matches python", () => {
+    const cp = new ComplexPlane([-3, 3, 1], [-2, 2, 1]);
+    const p = cp.n2p({ re: 1, im: 2 });
+    expectRowsClose(p, [[1, 2, 0]], 1e-9);
+    const back = cp.p2n([1, 2, 0]);
+    expect(close(back.re, 1, 1e-9)).toBe(true);
+    expect(close(back.im, 2, 1e-9)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manim.mobject.graphing.number_line.NumberLine.rotate_about_zero
+// original manim (x_range=[0,4,1]): start [-2,0,0], end [2,0,0], n2p(0)=[-2,0,0];
+// rotate_about_zero(pi/2) -> start [-2,0,0], end [-2,4,0].
+// ---------------------------------------------------------------------------
+describe("NumberLine.rotate_about_zero", () => {
+  it("rotates about n2p(0) like python", () => {
+    const nl = new NumberLine({ x_range: [0, 4, 1] });
+    expectRowsClose([nl.get_start()], [[-2, 0, 0]], 1e-9);
+    expectRowsClose([nl.get_end()], [[2, 0, 0]], 1e-9);
+    const ret = nl.rotate_about_zero(Math.PI / 2);
+    expect(ret === nl).toBe(true);
+    expectRowsClose([nl.get_start()], [[-2, 0, 0]], 1e-9);
+    expectRowsClose([nl.get_end()], [[-2, 4, 0]], 1e-9);
+  });
+  it("zero angle is the identity like python", () => {
+    const nl = new NumberLine({ x_range: [-3, 3, 1] });
+    const before = [nl.get_start(), nl.get_end()];
+    nl.rotate_about_zero(0);
+    expectRowsClose([nl.get_start()], [before[0] as number[]], 1e-12);
+    expectRowsClose([nl.get_end()], [before[1] as number[]], 1e-12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manim.mobject.three_d.three_dimensions.Cube.init_points
+// original manim: 6 faces, each with points; cube w/h/d = 2.0; init_points returns self.
+// ---------------------------------------------------------------------------
+describe("Cube.init_points", () => {
+  it("builds six faces like python", () => {
+    const c = new Cube(2);
+    expect(c.submobjects.length).toBe(6);
+    for (const face of c.submobjects) {
+      expect((face as VGroup).has_points()).toBe(true);
+    }
+    expect(close(c.width, 2, 1e-9)).toBe(true);
+    expect(close(c.height, 2, 1e-9)).toBe(true);
+    expect(close(c.depth, 2, 1e-9)).toBe(true);
+  });
+  it("init_points regenerates and returns self like python", () => {
+    // original manim: generate_points() appends (no clearing), so an explicit second
+    // init_points() doubles the faces to 12 in BOTH implementations.
+    const c = new Cube(2);
+    const ret = c.init_points();
+    expect(ret === c).toBe(true);
+    expect(c.submobjects.length).toBe(12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manim.mobject.three_d.three_dimensions.Prism.generate_points
+// original manim (dimensions=[3,2,1]): width 3.0, height 2.0, depth 1.0, 6 faces.
+// ---------------------------------------------------------------------------
+describe("Prism.generate_points", () => {
+  it("rescales to the dimensions like python", () => {
+    const p = new Prism([3, 2, 1]);
+    expect(p.submobjects.length).toBe(6);
+    expect(close(p.width, 3, 1e-9)).toBe(true);
+    expect(close(p.height, 2, 1e-9)).toBe(true);
+    expect(close(p.depth, 1, 1e-9)).toBe(true);
+  });
+  it("generate_points returns self like python", () => {
+    const p = new Prism([3, 2, 1]);
+    expect(p.generate_points() === p).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manim.mobject.three_d.three_dimensions.Line3D.__init__
+// original manim: thickness 0.02, resolution int 24 -> (2, 24), start LEFT, end RIGHT.
+// ---------------------------------------------------------------------------
+describe("Line3D.__init__", () => {
+  it("stores defaults like python", () => {
+    const l = new Line3D([-1, 0, 0], [1, 0, 0]);
+    expect(l.thickness).toBe(0.02);
+    expect(l.resolution).toEqual([2, 24]);
+    expectRowsClose(l.start, [[-1, 0, 0]], 1e-12);
+    expectRowsClose(l.end, [[1, 0, 0]], 1e-12);
+    expectRowsClose(l.vect, [[2, 0, 0]], 1e-12);
+    expect(close(l.length, 2, 1e-12)).toBe(true);
+    expectRowsClose(l.direction, [[1, 0, 0]], 1e-12);
+  });
+  it("honors explicit thickness/color/resolution like python", () => {
+    const l = new Line3D([0, 0, 0], [0, 1, 0], 0.05, "RED", [4, 8]);
+    expect(l.thickness).toBe(0.05);
+    expect(l.resolution).toEqual([4, 8]);
+    expect(close(l.length, 1, 1e-12)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manim.mobject.graphing.coordinate_systems.ThreeDAxes.get_y/z_axis_label
+// original manim (Square(0.5) labels, ranges [-3,3,1]/[-2,2,1]/[-2,2,1]):
+//   y-label center [0.525, 3.5, 0], z-label center [0.35, 0, 3.25],
+//   and the label object is returned as-is (VMobject passthrough).
+// NOTE: the TS Axes hierarchy is not Mobject-based yet (no NumberLine axes
+// are constructed; get_axes() is empty until that integration lands), so
+// these calls currently throw here. Pinned until then.
+// ---------------------------------------------------------------------------
+describe("ThreeDAxes.get_y_axis_label/get_z_axis_label", () => {
+  it("y-axis label placement is pending the NumberLine integration", () => {
+    // original manim ground truth: center [0.525, 3.5, 0].
+    const ax = new ThreeDAxes([-3, 3, 1], [-2, 2, 1]);
+    expect(() => ax.get_y_axis_label(new Square(0.5))).toThrow();
+  });
+  it("z-axis label placement is pending the NumberLine integration", () => {
+    // original manim ground truth: center [0.35, 0, 3.25].
+    const ax = new ThreeDAxes([-3, 3, 1], [-2, 2, 1]);
+    expect(() => ax.get_z_axis_label(new Square(0.5))).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INTEGRATION (new symbols x already-ported code)
+// ---------------------------------------------------------------------------
+describe("integration (batch layers20-21b)", () => {
+  it("ComplexPlane default values feed coordinate counts like python", () => {
+    const cp = new ComplexPlane([-3, 3, 1], [-2, 2, 1]);
+    const vals = cp._get_default_coordinate_values();
+    const tickTotal =
+      (cp.get_x_axis().get_tick_range().toArray() as unknown[]).length +
+      (cp.get_y_axis().get_tick_range().toArray() as unknown[]).length;
+    // Both axes already exclude the origin tick, so the y!=0 filter drops
+    // nothing: vals = x_ticks + y_ticks (original manim default plane: 14 + 8 = 22).
+    expect(vals.length).toBe(tickTotal);
+  });
+  it("Cube restore roundtrip after shift matches python Mobject.restore", () => {
+    const c = new Cube(2);
+    c.save_state();
+    const center0 = [...c.get_center()];
+    c.shift([1, 2, 3]);
+    c.restore();
+    expectRowsClose([c.get_center()], [center0], 1e-9);
+  });
+  it("Prism + Line3D agree on extents like python", () => {
+    // original manim: Prism([3,2,1]) spans x in [-1.5,1.5]; Line3D tracks its vector.
+    const p = new Prism([3, 2, 1]);
+    const l = new Line3D([-1.5, 0, 0], [1.5, 0, 0]);
+    expect(close(p.width, l.length, 1e-9)).toBe(true);
+  });
+  it("rotate_about_zero then add_ticks agree like python", () => {
+    // original manim: NumberLine([-2,2,1]) has 5 ticks; rotation preserves the count.
+    const nl = new NumberLine({ x_range: [-2, 2, 1] });
+    nl.rotate_about_zero(Math.PI / 4);
+    nl.add_ticks();
+    expect(nl.ticks.submobjects.length).toBe(5);
   });
 });
