@@ -150,6 +150,87 @@ export class Transform extends Animation {
   }
 }
 
+export type MobjectBoundMethod = ((...args: any[]) => unknown) & {
+  __self__?: unknown;
+  __func__?: (...args: any[]) => unknown;
+};
+
+export class ApplyMethod extends Transform {
+  method: MobjectBoundMethod;
+  method_args: unknown[];
+
+  constructor(method: MobjectBoundMethod, ...methodArgs: unknown[]) {
+    // NOTE: Python calls `self.check_validity_of_input(method)` before
+    // `super().__init__`; TS cannot touch `this` before `super()`, so the
+    // same check runs as a static here and as an instance method below
+    // (same pattern as MoveToTarget in this file).
+    // NOTE: Python's `**kwargs` (forwarded to Transform) have no positional
+    // TS spelling; every rest arg is a method arg, and a trailing plain
+    // object stays a method-kwarg dict per `create_target` below.
+    ApplyMethod.validateInput(method);
+    super((method as unknown as { __self__: Mobject }).__self__);
+    this.method = method;
+    this.method_args = methodArgs;
+  }
+
+  check_validity_of_input(method: MobjectBoundMethod): void {
+    ApplyMethod.validateInput(method);
+  }
+
+  checkValidityOfInput(method: MobjectBoundMethod): void {
+    this.check_validity_of_input(method);
+  }
+
+  private static validateInput(method: MobjectBoundMethod): void {
+    // Mirrors `inspect.ismethod(method)`: a bare function (or anything
+    // without a bound `__self__`, i.e. an already-invoked result) means the
+    // caller passed `mobject.method(...)` instead of `mobject.method`.
+    // TS callers attach `__self__`/`__func__` the way CPython bound methods
+    // carry them.
+    const self = (method as unknown as { __self__?: unknown }).__self__;
+    if (typeof method !== "function" || self === undefined || self === null) {
+      const error = new Error(
+        "Whoops, looks like you accidentally invoked the method you want to animate",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    if (!(self instanceof Mobject)) {
+      const error = new Error(
+        `assert isinstance(method.__self__, (Mobject, OpenGLMobject)): got ${self === null ? "null" : typeof self}`,
+      );
+      error.name = "AssertionError";
+      throw error;
+    }
+  }
+
+  override create_target(): Mobject {
+    const method = this.method;
+    // Make sure it's a list so that args.pop() works
+    const args = [...this.method_args];
+    let method_kwargs: Record<string, unknown> = {};
+    if (args.length > 0) {
+      const last = args[args.length - 1];
+      if (
+        last !== null &&
+        typeof last === "object" &&
+        !(last instanceof Mobject) &&
+        !Array.isArray(last)
+      ) {
+        method_kwargs = args.pop() as Record<string, unknown>;
+      }
+    }
+    const target = ((method as unknown as { __self__: Mobject }).__self__).copy();
+    const func = (method as unknown as { __func__: (...args: any[]) => unknown }).__func__;
+    // Mirrors `method.__func__(target, *args, **method_kwargs)`; TS has no
+    // **kwargs channel, so a non-empty kwarg dict rides as the last
+    // positional (same convention as _MethodAnimation.finish in this repo).
+    if (Object.keys(method_kwargs).length > 0) func.apply(target, [...args, method_kwargs]);
+    else func.apply(target, args);
+    return target;
+  }
+}
+
 export class ApplyPointwiseFunction extends Transform {
   function: (mobject: Mobject) => Mobject;
 

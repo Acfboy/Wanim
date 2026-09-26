@@ -1,10 +1,11 @@
 import { platform } from "node:os";
 import { array, matmul, transpose, type NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
-import { OUT, SHIFT_VALUE } from "../constants.js";
+import { OUT, RendererType, SHIFT_VALUE } from "../constants.js";
 import { MethodWithArgs } from "../data_structures.js";
 import { Mobject } from "../mobject/mobject.js";
 import { pointRows } from "../utils/arrays.js";
+import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
 import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { Animation, prepare_animation } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
@@ -131,13 +132,70 @@ export class TimeProgression implements Iterable<number> {
   }
 }
 
+/**
+ * Minimal mirror of `srt.Subtitle` (index/content/start/end), with the
+ * `datetime.timedelta` bounds stored as seconds since the scene start.
+ * The `srt` package has no TS equivalent, so this local stand-in keeps
+ * `add_subcaption` behavior identical for the fields manim uses.
+ */
+export class Subtitle {
+  index: number;
+  content: string;
+  start: number;
+  end: number;
+
+  constructor(index = 0, content = "", start = 0, end = 0) {
+    this.index = index;
+    this.content = content;
+    this.start = start;
+    this.end = end;
+  }
+}
+
+export interface SceneConstructorOptions {
+  renderer?: any;
+  camera_class?: new (...args: any[]) => any;
+  always_update_mobjects?: boolean;
+  random_seed?: number | null;
+  skip_animations?: boolean;
+}
+
+function isSceneOptionsBag(value: unknown): value is SceneConstructorOptions {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return ["renderer", "camera_class", "always_update_mobjects", "random_seed", "skip_animations"].some((key) => key in (value as Record<string, unknown>));
+}
+
+export interface ScenePlayOptions {
+  subcaption?: string | null;
+  subcaption_duration?: number | null;
+  subcaption_offset?: number;
+  [key: string]: unknown;
+}
+
+function isScenePlayOptions(value: unknown): value is ScenePlayOptions {
+  // Any trailing plain object is the play-options bag (Animation and Mobject
+  // instances carry class prototypes and never match).
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 export class Scene {
   mobjects: Mobject[] = [];
   foreground_mobjects: Mobject[] = [];
   meshes: Mobject[] = [];
   animations: Animation[] = [];
+  stop_condition: (() => boolean) | null = null;
+  moving_mobjects: Mobject[] = [];
+  static_mobjects: Mobject[] = [];
+  time_progression: TimeProgression | null = null;
+  duration = 0;
+  last_t = 0;
   camera: any = null;
   renderer: any = null;
+  camera_class: new (...args: any[]) => any;
   key_to_function_map: Map<string, () => void> = new Map();
   mouse_press_callbacks: Array<() => void> = [];
   interactive_mode = false;
@@ -148,13 +206,65 @@ export class Scene {
   mouse_point: Mobject = new Mobject();
   mouse_drag_point: Mobject = new Mobject();
   always_update_mobjects: boolean;
+  random_seed: number | null;
+  skip_animations: boolean;
   skip_animation_preview = false;
   queue: Array<SceneInteractAction> = [];
+  widgets: Array<Record<string, unknown>> = [];
+  dearpygui_imported = false;
+  subcaptions: Subtitle[] = [];
 
-  constructor(renderer: any = null, camera_class: new (...args: any[]) => any = class {}, always_update_mobjects = false) {
-    this.renderer = renderer;
-    this.camera = new camera_class();
-    this.always_update_mobjects = always_update_mobjects;
+  constructor(
+    renderer?: SceneConstructorOptions | any,
+    camera_class?: (new (...args: any[]) => any) | SceneConstructorOptions | null,
+    always_update_mobjects: boolean | SceneConstructorOptions = false,
+    random_seed?: number | null,
+    skip_animations = false,
+  ) {
+    // NOTE: Python's signature is
+    // `(renderer, camera_class, always_update_mobjects, random_seed,
+    // skip_animations)`. The TS port additionally accepts a single trailing
+    // plain-object options bag (used by tests and TS callers), e.g.
+    // `new Scene({ skip_animations: true })`.
+    let resolvedRenderer: any = renderer ?? null;
+    let resolvedCameraClass: (new (...args: any[]) => any) | null | undefined = camera_class as new (...args: any[]) => any;
+    let resolvedAlwaysUpdate = always_update_mobjects as boolean;
+    let resolvedSeed = random_seed;
+    let resolvedSkip = skip_animations;
+    const trailing = [renderer, camera_class, always_update_mobjects].find((value) =>
+      isSceneOptionsBag(value),
+    ) as SceneConstructorOptions | undefined;
+    if (trailing !== undefined) {
+      if (trailing.renderer !== undefined) resolvedRenderer = trailing.renderer;
+      if (trailing.camera_class !== undefined) {
+        resolvedCameraClass = trailing.camera_class as new (...args: any[]) => any;
+      }
+      if (trailing.always_update_mobjects !== undefined) {
+        resolvedAlwaysUpdate = trailing.always_update_mobjects;
+      }
+      if (trailing.random_seed !== undefined) resolvedSeed = trailing.random_seed;
+      if (trailing.skip_animations !== undefined) resolvedSkip = trailing.skip_animations;
+    }
+    this.camera_class = (resolvedCameraClass ?? class {}) as new (...args: any[]) => any;
+    this.always_update_mobjects = resolvedAlwaysUpdate ?? false;
+    // NOTE: non-numeric values (e.g. an options bag forwarded by a subclass
+    // super() call) fall back to the configured seed, mirroring Python's
+    // `random_seed if random_seed is not None else config.seed`.
+    this.random_seed = typeof resolvedSeed === "number"
+      ? resolvedSeed
+      : ((config.seed as number | null) ?? null);
+    this.skip_animations = resolvedSkip ?? false;
+    this.renderer = resolvedRenderer;
+    this.camera = this.camera_class === null ? null : new this.camera_class();
+    this.renderer?.init_scene?.(this);
+    // NOTE: Python seeds the `random` and `numpy.random` singletons here.
+    // The TS runtime has no seedable global RNG, so only the field above is
+    // stored (see ).
+  }
+
+  /** The time since the start of the scene. */
+  get time(): number {
+    return (this.renderer?.time as number | undefined) ?? 0;
   }
 
   add(...mobjects: Mobject[]): this {
@@ -224,8 +334,81 @@ export class Scene {
     return index === -1 ? [] : mobjects.slice(index);
   }
 
-  play(...animations: (Animation | Mobject)[]): this {
-    const prepared = animations.map((animation) => prepare_animation(animation));
+  get_restructured_mobject_list(
+    mobjects: Iterable<Mobject>,
+    to_remove: Iterable<Mobject>,
+  ): Mobject[] {
+    const new_mobjects: Mobject[] = [];
+
+    function add_safe_mobjects_from_list(
+      list_to_examine: Iterable<Mobject>,
+      set_to_remove: Set<Mobject>,
+    ): void {
+      for (const mob of list_to_examine) {
+        if (set_to_remove.has(mob)) continue;
+        const family = new Set(mob.get_family());
+        const intersect = [...set_to_remove].filter((m) => family.has(m));
+        if (intersect.length > 0) {
+          add_safe_mobjects_from_list(mob.submobjects, new Set(intersect));
+        } else {
+          new_mobjects.push(mob);
+        }
+      }
+    }
+
+    add_safe_mobjects_from_list(mobjects, new Set(to_remove));
+    return new_mobjects;
+  }
+
+  get_run_time(animations: Animation[]): number {
+    const run_time = Math.max(...animations.map((animation) => animation.run_time));
+    return Scene.validate_run_time(
+      run_time,
+      this.play as (...args: unknown[]) => unknown,
+      "total run_time",
+    );
+  }
+
+  play(...args: Array<Animation | Mobject | ScenePlayOptions>): this {
+    // NOTE: Python's signature is `play(*args, subcaption, subcaption_duration,
+    // subcaption_offset, **kwargs)` with kwargs forwarded to the renderer.
+    // The TS port reads a trailing plain object as those play options
+    // (Animation/Mobject instances never match); remaining kwargs are
+    // accepted and ignored since the cairo renderer is not ported yet.
+    let options: ScenePlayOptions = {};
+    let playArgs = args;
+    const last = args[args.length - 1];
+    if (isScenePlayOptions(last)) {
+      options = last;
+      playArgs = args.slice(0, -1);
+    }
+    const {
+      subcaption = null,
+      subcaption_duration = null,
+      subcaption_offset = 0,
+      ..._rendererKwargs
+    } = options;
+    void _rendererKwargs;
+    // If we are in interactive embedded mode, make sure this is running on
+    // the main thread (required for OpenGL). The TS runtime is single
+    // threaded, so only the interactive-mode + OpenGL part is mirrored.
+    if (this.interactive_mode && (config.renderer as unknown) === RendererType.OPENGL) {
+      this.queue.push(
+        new SceneInteractRerun("play", {
+          subcaption,
+          subcaption_duration,
+          subcaption_offset,
+          ..._rendererKwargs,
+        }),
+      );
+      return this;
+    }
+    const start_time = this.time;
+    // NOTE: stand-in for `self.renderer.play(self, *args, **kwargs)` — the
+    // cairo renderer is not ported yet, so animations run inline here.
+    const prepared = flatten_iterable_parameters<Animation | Mobject>(
+      playArgs as Array<Animation | Mobject | Iterable<Animation | Mobject>>,
+    ).map((animation) => prepare_animation(animation));
     this.animations.push(...prepared);
     for (const animation of prepared) {
       animation._setup_scene(this);
@@ -233,7 +416,26 @@ export class Scene {
       animation.finish();
       animation.clean_up_from_scene(this);
     }
+    const run_time = this.time - start_time;
+    if (subcaption) {
+      const duration = subcaption_duration ?? run_time;
+      // The start of the subcaption needs to be offset by the
+      // run_time of the animation because it is added after
+      // the animation has already been played (and Scene.time
+      // has already been updated).
+      this.add_subcaption(subcaption, duration, -run_time + (subcaption_offset ?? 0));
+    }
     return this;
+  }
+
+  add_subcaption(content: string, duration = 1, offset = 0): void {
+    const store = this.renderer?.file_writer?.subcaptions as Subtitle[] | undefined;
+    const start = this.time + offset;
+    const end = start + duration;
+    // NOTE: with no renderer/file_writer (plain `new Scene()`), entries land
+    // in the local `subcaptions` list instead of raising.
+    const target = store ?? this.subcaptions;
+    target.push(new Subtitle(target.length, content, start, end));
   }
 
   wait(_duration = 1): this { return this; }

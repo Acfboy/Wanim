@@ -1,4 +1,5 @@
 import { Mobject, Group, get_animation_override, type FunctionLike } from "../mobject/mobject.js";
+import type { _AnimationBuilder } from "../mobject/mobject.js";
 import { DEFAULT_ANIMATION_LAG_RATIO, DEFAULT_ANIMATION_RUN_TIME } from "../constants.js";
 import { linear, smooth } from "../utils/rate_functions.js";
 
@@ -319,11 +320,27 @@ export class Add extends Animation {
   interpolate(_alpha: number): void {}
 }
 
-export function prepare_animation(animation: Animation | Mobject | (() => Animation)): Animation {
+export function prepare_animation(
+  animation: Animation | _AnimationBuilder | Mobject | (() => Animation),
+): Animation {
+  // Mirrors Python: animation factories (_AnimationBuilder, incl. the OpenGL
+  // variant which also exposes build()) are built first, an Animation passes
+  // through unchanged, anything else raises TypeError.
+  // NOTE: the Mobject/function fallbacks below are TS conveniences with no
+  // Python counterpart (Python raises TypeError for both); they keep
+  // historical Scene.play call sites working without a renderer.
+  const candidate = animation as unknown as { build?: unknown };
+  if (
+    candidate !== null &&
+    (typeof candidate === "object" || typeof candidate === "function") &&
+    typeof candidate.build === "function"
+  ) {
+    return (candidate.build as () => Animation).call(animation);
+  }
   if (animation instanceof Animation) return animation;
-  if (typeof animation === "function") return animation();
+  if (typeof animation === "function") return (animation as () => Animation)();
   if (animation instanceof Mobject) return new Animation(animation);
-  throw new TypeError("Expected an Animation, Mobject, or animation factory.");
+  throw new TypeError(`Object ${String(animation)} cannot be converted to an animation`);
 }
 
 export function override_animation(animationClass: AnimationClass): (func: FunctionLike) => FunctionLike {

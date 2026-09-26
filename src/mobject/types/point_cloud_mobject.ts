@@ -248,6 +248,20 @@ export class PMobject extends Mobject {
     return rgba_to_color(pointRows(this.rgbas, 4)[0] ?? [0, 0, 0, 1]);
   }
 
+  match_colors(mobject: Mobject): this {
+    this.align_data(mobject);
+    this.rgbas = array(pointRows((mobject as PMobject).rgbas, 4)) as NDArray;
+    return this;
+  }
+
+  static get_mobject_type_class(): typeof PMobject {
+    return PMobject;
+  }
+
+  get_point_mobject(center?: number[] | readonly number[] | NDArray | null): Point {
+    return new Point((center ?? this.get_center()) as number[] | readonly number[] | NDArray);
+  }
+
   point_from_proportion(alpha: number): NDArray {
     const index = alpha * (this.get_num_points() - 1);
     const rows = this.points.toArray() as unknown[][];

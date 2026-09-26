@@ -1699,9 +1699,25 @@ export class Mobject {
 }
 
 export class Group extends Mobject {
-  constructor(...mobjects: (Mobject | Iterable<Mobject>)[]) {
-    super();
-    this.add(...mobjects);
+  constructor(...args: Array<Mobject | Iterable<Mobject> | MobjectOptions>) {
+    // Mirrors Python `Group.__init__(self, *mobjects, **kwargs)`: a trailing
+    // plain object is the Mobject kwargs, everything else are members.
+    // (Mobject instances carry a class prototype, so they never match.)
+    const last = args[args.length - 1];
+    let options: MobjectOptions = {};
+    let members = args as Array<Mobject | Iterable<Mobject>>;
+    if (
+      last !== undefined &&
+      !(last instanceof Mobject) &&
+      typeof last === "object" &&
+      !Array.isArray(last) &&
+      typeof (last as { [Symbol.iterator]?: unknown })[Symbol.iterator] !== "function"
+    ) {
+      options = last as MobjectOptions;
+      members = args.slice(0, -1) as Array<Mobject | Iterable<Mobject>>;
+    }
+    super(options);
+    this.add(...members);
   }
 }
 

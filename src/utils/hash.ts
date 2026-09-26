@@ -279,10 +279,25 @@ export class _Memoizer {
   }
 }
 
+/**
+ * Mirrors Python's `isinstance(value, dict)` gate in `_cleaned_iterable`:
+ * only plain records are recursed into. Class instances (Mobjects,
+ * ndarrays, colors, ...) are leaves serialized later by `default()`,
+ * exactly like `JSONEncoder.default` handles them in Python. (Recursing
+ * into arbitrary instances crashes on internal cycles such as an
+ * ndarray's buffer views.)
+ */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 export class _CustomEncoder {
   _memoizer: _Memoizer;
   include_pixel_array: boolean;
-
   constructor(memoizer: _Memoizer, include_pixel_array = false) {
     this._memoizer = memoizer;
     this.include_pixel_array = include_pixel_array;
@@ -334,8 +349,8 @@ export class _CustomEncoder {
       let el = this._memoizer.check_already_processed(lst[index]);
       if (Array.isArray(el)) {
         el = this._iter_check_list(el);
-      } else if (el !== null && typeof el === "object" && !Array.isArray(el)) {
-        el = this._iter_check_dict(el as Record<string, unknown>);
+      } else if (isPlainRecord(el)) {
+        el = this._iter_check_dict(el);
       }
       processed[index] = el;
     }
@@ -355,10 +370,10 @@ export class _CustomEncoder {
       // pass through exactly like Python's str/int/float/bool/None keys
       // that JSON supports natively.
       const nextKey: string | number = typeof key !== "string" ? this._key_to_hash(key) : key;
-      if (typeof next === "object" && next !== null && !Array.isArray(next)) {
-        processed[nextKey] = this._iter_check_dict(next as Record<string, unknown>);
-      } else if (Array.isArray(next)) {
+      if (Array.isArray(next)) {
         processed[nextKey] = this._iter_check_list(next);
+      } else if (isPlainRecord(next)) {
+        processed[nextKey] = this._iter_check_dict(next);
       } else {
         processed[nextKey] = next;
       }
@@ -376,22 +391,29 @@ export class _CustomEncoder {
     throw new TypeError("'iterable' is neither an iterable nor a dictionary.");
   }
 
+  /** Shared `JSON.stringify` replacer: mirrors `JSONEncoder.default`, which
+   * the Python encoder invokes for every value its serializer cannot handle
+   * natively (class instances, functions, ndarrays). */
+  private _replacer = (_key: string, value: unknown): unknown => {
+    if (typeof value === "bigint") return Number(value);
+    if (typeof value === "function") return this.default(value);
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      !(value instanceof Array) &&
+      (value as object).constructor !== Object
+    ) {
+      return this.default(value);
+    }
+    return value;
+  };
+
   encode(obj: unknown): string {
     this._memoizer.mark_as_processed(obj);
     if (Array.isArray(obj) || (obj !== null && typeof obj === "object" && obj.constructor === Object)) {
-      return JSON.stringify(this._cleaned_iterable(obj as Record<string, unknown>), (_key, value: unknown) => {
-        if (typeof value === "bigint") return Number(value);
-        if (typeof value === "function") return this.default(value);
-        if (value !== null && typeof value === "object" && !(value instanceof Array) && (value as object).constructor !== Object) {
-          return this.default(value);
-        }
-        return value;
-      });
+      return JSON.stringify(this._cleaned_iterable(obj as Record<string, unknown>), this._replacer);
     }
-    return JSON.stringify(obj, (_key, value: unknown) => {
-      if (typeof value === "function") return this.default(value);
-      return value;
-    });
+    return JSON.stringify(obj, this._replacer);
   }
 }
 
@@ -483,4 +505,60 @@ export function _hash_ndarray(arr: NDArray): string {
 
 export function get_json(obj: unknown, include_pixel_array = false): string {
   return _get_json(obj, new _Memoizer(), include_pixel_array);
+}
+
+/**
+ * Mirrors CPython `repr()` for the values hashed by
+ * `get_hash_from_play_call` (JSON strings and lists of JSON strings).
+ * Only used on the hashing path so existing `pythonRepr` output elsewhere
+ * is untouched.
+ */
+function reprForHash(value: unknown): string {
+  if (value === null || value === undefined) return "None";
+  if (typeof value === "string") {
+    const escaped = value
+      .replace(/\\/g, "\\\\")
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r")
+      .replace(/\t/g, "\\t");
+    if (!escaped.includes("'")) return `'${escaped}'`;
+    if (!escaped.includes('"')) return `"${escaped}"`;
+    return `'${escaped.replace(/'/g, "\\'")}'`;
+  }
+  if (Array.isArray(value)) return `[${value.map(reprForHash).join(", ")}]`;
+  return String(value);
+}
+
+export function get_hash_from_play_call(
+  scene_object: unknown,
+  camera_object: unknown,
+  animations_list: Iterable<unknown>,
+  current_mobjects_list: Iterable<unknown>,
+): string {
+  console.debug("Hashing ...");
+  const t_start = Date.now();
+  const memoizer = new _Memoizer();
+  memoizer.mark_as_processed(scene_object);
+  const camera_json = _get_json(camera_object, memoizer);
+  const animations_list_json = [...animations_list]
+    .sort((a, b) => {
+      // Mirrors `sorted(animations_list, key=str)` (stable sort by str()).
+      const sa = String(a);
+      const sb = String(b);
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    })
+    .map((animation) => _get_json(animation, memoizer, true));
+  const current_mobjects_list_json = [...current_mobjects_list].map((mobject) =>
+    _get_json(mobject, memoizer, true),
+  );
+  const [hash_camera, hash_animations, hash_current_mobjects] = [
+    camera_json,
+    animations_list_json,
+    current_mobjects_list_json,
+  ].map((json_val) => crc32(reprForHash(json_val)));
+  const hash_complete = `${hash_camera}_${hash_animations}_${hash_current_mobjects}`;
+  const t_end = Date.now();
+  console.debug(`Hashing done in ${String((t_end - t_start) / 1000).slice(0, 8)} s.`);
+  console.debug(`Hash generated :  ${hash_complete}`);
+  return hash_complete;
 }

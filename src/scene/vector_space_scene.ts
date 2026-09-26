@@ -286,7 +286,6 @@ export class LinearTransformationScene extends VectorScene {
   transformable_mobjects!: Mobject[];
   moving_vectors!: Mobject[];
   transformable_labels!: any[];
-  moving_mobjects!: Mobject[];
   has_already_setup?: boolean;
   basis_vectors!: VGroup;
   i_hat!: Mobject;
