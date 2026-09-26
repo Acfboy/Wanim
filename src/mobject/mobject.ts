@@ -1707,8 +1707,16 @@ export class Mobject {
   }
 
   align_submobjects(other: Mobject): this {
-    while (this.submobjects.length < other.submobjects.length) this.submobjects.push(new Mobject());
-    while (other.submobjects.length < this.submobjects.length) other.submobjects.push(new Mobject());
+    // NOTE: mirrors Python exactly (add_n_more_submobjects duplicates
+    // existing children instead of padding with empty Mobjects). Padding
+    // with empty Mobjects never converges for (empty, pointed) pairs:
+    // null_point_align pushes the pointed side down one level while the
+    // empty side gains an empty child, recursing forever (observed as a
+    // stack overflow aligning DashedLines with different dash counts).
+    const n1 = this.submobjects.length;
+    const n2 = other.submobjects.length;
+    this.add_n_more_submobjects(Math.max(0, n2 - n1));
+    other.add_n_more_submobjects(Math.max(0, n1 - n2));
     return this;
   }
 
