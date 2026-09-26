@@ -237,6 +237,47 @@ export class Mobject {
     (this as unknown as typeof Mobject).add_animation_override(animationClass, overrideFunc);
   }
 
+  static _add_intrinsic_animation_overrides(): void {
+    // Mirrors Python: scan the class (including inherited methods, subclass
+    // first) for methods marked with the `override_animation` decorator
+    // (i.e. carrying an `_override_animation` attribute) and register each
+    // as an animation override. Dunder attributes are ignored.
+    // NOTE: Python invokes this automatically per subclass via
+    // `__init_subclass__` (which also resets the per-class override dict);
+    // TS has no subclass-creation hook, so this must be called manually and
+    // it registers into the (possibly inherited) override map.
+    const seen = new Set<string>();
+    const consider = (holder: Record<string, unknown>): void => {
+      for (const name of Object.getOwnPropertyNames(holder)) {
+        if (name.startsWith("__") || seen.has(name)) continue;
+        seen.add(name);
+        // NOTE: read via the descriptor so accessor properties (getters)
+        // are not invoked; Python's getattr(cls, name) likewise returns
+        // the descriptor object itself without calling it.
+        const descriptor = Object.getOwnPropertyDescriptor(holder, name);
+        const method = descriptor?.value;
+        if (typeof method === "function") {
+          const animationClass = (method as { _override_animation?: unknown })._override_animation;
+          if (animationClass !== undefined) {
+            (this as unknown as typeof Mobject).add_animation_override(animationClass, method as FunctionLike);
+          }
+        }
+      }
+    };
+    let current: unknown = this;
+    while (current !== null && current !== undefined && current !== Function.prototype) {
+      // Scan instance methods on the prototype (mirrors dir(cls) entries
+      // resolved on the class) as well as static members on the constructor.
+      const proto = (current as { prototype?: Record<string, unknown> }).prototype;
+      if (proto !== undefined && proto !== null && typeof proto === "object") {
+        consider(proto);
+        consider(current as Record<string, unknown>);
+        if ((proto as unknown) === Mobject.prototype) break;
+      }
+      current = Object.getPrototypeOf(current);
+    }
+  }
+
   get animate(): _AnimationBuilder {
     return createAnimationBuilder(this);
   }

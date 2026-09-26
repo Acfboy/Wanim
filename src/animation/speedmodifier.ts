@@ -168,7 +168,8 @@ export class ChangeSpeed extends Animation {
   }
 
   static setup(anim: Animation | _AnimationBuilder): Animation {
-    if ((anim as Animation) instanceof Wait) {
+    // NOTE: mirrors Python `type(anim) is Wait` (exact-type check, not isinstance).
+    if ((anim as object).constructor === Wait) {
       const wait = anim as Wait;
       wait.interpolate = (_alpha: number): void => {
         wait.rate_func(_alpha);

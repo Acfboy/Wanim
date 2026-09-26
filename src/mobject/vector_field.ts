@@ -111,6 +111,14 @@ export class VectorField extends VGroup {
     return this;
   }
 
+  get_nudge_updater(speed = 1, pointwise = false): (mob: Mobject, dt: number) => VectorField {
+    return (mob: Mobject, dt: number) => this.nudge(mob, dt * speed, 1, pointwise);
+  }
+
+  getNudgeUpdater(speed = 1, pointwise = false): (mob: Mobject, dt: number) => VectorField {
+    return this.get_nudge_updater(speed, pointwise);
+  }
+
   start_submobject_movement(speed = 1, pointwise = false): this {
     this.stop_submobject_movement();
     this.submob_movement_updater = (mob: Mobject, dt: number): void => {
