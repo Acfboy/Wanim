@@ -100,16 +100,63 @@ function parseSingleColor(value: ParsableManimColor | Iterable<ManimColor>): Man
   return new ManimColor((single ?? BLACK) as ParsableManimColor);
 }
 
-function interpolateArray(first: unknown, second: unknown, alpha: number): NDArray {  if (typeof first === "number" || typeof second === "number") return array(Number(first) * (1 - alpha) + Number(second) * alpha) as NDArray;
-  const left = Array.isArray(first) ? first : isNDArray(first) ? rows(first, 4) : [first];
-  const right = Array.isArray(second) ? second : isNDArray(second) ? rows(second, 4) : [second];
-  const result = left.map((value, index) => {
-    if (Array.isArray(value)) {
-      const other = Array.isArray(right[index]) ? right[index] : [Number(right[index])];
-      return value.map((item, component) => Number(item) * (1 - alpha) + Number(other[component] ?? 0) * alpha);
-    }
-    return Number(value) * (1 - alpha) + Number(right[index] ?? 0) * alpha;
-  });
+function asRows(value: unknown): number[][] {
+  if (isNDArray(value)) {
+    const arr = (value as NDArray).toArray() as unknown;
+    if (Array.isArray(arr) && Array.isArray(arr[0])) return arr as number[][];
+    return [arr as number[]];
+  }
+  if (Array.isArray(value)) {
+    if (Array.isArray(value[0])) return value as number[][];
+    return [value as number[]];
+  }
+  return [[Number(value)]];
+}
+
+/** Rank 0 = scalar, 1 = flat vector, 2 = matrix / row list. */
+function rankOf(value: unknown): number {
+  if (isNDArray(value)) return ((value as NDArray).shape.length ?? 1) >= 2 ? 2 : 1;
+  if (Array.isArray(value)) return Array.isArray(value[0]) ? 2 : 1;
+  return 0;
+}
+
+function flatArray(value: unknown): number[] {
+  if (isNDArray(value)) return ((value as NDArray).toArray() as unknown[]).map(Number);
+  if (Array.isArray(value)) return (value as unknown[]).map(Number);
+  return [Number(value)];
+}
+
+function lerp1d(a: number[], b: number[], alpha: number): number[] {
+  const n = Math.max(a.length, b.length);
+  const out: number[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const av = a.length === 1 ? a[0] : (a[i] ?? 0);
+    const bv = b.length === 1 ? b[0] : (b[i] ?? 0);
+    out.push(Number(av) * (1 - alpha) + Number(bv) * alpha);
+  }
+  return out;
+}
+
+/** Element-wise lerp with NumPy-style broadcasting: flat vectors stay 1-D,
+ * while a single rgba row broadcasts against a full point-aligned array
+ * (Python: `(N,4)` with `(1,4)`). */
+function interpolateArray(first: unknown, second: unknown, alpha: number): NDArray {
+  const firstRank = rankOf(first);
+  const secondRank = rankOf(second);
+  if (firstRank === 0 && secondRank === 0) {
+    return array(Number(first) * (1 - alpha) + Number(second) * alpha) as NDArray;
+  }
+  const left = asRows(first);
+  const right = asRows(second);
+  const rowCount = Math.max(left.length, right.length);
+  const result: number[][] = [];
+  for (let i = 0; i < rowCount; i += 1) {
+    const a = left.length === 1 ? left[0] : (left[i] ?? left[0]);
+    const b = right.length === 1 ? right[0] : (right[i] ?? right[0]);
+    result.push(lerp1d(a as number[], b as number[], alpha));
+  }
+  // Preserve the original rank: flat inputs interpolate to a flat vector.
+  if (firstRank <= 1 && secondRank <= 1) return array(result[0] ?? []) as NDArray;
   return array(result) as NDArray;
 }
 

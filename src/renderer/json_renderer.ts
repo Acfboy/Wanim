@@ -331,14 +331,11 @@ export class JSONCairoRenderer {
     this.skip_animations = this._original_skipping_status;
     this.update_skipping_status();
 
-    let playArgs = args;
-    const last = args[args.length - 1];
-    if (last !== null && typeof last === "object" && !Array.isArray(last)
-      && (Object.getPrototypeOf(last) === Object.prototype || Object.getPrototypeOf(last) === null)) {
-      playArgs = args.slice(0, -1);
-    }
-
-    scene.compile_animation_data(...(playArgs as Array<never>));
+    // `Scene.play` forwards any play-level options (run_time, lag_ratio,
+    // ...) as a trailing plain object; `compile_animation_data` reads it,
+    // so the args are passed through intact (mirrors Python's
+    // `renderer.play(scene, *args, **kwargs)`).
+    scene.compile_animation_data(...(args as Array<never>));
 
     if (this.skip_animations) {
       this.time += scene.duration;
