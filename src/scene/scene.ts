@@ -458,6 +458,10 @@ export class Scene {
     return this;
   }
 
+  add_foreground_mobject(mobject: Mobject): this {
+    return this.add_foreground_mobjects(mobject);
+  }
+
   remove_foreground_mobjects(...to_remove: Mobject[]): this {
     this.restructure_mobjects(to_remove, "foreground_mobjects");
     return this;
@@ -854,6 +858,40 @@ export class Scene {
       // has already been updated).
       this.add_subcaption(subcaption, duration, -run_time + (subcaption_offset ?? 0));
     }
+    return this;
+  }
+
+  compile_animation_data(
+    ...args: Array<Animation | Mobject | _AnimationBuilder | ScenePlayOptions>
+  ): this | null {
+    // NOTE TODO : returns statement of this method are wrong. It should return nothing, as it makes a little sense to get any information from this method.
+    // The return are kept to keep webgl renderer from breaking.
+    if (args.length === 0) {
+      const error = new Error("Called Scene.play with no animations");
+      error.name = "ValueError";
+      throw error;
+    }
+
+    this.animations = this.compile_animations(...args);
+    this.add_mobjects_from_animations(this.animations);
+
+    this.last_t = 0;
+    this.stop_condition = null;
+    this.moving_mobjects = [];
+    this.static_mobjects = [];
+
+    this.duration = this.get_run_time(this.animations);
+    if (this.animations.length === 1 && this.animations[0] instanceof Wait) {
+      if (this.should_update_mobjects()) {
+        this.update_mobjects(0); // Any problems with this?
+        this.stop_condition = (this.animations[0] as Wait).stop_condition;
+      } else {
+        // Static image logic when the wait is static is done by the renderer, not here.
+        (this.animations[0] as Wait).is_static_wait = true;
+        return null;
+      }
+    }
+
     return this;
   }
 

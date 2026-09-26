@@ -429,8 +429,9 @@ export class LinearTransformationScene extends VectorScene {
   }
 
   // NOTE: Python flags this override as conflicting with
-  // Scene.add_foreground_mobject(s); the TS Scene has no such method yet, so
-  // this is the only definition.
+  // Scene.add_foreground_mobject(s) (`# type: ignore[override]`); the TS
+  // override keeps the same ignore via @ts-expect-error below.
+  // @ts-expect-error -- mirrors Python `# type: ignore[override]`: variadic void intentionally narrows Scene.add_foreground_mobject
   add_foreground_mobject(...mobjects: Mobject[]): void {
     this.add_special_mobjects(this.foreground_mobjects, ...mobjects);
   }

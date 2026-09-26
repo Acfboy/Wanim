@@ -4,7 +4,7 @@ import { IN, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, UP, DOWN, X_AXIS, Y_AXIS, Z_AXIS
 import { DEFAULT_DOT_RADIUS, LineJointType } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { RendererType } from "../../constants.js";
-import { normalize, z_to_vector } from "../../utils/space_ops.js";
+import { normalize, z_to_vector, cross, perpendicular_bisector } from "../../utils/space_ops.js";
 import { BLUE, BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import type { ThreeDAxes } from "../graphing/coordinate_systems.js";
 import { Mobject } from "../mobject.js";
@@ -882,6 +882,52 @@ export class Line3D {
     // and returns np.array(...) preserving shape; mirror that with a copy.
     if (isNDArray(mob_or_point)) return (mob_or_point as NDArray).copy();
     return array([...(mob_or_point as readonly number[])].map(Number)) as NDArray;
+  }
+
+  static parallel_to(
+    line: Line3D,
+    point: number[] | readonly number[] | NDArray = [...ORIGIN],
+    length = 5,
+    options: { thickness?: number; color?: ParsableManimColor | null; resolution?: number | [number, number] } = {},
+  ): Line3D {
+    const np_point = pointRows(isNDArray(point) ? (point as NDArray).copy() : [...(point as readonly number[])], 3)[0] ?? [0, 0, 0];
+    const vect = normalize(line.vect);
+    return new Line3D(
+      np_point.map((value, index) => value + (vect[index] ?? 0) * length / 2),
+      np_point.map((value, index) => value - (vect[index] ?? 0) * length / 2),
+      options.thickness ?? 0.02,
+      options.color ?? null,
+      options.resolution ?? 24,
+    );
+  }
+
+  static perpendicular_to(
+    line: Line3D,
+    point: number[] | readonly number[] | NDArray = [...ORIGIN],
+    length = 5,
+    options: { thickness?: number; color?: ParsableManimColor | null; resolution?: number | [number, number] } = {},
+  ): Line3D {
+    const np_point = pointRows(isNDArray(point) ? (point as NDArray).copy() : [...(point as readonly number[])], 3)[0] ?? [0, 0, 0];
+    const startRows = pointRows(line.start, 3)[0] ?? [0, 0, 0];
+    const diff = np_point.map((value, index) => value - (startRows[index] ?? 0));
+    const normVec = cross(line.vect, diff);
+    if (normVec.every((value) => value === 0)) {
+      const error = new Error("Could not find the perpendicular.");
+      error.name = "ValueError";
+      throw error;
+    }
+
+    const [bisStart, bisEnd] = perpendicular_bisector([line.start, line.end], normVec);
+    const bisVect = normalize(
+      (bisEnd ?? []).map((value, index) => value - ((bisStart ?? [])[index] ?? 0)),
+    );
+    return new Line3D(
+      np_point.map((value, index) => value + (bisVect[index] ?? 0) * length / 2),
+      np_point.map((value, index) => value - (bisVect[index] ?? 0) * length / 2),
+      options.thickness ?? 0.02,
+      options.color ?? null,
+      options.resolution ?? 24,
+    );
   }
 }
 
