@@ -1068,6 +1068,18 @@ function axisValue(value: number, range: number[], length: number): number {
   return min + alpha * (max - min);
 }
 
+function unitPosition(value: number, range: number[]): number {
+  // Mirrors a unit-sized NumberLine axis centered on the range midpoint
+  // (Python NumberPlane/ComplexPlane with x_length=None): pos(x) is x
+  // shifted so the range midpoint lands on the origin.
+  return Number(value) - (Number(range[0]) + Number(range[1])) / 2;
+}
+
+function unitValue(point: number, range: number[]): number {
+  // Algebraic inverse of unitPosition above.
+  return Number(point) + (Number(range[0]) + Number(range[1])) / 2;
+}
+
 function coordinateRows(value: number | number[] | NDArray): number[][] {
   if (isNDArray(value)) return pointRows(value, 3);
   if (Array.isArray(value)) {
@@ -1090,6 +1102,23 @@ function axisValues(value: number | number[] | NDArray): number[] {
 }
 
 export class NumberPlane extends CoordinateSystem {
+  constructor(
+    x_range: number[] | null = null,
+    y_range: number[] | null = null,
+    x_length: number | null = null,
+    y_length: number | null = null,
+  ) {
+    // NOTE: mirrors Python NumberPlane.__init__ defaults, which use the raw
+    // frame radii (unlike Axes/CoordinateSystem, which round them to
+    // [-7, 7, 1] / [-4, 4, 1]).
+    super(
+      x_range ?? [-config.frame_x_radius, config.frame_x_radius, 1],
+      y_range ?? [-config.frame_y_radius, config.frame_y_radius, 1],
+      x_length,
+      y_length,
+    );
+  }
+
   point_to_coords(point: readonly number[]): number[] {
     // Mirrors Axes.point_to_coords for the linear mapping implemented by
     // coords_to_point above (Python resolves this through NumberLine axes;
@@ -1105,21 +1134,38 @@ export class NumberPlane extends CoordinateSystem {
       return (point as unknown as number[][]).map((p) => single(p)) as unknown as number[];
     }
     const values = [...point].map(Number);
-    const xLength = this.x_length ?? Math.round(config.frame_width) - 2;
-    const yLength = this.y_length ?? Math.round(config.frame_height) - 2;
-    return [
-      axisValue(values[0] ?? 0, this.x_range, xLength),
-      axisValue(values[1] ?? 0, this.y_range, yLength),
-    ];
+    // NOTE: a null length mirrors Python's unit-sized NumberLine axes
+    // (NumberPlane/ComplexPlane with x_length=None map coords about the
+    // range midpoint at unit size); explicit lengths use the linear map.
+    const xValue =
+      this.x_length === null || this.x_length === undefined
+        ? unitValue(values[0] ?? 0, this.x_range)
+        : axisValue(values[0] ?? 0, this.x_range, this.x_length);
+    const yValue =
+      this.y_length === null || this.y_length === undefined
+        ? unitValue(values[1] ?? 0, this.y_range)
+        : axisValue(values[1] ?? 0, this.y_range, this.y_length);
+    return [xValue, yValue];
   }
 
   coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
     if (coords.length === 0) return array([0, 0, 0]) as NDArray;
-    const xLength = this.x_length ?? Math.round(config.frame_width) - 2;
-    const yLength = this.y_length ?? Math.round(config.frame_height) - 2;
+    const xLength = this.x_length;
+    const yLength = this.y_length;
+    // NOTE: null lengths mirror Python's unit-sized axes (see
+    // point_to_coords); explicit lengths fall back to the frame-derived
+    // sizes only when the fields are null here for legacy callers — Axes
+    // always stores resolved lengths, so this branch only affects direct
+    // NumberPlane/ComplexPlane use with an explicit length on one axis.
+    const resolvedXLength = xLength ?? Math.round(config.frame_width) - 2;
+    const resolvedYLength = yLength ?? Math.round(config.frame_height) - 2;
     const mapPoint = (x: number, y: number): number[] => [
-      axisPosition(Number(x), this.x_range, xLength),
-      axisPosition(Number(y), this.y_range, yLength),
+      xLength === null || xLength === undefined
+        ? unitPosition(Number(x), this.x_range)
+        : axisPosition(Number(x), this.x_range, resolvedXLength),
+      yLength === null || yLength === undefined
+        ? unitPosition(Number(y), this.y_range)
+        : axisPosition(Number(y), this.y_range, resolvedYLength),
       0,
     ];
     if (coords.length === 1) {
@@ -1184,9 +1230,12 @@ export class Axes extends NumberPlane {
     y_axis_config: Record<string, unknown> | null = null,
     tips = true,
   ) {
+    // NOTE: mirrors Python Axes.__init__, whose omitted ranges round the
+    // frame radii ([-7, 7, 1] / [-4, 4, 1]); NumberPlane/ComplexPlane keep
+    // the raw radii, so the rounding is applied here before delegating.
     super(
-      x_range,
-      y_range,
+      x_range ?? [Math.round(-config.frame_x_radius), Math.round(config.frame_x_radius), 1],
+      y_range ?? [Math.round(-config.frame_y_radius), Math.round(config.frame_y_radius), 1],
       x_length ?? Math.round(config.frame_width) - 2,
       y_length ?? Math.round(config.frame_height) - 2,
     );
