@@ -184,9 +184,9 @@ export class Flash extends AnimationGroup {
   }
 
   create_lines(): VGroup {
-    const lines = Flash.createLines(this.point, this.line_length, this.num_lines, this.flash_radius, this.line_stroke_width, this.color);
-    this.lines = lines;
-    return lines;
+    // NOTE: mirrors Python, which builds and returns a fresh VGroup without
+    // reassigning `self.lines` (only `__init__` assigns it).
+    return Flash.createLines(this.point, this.line_length, this.num_lines, this.flash_radius, this.line_stroke_width, this.color);
   }
 
   create_line_anims(): ShowPassingFlash[] {
