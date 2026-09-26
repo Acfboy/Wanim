@@ -1619,6 +1619,20 @@ export class Axes extends NumberPlane {
     return this.axes;
   }
 
+  get_axis_labels(
+    x_label: number | string | VMobject = "x",
+    y_label: number | string | VMobject = "y",
+  ): VGroup {
+    // NOTE: mirrors Python `Axes.get_axis_labels` verbatim: builds a VGroup
+    // of the positioned x/y labels, stores it as `axis_labels`, returns it.
+    const labels = new VGroup(
+      this.get_x_axis_label(x_label) as unknown as VMobject,
+      this.get_y_axis_label(y_label) as unknown as VMobject,
+    );
+    (this as unknown as { axis_labels: VGroup }).axis_labels = labels;
+    return labels;
+  }
+
   plot_line_graph(
     x_values: Iterable<number> | number[] | NDArray,
     y_values: Iterable<number> | number[] | NDArray,
