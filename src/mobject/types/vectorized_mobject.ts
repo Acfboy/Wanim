@@ -1131,8 +1131,15 @@ export class VMobject extends Mobject {
     // curve is the segment between its two anchors.
     const corners = rows(points, this.dim);
     if (corners.length === 0) {
-      this.points = array([]) as NDArray;
-      return this;
+      // NOTE: mirrors Python, where `np.zeros((0, dim))` assignment raises
+      // "ValueError: could not broadcast input array from shape (0,) into
+      // shape (0,3)". Keep the ValueError (message included) instead of
+      // silently clearing points.
+      const error = new Error(
+        "could not broadcast input array from shape (0,) into shape (0,3)",
+      );
+      error.name = "ValueError";
+      throw error;
     }
     const starts = corners.slice(0, -1);
     const ends = corners.slice(1);

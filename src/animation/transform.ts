@@ -187,9 +187,24 @@ export class ApplyMethod extends Transform {
     // without a bound `__self__`, i.e. an already-invoked result) means the
     // caller passed `mobject.method(...)` instead of `mobject.method`.
     // TS callers attach `__self__`/`__func__` the way CPython bound methods
-    // carry them.
-    const self = (method as unknown as { __self__?: unknown }).__self__;
-    if (typeof method !== "function" || self === undefined || self === null) {
+    // carry them. NOTE: Mobjects are Proxies that raise AttributeError on
+    // unknown property reads, so reading `__self__` off an already-invoked
+    // result (a Mobject) throws here; like Python (where such a value fails
+    // `inspect.ismethod`), that still means ValueError, not AttributeError.
+    if (typeof method !== "function") {
+      const error = new Error(
+        "Whoops, looks like you accidentally invoked the method you want to animate",
+      );
+      error.name = "ValueError";
+      throw error;
+    }
+    let self: unknown;
+    try {
+      self = (method as unknown as { __self__?: unknown }).__self__;
+    } catch {
+      self = undefined;
+    }
+    if (self === undefined || self === null) {
       const error = new Error(
         "Whoops, looks like you accidentally invoked the method you want to animate",
       );
