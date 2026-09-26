@@ -1,6 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { Animation, classDefaultsOf, type AnimationOptions, type RateFunction } from "./animation.js";
 import { Mobject } from "../mobject/mobject.js";
+import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { linear } from "../utils/rate_functions.js";
 import { pointsFrom, pointFrom, pointRows, isNDArray, nestedRows, addPoints, scalePoint } from "../utils/arrays.js";
 
@@ -47,6 +48,15 @@ export class Homotopy extends Animation {
 
 export class SmoothedVectorizedHomotopy extends Homotopy {
   interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): this {
+    // Mirrors Python `assert isinstance(submobject, VMobject)`. (In manim
+    // 0.21.0 the assert itself raises NameError at runtime because VMobject
+    // is only imported under TYPE_CHECKING; the port implements the evident
+    // intent: assert the type, apply the homotopy, then make_smooth().)
+    if (!(submobject instanceof VMobject)) {
+      const error = new Error(`assert isinstance(submobject, VMobject): got ${submobject?.constructor?.name ?? typeof submobject}`);
+      error.name = "AssertionError";
+      throw error;
+    }
     super.interpolate_submobject(submobject, startingSubmobject, alpha);
     const vmobject = submobject as Mobject & { make_smooth?: () => void };
     vmobject.make_smooth?.();

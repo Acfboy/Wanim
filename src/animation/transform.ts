@@ -549,7 +549,11 @@ export class TransformAnimations extends Transform {
     super(startAnim.mobject, endAnim.mobject, { rate_func: resolvedRateFunc, ...rest });
     this.start_anim = startAnim;
     this.end_anim = endAnim;
-    this.run_time = runTime;
+    // NOTE: mirrors Python exactly: `run_time` was popped out of kwargs (or
+    // never present), so `super().__init__` resets `self.run_time` to the
+    // default (1.0). The pre-super max computation only sizes the sub-anims.
+    // Do NOT re-assign `this.run_time = runTime` here (verified: Python gives
+    // run_time 1.0 even for max(1, 2) == 2 or an explicit run_time=5).
     // Rewire starting and ending mobjects
     startAnim.mobject = this.starting_mobject;
     endAnim.mobject = this.target_mobject;
