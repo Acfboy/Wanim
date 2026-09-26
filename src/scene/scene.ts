@@ -6,6 +6,7 @@ import { MethodWithArgs } from "../data_structures.js";
 import { Mobject, _AnimationBuilder } from "../mobject/mobject.js";
 import { pointRows } from "../utils/arrays.js";
 import { extract_mobject_family_members } from "../utils/family.js";
+import { list_update } from "../utils/iterables.js";
 import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
 import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { Animation, Wait, prepare_animation } from "../animation/animation.js";
@@ -347,23 +348,47 @@ export class Scene {
   }
 
   remove(...mobjects: Mobject[]): this {
-    const meshes_to_remove = new Set(mobjects);
-    function lambda_function(mesh: Mobject): boolean {
-      return !meshes_to_remove.has(mesh);
+    if (config.renderer === RendererType.OPENGL) {
+      const mobjects_to_remove: Mobject[] = [];
+      const meshes_to_remove = new Set<Mobject>();
+      // NOTE: Python splits Object3D meshes from Mobjects here; the OpenGL
+      // renderer (and Object3D) is not ported yet, so every argument is
+      // treated as a mesh for the meshes list, mirroring the previous
+      // behavior of this port.
+      for (const mobject_or_mesh of mobjects) {
+        mobjects_to_remove.push(mobject_or_mesh);
+        meshes_to_remove.add(mobject_or_mesh);
+      }
+      this.mobjects = this.get_restructured_mobject_list(this.mobjects, mobjects_to_remove);
+
+      function lambda_function(mesh: Mobject): boolean {
+        return !meshes_to_remove.has(mesh);
+      }
+      this.meshes = this.meshes.filter(lambda_function);
+      return this;
+    } else {
+      for (const list_name of ["mobjects", "foreground_mobjects"] as const) {
+        this.restructure_mobjects(mobjects, list_name, false);
+      }
+      return this;
     }
-    this.meshes = this.meshes.filter(lambda_function);
-    for (const mobject of mobjects) {
-      const index = this.mobjects.indexOf(mobject);
-      if (index >= 0) this.mobjects.splice(index, 1);
-      const foreground_index = this.foreground_mobjects.indexOf(mobject);
-      if (foreground_index >= 0) this.foreground_mobjects.splice(foreground_index, 1);
-    }
-    return this;
   }
 
   clear(): this {
     this.mobjects = [];
     this.foreground_mobjects = [];
+    return this;
+  }
+
+  // TODO, remove this, and calls to this
+  add_foreground_mobjects(...mobjects: Mobject[]): this {
+    this.foreground_mobjects = list_update(this.foreground_mobjects, mobjects);
+    this.add(...mobjects);
+    return this;
+  }
+
+  remove_foreground_mobjects(...to_remove: Mobject[]): this {
+    this.restructure_mobjects(to_remove, "foreground_mobjects");
     return this;
   }
 
@@ -430,6 +455,29 @@ export class Scene {
     skip_animations = false,
   ): void {
     this.renderer.file_writer.next_section(name, section_type, skip_animations);
+  }
+
+  should_update_mobjects(): boolean {
+    const wait_animation = this.animations[0];
+    if (!(wait_animation instanceof Wait)) {
+      const error = new Error("assert isinstance(wait_animation, Wait)");
+      error.name = "AssertionError";
+      throw error;
+    }
+    if (wait_animation.is_static_wait === null) {
+      // NOTE: Python `or`-chains the raw values; the TS port coerces to
+      // boolean explicitly (a bare `this.updaters` array would always be
+      // truthy in JS, so its length is tested instead, matching Python's
+      // empty-list-is-falsy semantics).
+      const should_update = Boolean(
+        this.always_update_mobjects ||
+          this.updaters.length > 0 ||
+          wait_animation.stop_condition !== null ||
+          this.get_mobject_family_members().some((mob) => mob.has_time_based_updater()),
+      );
+      wait_animation.is_static_wait = !should_update;
+    }
+    return !wait_animation.is_static_wait;
   }
 
   get_top_level_mobjects(): Mobject[] {
@@ -734,6 +782,25 @@ export class Scene {
 
   update_mobjects(dt: number): void {
     for (const mobj of this.mobjects) mobj.update(dt);
+  }
+
+  update_meshes(dt: number): void {
+    for (const obj of this.meshes) {
+      for (const mesh of obj.get_family()) mesh.update(dt);
+    }
+  }
+
+  update_to_time(t: number): void {
+    const dt = t - this.last_t;
+    this.last_t = t;
+    for (const animation of this.animations) {
+      animation.update_mobjects(dt);
+      const alpha = t / animation.run_time;
+      animation.interpolate(alpha);
+    }
+    this.update_mobjects(dt);
+    this.update_meshes(dt);
+    this.update_self(dt);
   }
 
   pause(duration: number = DEFAULT_WAIT_TIME): void {

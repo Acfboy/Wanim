@@ -1734,6 +1734,39 @@ export class Mobject {
     return this;
   }
 
+  add_n_more_submobjects(n: number): this | null {
+    if (n === 0) return null;
+
+    const curr = this.submobjects.length;
+    if (curr === 0) {
+      // If empty, simply add n point mobjects
+      this.submobjects = Array.from({ length: n }, () => this.get_point_mobject());
+      return null;
+    }
+
+    const target = curr + n;
+    // TODO, factor this out to utils so as to reuse
+    // with VMobject.insert_n_curves
+    // NOTE: mirrors ``(np.arange(target) * curr) // target`` (integer
+    // floored division on non-negative values, matching Math.floor).
+    const repeat_indices = Array.from(
+      { length: target },
+      (_, k) => Math.floor((k * curr) / target),
+    );
+    const split_factors = Array.from(
+      { length: curr },
+      (_, i) => repeat_indices.filter((index) => index === i).length,
+    );
+    const new_submobs: Mobject[] = [];
+    this.submobjects.forEach((submob, index) => {
+      const sf = split_factors[index] ?? 0;
+      new_submobs.push(submob);
+      for (let k = 1; k < sf; k += 1) new_submobs.push(submob.copy().fade(1));
+    });
+    this.submobjects = new_submobs;
+    return this;
+  }
+
   *__iter__(): IterableIterator<Mobject> {
     if (this.has_points()) yield this;
     yield* this.submobjects;

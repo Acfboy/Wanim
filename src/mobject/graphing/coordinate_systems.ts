@@ -530,6 +530,7 @@ export interface ShadedAxis {
 export class ThreeDAxes extends Axes {
   light_source: number[];
   shaded_axes: ShadedAxis[];
+  num_axis_pieces: number;
 
   constructor(
     x_range: number[] | null = null,
@@ -538,10 +539,16 @@ export class ThreeDAxes extends Axes {
     y_length: number | null = null,
     light_source: readonly number[] = [-7, -9, 10],
     shaded_axes: ShadedAxis[] = [],
+    num_axis_pieces = 20,
   ) {
     super(x_range, y_range, x_length, y_length);
     this.light_source = [...light_source];
     this.shaded_axes = shaded_axes;
+    this.num_axis_pieces = num_axis_pieces;
+    if (config.renderer === RendererType.CAIRO) {
+      this._add_3d_pieces();
+      this._set_axis_shading();
+    }
   }
 
   *[Symbol.iterator](): Iterator<ShadedAxis> {
@@ -549,6 +556,23 @@ export class ThreeDAxes extends Axes {
     // axes); the TS port tracks the axes in `shaded_axes` until the Axes
     // hierarchy becomes Mobject-based.
     yield* this.shaded_axes;
+  }
+
+  _add_3d_pieces(): void {
+    // NOTE: mirrors ``for axis in self.axes``; the TS Axes hierarchy is not
+    // Mobject-based yet, so `axes` is empty until the NumberLine integration
+    // lands and this loop is a no-op in the meantime (same as _set_axis_shading).
+    for (const axis of this.axes.submobjects) {
+      const mob = axis as Mobject;
+      // NOTE: get_pieces returns a Group; unpack its members explicitly
+      // (spreading the Group itself would go through Mobject's iterator,
+      // which also yields the container when it has points).
+      const pieces = new VGroup(...mob.get_pieces(this.num_axis_pieces).submobjects as VMobject[]);
+      (mob as unknown as { pieces: VGroup }).pieces = pieces;
+      mob.add(pieces);
+      (mob as unknown as VMobject).set_stroke(undefined, 0, undefined, false);
+      (mob as unknown as VMobject).set_shade_in_3d(true);
+    }
   }
 
   _set_axis_shading(): void {

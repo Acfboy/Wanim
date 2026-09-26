@@ -16,7 +16,7 @@ import { angle_of_vector, cross, line_intersection, normalize } from "../../util
 import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { DashedVMobject, VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
-import { Arc, Dot, TipableVMobject, set_line_constructor, type TipableVMobjectOptions } from "./arc.js";
+import { Arc, ArcBetweenPoints, Dot, TipableVMobject, set_line_constructor, type TipableVMobjectOptions } from "./arc.js";
 import { ArrowTriangleFilledTip } from "./tips.js";
 import type { ArrowTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
@@ -79,7 +79,10 @@ export class Line extends TipableVMobject {
   ): this {
     this._set_start_and_end_attrs(start, end);
     if (path_arc) {
-      throw new Error("TODO: Line with path_arc needs ArcBetweenPoints, not ported yet");
+      // NOTE: mirrors Python exactly: the branch tests the `path_arc`
+      // argument, but the arc angle comes from `self.path_arc`.
+      const arc = new ArcBetweenPoints(this.start, this.end, this.path_arc);
+      this.set_points(arc.points);
     } else {
       this.set_points_as_corners([
         pointRows(this.start, this.dim)[0] ?? new Array(this.dim).fill(0),
@@ -286,6 +289,21 @@ export class DashedLine extends Line {
     } else {
       return super.get_end();
     }
+  }
+
+  get_first_handle(): number[] {
+    // Type inference of extracting an element from a list, is not
+    // supported by numpy, see this numpy issue
+    // https://github.com/numpy/numpy/issues/16544
+    return pointRows((this.submobjects[0] as VMobject).points, this.dim)[1] ?? [0, 0, 0];
+  }
+
+  get_last_handle(): number[] {
+    // Type inference of extracting an element from a list, is not
+    // supported by numpy, see this numpy issue
+    // https://github.com/numpy/numpy/issues/16544
+    const rows = pointRows((this.submobjects[this.submobjects.length - 1] as VMobject).points, this.dim);
+    return rows[2] ?? [0, 0, 0];
   }
 }
 

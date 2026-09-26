@@ -42,6 +42,7 @@ export * from "./_config/utils.js";
 export * from "./camera/camera.js";
 export * from "./camera/mapping_camera.js";
 export * from "./camera/moving_camera.js";
+export * from "./camera/multi_camera.js";
 export * from "./mobject/mobject.js";
 export * from "./mobject/frame.js";
 export * from "./mobject/table.js";

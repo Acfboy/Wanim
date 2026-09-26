@@ -70,6 +70,16 @@ export class Surface extends VGroup {
   ) {
     super();
     void options;
+    // NOTE: Python forwards fill_color/fill_opacity/stroke_color/stroke_width
+    // to VGroup.__init__ (which stores them as fields via VMobject.__init__);
+    // TS requires super() first and VGroup takes no style options, so the
+    // same field assignment (+init_colors, mirroring VMobject.__init__'s
+    // tail) runs here instead.
+    this.fill_color = new ManimColor(fill_color);
+    this.fill_opacity = fill_opacity;
+    this.stroke_color = new ManimColor(stroke_color);
+    this.stroke_width = stroke_width;
+    this.init_colors();
     this.u_range = u_range;
     this.v_range = v_range;
     this.surface_piece_config = surface_piece_config;
@@ -198,6 +208,18 @@ function spherePoint(radius: number, u: number, v: number): SurfacePoint {
   ]) as SurfacePoint;
 }
 
+export interface SphereOptions {
+  fill_color?: ParsableManimColor;
+  fill_opacity?: number;
+  checkerboard_colors?: Iterable<ParsableManimColor> | false;
+  stroke_color?: ParsableManimColor;
+  stroke_width?: number;
+  should_make_jagged?: boolean;
+  surface_piece_config?: Record<string, unknown>;
+  pre_function_handle_to_anchor_scale_factor?: number;
+  [key: string]: unknown;
+}
+
 export class Sphere extends Surface {
   radius: number;
 
@@ -210,10 +232,25 @@ export class Sphere extends Surface {
     resolution: number | [number, number] = [24, 12],
     u_range: [number, number] = [0, Math.PI * 2],
     v_range: [number, number] = [0, Math.PI],
+    options: SphereOptions = {},
   ) {
     // NOTE: the closure captures `radius` instead of `this.func` because
     // `this` cannot be referenced in a super() call.
-    super((u: number, v: number): SurfacePoint => spherePoint(radius, u, v), u_range, v_range, resolution);
+    super(
+      (u: number, v: number): SurfacePoint => spherePoint(radius, u, v),
+      u_range,
+      v_range,
+      resolution,
+      options.surface_piece_config ?? {},
+      options.fill_color ?? BLUE_D,
+      options.fill_opacity ?? 1.0,
+      options.checkerboard_colors ?? [BLUE_D, BLUE_E],
+      options.stroke_color ?? LIGHT_GREY,
+      options.stroke_width ?? 0.5,
+      options.should_make_jagged ?? false,
+      options.pre_function_handle_to_anchor_scale_factor ?? 0.00001,
+      options,
+    );
     this.radius = radius;
     this.shift(pointRows(center, 3)[0] ?? [0, 0, 0]);
   }

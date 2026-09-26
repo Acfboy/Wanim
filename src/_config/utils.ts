@@ -1255,6 +1255,63 @@ export class ManimConfig {
 
 export const config = new ManimConfig(true);
 
+/**
+ * Temporarily modifies the global ``config`` object using a generator-based
+ * context manager (mirroring Python's ``@contextmanager`` ``tempconfig``).
+ *
+ * Inside the ``with``-equivalent span, the modified config is used; after
+ * the generator completes, the config is restored to its original state.
+ *
+ * Keys not present in the config are ignored, mirroring Python's
+ * ``{k: v for k, v in temp.items() if k in original}`` filter.
+ *
+ * Usage:
+ *
+ *     const ctx = tempconfig({ frame_height: 100.0 });
+ *     ctx.next(); // enter: config is updated
+ *     try {
+ *       // ... use the modified config ...
+ *     } finally {
+ *       ctx.return(undefined); // exit: config is restored
+ *     }
+ */
+export function* tempconfig(
+  temp: ManimConfig | Record<string, unknown>,
+): Generator<void, void, void> {
+  const original = config.copy();
+
+  const raw: Record<string, unknown> = {};
+  if (temp instanceof ManimConfig) {
+    // NOTE: mirrors ``temp.items()`` (ManimConfig.__iter__ yields stored keys).
+    for (const key of temp) raw[key] = temp.get(key);
+  } else {
+    Object.assign(raw, temp);
+  }
+
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    // NOTE: mirrors ``k in original`` (ManimConfig.__contains__, which
+    // probes __getitem__ and swallows AttributeError): unknown keys are
+    // dropped instead of raising.
+    try {
+      config.get(key);
+    } catch {
+      continue;
+    }
+    filtered[key] = value;
+  }
+
+  // NOTE: mirrors Python's comment — update() mutates the shared object in
+  // place (assignment would only rebind the local). Do NOT replace this
+  // with an assignment.
+  config.update(filtered);
+  try {
+    yield;
+  } finally {
+    config.update(original); // update, not assignment!
+  }
+}
+
 export function config_file_paths(): string[] {
   const runtime = globalThis as typeof globalThis & { process?: { platform?: string; env?: Record<string, string | undefined> } };
   const platform = runtime.process?.platform ?? "linux";
