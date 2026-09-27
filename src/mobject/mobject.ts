@@ -1717,7 +1717,7 @@ export class Mobject {
   }
 
   arrange_in_grid(
-    rows: number | null = null,
+    rows: number | null | Record<string, unknown> = null,
     cols: number | null = null,
     buff: number | [number, number] = MED_SMALL_BUFF,
     cell_alignment: readonly number[] = ORIGIN,
@@ -1727,12 +1727,30 @@ export class Mobject {
     col_widths: Iterable<number | null | undefined> | null = null,
     flow_order = "rd",
   ): this {
+    // Accept a leading options bag (`arrange_in_grid({rows, cols, buff})`),
+    // mirroring Python's keyword API. Animation/Mobject instances are not
+    // plain objects, so this never misreads a positional numeric argument.
+    if (rows !== null && typeof rows === "object" && !Array.isArray(rows)) {
+      const opts = rows as Record<string, unknown>;
+      return this.arrange_in_grid(
+        (opts.rows as number | null) ?? null,
+        (opts.cols as number | null) ?? null,
+        (opts.buff as number | [number, number]) ?? MED_SMALL_BUFF,
+        (opts.cell_alignment as readonly number[]) ?? ORIGIN,
+        (opts.row_alignments as string | null) ?? null,
+        (opts.col_alignments as string | null) ?? null,
+        (opts.row_heights as Iterable<number | null | undefined> | null) ?? null,
+        (opts.col_widths as Iterable<number | null | undefined> | null) ?? null,
+        (opts.flow_order as string) ?? "rd",
+      );
+    }
+    const resolvedRows = rows as number | null;
     const mobs = [...this.submobjects];
     const startPos = this.get_center();
     const row_heights_list = row_heights === null ? null : [...row_heights];
     const col_widths_list = col_widths === null ? null : [...col_widths];
     let columnCount = init_size(cols, col_alignments, col_widths_list);
-    let rowCount = init_size(rows, row_alignments, row_heights_list);
+    let rowCount = init_size(resolvedRows, row_alignments, row_heights_list);
     if (rowCount === null && columnCount === null) columnCount = Math.ceil(Math.sqrt(mobs.length));
     if (rowCount === null) rowCount = Math.ceil(mobs.length / (columnCount as number));
     if (columnCount === null) columnCount = Math.ceil(mobs.length / rowCount);
