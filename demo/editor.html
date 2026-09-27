@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wanim · manim Python editor</title>
+<link rel="stylesheet" href="./style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "wanim": "./wanim.browser.js",
+    "numpy-ts": "../node_modules/numpy-ts/dist/numpy-ts.browser.js",
+    "py2js": "./py2js.browser.js"
+  }
+}
+</script>
+<script src="./rapydscript.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>wanim · Python → rapydscript → Canvas2D</h1>
+  <p class="sub">Write (almost) unmodified manim Python on the left; it is compiled by rapydscript and rendered by wanim in the browser.</p>
+</header>
+
+<main>
+  <section class="editor-pane">
+    <div class="toolbar">
+      <button data-preset="square">SquareToCircle</button>
+      <button data-preset="opening">OpeningManim</button>
+      <button data-preset="threeD">ThreeDScene</button>
+      <select id="quality" title="quality">
+        <option value="-ql">-ql (854×480, 15fps)</option>
+        <option value="-qm">-qm (1280×720, 30fps)</option>
+        <option value="-qh">-qh (1920×1080, 60fps)</option>
+      </select>
+    </div>
+    <textarea id="code" spellcheck="false"></textarea>
+    <div class="actions">
+      <button id="run" class="primary">运行 / Run</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="show-js">Show JS</button>
+    </div>
+    <pre id="js-output" hidden></pre>
+  </section>
+
+  <section class="stage-pane">
+    <div class="canvas-wrap">
+      <canvas id="stage" width="854" height="480"></canvas>
+    </div>
+    <pre id="status">Idle.</pre>
+    <pre id="stats"></pre>
+  </section>
+</main>
+
+<script type="module" src="./editor.js"></script>
+</body>
+</html>

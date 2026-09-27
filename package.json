@@ -14,7 +14,11 @@
   "scripts": {
     "build": "tsc && node -e \"require('node:fs').cpSync('src/mobject/text/pango/fonts','dist/mobject/text/pango/fonts',{recursive:true})\"",
     "build:browser": "pnpm build && node scripts/build-browser.mjs",
+    "build:rapydscript": "node scripts/build-rapydscript-browser.mjs",
+    "build:editor": "node scripts/build-editor.mjs",
+    "build:demo": "pnpm build:browser && pnpm build:rapydscript && pnpm build:editor",
     "demo": "node scripts/demo-server.mjs",
+    "smoke:editor": "node scripts/editor_smoke.mjs",
     "typecheck": "tsc --noEmit",
   },
   "dependencies": {
