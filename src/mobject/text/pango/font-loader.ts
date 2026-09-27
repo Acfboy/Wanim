@@ -20,6 +20,9 @@ const opentype: OpentypeModule = ((opentypeNs as unknown as { default?: Opentype
 
 const FONT_CACHE = new Map<string, Font>();
 
+/** True in a browser/worker (no synchronous filesystem). */
+const IS_BROWSER = typeof window !== "undefined" || typeof (globalThis as { importScripts?: unknown }).importScripts === "function";
+
 /** Bundled fallback font (DejaVu Sans), used when no font is specified. */
 export const DEFAULT_FONT_PATH = new URL("./fonts/DejaVuSans.ttf", import.meta.url).pathname;
 
@@ -31,6 +34,9 @@ const SYSTEM_FONT_CANDIDATES = [
 
 /** Resolve the default font file, preferring the bundled asset. */
 export function resolveDefaultFontPath(): string {
+  // In the browser the bundle is served next to its (copied) fonts, so the
+  // URL-derived path is authoritative and there is no fs to probe.
+  if (IS_BROWSER) return DEFAULT_FONT_PATH;
   if (existsSync(DEFAULT_FONT_PATH)) return DEFAULT_FONT_PATH;
   // When running from `dist/` the .ttf is not emitted by tsc; fall back to the
   // source tree (e.g. tests / dev servers run from the project root).
@@ -44,8 +50,28 @@ export function resolveDefaultFontPath(): string {
   );
 }
 
-/** Read a binary file into an ArrayBuffer using only the shimmed fs surface. */
+/**
+ * Synchronously fetch `url` as raw bytes in the browser.  The font loader's
+ * API is synchronous (`loadFontSync`) so a blocking XHR is the only option;
+ * the font is served from the same origin as the bundle.
+ */
+function readBinaryFileBrowser(url: string): ArrayBuffer {
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", url, false);
+  xhr.overrideMimeType("text/plain; charset=x-user-defined");
+  xhr.send();
+  if (xhr.status !== 0 && (xhr.status < 200 || xhr.status >= 300)) {
+    throw new Error(`Failed to load font ${url}: HTTP ${xhr.status}`);
+  }
+  const text = xhr.responseText;
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i) & 0xff;
+  return bytes.buffer;
+}
+
+/** Read a binary file into an ArrayBuffer (fs in Node, XHR in the browser). */
 function readBinaryFile(filePath: string): ArrayBuffer {
+  if (IS_BROWSER) return readBinaryFileBrowser(filePath);
   // `readFileSync(path, "base64")` returns a base64 string; decoding through
   // `atob` avoids depending on the Node `Buffer` type in this port.
   const base64 = readFileSync(path.resolve(filePath), { encoding: "base64" });

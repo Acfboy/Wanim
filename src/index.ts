@@ -126,3 +126,4 @@ export * from "./animation/updaters/mobject_update_utils.js";
 export * from "./animation/updaters/update.js";
 export * from "./renderer/scene_runner.js";
 export * from "./renderer/index.js";
+export * from "./browser.js";

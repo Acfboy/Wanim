@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// Bundle the built wanim library for the browser.
+//
+// The library is authored as plain Node/ESM with a handful of `node:*` imports
+// (config files, TeX caches, fonts).  For the browser we bundle `dist/index.js`
+// and alias those builtins to tiny shims (`scripts/shims/*.js`); the shimmed
+// paths are only reached by TeX/typst/font code that the Canvas2D demo does not
+// use.
+//
+// Output: demo/wanim.browser.js (+ .map), an ES module usable from an import
+// map entry `"wanim"`.
+import { build } from "esbuild";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, "..");
+const shim = (name) => resolve(here, "shims", name);
+
+// The browser bundle resolves the default font next to itself; copy it so
+// `Text`/Pango scenes work without a filesystem.
+const fontsDir = resolve(root, "demo", "fonts");
+mkdirSync(fontsDir, { recursive: true });
+copyFileSync(
+  resolve(root, "src", "mobject", "text", "pango", "fonts", "DejaVuSans.ttf"),
+  resolve(fontsDir, "DejaVuSans.ttf"),
+);
+
+await build({
+  entryPoints: [resolve(root, "dist", "index.js")],
+  outfile: resolve(root, "demo", "wanim.browser.js"),
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: ["chrome110"],
+  sourcemap: true,
+  // wanim's scene discovery is name-based (`prototype.constructor.name ===
+  // "Scene"`); bundling turns `class Scene` into an anonymous class expression
+  // unless names are preserved.
+  keepNames: true,
+  logLevel: "info",
+  // Keep numpy-ts external so the page loads it from a single URL and can
+  // `configureWasm()` *before* wanim's first array operation (a heap sized at
+  // import time cannot be resized afterwards).
+  external: ["numpy-ts"],
+  alias: {
+    "node:fs/promises": shim("node-fs-promises.js"),
+    "node:fs": shim("node-fs.js"),
+    "node:path": shim("node-path.js"),
+    "node:os": shim("node-os.js"),
+    "node:child_process": shim("node-child_process.js"),
+  },
+  banner: {
+    js: "if (typeof globalThis.process === 'undefined') { globalThis.process = { cwd: () => '/', env: {}, argv: [], stdout: { write() {} }, platform: 'browser' }; }",
+  },
+  define: {
+    "process.env.NODE_ENV": '"production"',
+  },
+});
+
+console.log("wanim: wrote demo/wanim.browser.js");
