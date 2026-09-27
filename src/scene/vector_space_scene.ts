@@ -16,7 +16,7 @@ import { Create } from "../animation/creation.js";
 import { Animation } from "../animation/animation.js";
 import { ApplyPointwiseFunction, Transform } from "../animation/transform.js";
 import type { Mobject } from "../mobject/mobject.js";
-import { Group } from "../mobject/mobject.js";
+import { Group, isPlainOptionsObject } from "../mobject/mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Axes, CoordinateSystem, NumberPlane } from "../mobject/graphing/coordinate_systems.js";
 import { GREY, ManimColor, WHITE, type ParsableManimColor } from "../utils/color/core.js";
@@ -91,12 +91,19 @@ export class VectorScene extends Scene {
     this.basis_vector_stroke_width = strokeWidth;
   }
 
-  add_plane(animate = false, kwargs: Record<string, unknown> = {}): NumberPlane {
+  add_plane(animate: boolean | Record<string, unknown> = false, kwargs: Record<string, unknown> = {}): NumberPlane {
     // Forward every NumberPlane keyword (including axis_config /
     // background_line_style / faded_line_ratio), mirroring Python's
-    // `NumberPlane(**kwargs)`.
-    const plane = numberPlaneFromKwargs(kwargs);
-    if (animate) {
+    // `NumberPlane(**kwargs)`. A plain bag in the `animate` slot is the
+    // Python kwargs bag (`add_plane({ background_line_style })`).
+    let resolvedAnimate = animate as boolean;
+    const merged: Record<string, unknown> = { ...kwargs };
+    if (isPlainOptionsObject(animate)) {
+      Object.assign(merged, animate);
+      resolvedAnimate = false;
+    }
+    const plane = numberPlaneFromKwargs(merged);
+    if (resolvedAnimate) {
       this.play(new Create(plane as unknown as import("../mobject/types/vectorized_mobject.js").VMobject, { lag_ratio: 0.5 }));
     }
     this.add(plane as unknown as Mobject);
@@ -104,14 +111,30 @@ export class VectorScene extends Scene {
   }
 
   add_axes(
-    animate = false,
-    color: ParsableManimColor | Iterable<ParsableManimColor> = WHITE,
+    animate: boolean | Record<string, unknown> = false,
+    color: ParsableManimColor | Iterable<ParsableManimColor> | Record<string, unknown> = WHITE,
+    kwargs: Record<string, unknown> = {},
   ): Axes {
-    void color;
-    // NOTE: the TS Axes port takes no color/axis_config options yet; they
-    // are accepted for API compatibility and ignored.
-    const axes = new Axes();
-    if (animate) {
+    // Mirrors Python `add_axes(animate=False, color=WHITE, **kwargs)`: build
+    // Axes(**kwargs), set its color, optionally play Create, then add. A plain
+    // bag in the animate/color slot carries the Python kwargs.
+    let resolvedAnimate = animate as boolean;
+    let colorOption: ParsableManimColor | Iterable<ParsableManimColor> | undefined = color as ParsableManimColor;
+    const merged: Record<string, unknown> = { ...kwargs };
+    if (isPlainOptionsObject(animate)) {
+      Object.assign(merged, animate);
+      resolvedAnimate = (merged["animate"] as boolean | undefined) ?? false;
+    }
+    if (isPlainOptionsObject(color)) {
+      Object.assign(merged, color);
+      colorOption = undefined;
+    }
+    const resolvedColor = (merged["color"] as ParsableManimColor | Iterable<ParsableManimColor> | undefined) ?? colorOption ?? WHITE;
+    delete merged["color"];
+    delete merged["animate"];
+    const axes = new Axes(merged);
+    axes.set_color(resolvedColor as ParsableManimColor);
+    if (resolvedAnimate) {
       this.play(new Create(axes as unknown as import("../mobject/types/vectorized_mobject.js").VMobject));
     }
     this.add(axes as unknown as Mobject);
@@ -157,22 +180,38 @@ export class VectorScene extends Scene {
 
   add_vector(
     vector: Arrow | number[] | readonly number[] | NDArray,
-    color: ParsableManimColor | Iterable<ParsableManimColor> = new ManimColor("PURE_YELLOW"),
-    animate = true,
+    color: ParsableManimColor | Iterable<ParsableManimColor> | Record<string, unknown> = new ManimColor("PURE_YELLOW"),
+    animate: boolean | Record<string, unknown> = true,
     kwargs: Record<string, unknown> = {},
   ): Arrow {
     // NOTE: mirrors Python `VectorScene.add_vector`: a pre-made Arrow is
-    // used as-is, anything else is converted with np.asarray semantics.
+    // used as-is, anything else is converted with np.asarray semantics. A
+    // plain bag in the color/animate slot carries the Python kwargs
+    // (`add_vector(v, { color: Y })`).
+    let resolvedAnimate = animate as boolean;
+    let colorOption: ParsableManimColor | Iterable<ParsableManimColor> | undefined = color as ParsableManimColor;
+    const merged: Record<string, unknown> = { ...kwargs };
+    if (isPlainOptionsObject(color)) {
+      Object.assign(merged, color);
+      colorOption = undefined;
+    }
+    if (isPlainOptionsObject(animate)) {
+      Object.assign(merged, animate);
+      resolvedAnimate = (merged["animate"] as boolean | undefined) ?? true;
+    }
+    const resolvedColor = (merged["color"] as ParsableManimColor | Iterable<ParsableManimColor> | undefined) ?? colorOption ?? new ManimColor("PURE_YELLOW");
+    delete merged["color"];
+    delete merged["animate"];
     let arrow: Arrow;
     if (vector instanceof Arrow) {
       arrow = vector;
     } else {
       arrow = new Vector(vector as number[] | NDArray, {
-        color: color as VectorOptions["color"],
-        ...(kwargs as VectorOptions),
+        color: resolvedColor as VectorOptions["color"],
+        ...(merged as VectorOptions),
       });
     }
-    if (animate) {
+    if (resolvedAnimate) {
       this.play(new GrowArrow(arrow));
     }
     this.add(arrow);
@@ -617,8 +656,8 @@ export class LinearTransformationScene extends VectorScene {
 
   override add_vector(
     vector: any,
-    color: ParsableManimColor | Iterable<ParsableManimColor> = new ManimColor("PURE_YELLOW"),
-    animate = false,
+    color: ParsableManimColor | Iterable<ParsableManimColor> | Record<string, unknown> = new ManimColor("PURE_YELLOW"),
+    animate: boolean | Record<string, unknown> = false,
     kwargs: Record<string, unknown> = {},
   ): any {
     const result = super.add_vector(vector, color, animate, kwargs);

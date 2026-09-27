@@ -1,5 +1,5 @@
 import { array, type NDArray } from "numpy-ts";
-import { Mobject } from "../mobject.js";
+import { Mobject, isPlainOptionsObject, splitArgsAndOptions } from "../mobject.js";
 import { config } from "../../_config/utils.js";
 import { arange, isNDArray, linspace, numeric, pointFrom, pointRows, type ComplexPoint } from "../../utils/arrays.js";
 import { update_dict_recursively, merge_dicts_recursively } from "../../utils/config_ops.js";
@@ -14,7 +14,7 @@ import { Polygon, Rectangle, RegularPolygon } from "../geometry/polygram.js";
 import { Dot, Circle } from "../geometry/arc.js";
 import { Arrow, DashedLine, Line } from "../geometry/line.js";
 import { ImplicitFunction, ParametricFunction, type ParametricFunctionOptions } from "./functions.js";
-import { NumberLine } from "./number_line.js";
+import { NumberLine, type NumberLineOptions } from "./number_line.js";
 import { Surface } from "../three_d/three_dimensions.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
@@ -25,6 +25,74 @@ interface NonlinearTransformable {
   get_num_curves(): number;
   insert_n_curves(n: number): void;
 }
+
+/** Positional/keyword options bag accepted by the Axes family constructors
+ *  (mirrors the Python `Axes(..., **kwargs)` signature). */
+export interface AxesOptions {
+  x_range?: number[] | null;
+  y_range?: number[] | null;
+  x_length?: number | null;
+  y_length?: number | null;
+  axis_config?: Record<string, unknown> | null;
+  x_axis_config?: Record<string, unknown> | null;
+  y_axis_config?: Record<string, unknown> | null;
+  tips?: boolean;
+  [key: string]: unknown;
+}
+
+/** Keys recognized as Axes keyword arguments when scanning options bags. */
+const AXES_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "x_range",
+  "y_range",
+  "x_length",
+  "y_length",
+  "axis_config",
+  "x_axis_config",
+  "y_axis_config",
+  "tips",
+]);
+
+/** Options bag accepted by NumberPlane (mirrors its Python kwargs). */
+export interface NumberPlaneOptions extends AxesOptions {
+  background_line_style?: Record<string, unknown> | null;
+  faded_line_style?: Record<string, unknown> | null;
+  faded_line_ratio?: number;
+  make_smooth_after_applying_functions?: boolean;
+}
+
+const NUMBER_PLANE_OPTION_KEYS: ReadonlySet<string> = new Set([
+  ...AXES_OPTION_KEYS,
+  "background_line_style",
+  "faded_line_style",
+  "faded_line_ratio",
+  "make_smooth_after_applying_functions",
+]);
+
+/** Options bag accepted by ThreeDAxes (mirrors its Python kwargs). */
+export interface ThreeDAxesOptions extends AxesOptions {
+  z_range?: number[] | null;
+  z_length?: number | null;
+  z_axis_config?: Record<string, unknown> | null;
+  z_normal?: readonly number[];
+  light_source?: readonly number[];
+  shaded_axes?: ShadedAxis[];
+  num_axis_pieces?: number;
+  depth?: unknown;
+  gloss?: number;
+}
+
+const THREE_D_AXES_OPTION_KEYS: ReadonlySet<string> = new Set([
+  ...AXES_OPTION_KEYS,
+  "z_range",
+  "z_length",
+  "z_axis_config",
+  "z_normal",
+  "light_source",
+  "shaded_axes",
+  "num_axis_pieces",
+  "depth",
+  "gloss",
+]);
 
 /** Structural surface an axis mobject must provide for
  * CoordinateSystem.add_coordinates (mirrors NumberLine.add_labels /
@@ -394,23 +462,38 @@ export class CoordinateSystem extends VGroup {
 
   plot(
     function_: (x: number) => number,
-    x_range: number[] | null = null,
-    use_vectorized = false,
-    colorscale: Array<ParsableManimColor | [ParsableManimColor, number]> | null = null,
-    colorscale_axis = 1,
+    x_rangeOrOptions: number[] | null | ParametricFunctionOptions = null,
+    use_vectorized: boolean | ParametricFunctionOptions = false,
+    colorscale: Array<ParsableManimColor | [ParsableManimColor, number]> | null | ParametricFunctionOptions = null,
+    colorscale_axis: number | ParametricFunctionOptions = 1,
     options: ParametricFunctionOptions = {},
   ): ParametricFunction {
+    // Accept a plain options bag in place of any keyword so the Python idiom
+    // `axes.plot(fn, { color: Y })` works. Only the actually-supplied
+    // arguments are considered, so unspecified defaults are not misread as
+    // positionals.
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments).slice(1),
+    );
+    const resolvedXRange = (bag["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? null;
+    const resolvedUseVectorized = (bag["use_vectorized"] as boolean | undefined) ?? (positionals[1] as boolean | undefined) ?? false;
+    const resolvedColorscale = (bag["colorscale"] as Array<ParsableManimColor | [ParsableManimColor, number]> | null | undefined) ?? (positionals[2] as Array<ParsableManimColor | [ParsableManimColor, number]> | null | undefined) ?? null;
+    const resolvedColorscaleAxis = (bag["colorscale_axis"] as number | undefined) ?? (positionals[3] as number | undefined) ?? 1;
+    const resolvedOptions = { ...(bag as ParametricFunctionOptions) };
+    for (const key of ["x_range", "use_vectorized", "colorscale", "colorscale_axis"]) {
+      delete (resolvedOptions as Record<string, unknown>)[key];
+    }
     const t_range: [number, number, number] = [
       this.x_range[0] ?? 0,
       this.x_range[1] ?? 0,
       this.x_range[2] ?? 1,
     ];
-    if (x_range !== null) {
-      for (let index = 0; index < x_range.length; index += 1) {
-        t_range[index] = x_range[index] ?? t_range[index] ?? 0;
+    if (resolvedXRange !== null) {
+      for (let index = 0; index < resolvedXRange.length; index += 1) {
+        t_range[index] = resolvedXRange[index] ?? t_range[index] ?? 0;
       }
     }
-    if (x_range === null || x_range.length < 3) {
+    if (resolvedXRange === null || resolvedXRange.length < 3) {
       // if t_range has a defined step size, increase the number of sample points per tick
       t_range[2] = (t_range[2] ?? 1) / this.num_sampled_graph_points_per_tick;
     }
@@ -423,33 +506,33 @@ export class CoordinateSystem extends VGroup {
     const scaling: _ScaleBase = this.x_axis?.scaling ?? new LinearBase();
     const graph = new ParametricFunction(
       (t: number) => this.coords_to_point(t, function_(t)),
-      { t_range, scaling, use_vectorized, ...options },
+      { t_range, scaling, use_vectorized: resolvedUseVectorized, ...resolvedOptions },
     );
     graph.underlying_function = function_;
 
-    if (colorscale) {
+    if (resolvedColorscale) {
       let new_colors: ParsableManimColor[];
       let pivots: number[];
-      if (Array.isArray(colorscale[0])) {
-        const pairs = colorscale as Array<[ParsableManimColor, number]>;
+      if (Array.isArray(resolvedColorscale[0])) {
+        const pairs = resolvedColorscale as Array<[ParsableManimColor, number]>;
         new_colors = pairs.map(([color]) => color);
         pivots = pairs.map(([, pivot]) => pivot);
       } else {
-        new_colors = colorscale as ParsableManimColor[];
+        new_colors = resolvedColorscale as ParsableManimColor[];
         const ranges = [this.x_range, this.y_range];
-        const pivot_min = ranges[colorscale_axis]?.[0] ?? 0;
-        const pivot_max = ranges[colorscale_axis]?.[1] ?? 1;
+        const pivot_min = ranges[resolvedColorscaleAxis]?.[0] ?? 0;
+        const pivot_max = ranges[resolvedColorscaleAxis]?.[1] ?? 1;
         const pivot_frequency = (pivot_max - pivot_min) / (new_colors.length - 1);
         pivots = arange(pivot_min, pivot_max + pivot_frequency, pivot_frequency);
       }
       // NOTE: mirrors Python, which indexes x_range directly here (raising
       // TypeError when x_range is None and colorscale is given).
-      const xr = x_range as number[];
+      const xr = resolvedXRange as number[];
       const resolution = xr.length === 2 ? 0.01 : (xr[2] ?? 0.01);
       const sample_points = arange(xr[0] ?? 0, (xr[1] ?? 0) + resolution, resolution);
       const color_list: ParsableManimColor[] = [];
       for (const samp_x of sample_points) {
-        const axis_value = ([samp_x, function_(samp_x)] as number[])[colorscale_axis] ?? 0;
+        const axis_value = ([samp_x, function_(samp_x)] as number[])[resolvedColorscaleAxis] ?? 0;
         if (axis_value <= (pivots[0] ?? 0)) {
           color_list.push(new_colors[0] as ParsableManimColor);
         } else if (axis_value >= (pivots[pivots.length - 1] ?? 0)) {
@@ -632,18 +715,32 @@ export class CoordinateSystem extends VGroup {
 
   get_graph_label(
     graph: ParametricFunction,
-    label: number | string | VMobject = "f(x)",
-    x_val: number | null = null,
+    labelOrOptions: number | string | VMobject | Record<string, unknown> = "f(x)",
+    x_valOrOptions: number | null | Record<string, unknown> = null,
     direction: readonly number[] | NDArray = [...RIGHT],
     buff = MED_SMALL_BUFF,
     color: ParsableManimColor | null = null,
     dot = false,
     dot_config: Record<string, unknown> | null = null,
+    options: Record<string, unknown> = {},
   ): Mobject {
+    // Mirror Python's keyword-only `**kwargs` (forwarded to the label
+    // constructor): a plain bag in the label/x_val slot carries them.
+    let label: number | string | VMobject = labelOrOptions as number | string | VMobject;
+    let x_val = x_valOrOptions as number | null;
+    const merged_options: Record<string, unknown> = { ...options };
+    if (isPlainOptionsObject(labelOrOptions)) {
+      Object.assign(merged_options, labelOrOptions);
+      label = "f(x)";
+    }
+    if (isPlainOptionsObject(x_valOrOptions)) {
+      Object.assign(merged_options, x_valOrOptions);
+      x_val = null;
+    }
     const resolved_dot_config: Record<string, unknown> = dot_config ?? {};
     const resolved_color = color ?? graph.get_color();
     // NOTE: mirrors Python `self.x_axis._create_label_tex(label)`.
-    const label_object: Mobject = (this as unknown as { x_axis: CoordinateAxisLike }).x_axis._create_label_tex(label);
+    const label_object: Mobject = (this as unknown as { x_axis: CoordinateAxisLike }).x_axis._create_label_tex(label, null, merged_options);
     label_object.set_color(resolved_color as ParsableManimColor);
     let point: NDArray;
     if (x_val === null || x_val === undefined) {
@@ -704,6 +801,23 @@ export class CoordinateSystem extends VGroup {
     blend = false,
     width_scale_factor = 1.001,
   ): VGroup {
+    // Accept a plain options bag anywhere among the arguments so the Python
+    // kwargs idiom works (e.g. `{ color, stroke_width }`). Only the supplied
+    // arguments are considered so defaults are not misread as positionals.
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments).slice(1),
+    );
+    x_range = (bag["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? null;
+    dx = (bag["dx"] as number | undefined) ?? (positionals[1] as number | undefined) ?? 0.1;
+    input_sample_type = (bag["input_sample_type"] as string | undefined) ?? (positionals[2] as string | undefined) ?? "left";
+    stroke_width = (bag["stroke_width"] as number | undefined) ?? (positionals[3] as number | undefined) ?? 1;
+    stroke_color = (bag["stroke_color"] as ParsableManimColor | undefined) ?? (positionals[4] as ParsableManimColor | undefined) ?? BLACK;
+    fill_opacity = (bag["fill_opacity"] as number | undefined) ?? (positionals[5] as number | undefined) ?? 1;
+    color = (bag["color"] as Iterable<ParsableManimColor> | ParsableManimColor | undefined) ?? (positionals[6] as Iterable<ParsableManimColor> | ParsableManimColor | undefined) ?? [BLUE, GREEN];
+    show_signed_area = (bag["show_signed_area"] as boolean | undefined) ?? (positionals[7] as boolean | undefined) ?? true;
+    bounded_graph = (bag["bounded_graph"] as ParametricFunction | null | undefined) ?? (positionals[8] as ParametricFunction | null | undefined) ?? null;
+    blend = (bag["blend"] as boolean | undefined) ?? (positionals[9] as boolean | undefined) ?? false;
+    width_scale_factor = (bag["width_scale_factor"] as number | undefined) ?? (positionals[10] as number | undefined) ?? 1.001;
     // setting up x_range, overwrite user's third input
     let resolved_range: number[];
     if (x_range === null || x_range === undefined) {
@@ -796,6 +910,17 @@ export class CoordinateSystem extends VGroup {
     bounded_graph: ParametricFunction | null = null,
     kwargs: Record<string, unknown> = {},
   ): Polygon {
+    // Accept a plain options bag anywhere among the arguments so the Python
+    // kwargs idiom works (e.g. `get_area(graph, range, { stroke_width })`).
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments).slice(1),
+    );
+    x_range = (bag["x_range"] as readonly [number, number] | [number, number] | null | undefined) ?? (positionals[0] as readonly [number, number] | [number, number] | null | undefined) ?? null;
+    color = (bag["color"] as ParsableManimColor | ParsableManimColor[] | undefined) ?? (positionals[1] as ParsableManimColor | ParsableManimColor[] | undefined) ?? [BLUE, GREEN];
+    opacity = (bag["opacity"] as number | undefined) ?? (positionals[2] as number | undefined) ?? 0.3;
+    bounded_graph = (bag["bounded_graph"] as ParametricFunction | null | undefined) ?? (positionals[3] as ParametricFunction | null | undefined) ?? null;
+    const resolved_kwargs: Record<string, unknown> = { ...bag };
+    for (const key of ["x_range", "color", "opacity", "bounded_graph"]) delete resolved_kwargs[key];
     let a: number;
     let b: number;
     if (x_range === null) {
@@ -850,7 +975,7 @@ export class CoordinateSystem extends VGroup {
     // single-parse the color into ManimColor and reject lists, so the
     // gradient path is invoked directly here with identical ordering
     // (set_opacity first, then the color updates).
-    const area = new Polygon(points, kwargs).set_opacity(opacity);
+    const area = new Polygon(points, resolved_kwargs).set_opacity(opacity);
     if (Array.isArray(color)) {
       const gradient = color.map((c) => new ManimColor(c));
       area.update_rgbas_array("fill_rgbas", gradient, null);
@@ -998,10 +1123,19 @@ export class CoordinateSystem extends VGroup {
     num_lines = 20,
     kwargs: Record<string, unknown> = {},
   ): VGroup {
+    // Accept a plain options bag anywhere among the arguments so the Python
+    // kwargs idiom works (e.g. `get_vertical_lines_to_graph(graph, null, 20,
+    // { color: Y })`).
+    const { positionals, options: bag } = splitArgsAndOptions(Array.from(arguments).slice(1));
+    x_range = (bag["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? null;
+    num_lines = (bag["num_lines"] as number | undefined) ?? (positionals[1] as number | undefined) ?? 20;
+    const resolved_kwargs: Record<string, unknown> = { ...bag };
+    delete resolved_kwargs["x_range"];
+    delete resolved_kwargs["num_lines"];
     const resolved = x_range !== null && x_range !== undefined ? [...x_range] : [...this.x_range];
     return new VGroup(
       ...linspace(resolved[0] ?? 0, resolved[1] ?? 0, num_lines).map((x) =>
-        this.get_vertical_line(this.i2gp(x, graph), { ...kwargs }) as VMobject,
+        this.get_vertical_line(this.i2gp(x, graph), { ...resolved_kwargs }) as VMobject,
       ),
     );
   }
@@ -1070,14 +1204,14 @@ export class Axes extends CoordinateSystem {
   declare y_axis: NumberLine;
 
   constructor(
-    x_range: number[] | null = null,
+    x_rangeOrOptions: number[] | null | AxesOptions = null,
     y_range: number[] | null = null,
-    x_length: number | null | undefined = undefined,
-    y_length: number | null | undefined = undefined,
-    axis_config: Record<string, unknown> | null = null,
+    x_length: number | null | undefined | AxesOptions = undefined,
+    y_length: number | null | undefined | AxesOptions = undefined,
+    axis_config: Record<string, unknown> | null | AxesOptions = null,
     x_axis_config: Record<string, unknown> | null = null,
     y_axis_config: Record<string, unknown> | null = null,
-    tips = true,
+    tips: boolean | AxesOptions = true,
   ) {
     // NOTE: mirrors Python Axes.__init__, whose omitted ranges round the
     // frame radii ([-7, 7, 1] / [-4, 4, 1]); NumberPlane/ComplexPlane keep
@@ -1086,15 +1220,34 @@ export class Axes extends CoordinateSystem {
     // (``undefined``), while an explicit ``null`` is a genuine None (used by
     // NumberPlane/PolarPlane for their unit-sized default axes), matching
     // Python's default-parameter semantics.
+    // Accept a leading or trailing plain options bag so the Python kwargs
+    // idiom works: `new Axes({ x_range, y_range })`.
+    const { positionals, options } = splitArgsAndOptions(
+      Array.from(arguments),
+      AXES_OPTION_KEYS,
+    );
+    // An options bag at the first slot that carries only unknown keys (e.g.
+    // a bare `{}` from a wrapper) is still kwargs, not x_range.
+    if (positionals.length > 0 && isPlainOptionsObject(positionals[0])) {
+      Object.assign(options, positionals.shift());
+    }
+    const resolvedXRange = (options["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? null;
+    const resolvedYRange = (options["y_range"] as number[] | null | undefined) ?? (positionals[1] as number[] | null | undefined) ?? null;
+    const resolvedXLength = (options["x_length"] !== undefined ? options["x_length"] : positionals[2]) as number | null | undefined;
+    const resolvedYLength = (options["y_length"] !== undefined ? options["y_length"] : positionals[3]) as number | null | undefined;
+    const resolvedAxisConfig = (options["axis_config"] as Record<string, unknown> | null | undefined) ?? (positionals[4] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedXAxisConfig = (options["x_axis_config"] as Record<string, unknown> | null | undefined) ?? (positionals[5] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedYAxisConfig = (options["y_axis_config"] as Record<string, unknown> | null | undefined) ?? (positionals[6] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedTips = (options["tips"] as boolean | undefined) ?? (positionals[7] as boolean | undefined) ?? true;
     super(
-      x_range ?? [Math.round(-config.frame_x_radius), Math.round(config.frame_x_radius), 1],
-      y_range ?? [Math.round(-config.frame_y_radius), Math.round(config.frame_y_radius), 1],
-      x_length === undefined ? Math.round(config.frame_width) - 2 : x_length,
-      y_length === undefined ? Math.round(config.frame_height) - 2 : y_length,
+      resolvedXRange ?? [Math.round(-config.frame_x_radius), Math.round(config.frame_x_radius), 1],
+      resolvedYRange ?? [Math.round(-config.frame_y_radius), Math.round(config.frame_y_radius), 1],
+      resolvedXLength === undefined ? Math.round(config.frame_width) - 2 : resolvedXLength,
+      resolvedYLength === undefined ? Math.round(config.frame_height) - 2 : resolvedYLength,
     );
 
     this.axis_config = {
-      include_tip: tips,
+      include_tip: resolvedTips,
       numbers_to_exclude: [0],
     };
     this.x_axis_config = {};
@@ -1105,7 +1258,7 @@ export class Axes extends CoordinateSystem {
 
     Axes._update_default_configs(
       [this.axis_config, this.x_axis_config, this.y_axis_config],
-      [axis_config, x_axis_config, y_axis_config],
+      [resolvedAxisConfig, resolvedXAxisConfig, resolvedYAxisConfig],
     );
 
     this.x_axis_config = merge_dicts_recursively(
@@ -1156,8 +1309,8 @@ export class Axes extends CoordinateSystem {
     // so that the origin-shift point lands on the origin. Like Python, the
     // passed config dict is mutated in place (it is self.x_axis_config etc).
     axis_config["length"] = length;
-    const options = {
-      ...(axis_config as ConstructorParameters<typeof NumberLine>[0]),
+    const options: NumberLineOptions = {
+      ...(axis_config as NumberLineOptions),
       x_range: [...range_terms] as [number, number, number],
     };
     const axis = new NumberLine(options);
@@ -1341,6 +1494,18 @@ export class Axes extends CoordinateSystem {
     vertex_dot_style: Record<string, unknown> | null = null,
     kwargs: Record<string, unknown> = {},
   ): VDict {
+    // Accept a plain options bag among z_values/line_color/... so the Python
+    // kwargs idiom works (e.g. `plot_line_graph(xs, ys, { stroke_width })`).
+    // vertex_dot_style and the trailing kwargs bag are handled explicitly.
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments).slice(2, 6),
+    );
+    z_values = (bag["z_values"] as Iterable<number> | number[] | NDArray | null | undefined) ?? (positionals[0] as Iterable<number> | number[] | NDArray | null | undefined) ?? null;
+    line_color = (bag["line_color"] as ParsableManimColor | undefined) ?? (positionals[1] as ParsableManimColor | undefined) ?? "PURE_YELLOW";
+    add_vertex_dots = (bag["add_vertex_dots"] as boolean | undefined) ?? (positionals[2] as boolean | undefined) ?? true;
+    vertex_dot_radius = (bag["vertex_dot_radius"] as number | undefined) ?? (positionals[3] as number | undefined) ?? DEFAULT_DOT_RADIUS;
+    const merged_kwargs: Record<string, unknown> = { ...bag, ...kwargs };
+    for (const key of ["z_values", "line_color", "add_vertex_dots", "vertex_dot_radius"]) delete merged_kwargs[key];
     const xs = isNDArray(x_values)
       ? ((x_values as NDArray).toArray() as unknown[]).map(Number)
       : [...(x_values as Iterable<number>)].map(Number);
@@ -1363,8 +1528,8 @@ export class Axes extends CoordinateSystem {
     const line_graph = new VDict();
     const graph = new VGroup();
     graph.set_color(line_color);
-    if (Object.keys(kwargs).length > 0) {
-      graph.set_style(kwargs as Parameters<VGroup["set_style"]>[0]);
+    if (Object.keys(merged_kwargs).length > 0) {
+      graph.set_style(merged_kwargs as Parameters<VGroup["set_style"]>[0]);
     }
     const vertices = xs.map((x, index) =>
       pointRows(this.coords_to_point(x, ys[index] ?? 0, zs[index] ?? 0), 3)[0] ?? [0, 0, 0],
@@ -1427,14 +1592,14 @@ export class NumberPlane extends Axes {
   y_lines: VGroup = new VGroup();
 
   constructor(
-    x_range: number[] | null = null,
+    x_rangeOrOptions: number[] | null | NumberPlaneOptions = null,
     y_range: number[] | null = null,
     x_length: number | null = null,
     y_length: number | null = null,
-    background_line_style: Record<string, unknown> | null = null,
+    background_line_style: Record<string, unknown> | null | NumberPlaneOptions = null,
     faded_line_style: Record<string, unknown> | null = null,
-    faded_line_ratio = 1,
-    make_smooth_after_applying_functions = true,
+    faded_line_ratio: number | NumberPlaneOptions = 1,
+    make_smooth_after_applying_functions: boolean | NumberPlaneOptions = true,
     options: {
       axis_config?: Record<string, unknown> | null;
       y_axis_config?: Record<string, unknown> | null;
@@ -1445,6 +1610,25 @@ export class NumberPlane extends Axes {
     // frame radii (unlike Axes/CoordinateSystem, which round them to
     // [-7, 7, 1] / [-4, 4, 1]). The configs are built before super() because
     // they are forwarded into Axes.__init__ (which builds the real axes).
+    // A leading or trailing plain options bag is accepted so the Python
+    // kwargs idiom works: `new NumberPlane({ x_range, y_range })`.
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments),
+      NUMBER_PLANE_OPTION_KEYS,
+    );
+    // The explicit 9th `options` parameter is always a kwargs bag.
+    for (const [key, value] of Object.entries(options)) {
+      if (!(key in bag)) bag[key] = value;
+      else if (value !== undefined && value !== null) bag[key] = value;
+    }
+    const resolvedXRange = (bag["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? null;
+    const resolvedYRange = (bag["y_range"] as number[] | null | undefined) ?? (positionals[1] as number[] | null | undefined) ?? null;
+    const resolvedXLength = (bag["x_length"] !== undefined ? bag["x_length"] : (positionals[2] ?? null)) as number | null;
+    const resolvedYLength = (bag["y_length"] !== undefined ? bag["y_length"] : (positionals[3] ?? null)) as number | null;
+    const resolvedBackgroundStyle = (bag["background_line_style"] as Record<string, unknown> | null | undefined) ?? (positionals[4] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedFadedLineStyle = (bag["faded_line_style"] as Record<string, unknown> | null | undefined) ?? (positionals[5] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedFadedRatio = (bag["faded_line_ratio"] as number | undefined) ?? (positionals[6] as number | undefined) ?? 1;
+    const resolvedMakeSmooth = (bag["make_smooth_after_applying_functions"] as boolean | undefined) ?? (positionals[7] as boolean | undefined) ?? true;
     const axis_config: Record<string, unknown> = {
       stroke_width: 2,
       include_ticks: false,
@@ -1459,16 +1643,17 @@ export class NumberPlane extends Axes {
       stroke_width: 2,
       stroke_opacity: 1,
     };
-    const { axis_config: userAxisConfig, y_axis_config: userYAxisConfig } = options;
+    const userAxisConfig = bag["axis_config"] as Record<string, unknown> | null | undefined;
+    const userYAxisConfig = bag["y_axis_config"] as Record<string, unknown> | null | undefined;
     Axes._update_default_configs(
       [axis_config, y_axis_config, background_style],
-      [userAxisConfig ?? null, userYAxisConfig ?? null, background_line_style],
+      [userAxisConfig ?? null, userYAxisConfig ?? null, resolvedBackgroundStyle],
     );
     super(
-      x_range ?? [-config.frame_x_radius, config.frame_x_radius, 1],
-      y_range ?? [-config.frame_y_radius, config.frame_y_radius, 1],
-      x_length,
-      y_length,
+      resolvedXRange ?? [-config.frame_x_radius, config.frame_x_radius, 1],
+      resolvedYRange ?? [-config.frame_y_radius, config.frame_y_radius, 1],
+      resolvedXLength,
+      resolvedYLength,
       axis_config,
       null,
       y_axis_config,
@@ -1476,9 +1661,9 @@ export class NumberPlane extends Axes {
     this.axis_config = axis_config;
     this.y_axis_config = y_axis_config;
     this.background_line_style = background_style;
-    this.faded_line_style = faded_line_style;
-    this.faded_line_ratio = faded_line_ratio;
-    this.make_smooth_after_applying_functions = make_smooth_after_applying_functions;
+    this.faded_line_style = resolvedFadedLineStyle;
+    this.faded_line_ratio = resolvedFadedRatio;
+    this.make_smooth_after_applying_functions = resolvedMakeSmooth;
     this._init_background_lines();
   }
 
@@ -1604,13 +1789,13 @@ export class ThreeDAxes extends Axes {
   z_axis!: NumberLine;
 
   constructor(
-    x_range: number[] | null = null,
+    x_rangeOrOptions: number[] | null | ThreeDAxesOptions = null,
     y_range: number[] | null = null,
     x_length: number | null = null,
     y_length: number | null = null,
-    light_source: readonly number[] = [-7, -9, 10],
-    shaded_axes: ShadedAxis[] = [],
-    num_axis_pieces = 20,
+    light_source: readonly number[] | ThreeDAxesOptions = [-7, -9, 10],
+    shaded_axes: ShadedAxis[] | ThreeDAxesOptions = [],
+    num_axis_pieces: number | ThreeDAxesOptions = 20,
     z_range: number[] | null = [-4, 4, 1],
     z_length: number | null = null,
     z_axis_config: Record<string, unknown> | null = null,
@@ -1630,23 +1815,46 @@ export class ThreeDAxes extends Axes {
     // (x_range, y_range, z_range, x_length, y_length, z_length, ...), so the
     // z_* params ride as trailing optionals here. Python defaults are
     // x_range=(-6,6,1), y_range=(-5,5,1), x_length/y_length=frame_height+2.5.
-    const resolvedXRange = x_range ?? [-6, 6, 1];
-    const resolvedYRange = y_range ?? [-5, 5, 1];
-    const resolvedXLength = x_length ?? config.frame_height + 2.5;
-    const resolvedYLength = y_length ?? config.frame_height + 2.5;
-    const resolvedZLength = z_length ?? config.frame_height - 1.5;
-    super(resolvedXRange, resolvedYRange, resolvedXLength, resolvedYLength, options.axis_config ?? null, options.x_axis_config ?? null, options.y_axis_config ?? null);
-    void depth;
-    void gloss;
-    this.z_range = z_range === null ? [-4, 4, 1] : [...z_range];
+    // A leading or trailing plain options bag is accepted so `new
+    // ThreeDAxes({ x_range, y_range, z_range })` maps by keyword.
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments),
+      THREE_D_AXES_OPTION_KEYS,
+    );
+    for (const [key, value] of Object.entries(options)) {
+      if (!(key in bag)) bag[key] = value;
+      else if (value !== undefined && value !== null) bag[key] = value;
+    }
+    const rXRange = (bag["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? [-6, 6, 1];
+    const rYRange = (bag["y_range"] as number[] | null | undefined) ?? (positionals[1] as number[] | null | undefined) ?? [-5, 5, 1];
+    const rXLength = (bag["x_length"] !== undefined ? bag["x_length"] : positionals[2]) as number | null;
+    const rYLength = (bag["y_length"] !== undefined ? bag["y_length"] : positionals[3]) as number | null;
+    const rLightSource = (bag["light_source"] as readonly number[] | undefined) ?? (positionals[4] as readonly number[] | undefined) ?? [-7, -9, 10];
+    const rShadedAxes = (bag["shaded_axes"] as ShadedAxis[] | undefined) ?? (positionals[5] as ShadedAxis[] | undefined) ?? [];
+    const rNumAxisPieces = (bag["num_axis_pieces"] as number | undefined) ?? (positionals[6] as number | undefined) ?? 20;
+    const rZRange = (bag["z_range"] as number[] | null | undefined) ?? (positionals[7] as number[] | null | undefined) ?? [-4, 4, 1];
+    const rZLength = (bag["z_length"] !== undefined ? bag["z_length"] : positionals[8]) as number | null;
+    const rZAxisConfig = (bag["z_axis_config"] as Record<string, unknown> | null | undefined) ?? (positionals[9] as Record<string, unknown> | null | undefined) ?? null;
+    const rZNormal = (bag["z_normal"] as readonly number[] | undefined) ?? (positionals[10] as readonly number[] | undefined) ?? [...DOWN];
+    const rDepth = bag["depth"] ?? positionals[11] ?? null;
+    const rGloss = (bag["gloss"] as number | undefined) ?? (positionals[12] as number | undefined) ?? 0.5;
+    const resolvedXRange = rXRange ?? [-6, 6, 1];
+    const resolvedYRange = rYRange ?? [-5, 5, 1];
+    const resolvedXLength = rXLength ?? config.frame_height + 2.5;
+    const resolvedYLength = rYLength ?? config.frame_height + 2.5;
+    const resolvedZLength = rZLength ?? config.frame_height - 1.5;
+    super(resolvedXRange, resolvedYRange, resolvedXLength, resolvedYLength, (bag["axis_config"] as Record<string, unknown> | null | undefined) ?? null, (bag["x_axis_config"] as Record<string, unknown> | null | undefined) ?? null, (bag["y_axis_config"] as Record<string, unknown> | null | undefined) ?? null);
+    void rDepth;
+    void rGloss;
+    this.z_range = rZRange === null || rZRange === undefined ? [-4, 4, 1] : [...rZRange];
     this.z_length = resolvedZLength;
     this.z_axis_config = {};
-    Axes._update_default_configs([this.z_axis_config], [z_axis_config]);
+    Axes._update_default_configs([this.z_axis_config], [rZAxisConfig]);
     this.z_axis_config = merge_dicts_recursively(this.axis_config, this.z_axis_config);
-    this.z_normal = [...z_normal];
-    this.light_source = [...light_source];
-    this.shaded_axes = shaded_axes;
-    this.num_axis_pieces = num_axis_pieces;
+    this.z_normal = [...rZNormal];
+    this.light_source = [...rLightSource];
+    this.shaded_axes = rShadedAxes;
+    this.num_axis_pieces = rNumAxisPieces;
     this.dimension = 3;
     const zScaling = this.z_axis_config["scaling"] as _ScaleBase | undefined | null;
     this.z_axis_config["exclude_origin_tick"] =
@@ -1856,11 +2064,42 @@ function limitFractionDenominator(
 }
 
 export interface PolarPlaneOptions {
+  radius_max?: number | null;
+  size?: number | null;
+  radius_step?: number;
+  azimuth_step?: number | null;
+  azimuth_units?: AzimuthUnits;
+  azimuth_compact_fraction?: boolean;
+  azimuth_offset?: number;
+  azimuth_direction?: AzimuthDirection;
+  azimuth_label_buff?: number;
+  azimuth_label_font_size?: number;
   radius_config?: Record<string, unknown> | null;
   background_line_style?: Record<string, unknown> | null;
   faded_line_style?: Record<string, unknown> | null;
+  faded_line_ratio?: number;
+  make_smooth_after_applying_functions?: boolean;
   [key: string]: unknown;
 }
+
+const POLAR_PLANE_OPTION_KEYS: ReadonlySet<string> = new Set([
+  ...AXES_OPTION_KEYS,
+  "radius_max",
+  "size",
+  "radius_step",
+  "azimuth_step",
+  "azimuth_units",
+  "azimuth_compact_fraction",
+  "azimuth_offset",
+  "azimuth_direction",
+  "azimuth_label_buff",
+  "azimuth_label_font_size",
+  "radius_config",
+  "background_line_style",
+  "faded_line_style",
+  "faded_line_ratio",
+  "make_smooth_after_applying_functions",
+]);
 
 export class PolarPlane extends Axes {
   azimuth_units: AzimuthUnits;
@@ -1881,30 +2120,57 @@ export class PolarPlane extends Axes {
   faded_lines: VGroup | null = null;
 
   constructor(
-    radius_max: number | null = null,
+    radius_maxOrOptions: number | null | PolarPlaneOptions = null,
     size: number | null = null,
-    radius_step = 1,
-    azimuth_step: number | null = null,
-    azimuth_units: AzimuthUnits = "PI radians",
-    azimuth_compact_fraction = true,
-    azimuth_offset = 0,
-    azimuth_direction: AzimuthDirection = "CCW",
-    azimuth_label_buff = SMALL_BUFF,
-    azimuth_label_font_size = 24,
-    radius_config: Record<string, unknown> | null = null,
+    radius_step: number | PolarPlaneOptions = 1,
+    azimuth_step: number | null | PolarPlaneOptions = null,
+    azimuth_units: AzimuthUnits | PolarPlaneOptions = "PI radians",
+    azimuth_compact_fraction: boolean | PolarPlaneOptions = true,
+    azimuth_offset: number | PolarPlaneOptions = 0,
+    azimuth_direction: AzimuthDirection | PolarPlaneOptions = "CCW",
+    azimuth_label_buff: number | PolarPlaneOptions = SMALL_BUFF,
+    azimuth_label_font_size: number | PolarPlaneOptions = 24,
+    radius_config: Record<string, unknown> | null | PolarPlaneOptions = null,
     background_line_style: Record<string, unknown> | null = null,
     faded_line_style: Record<string, unknown> | null = null,
-    faded_line_ratio = 1,
-    make_smooth_after_applying_functions = true,
+    faded_line_ratio: number | PolarPlaneOptions = 1,
+    make_smooth_after_applying_functions: boolean | PolarPlaneOptions = true,
     options: PolarPlaneOptions = {},
   ) {
+    // A leading or trailing plain options bag is accepted so the Python
+    // kwargs idiom works: `new PolarPlane({ radius_max, azimuth_units })`.
+    const { positionals, options: bag } = splitArgsAndOptions(
+      Array.from(arguments),
+      POLAR_PLANE_OPTION_KEYS,
+    );
+    for (const [key, value] of Object.entries(options)) {
+      if (!(key in bag)) bag[key] = value;
+      else if (value !== undefined && value !== null) bag[key] = value;
+    }
+    const radius_max = (bag["radius_max"] as number | null | undefined) ?? (positionals[0] as number | null | undefined) ?? null;
+    const resolvedSize = (bag["size"] as number | null | undefined) ?? (positionals[1] as number | null | undefined) ?? null;
+    const resolvedRadiusStep = (bag["radius_step"] as number | undefined) ?? (positionals[2] as number | undefined) ?? 1;
+    const resolvedAzimuthStep = (bag["azimuth_step"] as number | null | undefined) ?? (positionals[3] as number | null | undefined) ?? null;
+    const unitsRaw = bag["azimuth_units"] !== undefined ? bag["azimuth_units"] : positionals[4];
+    const resolvedAzimuthUnits = (unitsRaw === undefined ? "PI radians" : unitsRaw) as AzimuthUnits;
+    const resolvedAzimuthCompact = (bag["azimuth_compact_fraction"] as boolean | undefined) ?? (positionals[5] as boolean | undefined) ?? true;
+    const resolvedAzimuthOffset = (bag["azimuth_offset"] as number | undefined) ?? (positionals[6] as number | undefined) ?? 0;
+    const resolvedAzimuthDirection = (bag["azimuth_direction"] as AzimuthDirection | undefined) ?? (positionals[7] as AzimuthDirection | undefined) ?? "CCW";
+    const resolvedAzimuthLabelBuff = (bag["azimuth_label_buff"] as number | undefined) ?? (positionals[8] as number | undefined) ?? SMALL_BUFF;
+    const resolvedAzimuthLabelFontSize = (bag["azimuth_label_font_size"] as number | undefined) ?? (positionals[9] as number | undefined) ?? 24;
+    const resolvedRadiusConfig = (bag["radius_config"] as Record<string, unknown> | null | undefined) ?? (positionals[10] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedBackgroundLineStyle = (bag["background_line_style"] as Record<string, unknown> | null | undefined) ?? (positionals[11] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedFadedLineStyle = (bag["faded_line_style"] as Record<string, unknown> | null | undefined) ?? (positionals[12] as Record<string, unknown> | null | undefined) ?? null;
+    const resolvedFadedLineRatio = (bag["faded_line_ratio"] as number | undefined) ?? (positionals[13] as number | undefined) ?? 1;
+    // `make_smooth_after_applying_functions` is intentionally ignored (see
+    // the VGroup-overwrite note below).
     // error catching (mirrors Python, which validates before calling super)
     if (
-      azimuth_units !== "PI radians" &&
-      azimuth_units !== "TAU radians" &&
-      azimuth_units !== "degrees" &&
-      azimuth_units !== "gradians" &&
-      azimuth_units !== null
+      resolvedAzimuthUnits !== "PI radians" &&
+      resolvedAzimuthUnits !== "TAU radians" &&
+      resolvedAzimuthUnits !== "degrees" &&
+      resolvedAzimuthUnits !== "gradians" &&
+      resolvedAzimuthUnits !== null
     ) {
       const error = new Error(
         "Invalid azimuth units. Expected one of: PI radians, TAU radians, degrees, gradians or None.",
@@ -1912,7 +2178,7 @@ export class PolarPlane extends Axes {
       error.name = "ValueError";
       throw error;
     }
-    if (azimuth_direction !== "CW" && azimuth_direction !== "CCW") {
+    if (resolvedAzimuthDirection !== "CW" && resolvedAzimuthDirection !== "CCW") {
       const error = new Error("Invalid azimuth units. Expected one of: CW, CCW.");
       error.name = "ValueError";
       throw error;
@@ -1931,34 +2197,22 @@ export class PolarPlane extends Axes {
       stroke_width: 2,
       stroke_opacity: 1,
     };
-    const az_step = azimuth_step ?? (
+    const az_step = resolvedAzimuthStep ?? (
       {
         "PI radians": 20,
         "TAU radians": 20,
         degrees: 36,
         gradians: 40,
       } as Record<string, number>
-    )[String(azimuth_units)] ?? 1;
+    )[String(resolvedAzimuthUnits)] ?? 1;
     Axes._update_default_configs(
       [radius_config_default, background_style],
-      [radius_config ?? null, background_line_style ?? null],
+      [resolvedRadiusConfig ?? null, resolvedBackgroundLineStyle ?? null],
     );
-    const {
-      radius_config: _droppedRadiusConfig,
-      background_line_style: _droppedBackgroundLineStyle,
-      faded_line_style: _droppedFadedLineStyle,
-      faded_line_ratio: _droppedFadedLineRatio,
-      axis_config: axisConfigOption,
-      x_axis_config: xAxisConfigOption,
-      y_axis_config: yAxisConfigOption,
-      tips: tipsOption,
-      ..._ignoredOptions
-    } = options;
-    void _droppedRadiusConfig;
-    void _droppedBackgroundLineStyle;
-    void _droppedFadedLineStyle;
-    void _droppedFadedLineRatio;
-    void _ignoredOptions;
+    const axisConfigOption = bag["axis_config"];
+    const xAxisConfigOption = bag["x_axis_config"];
+    const yAxisConfigOption = bag["y_axis_config"];
+    const tipsOption = bag["tips"];
     const mergedRadiusConfig = { ...radius_config_default };
     if (axisConfigOption !== undefined && axisConfigOption !== null) {
       update_dict_recursively(mergedRadiusConfig, axisConfigOption as Record<string, unknown>);
@@ -1967,22 +2221,22 @@ export class PolarPlane extends Axes {
     // **kwargs)`: the radius config becomes the Axes-level axis config, so the
     // real axes are built from it.
     super(
-      [-resolved_radius_max, resolved_radius_max, radius_step],
-      [-resolved_radius_max, resolved_radius_max, radius_step],
-      size,
-      size,
+      [-resolved_radius_max, resolved_radius_max, resolvedRadiusStep],
+      [-resolved_radius_max, resolved_radius_max, resolvedRadiusStep],
+      resolvedSize,
+      resolvedSize,
       mergedRadiusConfig,
       (xAxisConfigOption as Record<string, unknown> | null | undefined) ?? null,
       (yAxisConfigOption as Record<string, unknown> | null | undefined) ?? null,
       (tipsOption as boolean | null | undefined) ?? true,
     );
-    this.azimuth_units = azimuth_units;
-    this.azimuth_direction = azimuth_direction;
+    this.azimuth_units = resolvedAzimuthUnits;
+    this.azimuth_direction = resolvedAzimuthDirection;
     this.radius_config = radius_config_default;
     this.background_line_style = background_style;
     this.azimuth_step = az_step;
-    this.faded_line_style = faded_line_style;
-    this.faded_line_ratio = faded_line_ratio;
+    this.faded_line_style = resolvedFadedLineStyle;
+    this.faded_line_ratio = resolvedFadedLineRatio;
     // NOTE: mirrors Python, where PolarPlane sets this field to True and then
     // Axes.__init__ runs VGroup.__init__(**kwargs), which unconditionally
     // overwrites it with the VMobject default False (the named parameter never
@@ -1990,10 +2244,10 @@ export class PolarPlane extends Axes {
     // behavior: always False, even when True is passed explicitly.
     void make_smooth_after_applying_functions;
     this.make_smooth_after_applying_functions = false;
-    this.azimuth_offset = azimuth_offset;
-    this.azimuth_label_buff = azimuth_label_buff;
-    this.azimuth_label_font_size = azimuth_label_font_size;
-    this.azimuth_compact_fraction = azimuth_compact_fraction;
+    this.azimuth_offset = resolvedAzimuthOffset;
+    this.azimuth_label_buff = resolvedAzimuthLabelBuff;
+    this.azimuth_label_font_size = resolvedAzimuthLabelFontSize;
+    this.azimuth_compact_fraction = resolvedAzimuthCompact;
     this._init_background_lines();
   }
 
@@ -2260,15 +2514,15 @@ function toComplexPoint(value: ComplexNumberLike): ComplexPoint {
 
 export class ComplexPlane extends NumberPlane {
   constructor(
-    x_range: number[] | null = null,
+    x_rangeOrOptions: number[] | null | NumberPlaneOptions = null,
     y_range: number[] | null = null,
     x_length: number | null = null,
     y_length: number | null = null,
   ) {
     // NOTE: mirrors Python `ComplexPlane.__init__(self, **kwargs)` (which
-    // only forwards to NumberPlane); the TS port takes explicit
-    // range/length params instead of a kwargs bag.
-    super(x_range, y_range, x_length, y_length);
+    // only forwards to NumberPlane); a leading options bag therefore forwards
+    // straight to NumberPlane: `new ComplexPlane({ x_range, y_range })`.
+    super(x_rangeOrOptions, y_range, x_length, y_length);
   }
 
   number_to_point(number: ComplexNumberLike): NDArray {

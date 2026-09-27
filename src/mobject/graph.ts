@@ -119,6 +119,8 @@ export type GraphVertexType =
   | null;
 
 export interface GenericGraphOptions {
+  vertices?: GraphVertex[];
+  edges?: GraphEdge[];
   labels?: boolean | Map<GraphVertex, unknown> | Record<string, unknown>;
   label_fill_color?: ParsableManimColor;
   layout?: LayoutName | Map<GraphVertex, NDArray> | Record<string, unknown> | LayoutFunction;
@@ -384,7 +386,21 @@ export class GenericGraph extends VMobject {
     throw error;
   }
 
-  constructor(vertices: GraphVertex[] = [], edges: GraphEdge[] = [], options: GenericGraphOptions = {}) {
+  constructor(verticesOrOptions: GraphVertex[] | GenericGraphOptions = [], edges: GraphEdge[] = [], options: GenericGraphOptions = {}) {
+    // Accept a leading options bag so the Python keyword idiom works:
+    // `new Graph({ vertices, edges, layout })`. The trailing options bag
+    // (`new Graph(vertices, edges, { layout })`) has always been supported.
+    let vertices = verticesOrOptions as GraphVertex[];
+    let resolvedEdges = edges;
+    let resolvedOptions = options;
+    if (isGraphOptionsBag(verticesOrOptions)) {
+      const bag: GenericGraphOptions = { ...(verticesOrOptions as GenericGraphOptions) };
+      if (bag.vertices !== undefined) vertices = bag.vertices;
+      if (bag.edges !== undefined) resolvedEdges = bag.edges;
+      delete bag.vertices;
+      delete bag.edges;
+      resolvedOptions = { ...bag, ...options };
+    }
     const {
       labels = false,
       label_fill_color = BLACK,
@@ -399,14 +415,14 @@ export class GenericGraph extends VMobject {
       root_vertex = null,
       edge_config = null,
       ...rest
-    } = options;
+    } = resolvedOptions;
     super(rest);
     this.vertices = new Map();
     this.edges = new Map();
     this._layout = new Map();
     this._graph = (this.constructor as typeof GenericGraph)._empty_networkx_graph();
     this._graph.addNodesFrom(vertices);
-    this._graph.addEdgesFrom(edges);
+    this._graph.addEdgesFrom(resolvedEdges);
 
     if (labels instanceof Map) {
       this._labels = new Map(labels);
@@ -485,9 +501,9 @@ export class GenericGraph extends VMobject {
     // NOTE: mirrors Python, which pops "tip_config" off the passed dict
     // (mutating the caller's object); the TS port copies first instead.
     const { default_tip_config, default_edge_config, per_edge_config } =
-      splitEdgeConfig(edge_config, edges);
+      splitEdgeConfig(edge_config, resolvedEdges);
     this.default_edge_config = default_edge_config;
-    for (const e of edges) {
+    for (const e of resolvedEdges) {
       const key = edgeKey(e[0], e[1]);
       const override = per_edge_config.find(
         (entry) => edgeKey(entry.pair[0], entry.pair[1]) === key,
@@ -504,7 +520,7 @@ export class GenericGraph extends VMobject {
         this._edge_config.set(key, { ...default_edge_config });
       }
     }
-    this._populate_edge_dict(edges, edge_type);
+    this._populate_edge_dict(resolvedEdges, edge_type);
 
     this.add(...this.vertices.values(), ...this.edges.values());
 

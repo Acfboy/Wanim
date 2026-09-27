@@ -19,7 +19,7 @@ import { writeFileSync } from "node:fs";
 import { config } from "../_config/utils.js";
 import { Camera } from "../camera/camera.js";
 import { CapStyleType, LineJointType } from "../constants.js";
-import type { Mobject } from "../mobject/mobject.js";
+import { NON_FINITE_GEOMETRY_HINT, hasNonFinite, type Mobject } from "../mobject/mobject.js";
 import { AbstractImageMobject } from "../mobject/types/image_mobject.js";
 import { PMobject } from "../mobject/types/point_cloud_mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
@@ -163,8 +163,19 @@ function memberOf(collection: unknown, item: unknown): boolean {
   return false;
 }
 
+/** Throw a descriptive non-finite error rather than writing a poisoned
+ *  `.mjson` (a NaN in the point/rgba stream explodes only much later, in the
+ *  Python renderer, as a cryptic failure or a truncated video). */
+function assertFiniteSerialized(value: unknown, field: string, className: string): void {
+  if (hasNonFinite(value)) {
+    throw new Error(`non-finite ${field} in ${className}. ${NON_FINITE_GEOMETRY_HINT}`);
+  }
+}
+
 /** Serialize a single VMobject's bezier data and style. */
 export function serialize_vmobject(vmobject: VMobject, camera?: unknown): Record<string, unknown> {
+  const className = vmobject.constructor.name;
+  assertFiniteSerialized(vmobject.points, "points", className);
   const record: Record<string, unknown> = { p: roundList(vmobject.points) };
   const styleFields: Array<[unknown, string]> = [
     [vmobject.fill_rgbas, "f"],
@@ -172,6 +183,9 @@ export function serialize_vmobject(vmobject: VMobject, camera?: unknown): Record
     [vmobject.background_stroke_rgbas, "bs"],
   ];
   for (const [value, short] of styleFields) {
+    if (value !== null && value !== undefined) {
+      assertFiniteSerialized(value, "rgba", className);
+    }
     record[short] = value !== null && value !== undefined ? roundList(value) : null;
   }
   record.sw = Number(vmobject.get_stroke_width());
@@ -221,6 +235,9 @@ export function serialize_frame(camera: Camera, sceneMobjects: Iterable<Mobject>
     throw error;
   }
   const vmobjects = mobjects.filter((mobject): mobject is VMobject => mobject instanceof VMobject);
+  assertFiniteSerialized(camera.frame_center, "camera frame_center", camera.constructor.name);
+  assertFiniteSerialized(camera.frame_width, "camera frame_width", camera.constructor.name);
+  assertFiniteSerialized(camera.frame_height, "camera frame_height", camera.constructor.name);
   const cam: Record<string, unknown> = {
     fc: roundList(camera.frame_center),
     fw: Number(camera.frame_width),
