@@ -40,7 +40,28 @@ export interface VectorSceneOptions {
   renderer?: unknown;
   camera_class?: new (...args: any[]) => any;
   always_update_mobjects?: boolean;
+  random_seed?: number | null;
+  skip_animations?: boolean;
   [key: string]: unknown;
+}
+
+/**
+ * The TS scene runner constructs scenes positionally (`new SceneClass({
+ * renderer })`), whereas Python forwards `renderer=...` through `**kwargs`.
+ * VectorScene's first parameter is a number, so detect an options bag passed
+ * in its place and route it to Scene, mirroring Python's keyword forwarding.
+ */
+function isSceneOptionsBag(value: unknown): value is VectorSceneOptions {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return [
+    "renderer",
+    "camera_class",
+    "always_update_mobjects",
+    "random_seed",
+    "skip_animations",
+  ].some((key) => key in (value as Record<string, unknown>));
 }
 
 export class VectorScene extends Scene {
@@ -50,26 +71,31 @@ export class VectorScene extends Scene {
   // behind a type-ignore. The field is declared here for the same access.
   plane!: NumberPlane;
 
-  constructor(basis_vector_stroke_width = 6.0, options: VectorSceneOptions = {}) {
+  constructor(
+    basis_vector_stroke_width: number | VectorSceneOptions = 6.0,
+    options: VectorSceneOptions = {},
+  ) {
+    let strokeWidth = basis_vector_stroke_width as number;
+    let opts = options;
+    if (isSceneOptionsBag(basis_vector_stroke_width)) {
+      opts = basis_vector_stroke_width;
+      strokeWidth = 6.0;
+    }
     super(
-      (options.renderer as null) ?? null,
-      options.camera_class,
-      options.always_update_mobjects ?? false,
+      (opts.renderer as null) ?? null,
+      opts.camera_class,
+      opts.always_update_mobjects ?? false,
+      (opts.random_seed as number | null | undefined) ?? undefined,
+      (opts.skip_animations as boolean | undefined) ?? false,
     );
-    this.basis_vector_stroke_width = basis_vector_stroke_width;
+    this.basis_vector_stroke_width = strokeWidth;
   }
 
   add_plane(animate = false, kwargs: Record<string, unknown> = {}): NumberPlane {
-    // NOTE: only the geometric range/length options are forwarded; grid-style
-    // options (axis_config/background_line_style/...) hit the pre-existing
-    // merge_dicts_recursively color-object recursion bug in config_ops, so
-    // they remain accepted-but-ignored until that helper is fixed.
-    const plane = new NumberPlane(
-      (kwargs.x_range as number[] | null) ?? null,
-      (kwargs.y_range as number[] | null) ?? null,
-      (kwargs.x_length as number | null) ?? null,
-      (kwargs.y_length as number | null) ?? null,
-    );
+    // Forward every NumberPlane keyword (including axis_config /
+    // background_line_style / faded_line_ratio), mirroring Python's
+    // `NumberPlane(**kwargs)`.
+    const plane = numberPlaneFromKwargs(kwargs);
     if (animate) {
       this.play(new Create(plane as unknown as import("../mobject/types/vectorized_mobject.js").VMobject, { lag_ratio: 0.5 }));
     }
@@ -293,15 +319,67 @@ export interface LinearTransformationSceneOptions {
 }
 
 function numberPlaneFromKwargs(kwargs: Record<string, unknown>): NumberPlane {
-  // NOTE: only the geometric range/length options are forwarded; grid-style
-  // options hit the pre-existing merge_dicts_recursively color-object
-  // recursion bug in config_ops (see add_plane).
-  return new NumberPlane(
-    (kwargs.x_range as number[] | null) ?? null,
-    (kwargs.y_range as number[] | null) ?? null,
-    (kwargs.x_length as number | null) ?? null,
-    (kwargs.y_length as number | null) ?? null,
+  // Mirror Python's `NumberPlane(**kwargs)`: split out the positional
+  // parameters and forward the remaining kwargs (axis_config, y_axis_config,
+  // color, ...) through the trailing options bag.
+  const {
+    x_range = null,
+    y_range = null,
+    x_length = null,
+    y_length = null,
+    background_line_style = null,
+    faded_line_style = null,
+    faded_line_ratio = 1,
+    make_smooth_after_applying_functions = true,
+    axis_config = null,
+    y_axis_config = null,
+    ...rest
+  } = kwargs;
+  const plane = new NumberPlane(
+    x_range as number[] | null,
+    y_range as number[] | null,
+    x_length as number | null,
+    y_length as number | null,
+    sanitizeStyleColors(background_line_style) as Record<string, unknown> | null,
+    sanitizeStyleColors(faded_line_style) as Record<string, unknown> | null,
+    faded_line_ratio as number,
+    make_smooth_after_applying_functions as boolean,
+    {
+      axis_config: sanitizeStyleColors(axis_config),
+      y_axis_config: sanitizeStyleColors(y_axis_config),
+      ...rest,
+    } as Record<string, unknown>,
   );
+  // Python's NumberLine receives `color` through axis_config and paints the
+  // axes with it; the TS NumberLine drops that key, so apply it here (the
+  // background/faded lines keep their own background_line_style colours,
+  // matching the Python ordering where the lines are styled afterwards).
+  const axisColor = (axis_config as Record<string, unknown> | null)?.color;
+  const yAxisColor = (y_axis_config as Record<string, unknown> | null)?.color;
+  if (axisColor !== undefined && axisColor !== null) {
+    (plane.get_axes() as unknown as Mobject).set_color(axisColor as never);
+  }
+  if (yAxisColor !== undefined && yAxisColor !== null && yAxisColor !== axisColor) {
+    (plane.get_y_axis() as unknown as Mobject).set_color(yAxisColor as never);
+  }
+  return plane;
+}
+
+/**
+ * `merge_dicts_recursively` (utils/config_ops) only treats plain dictionaries
+ * as mergeable in Python; the TS port currently recurses into any object, so a
+ * `ManimColor` colliding with the default `stroke_color` recurses forever.
+ * Colour values in style configs are therefore flattened to hex strings here
+ * (they are re-parsed by `set_style`), which avoids the collision while
+ * producing identical final colours. See .
+ */
+function sanitizeStyleColors(style: unknown): unknown {
+  if (style === null || style === undefined || typeof style !== "object") return style;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(style as Record<string, unknown>)) {
+    result[key] = value instanceof ManimColor ? value.to_hex() : value;
+  }
+  return result;
 }
 
 function inverseSquareMatrix(values: number[][]): number[][] {
@@ -362,7 +440,7 @@ export class LinearTransformationScene extends VectorScene {
   title!: any;
 
   constructor(
-    include_background_plane = true,
+    include_background_plane: boolean | LinearTransformationSceneOptions = true,
     include_foreground_plane = true,
     background_plane_kwargs: Record<string, unknown> | null = null,
     foreground_plane_kwargs: Record<string, unknown> | null = null,
@@ -374,10 +452,18 @@ export class LinearTransformationScene extends VectorScene {
     leave_ghost_vectors = false,
     options: LinearTransformationSceneOptions = {},
   ) {
+    // The TS scene runner constructs scenes positionally with a leading
+    // options bag (`new SceneClass({ renderer })`); Python forwards
+    // `renderer=...` as a keyword. Route that bag to Scene (see VectorScene).
+    if (isSceneOptionsBag(include_background_plane)) {
+      options = include_background_plane;
+      include_background_plane = true;
+    }
+    const backgroundFlag = include_background_plane as boolean;
     super(basis_vector_stroke_width, options as unknown as VectorSceneOptions);
     // NOTE: Python calls super().__init__(**kwargs) without forwarding
     // basis_vector_stroke_width, then assigns every field directly.
-    this.include_background_plane = include_background_plane;
+    this.include_background_plane = backgroundFlag;
     this.include_foreground_plane = include_foreground_plane;
     this.show_coordinates = show_coordinates;
     this.show_basis_vectors = show_basis_vectors;

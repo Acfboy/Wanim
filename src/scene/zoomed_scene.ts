@@ -93,6 +93,22 @@ export class ZoomedScene extends MovingCameraScene {
     // requires super() first. The base Scene constructor does not read any
     // of these fields, so assigning afterwards is behaviorally identical.
     super((cameraClassOption as new (...args: any[]) => any) ?? camera_class, rest);
+    // The TS scene runner picks the camera class from the scene hierarchy
+    // (MovingCamera for every MovingCameraScene subclass), so a ZoomedScene
+    // would otherwise receive a MovingCamera instead of its Python default
+    // MultiCamera. Rebuild the renderer camera from the class this scene was
+    // actually constructed with, mirroring Python's
+    // `scene_class(renderer=renderer)` with `camera_class=MultiCamera`.
+    const RendererCameraClass = this.camera_class as new (...args: any[]) => unknown;
+    if (
+      this.renderer !== null &&
+      this.renderer !== undefined &&
+      RendererCameraClass !== undefined &&
+      !(this.camera instanceof RendererCameraClass)
+    ) {
+      this.renderer.camera = new RendererCameraClass();
+      this.camera = this.renderer.camera;
+    }
     this.zoomed_display_height = zoomed_display_height;
     this.zoomed_display_width = zoomed_display_width;
     this.zoomed_display_center = zoomed_display_center;
