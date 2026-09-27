@@ -31,6 +31,7 @@ import {
   serialize_frame,
   type JSONCairoRendererOptions,
 } from "./json_renderer.js";
+import { is_thenable } from "../utils/scheduler.js";
 
 export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
   ctx: CanvasRenderingContext2D;
@@ -106,15 +107,21 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this._started = true;
   }
 
-  override play(scene: Scene, ...args: Array<unknown>): void {
+  override play(scene: Scene, ...args: Array<unknown>): void | Promise<void> {
     if (!this._started) {
       this._started = true;
       this._startedAt = performance.now();
     }
     const startedAt = performance.now();
-    super.play(scene, ...args as never[]);
-    this.stats.playMs += performance.now() - startedAt;
-    this._emitProgress(true);
+    const result = super.play(scene, ...args as never[]);
+    const finish = (): void => {
+      this.stats.playMs += performance.now() - startedAt;
+      this._emitProgress(true);
+    };
+    if (is_thenable(result)) {
+      return Promise.resolve(result).then(finish);
+    }
+    finish();
   }
 
   override update_frame(

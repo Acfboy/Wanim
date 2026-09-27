@@ -16,6 +16,7 @@ import { Scene } from "../scene/scene.js";
 import { MovingCameraScene } from "../scene/moving_camera_scene.js";
 import { SpecialThreeDScene, ThreeDScene } from "../scene/three_d_scene.js";
 import { get_scene_classes_from_module, type SceneModule } from "../utils/module_ops.js";
+import { is_thenable } from "../utils/scheduler.js";
 import { JSONCairoRenderer } from "./json_renderer.js";
 
 /** (label, pixel_width, pixel_height, frame_rate) — mirrors __main__.py. */
@@ -83,13 +84,23 @@ export function construct_scene(sceneClass: SceneConstructor, renderer: JSONCair
   return new sceneClass({ renderer });
 }
 
-/** Run one Scene class and serialize it to `outputPath`. Returns the path. */
-export function run_scene(sceneClass: SceneConstructor, outputPath: string): string {
+/**
+ * Run one Scene class and serialize it to `outputPath`. Returns the path.
+ *
+ * Hand-written JS scenes run synchronously (and return the path directly);
+ * rapydscript-translated scenes have an `async construct` (the compiler inserts
+ * `await self.play(...)`), so rendering completes asynchronously and a promise
+ * for the path is returned instead.
+ */
+export function run_scene(sceneClass: SceneConstructor, outputPath: string): string | Promise<string> {
   const renderer = new JSONCairoRenderer(outputPath, {
     camera_class: default_camera_class(sceneClass),
   });
   const scene = construct_scene(sceneClass, renderer);
-  scene.render();
+  const rendered = scene.render();
+  if (is_thenable(rendered)) {
+    return Promise.resolve(rendered).then(() => renderer.write_output());
+  }
   return renderer.write_output();
 }
 
@@ -106,7 +117,7 @@ export interface RunScenesOptions {
 export function run_scenes_from_module(
   module: Record<string, unknown>,
   options: RunScenesOptions = {},
-): string[] {
+): string[] | Promise<string[]> {
   apply_quality(options.quality ?? "-ql");
   const sceneClasses = get_scene_classes_from_module(module as unknown as SceneModule) as unknown as SceneConstructor[];
   const selected = options.sceneNames && options.sceneNames.length > 0
@@ -114,5 +125,9 @@ export function run_scenes_from_module(
     : sceneClasses;
   const outputDir = options.outputDir ?? join("media", "interpreted");
   mkdirSync(outputDir, { recursive: true });
-  return selected.map((sceneClass) => run_scene(sceneClass, join(outputDir, `${sceneClass.name}.mjson`)));
+  const results = selected.map((sceneClass) => run_scene(sceneClass, join(outputDir, `${sceneClass.name}.mjson`)));
+  if (results.some(is_thenable)) {
+    return Promise.all(results.map((result) => Promise.resolve(result)));
+  }
+  return results as string[];
 }

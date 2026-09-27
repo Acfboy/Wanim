@@ -8,6 +8,11 @@
 //
 // `wanim` and `numpy-ts` are kept external so the page's import map resolves the
 // single shared instances loaded by the wanim browser bundle.
+//
+// Env overrides (used by `build-demo-site.mjs`):
+//   WANIMPY_BROWSER_OUT  output file (default demo/py2js.browser.js)
+//   WANIM_MINIFY         "0" to disable minification (default: minify)
+//   WANIM_SOURCEMAP      "0" to omit the sourcemap (default: emit)
 import { build } from "esbuild";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -23,14 +28,17 @@ if (!existsSync(resolve(wanimRoot, "dist", "index.js"))) {
   process.exit(1);
 }
 
+const outfile = resolve(process.env.WANIMPY_BROWSER_OUT ?? resolve(wanimRoot, "demo", "py2js.browser.js"));
+
 await build({
   entryPoints: [entry],
-  outfile: resolve(wanimRoot, "demo", "py2js.browser.js"),
+  outfile,
   bundle: true,
   format: "esm",
   platform: "browser",
   target: ["chrome110"],
-  sourcemap: true,
+  sourcemap: process.env.WANIM_SOURCEMAP !== "0",
+  minify: process.env.WANIM_MINIFY !== "0",
   logLevel: "info",
   // Keep the shared singletons external; the page import map points them at the
   // same URLs the wanim bundle uses.
@@ -52,4 +60,4 @@ await build({
   define: { "process.env.NODE_ENV": '"production"' },
 });
 
-console.log("wanim: wrote demo/py2js.browser.js");
+console.log(`wanim: wrote ${outfile}`);

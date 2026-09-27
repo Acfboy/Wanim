@@ -23,6 +23,13 @@ import {
   default_camera_class,
   type SceneConstructor,
 } from "./renderer/scene_runner.js";
+import {
+  create_frame_scheduler,
+  get_render_scheduler,
+  is_thenable,
+  set_render_scheduler,
+  type RenderScheduler,
+} from "./utils/scheduler.js";
 
 /**
  * Resize numpy-ts' fixed WebAssembly heap.  Must be called before the first
@@ -46,6 +53,17 @@ export interface BrowserRenderOptions {
   drawFrames?: boolean;
   /** Serialize every frame into `frames` for later playback (default false). */
   recordFrames?: boolean;
+  /**
+   * Render in real time: `Scene.play` yields to the event loop after every
+   * drawn frame and only resumes once the target frame interval has elapsed.
+   * Defaults to true — this is what makes the in-browser preview live rather
+   * than "compute everything, then play".
+   */
+  realtime?: boolean;
+  /** Target logical frame rate in realtime mode (default 30). */
+  fps?: number;
+  /** Abort a realtime run; the scene stops at the next frame boundary. */
+  signal?: AbortSignal;
   onProgress?: (info: { frames: number; plays: number; elapsedMs: number }) => void;
 }
 
@@ -71,14 +89,20 @@ function make_meta(camera: Camera, numFrames: number, numPlays: number): MJSONMe
 /**
  * Run one Scene class against a canvas.
  *
- * - Benchmark / limit-FPS: `drawFrames: true, recordFrames: false`.
- * - Preview: `recordFrames: true, drawFrames: false`, then play `frames`.
+ * The default (`realtime: true`) is the live preview: frames are drawn as they
+ * are produced and the scene task yields between frames, so the page stays
+ * responsive.  Set `realtime: false` to run the whole scene synchronously
+ * (used for benchmarking/recording).
+ *
+ * - Benchmark / limit-FPS: `drawFrames: true, recordFrames: false, realtime: false`.
+ * - Recorded playback: `recordFrames: true, drawFrames: false, realtime: false`,
+ *   then play `frames`.
  */
-export function render_scene_to_canvas(
+export async function render_scene_to_canvas(
   sceneClass: SceneConstructor,
   canvas: HTMLCanvasElement,
   options: BrowserRenderOptions = {},
-): BrowserRenderResult {
+): Promise<BrowserRenderResult> {
   const cameraClass = default_camera_class(sceneClass);
   apply_quality(options.quality ?? "-ql");
   const camera = new cameraClass();
@@ -101,7 +125,22 @@ export function render_scene_to_canvas(
     onFrame: options.onProgress,
   });
   const scene = construct_scene(sceneClass, renderer as never);
-  scene.render();
+
+  const realtime = options.realtime ?? true;
+  const previousScheduler = get_render_scheduler();
+  const scheduler: RenderScheduler | null = realtime
+    ? create_frame_scheduler({ fps: options.fps ?? 30 })
+    : null;
+  if (scheduler !== null) set_render_scheduler(scheduler);
+  const onAbort = (): void => scheduler?.cancel();
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const rendered = scene.render();
+    if (is_thenable(rendered)) await rendered;
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    if (scheduler !== null) set_render_scheduler(previousScheduler);
+  }
   return {
     stats: renderer.stats,
     frames: renderer.frames as unknown as MJSONFrame[],
@@ -114,11 +153,12 @@ export function benchmark_scene(
   sceneClass: SceneConstructor,
   canvas: HTMLCanvasElement,
   options: Omit<BrowserRenderOptions, "drawFrames" | "recordFrames"> = {},
-): BrowserRenderResult {
+): Promise<BrowserRenderResult> {
   return render_scene_to_canvas(sceneClass, canvas, {
     ...options,
     drawFrames: true,
     recordFrames: false,
+    realtime: options.realtime ?? false,
   });
 }
 
@@ -146,3 +186,13 @@ export function play_mjson(
 ): MJSONPlayerHandle {
   return new MJSONCanvasPlayer(canvas, parse_mjson(text)).play(options);
 }
+
+// Real-time scheduling primitives, re-exported so embedders (and the demo
+// page) can drive or cancel a live render without importing internals.
+export {
+  create_frame_scheduler,
+  get_render_scheduler,
+  is_async_rendering,
+  set_render_scheduler,
+} from "./utils/scheduler.js";
+export type { FrameSchedulerOptions, RenderScheduler } from "./utils/scheduler.js";

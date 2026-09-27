@@ -9,6 +9,12 @@
 //
 // Output: demo/wanim.browser.js (+ .map), an ES module usable from an import
 // map entry `"wanim"`.
+//
+// Env overrides (used by `build-demo-site.mjs`):
+//   WANIM_BROWSER_OUT  output file (default demo/wanim.browser.js)
+//   WANIM_FONTS_OUT    fonts directory (default: <output dir>/fonts)
+//   WANIM_MINIFY       "0" to disable minification (default: minify)
+//   WANIM_SOURCEMAP     "0" to omit the sourcemap (default: emit)
 import { build } from "esbuild";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -18,9 +24,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const shim = (name) => resolve(here, "shims", name);
 
+const outfile = resolve(process.env.WANIM_BROWSER_OUT ?? resolve(root, "demo", "wanim.browser.js"));
+const minify = process.env.WANIM_MINIFY !== "0";
+const sourcemap = process.env.WANIM_SOURCEMAP !== "0";
+
 // The browser bundle resolves the default font next to itself; copy it so
 // `Text`/Pango scenes work without a filesystem.
-const fontsDir = resolve(root, "demo", "fonts");
+const fontsDir = resolve(process.env.WANIM_FONTS_OUT ?? resolve(dirname(outfile), "fonts"));
 mkdirSync(fontsDir, { recursive: true });
 copyFileSync(
   resolve(root, "src", "mobject", "text", "pango", "fonts", "DejaVuSans.ttf"),
@@ -29,12 +39,13 @@ copyFileSync(
 
 await build({
   entryPoints: [resolve(root, "dist", "index.js")],
-  outfile: resolve(root, "demo", "wanim.browser.js"),
+  outfile,
   bundle: true,
   format: "esm",
   platform: "browser",
   target: ["chrome110"],
-  sourcemap: true,
+  sourcemap,
+  minify,
   // wanim's scene discovery is name-based (`prototype.constructor.name ===
   // "Scene"`); bundling turns `class Scene` into an anonymous class expression
   // unless names are preserved.
@@ -59,4 +70,4 @@ await build({
   },
 });
 
-console.log("wanim: wrote demo/wanim.browser.js");
+console.log(`wanim: wrote ${outfile}`);
