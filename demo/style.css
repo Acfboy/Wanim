@@ -4,7 +4,7 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  background: #f2e3d5;
+  background: #f8efe5;
   color: #2a2119;
   font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -25,7 +25,7 @@ main {
   padding: 12px;
 }
 
-.stage-col { border-left: 1px solid #cbb69f; }
+.stage-col { border-left: 1px solid #dccbb8; }
 
 .bar {
   display: flex;
@@ -38,9 +38,9 @@ main {
 
 select,
 button {
-  background: #fbf5ee;
+  background: #fdf9f3;
   color: #2a2119;
-  border: 1px solid #cbb69f;
+  border: 1px solid #dccbb8;
   border-radius: 0;
   padding: 6px 10px;
   font: inherit;
@@ -55,8 +55,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   position: relative;
   flex: 1;
   min-height: 0;
-  border: 1px solid #cbb69f;
-  background: #fbf5ee;
+  border: 1px solid #dccbb8;
+  background: #fdf9f3;
   overflow: hidden;
 }
 
@@ -90,8 +90,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fbf5ee;
-  border: 1px solid #cbb69f;
+  background: #fdf9f3;
+  border: 1px solid #dccbb8;
   overflow: hidden;
 }
 canvas {
@@ -108,8 +108,8 @@ canvas {
   height: 30%;
   min-height: 96px;
   overflow: auto;
-  background: #fbf5ee;
-  border: 1px solid #cbb69f;
+  background: #fdf9f3;
+  border: 1px solid #dccbb8;
   color: #5a4a3c;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;

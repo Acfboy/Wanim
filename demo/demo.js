@@ -38,16 +38,6 @@ class SquareToCircle(Scene):
         self.play(Transform(square, circle))
         self.play(FadeOut(square))
 `,
-  static: `from manim import *
-
-class StaticOnly(Scene):
-    def construct(self):
-        circle = Circle()
-        circle.set_fill(PINK, opacity=0.5)
-        square = Square()
-        square.rotate(PI / 4)
-        self.add(circle, square)
-`,
   opening: `from manim import *
 
 class OpeningManim(Scene):
@@ -55,28 +45,73 @@ class OpeningManim(Scene):
         title = Tex(r"This is some \\LaTeX")
         basel = MathTex(r"\\sum_{n=1}^\\infty \\frac{1}{n^2} = \\frac{\\pi^2}{6}")
         VGroup(title, basel).arrange(DOWN)
-        self.play(Write(title), FadeIn(basel, shift=DOWN))
+        self.play(
+            Write(title),
+            FadeIn(basel, shift=DOWN),
+        )
         self.wait()
+
         transform_title = Tex("That was a transform")
         transform_title.to_corner(UP + LEFT)
-        self.play(Transform(title, transform_title))
+        self.play(
+            Transform(title, transform_title),
+            LaggedStart(*[FadeOut(obj, shift=DOWN) for obj in basel]),
+        )
+        self.wait()
+
+        grid = NumberPlane()
+        grid_title = Tex("This is a grid", font_size=72)
+        grid_title.move_to(transform_title)
+
+        self.add(grid, grid_title)  # Make sure title is on top of grid
+        self.play(
+            FadeOut(title),
+            FadeIn(grid_title, shift=UP),
+            Create(grid, run_time=3, lag_ratio=0.1),
+        )
+        self.wait()
+
+        grid_transform_title = Tex(
+            r"That was a non-linear function \\\\ applied to the grid"
+        )
+        grid_transform_title.move_to(grid_title, UL)
+        grid.prepare_for_nonlinear_transform()
+        self.play(
+            grid.animate.apply_function(
+                lambda p: p
+                          + np.array(
+                    [
+                        np.sin(p[1]),
+                        np.sin(p[0]),
+                        0,
+                    ]
+                )
+            ),
+            run_time=3,
+        )
+        self.wait()
+        self.play(Transform(grid_title, grid_transform_title))
         self.wait()
 `,
-  sin: `from manim import *
-import numpy as np
+  formula: `from manim import *
 
-class AxesPlotSin(Scene):
+class MovingFrameBox(Scene):
     def construct(self):
-        axes = Axes(
-            x_range=[0, TAU, PI / 2],
-            y_range=[-1.5, 1.5, 0.5],
-            x_length=7,
-            y_length=3,
+        text = MathTex(
+            "\\\\frac{d}{dx}f(x)g(x)=", "f(x)\\\\frac{d}{dx}g(x)", "+",
+            "g(x)\\\\frac{d}{dx}f(x)"
         )
-        sin_graph = axes.plot(lambda x: np.sin(x), color=BLUE)
-        cos_graph = axes.plot(lambda x: np.cos(x), color=GREEN)
-        self.play(Create(axes), Create(sin_graph), Create(cos_graph))
-        self.wait(0.2)
+        self.play(Write(text))
+        framebox1 = SurroundingRectangle(text[1], buff=.1)
+        framebox2 = SurroundingRectangle(text[3], buff=.1)
+        self.play(
+            Create(framebox1),
+        )
+        self.wait()
+        self.play(
+            ReplacementTransform(framebox1, framebox2),
+        )
+        self.wait()
 `,
   unitcircle: `from manim import *
 
@@ -140,17 +175,31 @@ class SineCurveUnitCircle(Scene):
 `,
   threeD: `from manim import *
 
-class RotatingSphere(ThreeDScene):
+class ThreeDSurfacePlot(ThreeDScene):
     def construct(self):
+        resolution_fa = 24
+        self.set_camera_orientation(phi=75 * DEGREES, theta=-30 * DEGREES)
+
+        def param_gauss(u, v):
+            x = u
+            y = v
+            sigma, mu = 0.4, [0.0, 0.0]
+            d = np.linalg.norm(np.array([x - mu[0], y - mu[1]]))
+            z = np.exp(-(d ** 2 / (2.0 * sigma ** 2)))
+            return np.array([x, y, z])
+
+        gauss_plane = Surface(
+            param_gauss,
+            resolution=(resolution_fa, resolution_fa),
+            v_range=[-2, +2],
+            u_range=[-2, +2]
+        )
+
+        gauss_plane.scale(2, about_point=ORIGIN)
+        gauss_plane.set_style(fill_opacity=1, stroke_color=GREEN)
+        gauss_plane.set_fill_by_checkerboard(ORANGE, BLUE, opacity=0.5)
         axes = ThreeDAxes()
-        self.set_camera_orientation(65 * DEGREES, -45 * DEGREES)
-        self.play(Create(axes))
-        self.begin_ambient_camera_rotation(0.3)
-        sphere = Sphere()
-        sphere.set_fill(GRAY, 1)
-        self.add(sphere)
-        self.play(Rotate(sphere, 360 * DEGREES, OUT), run_time=2)
-        self.wait(1)
+        self.add(axes, gauss_plane)
 `,
   threeDCamera: `from manim import *
 
