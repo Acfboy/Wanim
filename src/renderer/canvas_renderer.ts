@@ -180,7 +180,14 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this._emitProgress(false);
   }
 
-  override scene_finished(_scene: Scene): void {
+  override scene_finished(scene: Scene): void {
+    // A scene that only `add`s mobjects (or adds none) never enters the frame
+    // loop, so nothing would be drawn and the preview would stay blank.  Draw
+    // the final display list once so a static scene shows its result.
+    if (this.num_plays === 0 && this.stats.frames === 0) {
+      this.update_frame(scene);
+      this.add_frame(null);
+    }
     this.stats.totalMs = performance.now() - this._startedAt;
     this._emitProgress(true);
   }
