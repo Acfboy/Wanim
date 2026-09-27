@@ -446,10 +446,9 @@ describe("BarChart.__init__ (python ground truth)", () => {
     expect(bc.y_axis.numbers!.submobjects.length).toBe(4);
   });
 
-  it("bar_names need Tex labels (text/tex out of scope)", () => {
-    expect(() => new BarChart([1, 2], { bar_names: ["a", "b"] })).toThrow(
-      /text\/tex not ported/,
-    );
+  it("bar_names build Tex labels", () => {
+    const bc = new BarChart([1, 2], { bar_names: ["a", "b"] });
+    expect(bc.x_axis.labels!.submobjects.length).toBe(2);
   });
 
   it("explicit two-element y_range gains a computed step", () => {

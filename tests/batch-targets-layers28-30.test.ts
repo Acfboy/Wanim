@@ -102,14 +102,27 @@ describe("ported labels and remaining tex-only stubs", () => {
     expect(t).toBeDefined();
     expect(t.width).toBeGreaterThan(0);
   });
-  it("VectorScene.get_basis_vector_labels throws", () => {
+  it("VectorScene.get_basis_vector_labels builds two MathTex labels", () => {
     const vs = new VectorScene();
-    expect(() => vs.get_basis_vector_labels()).toThrow(/text\/tex/);
+    const labels = vs.get_basis_vector_labels();
+    expect(labels.submobjects.length).toBe(2);
+    for (const label of labels.submobjects) {
+      expect(label).toBeInstanceOf(MathTex);
+      expect(label.width).toBeGreaterThan(0);
+    }
+    expect(
+      (labels.submobjects[0] as unknown as { tex_string: string }).tex_string,
+    ).toBe("\\hat{\\imath}");
+    expect(
+      (labels.submobjects[1] as unknown as { tex_string: string }).tex_string,
+    ).toBe("\\hat{\\jmath}");
   });
-  it("VectorScene.label_vector throws", () => {
+  it("VectorScene.label_vector builds a MathTex label", () => {
     const vs = new VectorScene();
-    expect(() => vs.label_vector(new Vector([1, 0, 0]), "x")).toThrow(
-      /text\/tex/,
+    const label = vs.label_vector(new Vector([1, 0, 0]), "x", false);
+    expect(label).toBeInstanceOf(MathTex);
+    expect((label as unknown as { tex_string: string }).tex_string).toBe(
+      "\\vec{\\textbf{x}}",
     );
   });
   it("NumberLine.get_number_mobject builds a positioned DecimalNumber (python)", () => {
@@ -122,25 +135,35 @@ describe("ported labels and remaining tex-only stubs", () => {
     // python: next_to([1,0,0], DOWN, 0.25) -> label top edge at y=-0.25
     expect(close(mob.get_top()[1] ?? NaN, -0.25, 1e-9)).toBe(true);
   });
-  it("Vector.coordinate_label throws (python: Matrix -> latex)", () => {
+  it("Vector.coordinate_label builds a Matrix label", () => {
     const v = new Vector([1, 2, 0]);
-    expect(() => v.coordinate_label()).toThrow(/text\/tex/);
+    const label = v.coordinate_label();
+    expect(label).toBeInstanceOf(Matrix);
+    expect(label.get_entries().submobjects.length).toBe(2);
+    // Python: Matrix(np.round([1,2])) -> [[1],[2]].
+    expect(
+      (label.get_entries().submobjects[0] as unknown as { tex_string: string })
+        .tex_string,
+    ).toBe("1");
+    expect(
+      (label.get_entries().submobjects[1] as unknown as { tex_string: string })
+        .tex_string,
+    ).toBe("2");
   });
-  it("VectorScene.coords_to_vector throws (python: Matrix+Write, needs latex)", () => {
+  it("VectorScene.coords_to_vector runs the Matrix+Write sequence", () => {
     const vs = new VectorScene();
-    expect(() => vs.coords_to_vector([1, 2, 0])).toThrow(/text\/tex/);
+    expect(() => vs.coords_to_vector([1, 2, 0])).not.toThrow();
   });
   it("LabeledArrow.__init__ builds a string label (python: MathTex)", () => {
     const arrow = new LabeledArrow("hi");
     expect(arrow.label).toBeDefined();
   });
-  it("PolarPlane.add_coordinates throws text/tex TODO (python: MathTex/DecimalNumber labels -> latex FileNotFoundError)", () => {
-    // Python reaches label construction (MathTex via get_radian_label,
-    // DecimalNumber via axis.add_numbers) and fails on missing latex. The TS
-    // port now builds the real axes and reaches the same DecimalNumber label
-    // path, which is the unported text pipeline.
+  it("PolarPlane.add_coordinates builds radius and azimuth label groups", () => {
     const pp = new PolarPlane();
-    expect(() => pp.add_coordinates()).toThrow(/text\/tex not ported/);
+    expect(() => pp.add_coordinates()).not.toThrow();
+    expect(pp.coordinate_labels.submobjects.length).toBe(2);
+    // Default PI plane: azimuth step 20 -> 20 radian labels.
+    expect(pp.coordinate_labels.submobjects[1].submobjects.length).toBe(20);
   });
   it("Matrix.__init__ default factory builds MathTex entries (python: MathTex)", () => {
     const m = new Matrix([
@@ -161,16 +184,23 @@ describe("ported labels and remaining tex-only stubs", () => {
     expect(m.get_entries().submobjects.length).toBe(1);
     expect(m.get_brackets().submobjects.length).toBe(2);
   });
-  it("MathTable/IntegerTable/DecimalTable defaults throw (python: MathTex/Integer/DecimalNumber -> latex)", () => {
-    expect(() => new MathTable([["a"]])).toThrow(/text\/tex/);
-    expect(() => new IntegerTable([[1]])).toThrow(/text\/tex/);
-    expect(() => new DecimalTable([[1]])).toThrow(/text\/tex/);
+  it("MathTable/IntegerTable/DecimalTable defaults build entries", () => {
+    expect(new MathTable([["a"]]).elements.submobjects.length).toBe(1);
+    expect(new IntegerTable([[1]]).elements.submobjects.length).toBe(1);
+    expect(new DecimalTable([[1]]).elements.submobjects.length).toBe(1);
   });
-  it("LinearTransformationScene.add_transformable_label throws via label_vector", () => {
+  it("LinearTransformationScene.add_transformable_label builds a label", () => {
     const scene = new LinearTransformationScene();
-    expect(() =>
-      scene.add_transformable_label(new Vector([1, 0, 0]), "x"),
-    ).toThrow(/text\/tex/);
+    scene.setup();
+    const label = scene.add_transformable_label(
+      new Vector([1, 0, 0]),
+      "x",
+      "L",
+      null,
+      { animate: false },
+    );
+    expect(label).toBeInstanceOf(MathTex);
+    expect(scene.transformable_labels.length).toBe(1);
   });
 });
 

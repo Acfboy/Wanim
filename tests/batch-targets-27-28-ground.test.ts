@@ -217,9 +217,11 @@ describe("VDict.add_key_value_pair", () => {
       vd.add_key_value_pair("k", {} as unknown as VMobject),
     ).toThrow(TypeError);
   });
-  it("show_keys=true throws tex TODO (python: Tex -> latex)", () => {
+  it("show_keys=true adds a Tex key label (python: Tex)", () => {
     const vd = new VDict({}, true);
-    expect(() => vd.add_key_value_pair("k", new Square())).toThrow(/text\/tex/);
+    const sq = new Square();
+    vd.add_key_value_pair("k", sq);
+    expect(sq.submobjects[0]).toBeInstanceOf(Tex);
   });
 });
 
@@ -248,9 +250,11 @@ describe("GenericGraph._add_vertex", () => {
     const g = new Graph([1, 2], [[1, 2]]);
     expect(() => g._add_vertex(1)).toThrow(/already used/);
   });
-  it("label=True throws tex TODO (python: MathTex -> latex)", () => {
+  it("label=True builds a MathTex vertex label (python: MathTex)", () => {
     const g = new Graph([1, 2], [[1, 2]]);
-    expect(() => g._add_vertex(9, [0, 0, 0], true)).toThrow(/text\/tex/);
+    const mob = g._add_vertex(9, [0, 0, 0], true);
+    const label = (mob as unknown as { submobjects: Array<{ tex_string: string }> }).submobjects[0];
+    expect(label.tex_string).toBe("9");
   });
 });
 
@@ -274,10 +278,13 @@ describe("SampleSpace braces/labels + add_title", () => {
     expect((res.submobjects[0] as VGroup).submobjects.length).toBe(2);
     expect((res.submobjects[1] as VGroup).submobjects.length).toBe(2);
   });
-  it("string labels throw tex TODO (python: MathTex -> latex)", () => {
+  it("string labels build MathTex labels (python: MathTex)", () => {
     const ss = new SampleSpace();
     ss.divide_horizontally([0.5, 0.5]);
-    expect(() => ss.get_side_braces_and_labels(["a", "b"])).toThrow(/text\/tex/);
+    const res = ss.get_side_braces_and_labels(["a", "b"]);
+    const labels = res.submobjects[1] as VGroup;
+    expect(labels.submobjects.length).toBe(2);
+    for (const label of labels.submobjects) expect(label).toBeInstanceOf(MathTex);
   });
   it("missing parts raise AssertionError like python assert", () => {
     expect(() => new SampleSpace().get_side_braces_and_labels([new VMobject()])).toThrow(
@@ -319,12 +326,14 @@ describe("SampleSpace braces/labels + add_title", () => {
       (parts as unknown as { label_kwargs: { buff: number } }).label_kwargs.buff,
     ).toBe(0.1); // SMALL_BUFF
   });
-  it("add_title throws tex TODO (python: Tex -> latex)", () => {
-    expect(() => new SampleSpace().add_title()).toThrow(/text\/tex/);
+  it("add_title builds a Tex title (python: Tex)", () => {
+    const ss = new SampleSpace();
+    ss.add_title();
+    expect(ss.title).toBeInstanceOf(Tex);
   });
 });
 
-describe("text/tex out-of-scope symbols throw TODO (or are unported stubs)", () => {
+describe("text/tex symbols now rendered through the ported pipeline", () => {
   it("text module exposes the real Text/MathTex/Tex classes", () => {
     expect(typeof Text).toBe("function");
     expect(typeof MathTex).toBe("function");
@@ -357,23 +366,29 @@ describe("text/tex out-of-scope symbols throw TODO (or are unported stubs)", () 
     expect(bl.label).toBe(vm2);
     expect(bl.submobjects).toContain(vm2);
   });
-  it("VectorScene.get_vector_label throws (python: MathTex -> latex)", () => {
-    expect(() => new VectorScene().get_vector_label(null, "x")).toThrow(/text\/tex/);
+  it("VectorScene.get_vector_label builds a MathTex (python: MathTex)", () => {
+    // python would build MathTex for the string label.
+    const label = new VectorScene().get_vector_label(new Vector([1, 0, 0]), "x");
+    expect(label).toBeInstanceOf(MathTex);
   });
-  it("BarChart.get_bar_labels throws (python: Tex/MathTex -> latex)", () => {
-    expect(() => new BarChart([1, 2, 3]).get_bar_labels()).toThrow(/text\/tex/);
+  it("BarChart.get_bar_labels builds Tex labels (python: Tex/MathTex)", () => {
+    const labels = new BarChart([1, 2, 3]).get_bar_labels();
+    expect(labels.submobjects.length).toBe(3);
+    for (const label of labels.submobjects) expect(label).toBeInstanceOf(Tex);
   });
-  it("PolarPlane.get_radian_label throws (string computed, MathTex out of scope)", () => {
-    // python computes e.g. number=0.25 PI radians -> "\\tfrac{1}{2}\\pi"
-    // then returns MathTex(string) which needs latex; TS throws TODO.
-    expect(() => new PolarPlane().get_radian_label(0.25)).toThrow(/text\/tex/);
+  it("PolarPlane.get_radian_label builds MathTex with the computed string", () => {
+    // python computes number=0.25 PI radians -> "\\tfrac{\\pi}{2}".
+    const label = new PolarPlane().get_radian_label(0.25);
+    expect(label).toBeInstanceOf(MathTex);
+    expect((label as unknown as { tex_string: string }).tex_string).toBe("\\tfrac{\\pi}{2}");
   });
 });
 
 describe("LinearTransformationScene", () => {
-  it("add_title with string throws; with Mobject works (python: Tex -> latex)", () => {
+  it("add_title builds a Tex for a string; keeps a Mobject as-is", () => {
     const scene = new LinearTransformationScene();
-    expect(() => scene.add_title("hello")).toThrow(/text\/tex/);
+    scene.add_title("hello");
+    expect(scene.title).toBeInstanceOf(Tex);
     const title = new Square();
     scene.add_title(title as unknown as Parameters<LinearTransformationScene["add_title"]>[0]);
     expect(scene.title).toBe(title);

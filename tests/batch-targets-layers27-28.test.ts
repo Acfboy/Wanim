@@ -13,7 +13,7 @@ import { SampleSpace, BarChart } from "../src/mobject/graphing/probability.js";
 import { PolarPlane } from "../src/mobject/graphing/coordinate_systems.js";
 import { Label, LabeledLine, LabeledPolygram } from "../src/mobject/geometry/labeled.js";
 import { Brace, BraceLabel } from "../src/mobject/svg/brace.js";
-import { MathTex, Text } from "../src/mobject/text/index.js";
+import { MathTex, Tex, Text } from "../src/mobject/text/index.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
 import {
   VectorScene,
@@ -201,9 +201,12 @@ describe("VDict.add_key_value_pair", () => {
     expect(vd.__getitem__("a")).toBe(sq);
     expect(vd.submobjects.length).toBe(1);
   });
-  it("show_keys=true throws tex TODO (python needs Tex -> latex here)", () => {
+  it("show_keys=true adds a Tex key label to the value (python: Tex)", () => {
     const vd = new VDict({}, true);
-    expect(() => vd.add_key_value_pair("k", new Square())).toThrow(/text\/tex/);
+    const sq = new Square();
+    vd.add_key_value_pair("k", sq);
+    expect(sq.submobjects.length).toBe(1);
+    expect(sq.submobjects[0]).toBeInstanceOf(Tex);
   });
 });
 
@@ -254,34 +257,29 @@ describe("ported text labels", () => {
     const b = new Brace(new Square());
     expect(b.get_tex("x")).toBeInstanceOf(MathTex);
   });
-  it("VectorScene.get_vector_label throws", () => {
+  it("VectorScene.get_vector_label builds a MathTex", () => {
     const vs = new VectorScene();
-    expect(() => vs.get_vector_label(null, "x")).toThrow(/text\/tex/);
+    expect(vs.get_vector_label(new Vector([1, 0, 0]), "x")).toBeInstanceOf(MathTex);
   });
-  it("SampleSpace.add_title throws", () => {
-    expect(() => new SampleSpace().add_title()).toThrow(/text\/tex/);
+  it("SampleSpace.add_title builds a Tex", () => {
+    const ss = new SampleSpace();
+    ss.add_title();
+    expect(ss.title).toBeInstanceOf(Tex);
   });
-  it("BarChart.get_bar_labels throws", () => {
-    const spy = vi
-      .spyOn(NumberLine.prototype, "get_number_mobject")
-      .mockImplementation(() => new Square() as unknown as VMobject);
-    try {
-      const bc = new BarChart([1, 2, 3]);
-      expect(() => bc.get_bar_labels()).toThrow(/text\/tex/);
-    } finally {
-      spy.mockRestore();
-    }
+  it("BarChart.get_bar_labels builds Tex labels", () => {
+    const bc = new BarChart([1, 2, 3]);
+    const labels = bc.get_bar_labels();
+    expect(labels.submobjects.length).toBe(3);
+    for (const label of labels.submobjects) expect(label).toBeInstanceOf(Tex);
   });
-  it("PolarPlane.get_radian_label throws (string computed, MathTex out of scope)", () => {
+  it("PolarPlane.get_radian_label builds a MathTex", () => {
     const pp = new PolarPlane();
-    expect(() => pp.get_radian_label(0.25)).toThrow(/text\/tex/);
+    expect(pp.get_radian_label(0.25)).toBeInstanceOf(MathTex);
   });
-  it("PolarPlane.get_coordinate_labels throws (needs MathTex labels)", () => {
+  it("PolarPlane.get_coordinate_labels builds 20 azimuth labels", () => {
     const pp = new PolarPlane();
-    // Python reaches MathTex (latex FileNotFoundError here); the TS port
-    // builds the real axes and reaches DecimalNumber/MathTex label creation,
-    // which is the unported text pipeline.
-    expect(() => pp.get_coordinate_labels()).toThrow(/text\/tex/);
+    const labels = pp.get_coordinate_labels();
+    expect(labels.submobjects[1].submobjects.length).toBe(20);
   });
 });
 
@@ -329,10 +327,13 @@ describe("SampleSpace braces/labels (tex-free VMobject path)", () => {
     expect((res.submobjects[0] as VGroup).submobjects.length).toBe(2);
     expect((res.submobjects[1] as VGroup).submobjects.length).toBe(2);
   });
-  it("string labels throw tex TODO (python: MathTex -> latex)", () => {
+  it("string labels build MathTex labels (python: MathTex)", () => {
     const ss = new SampleSpace();
     ss.divide_horizontally([0.5, 0.5]);
-    expect(() => ss.get_side_braces_and_labels(["a", "b"])).toThrow(/text\/tex/);
+    const res = ss.get_side_braces_and_labels(["a", "b"]);
+    const labels = res.submobjects[1] as VGroup;
+    expect(labels.submobjects.length).toBe(2);
+    for (const label of labels.submobjects) expect(label).toBeInstanceOf(MathTex);
   });
   it("missing parts raise AssertionError like python assert", () => {
     expect(() => new SampleSpace().get_side_braces_and_labels([new VMobject()])).toThrow(
@@ -371,9 +372,10 @@ describe("SampleSpace braces/labels (tex-free VMobject path)", () => {
 });
 
 describe("LinearTransformationScene", () => {
-  it("add_title with string throws; with Mobject works", () => {
+  it("add_title builds a Tex for a string; keeps a Mobject as-is", () => {
     const scene = new LinearTransformationScene();
-    expect(() => scene.add_title("hello")).toThrow(/text\/tex/);
+    scene.add_title("hello");
+    expect(scene.title).toBeInstanceOf(Tex);
     const title = new Square();
     scene.add_title(title as unknown as Parameters<LinearTransformationScene["add_title"]>[0]);
     expect(scene.title).toBe(title);

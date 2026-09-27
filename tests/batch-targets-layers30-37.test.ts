@@ -3,11 +3,12 @@ import { array, type NDArray } from "numpy-ts";
 import { VDict, VGroup, VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { Square, Rectangle } from "../src/mobject/geometry/polygram.js";
 import { Dot } from "../src/mobject/geometry/arc.js";
-import { Line } from "../src/mobject/geometry/line.js";
+import { Line, Vector } from "../src/mobject/geometry/line.js";
 import { LogBase } from "../src/mobject/graphing/scale.js";
 import { index_labels } from "../src/utils/debug.js";
 import { NumberLine, UnitInterval } from "../src/mobject/graphing/number_line.js";
-import { DecimalNumber } from "../src/mobject/text/numbers.js";
+import { DecimalNumber, Integer } from "../src/mobject/text/numbers.js";
+import { MathTex, Tex } from "../src/mobject/text/index.js";
 import {
   Axes,
   ComplexPlane,
@@ -133,28 +134,30 @@ describe("VDict", () => {
     expect(() => vd.remove("a")).toThrow(/not present/);
   });
 
-  it("show_keys branch is a text/tex stub (python renders Tex(str(key)))", () => {
+  it("show_keys branch renders Tex(str(key)) onto the value", () => {
     const vd = new VDict({}, true);
-    expect(() => vd.add_key_value_pair("k", new Square())).toThrow(
-      /text\/tex not ported/,
-    );
+    const sq = new Square();
+    vd.add_key_value_pair("k", sq);
+    expect(sq.submobjects.length).toBe(1);
+    expect(sq.submobjects[0]).toBeInstanceOf(Tex);
   });
 });
 
 // ---------------------------------------------------------------------------
-// text/tex stubs: no functional tests per port rules, only stub contracts
+// text/tex symbols now rendered through the ported pipeline
 // ---------------------------------------------------------------------------
 
-describe("text/tex stubs (out of scope for the entire port)", () => {
-  it("LogBase.get_custom_labels throws (python builds Integer labels, needs latex)", () => {
-    expect(() => new LogBase().get_custom_labels([1, 10, 100])).toThrow(
-      /text\/tex not ported/,
-    );
+describe("text/tex pipeline (ported)", () => {
+  it("LogBase.get_custom_labels builds Integer labels", () => {
+    const labels = new LogBase().get_custom_labels([1, 10, 100]) as Integer[];
+    expect(labels.map((m) => m.unit)).toEqual(["^{0}", "^{1}", "^{2}"]);
   });
 
-  it("index_labels throws (python builds Integer labels, needs latex)", () => {
+  it("index_labels builds Integer labels", () => {
     const g = new VGroup(new Square(), new Square());
-    expect(() => index_labels(g)).toThrow(/text\/tex not ported/);
+    const labels = index_labels(g);
+    expect(labels.submobjects.length).toBe(2);
+    expect(labels.submobjects.map((m) => (m as Integer).number)).toEqual([0, 1]);
   });
 
   it("NumberLine label builders build DecimalNumber labels (python)", () => {
@@ -176,36 +179,36 @@ describe("text/tex stubs (out of scope for the entire port)", () => {
     expect(nl._create_label_tex(vm)).toBe(vm);
   });
 
-  it("VectorScene.write_vector_coordinates/vector_to_coords throw (python needs Matrix/Write)", () => {
+  it("VectorScene.write_vector_coordinates/vector_to_coords build Matrix labels", () => {
     const vs = new VectorScene();
-    expect(() => vs.write_vector_coordinates(new Square())).toThrow(
-      /text\/tex not ported/,
-    );
-    expect(() => vs.vector_to_coords([1, 2, 0])).toThrow(/text\/tex not ported/);
+    expect(
+      vs.write_vector_coordinates(new Vector([1, 2])).get_entries().submobjects.length,
+    ).toBe(2);
+    expect(vs.vector_to_coords(new Vector([1, 2, 0])).length).toBe(3);
   });
 
-  it("LinearTransformationScene.write_vector_coordinates throws via super (python: Matrix)", () => {
+  it("LinearTransformationScene.write_vector_coordinates delegates via super", () => {
     const scene = new LinearTransformationScene();
-    expect(() => scene.write_vector_coordinates(new Square())).toThrow(
-      /text\/tex not ported/,
-    );
+    const coords = scene.write_vector_coordinates(new Vector([1, 2]));
+    expect(coords.get_entries().submobjects.length).toBe(2);
   });
 
-  it("BarChart._add_x_axis_labels throws (python builds Tex labels)", () => {
+  it("BarChart._add_x_axis_labels builds Tex labels", () => {
     const spy = vi
       .spyOn(NumberLine.prototype, "get_number_mobject")
       .mockImplementation(() => new Square() as unknown as VMobject);
     try {
-      const bc = new BarChart([1, 2, 3]);
-      expect(() => bc._add_x_axis_labels()).toThrow(/text\/tex not ported/);
-      expect(() => bc.get_bar_labels()).toThrow(/text\/tex not ported/);
+      const bc = new BarChart([1, 2, 3], { bar_names: ["a", "b", "c"] });
+      bc._add_x_axis_labels();
+      expect(bc.x_axis.labels!.submobjects.length).toBe(3);
+      expect(bc.get_bar_labels().submobjects.length).toBe(3);
     } finally {
       spy.mockRestore();
     }
     // bar_names trigger the label path in __init__, like python.
-    expect(() => new BarChart([1, 2], { bar_names: ["a", "b"] })).toThrow(
-      /text\/tex not ported/,
-    );
+    expect(
+      new BarChart([1, 2], { bar_names: ["a", "b"] }).x_axis.labels!.submobjects.length,
+    ).toBe(2);
   });
 });
 

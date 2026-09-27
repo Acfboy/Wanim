@@ -1,6 +1,7 @@
 import type { Mobject } from "../mobject/mobject.js";
 import { BLACK, type ParsableManimColor } from "./color/core.js";
-import type { VGroup } from "../mobject/types/vectorized_mobject.js";
+import { VGroup } from "../mobject/types/vectorized_mobject.js";
+import { Integer } from "../mobject/text/numbers.js";
 
 // NOTE: Python prints id(mobject) (the CPython memory address). JS has no
 // equivalent, so a stable per-object numeric id is assigned instead.
@@ -28,13 +29,18 @@ export function index_labels(
   background_stroke_color: ParsableManimColor = BLACK,
   kwargs: Record<string, unknown> = {},
 ): VGroup {
-  void mobject;
-  void label_height;
-  void background_stroke_width;
-  void background_stroke_color;
-  void kwargs;
-  // NOTE: mirrors Python `index_labels`, which builds one Integer label per
-  // submobject (styled, resized to label_height, moved onto the submobject).
-  // Integer labels need the text pipeline that is out of scope for this port.
-  throw new Error("TODO: text/tex not ported yet (index_labels needs Integer)");
+  // NOTE: mirrors Python `index_labels`: one Integer label per submobject,
+  // given a background stroke, resized to `label_height` and moved onto the
+  // submobject.
+  const labels = new VGroup();
+  let n = 0;
+  for (const submob of mobject) {
+    const label = new Integer(n, { ...kwargs });
+    label.set_stroke(background_stroke_color, background_stroke_width, undefined, true);
+    label.height = label_height;
+    label.move_to(submob);
+    labels.add(label);
+    n += 1;
+  }
+  return labels;
 }

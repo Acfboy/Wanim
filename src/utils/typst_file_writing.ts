@@ -18,5 +18,7 @@ export function typst_to_svg_file(
   _text_size: number = TYPST_COMPILATION_FONT_SIZE,
   _font_paths?: Array<string> | null,
 ): string {
-  throw new Error("TODO: text/tex not ported yet");
+  throw new Error(
+    "TODO: Typst rendering is not ported yet (requires the external `typst` compiler binary)",
+  );
 }

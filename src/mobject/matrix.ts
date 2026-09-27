@@ -6,6 +6,7 @@
 import { DOWN, DR, LEFT, MED_SMALL_BUFF, RIGHT } from "../constants.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 import { BackgroundRectangle } from "./geometry/shape_matchers.js";
+import { setMatrixFactory } from "./geometry/line.js";
 import { VGroup, VMobject } from "./types/vectorized_mobject.js";
 import { MathTex, Tex, type MathTexOptions } from "./text/tex_mobject.js";
 import {
@@ -313,3 +314,6 @@ export function get_det_text(
   }
   return detText;
 }
+
+// Registers the Matrix builder used by Vector.coordinate_label (see line.ts).
+setMatrixFactory((matrix, options = {}) => new Matrix(matrix, options));

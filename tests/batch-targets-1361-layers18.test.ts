@@ -732,8 +732,13 @@ describe("Mobject.align_data", () => {
 describe("DecimalTable", () => {
   const idFactory = (m: unknown) => m as VMobject;
 
-  it("marks the DecimalNumber default as a tex stub", () => {
-    expect(() => new DecimalTable([["1.5"]], {})).toThrowError(/text\/tex not ported/);
+  it("builds DecimalNumber entries with the default factory", () => {
+    const t = new DecimalTable([["1.5"]], {});
+    expect(t.elements.submobjects.length).toBe(1);
+    expect(
+      (t.elements.submobjects[0] as unknown as { constructor: { name: string } })
+        .constructor.name,
+    ).toBe("DecimalNumber");
   });
 
   it("inherits the Table grid layout with a custom factory", () => {

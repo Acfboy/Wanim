@@ -365,10 +365,14 @@ describe("_ScaleBase.get_custom_labels", () => {
     );
   });
 
-  it("LogBase stub throws until text/tex lands", () => {
-    // Deviation: Python builds MathTex labels (needs latex); the TS port
-    // throws TODO since text/tex is out of scope for the entire port.
-    expect(() => new LogBase().get_custom_labels([1, 2])).toThrowError(/not ported/);
+  it("LogBase builds Integer labels via the ported text pipeline", () => {
+    // python: [Integer(base, unit='^{exp}')] per value (needs latex there).
+    const labels = new LogBase().get_custom_labels([1, 2]) as Array<{
+      unit: string | null;
+      number: number;
+    }>;
+    expect(labels.map((m) => m.number)).toEqual([10, 10]);
+    expect(labels.map((m) => m.unit)).toEqual(["^{0}", "^{0}"]);
   });
 });
 

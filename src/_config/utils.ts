@@ -669,11 +669,19 @@ export class ManimConfig {
   }
 
   get tex_template(): unknown {
-    throw new Error("TODO: text/tex not ported yet");
+    // NOTE: Tex rendering goes through MathJax and never reads a LaTeX
+    // template, so manim.mobject.text.tex_mobject.TexTemplate (and its
+    // from_file helper) is not ported. Any code that explicitly asks for the
+    // configured template still fails fast here.
+    throw new Error(
+      "TODO: TexTemplate is not ported yet (MathJax backend has no LaTeX template); tex_template_file/TexTemplate.from_file are unavailable",
+    );
   }
 
   set tex_template(_val: unknown) {
-    throw new Error("TODO: text/tex not ported yet");
+    throw new Error(
+      "TODO: TexTemplate is not ported yet (MathJax backend has no LaTeX template); assigning config.tex_template is unavailable",
+    );
   }
 
   digest_file(filename: string): this {
@@ -1171,7 +1179,12 @@ export class ManimConfig {
 
     // Handle --tex_template
     if (args.tex_template) {
-      throw new Error("TODO: text/tex not ported yet (ManimConfig.digest_args --tex_template needs TexTemplate.from_file)");
+      // NOTE: the --tex_template CLI flag requires TexTemplate.from_file,
+      // which is not ported (the MathJax backend renders without a LaTeX
+      // template). Fail fast with an accurate message.
+      throw new Error(
+        "TODO: --tex_template is not supported (requires TexTemplate.from_file, which is not ported; the MathJax backend has no LaTeX template)",
+      );
     }
 
     if (this.renderer === RendererType.OPENGL && args.write_to_movie === null) {

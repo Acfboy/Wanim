@@ -274,12 +274,16 @@ describe("BarChart (original manim geometry, text labels disabled)", () => {
     });
   });
 
-  it("bar_names path raises the documented NotImported/NotImplemented error (text scope)", () => {
-    // `_add_x_axis_labels` needs Tex labels (another agent's scope); the
-    // reference env would additionally need a latex binary. Covered as a
-    // known limitation rather than a render diff.
-    expect(() => new BarChart([1, 2, 3, 4], { bar_names: ["a", "b", "c", "d"] }))
-      .toThrow(/not ported yet/);
+  it("bar_names path builds one Tex label per bar", () => {
+    const bc = new BarChart([1, 2, 3, 4], { bar_names: ["a", "b", "c", "d"] });
+    const labels = bc.x_axis.labels;
+    expect(labels).not.toBeNull();
+    expect(labels!.submobjects.length).toBe(4);
+    expect(
+      labels!.submobjects.map(
+        (m) => (m as unknown as { tex_string: string }).tex_string,
+      ),
+    ).toEqual(["\\text{a}", "\\text{b}", "\\text{c}", "\\text{d}"]);
   });
 });
 

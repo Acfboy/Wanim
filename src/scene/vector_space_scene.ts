@@ -1,5 +1,5 @@
 import { array, type NDArray } from "numpy-ts";
-import { Arrow, Vector, type ArrowOptions, type VectorOptions } from "../mobject/geometry/line.js";
+import { Arrow, Line, Vector, type ArrowOptions, type VectorOptions } from "../mobject/geometry/line.js";
 import { Rectangle } from "../mobject/geometry/polygram.js";
 import { DrawBorderThenFill } from "../animation/creation.js";
 import { GrowArrow } from "../animation/growing.js";
@@ -10,17 +10,19 @@ import { Scene } from "./scene.js";
 import { isNDArray, matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
 import { update_dict_recursively } from "../utils/config_ops.js";
 import { config } from "../_config/utils.js";
-import { RIGHT, UP, DL } from "../constants.js";
+import { DOWN, DL, LARGE_BUFF, ORIGIN, OUT, RIGHT, SMALL_BUFF, UP } from "../constants.js";
 import { Camera } from "../camera/camera.js";
-import { Create } from "../animation/creation.js";
+import { Create, Write } from "../animation/creation.js";
+import { FadeOut } from "../animation/fading.js";
 import { Animation } from "../animation/animation.js";
-import { ApplyPointwiseFunction, Transform } from "../animation/transform.js";
-import type { Mobject } from "../mobject/mobject.js";
-import { Group, isPlainOptionsObject } from "../mobject/mobject.js";
+import { ApplyFunction, ApplyPointwiseFunction, Transform } from "../animation/transform.js";
+import { Group, Mobject, isPlainOptionsObject } from "../mobject/mobject.js";
+import { Matrix } from "../mobject/matrix.js";
+import { MathTex, Tex } from "../mobject/text/tex_mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Axes, CoordinateSystem, NumberPlane } from "../mobject/graphing/coordinate_systems.js";
 import { GREY, ManimColor, WHITE, type ParsableManimColor } from "../utils/color/core.js";
-import { angle_of_vector } from "../utils/space_ops.js";
+import { angle_of_vector, normalize } from "../utils/space_ops.js";
 
 export { CoordinateSystem };
 
@@ -62,6 +64,13 @@ function isSceneOptionsBag(value: unknown): value is VectorSceneOptions {
     "random_seed",
     "skip_animations",
   ].some((key) => key in (value as Record<string, unknown>));
+}
+
+/** Flatten a vector-like input to a plain number[] (mirrors `np.asarray`). */
+function toNumberVector(vector: number[] | readonly number[] | NDArray): number[] {
+  if (Array.isArray(vector)) return (vector as readonly number[]).map(Number);
+  if (isNDArray(vector)) return ((vector as NDArray).toArray() as unknown[]).map(Number);
+  return [];
 }
 
 export class VectorScene extends Scene {
@@ -218,10 +227,19 @@ export class VectorScene extends Scene {
     return arrow;
   }
 
-  write_vector_coordinates(vector: any, kwargs: Record<string, unknown> = {}): any {
-    void vector;
-    void kwargs;
-    throw new Error("TODO: text/tex not ported yet");
+  write_vector_coordinates(vector: Vector, kwargs: Record<string, unknown> = {}): Matrix {
+    // NOTE: mirrors Python `coords = vector.coordinate_label(**kwargs)` then
+    // `self.play(Write(coords))`. The coordinate_label keyword args are split
+    // out of the bag so Matrix receives only its own options.
+    const { integer_labels, n_dim, color, ...matrixOptions } = kwargs;
+    const coords = vector.coordinate_label(
+      integer_labels as boolean | undefined,
+      n_dim as number | undefined,
+      color as ParsableManimColor | null | undefined,
+      matrixOptions,
+    ) as Matrix;
+    this.play(new Write(coords));
+    return coords;
   }
 
   get_basis_vectors(
@@ -244,39 +262,96 @@ export class VectorScene extends Scene {
     );
   }
 
-  get_basis_vector_labels(kwargs: Record<string, unknown> = {}): any {
-    void kwargs;
-    throw new Error("TODO: text/tex not ported yet");
+  get_basis_vector_labels(kwargs: Record<string, unknown> = {}): VGroup {
+    // NOTE: mirrors Python `get_basis_vector_labels`: rebuild the basis
+    // vectors and label them with \hat{\imath} / \hat{\jmath}.
+    const basis = this.get_basis_vectors();
+    const i_hat = basis.submobjects[0] as unknown as Vector;
+    const j_hat = basis.submobjects[1] as unknown as Vector;
+    const at_tip = (kwargs["at_tip"] as boolean | undefined) ?? false;
+    const direction = (kwargs["direction"] as string | undefined) ?? "left";
+    const rotate = (kwargs["rotate"] as boolean | undefined) ?? false;
+    return new VGroup(
+      this.get_vector_label(i_hat, "\\hat{\\imath}", at_tip, direction, rotate, X_COLOR, 1) as VMobject,
+      this.get_vector_label(j_hat, "\\hat{\\jmath}", at_tip, direction, rotate, Y_COLOR, 1) as VMobject,
+    );
   }
 
   get_vector_label(
-    vector: any,
-    label: any,
+    vector: Vector,
+    label: string | Mobject,
     at_tip = false,
     direction = "left",
     rotate = false,
     color: ParsableManimColor | null = null,
-    label_scale_factor: number | null = null,
-  ): any {
-    void vector;
-    void label;
-    void at_tip;
-    void direction;
-    void rotate;
-    void color;
-    void label_scale_factor;
-    throw new Error("TODO: text/tex not ported yet");
+    label_scale_factor: number = LARGE_BUFF - 0.2,
+  ): VMobject {
+    // NOTE: mirrors Python `get_vector_label` verbatim (string labels are
+    // built with MathTex, everything else is used as-is).
+    let label_mob: VMobject;
+    if (typeof label === "string") {
+      let texString = label;
+      if (label.length === 1) texString = `\\vec{\\textbf{${label}}}`;
+      const mathTexLabel = new MathTex(texString);
+      mathTexLabel.set_color(color ?? (vector.get_color() as ParsableManimColor));
+      label_mob = mathTexLabel;
+    } else {
+      label_mob = label as VMobject;
+    }
+    label_mob.scale(label_scale_factor);
+    label_mob.add_background_rectangle();
+
+    if (at_tip) {
+      const vect = normalize(vector.get_vector() as number[]) as number[];
+      label_mob.next_to(vector.get_end(), vect, SMALL_BUFF);
+    } else {
+      const angle = vector.get_angle();
+      if (!rotate) label_mob.rotate(-angle, [...OUT], ORIGIN);
+      if (direction === "left") {
+        const bottom = label_mob.get_bottom();
+        label_mob.shift(bottom.map((value, i) => -value + 0.1 * (UP[i] as number)));
+      } else {
+        const top = label_mob.get_top();
+        label_mob.shift(top.map((value, i) => -value + 0.1 * (DOWN[i] as number)));
+      }
+      label_mob.rotate(angle, [...OUT], ORIGIN);
+      const end = pointRows(vector.get_end(), 3)[0] ?? [0, 0, 0];
+      const start = pointRows(vector.get_start(), 3)[0] ?? [0, 0, 0];
+      label_mob.shift(end.map((value, i) => (value - (start[i] ?? 0)) / 2));
+    }
+    return label_mob;
   }
 
-  label_vector(vector: any, label: any, animate = true, kwargs: Record<string, unknown> = {}): any {
-    void vector;
-    void label;
-    void animate;
-    void kwargs;
-    throw new Error("TODO: text/tex not ported yet");
+  label_vector(
+    vector: Vector,
+    label: string | Mobject,
+    animate = true,
+    kwargs: Record<string, unknown> = {},
+  ): VMobject {
+    // NOTE: mirrors Python `label_vector`, which forwards every label kwarg
+    // to get_vector_label and optionally plays a Write.
+    const at_tip = (kwargs["at_tip"] as boolean | undefined) ?? false;
+    const direction = (kwargs["direction"] as string | undefined) ?? "left";
+    const rotate = (kwargs["rotate"] as boolean | undefined) ?? false;
+    const color = (kwargs["color"] as ParsableManimColor | null | undefined) ?? null;
+    const label_scale_factor = (kwargs["label_scale_factor"] as number | undefined) ?? (LARGE_BUFF - 0.2);
+    const mathtex_label = this.get_vector_label(
+      vector,
+      label,
+      at_tip,
+      direction,
+      rotate,
+      color,
+      label_scale_factor,
+    );
+    if (animate) {
+      this.play(new Write(mathtex_label, { run_time: 1 }));
+    }
+    this.add(mathtex_label);
+    return mathtex_label;
   }
 
-  position_x_coordinate(x_coord: Mobject, x_line: Mobject, vector: number[] | readonly number[] | NDArray): Mobject {
+  position_x_coordinate(x_coord: VMobject, x_line: Mobject, vector: number[] | readonly number[] | NDArray): VMobject {
     const coords = pointRows(vector, 3)[0] ?? [0, 0, 0];
     const direction = [0, -Math.sign(coords[1] ?? 0), 0];
     x_coord.next_to(x_line, direction);
@@ -284,7 +359,7 @@ export class VectorScene extends Scene {
     return x_coord;
   }
 
-  position_y_coordinate(y_coord: Mobject, y_line: Mobject, vector: number[] | readonly number[] | NDArray): Mobject {
+  position_y_coordinate(y_coord: VMobject, y_line: Mobject, vector: number[] | readonly number[] | NDArray): VMobject {
     const coords = pointRows(vector, 3)[0] ?? [0, 0, 0];
     const direction = [Math.sign(coords[0] ?? 0), 0, 0];
     y_coord.next_to(y_line, direction);
@@ -297,23 +372,93 @@ export class VectorScene extends Scene {
     coords_start: number[] | readonly number[] | NDArray = [2, 2, 0],
     clean_up = true,
   ): void {
-    void vector;
-    void coords_start;
-    void clean_up;
-    throw new Error("TODO: text/tex not ported yet");
+    // NOTE: mirrors Python `coords_to_vector`: write the vector's column
+    // matrix, peel the components out to the axes and finally draw the
+    // vector. Python's `Matrix(vector)` is handed a 1-D vector and would
+    // raise (`'int' object is not iterable`); the column reshape below is the
+    // shape `vector_to_coords`/`coordinate_label` use and is what the method
+    // intends.
+    const vec = toNumberVector(vector);
+    const starting_mobjects = [...this.mobjects];
+    const array = new Matrix(vec.map((value) => [value]));
+    array.shift(pointRows(coords_start, 3)[0] ?? [0, 0, 0]);
+    const arrow = new Vector(vec);
+    const xLine = new Line(ORIGIN, [(vec[0] ?? 0) * (RIGHT[0] as number), 0, 0]);
+    const yLine = new Line(xLine.get_end(), arrow.get_end());
+    xLine.set_color(X_COLOR);
+    yLine.set_color(Y_COLOR);
+    const mob_matrix = array.get_mob_matrix();
+    const x_coord = (mob_matrix[0] as VMobject[])[0] as VMobject;
+    const y_coord = (mob_matrix[1] as VMobject[])[0] as VMobject;
+
+    this.play(new Write(array, { run_time: 1 }));
+    this.wait();
+    this.play(new ApplyFunction((x) => this.position_x_coordinate(x as VMobject, xLine, vec), x_coord));
+    this.play(new Create(xLine));
+    this.play(
+      new ApplyFunction((y) => this.position_y_coordinate(y as VMobject, yLine, vec), y_coord),
+      new FadeOut(array.get_brackets()),
+    );
+    this.play(new Create(yLine));
+    this.play(new Create(arrow));
+    this.wait();
+    if (clean_up) {
+      this.clear();
+      this.add(...starting_mobjects);
+    }
   }
 
   vector_to_coords(
-    vector: number[] | readonly number[] | NDArray,
+    vector: Vector | number[] | readonly number[] | NDArray,
     integer_labels = true,
     clean_up = true,
-  ): any {
-    void vector;
-    void integer_labels;
-    void clean_up;
-    // NOTE: needs Matrix/Integer labels (text, out of scope) plus the
-    // played component-line/vector display sequence around them.
-    throw new Error("TODO: text/tex not ported yet");
+  ): [Matrix, Line, Line] {
+    // NOTE: mirrors Python `vector_to_coords` (including the played
+    // component-line/vector sequence).
+    const starting_mobjects = [...this.mobjects];
+    let arrow: Vector;
+    let vec: number[];
+    let show_creation = false;
+    if (vector instanceof Arrow) {
+      arrow = vector as Vector;
+      vec = (pointRows(arrow.get_end(), 3)[0] ?? [0, 0, 0]).slice(0, 2);
+    } else {
+      vec = toNumberVector(vector as number[] | readonly number[] | NDArray);
+      arrow = new Vector(vec);
+      show_creation = true;
+    }
+    const array = arrow.coordinate_label(integer_labels) as Matrix;
+    const xLine = new Line(ORIGIN, [(vec[0] ?? 0) * (RIGHT[0] as number), 0, 0]);
+    const yLine = new Line(xLine.get_end(), arrow.get_end());
+    xLine.set_color(X_COLOR);
+    yLine.set_color(Y_COLOR);
+    const temp = array.get_entries();
+    const x_coord = temp.submobjects[0] as VMobject;
+    const y_coord = temp.submobjects[1] as VMobject;
+    const x_coord_start = this.position_x_coordinate(x_coord.copy(), xLine, vec);
+    const y_coord_start = this.position_y_coordinate(y_coord.copy(), yLine, vec);
+    const brackets = array.get_brackets();
+
+    if (show_creation) {
+      this.play(new Create(arrow));
+    }
+    this.play(new Create(xLine), new Write(x_coord_start, { run_time: 1 }));
+    this.play(new Create(yLine), new Write(y_coord_start, { run_time: 1 }));
+    this.wait();
+    this.play(
+      new Transform(x_coord_start, x_coord, { lag_ratio: 0 }),
+      new Transform(y_coord_start, y_coord, { lag_ratio: 0 }),
+      new Write(brackets, { run_time: 1 }),
+    );
+    this.wait();
+
+    this.remove(x_coord_start, y_coord_start, brackets);
+    this.add(array);
+    if (clean_up) {
+      this.clear();
+      this.add(...starting_mobjects);
+    }
+    return [array, xLine, yLine];
   }
 
   show_ghost_movement(vector: any): void {
@@ -665,22 +810,21 @@ export class LinearTransformationScene extends VectorScene {
     return result;
   }
 
-  override write_vector_coordinates(vector: any, kwargs: Record<string, unknown> = {}): any {
-    // NOTE: the label itself is text/tex (out of scope); the base method
-    // builds and writes it, then the coords join the foreground list.
+  override write_vector_coordinates(vector: Vector, kwargs: Record<string, unknown> = {}): Matrix {
+    // NOTE: mirrors Python: the base method builds and writes the Matrix
+    // label, then the coords join the foreground list.
     const coords = super.write_vector_coordinates(vector, kwargs);
     this.add_foreground_mobject(coords);
     return coords;
   }
 
   add_transformable_label(
-    vector: any,
-    label: any,
-    transformation_name: any = "L",
-    new_label: any = null,
+    vector: Vector,
+    label: string | Mobject,
+    transformation_name: string | Mobject = "L",
+    new_label: string | Mobject | null = null,
     kwargs: Record<string, unknown> = {},
   ): any {
-    // NOTE: labels are MathTex/text (out of scope).
     const { animate: label_animate = true, ...label_kwargs } = kwargs;
     const label_mob = this.label_vector(vector, label, label_animate as boolean, label_kwargs) as any;
     if (new_label) {
@@ -697,19 +841,20 @@ export class LinearTransformationScene extends VectorScene {
     return label_mob;
   }
 
-  add_title(title: any, scale_factor = 1.5, animate = false): this {
-    // NOTE: non-Mobject titles are Tex/text (out of scope).
-    if (typeof title === "string") {
-      void scale_factor;
-      throw new Error("TODO: text/tex not ported yet");
+  add_title(title: Mobject | string, scale_factor = 1.5, animate = false): this {
+    // NOTE: mirrors Python `add_title`: non-Mobject titles are built with
+    // Tex and scaled; then it is moved to the top, backgrounded and (if
+    // requested) written in.
+    let titleMob: VMobject;
+    if (title instanceof Mobject) {
+      titleMob = title as VMobject;
+    } else {
+      titleMob = new Tex(String(title)).scale(scale_factor);
     }
-    const titleMob = title as Mobject;
-    (titleMob as unknown as { to_edge: (edge: unknown) => void }).to_edge(UP);
-    (titleMob as unknown as { add_background_rectangle: () => void }).add_background_rectangle();
+    titleMob.to_edge(UP);
+    titleMob.add_background_rectangle();
     if (animate) {
-      // NOTE: Python plays Write(title); Write (text animation) is not
-      // ported yet, so a plain Animation stands in until it lands.
-      this.play(new Animation(titleMob));
+      this.play(new Write(titleMob));
     }
     this.add_foreground_mobject(titleMob);
     this.title = titleMob;
@@ -784,14 +929,20 @@ export class LinearTransformationScene extends VectorScene {
 
   get_transformable_label_movement(): Transform {
     for (const label of this.transformable_labels as Array<any>) {
-      // NOTE: get_vector_label builds MathTex/text (out of scope); this
-      // mirrors the Python call shape through `any` so it binds once text
-      // lands. With no transformable labels (the common case until then)
-      // the loop is skipped.
+      // NOTE: mirrors Python `self.get_vector_label(label.vector.target,
+      // target_text, **label.kwargs)`: the label kwargs are bound to the
+      // fixed get_vector_label positions.
       const target_text: unknown = label.target_text;
-      label.target = (this as unknown as {
-        get_vector_label: (vector: unknown, label: unknown, kwargs?: unknown) => unknown;
-      }).get_vector_label(label.vector.target, target_text, label.kwargs);
+      const kw = (label.kwargs ?? {}) as Record<string, unknown>;
+      label.target = this.get_vector_label(
+        label.vector.target as Vector,
+        target_text as string | Mobject,
+        (kw["at_tip"] as boolean | undefined) ?? false,
+        (kw["direction"] as string | undefined) ?? "left",
+        (kw["rotate"] as boolean | undefined) ?? false,
+        (kw["color"] as ParsableManimColor | null | undefined) ?? null,
+        (kw["label_scale_factor"] as number | undefined) ?? (LARGE_BUFF - 0.2),
+      );
     }
     return this.get_piece_movement(this.transformable_labels);
   }
