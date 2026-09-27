@@ -38,6 +38,16 @@ class SquareToCircle(Scene):
         self.play(Transform(square, circle))
         self.play(FadeOut(square))
 `,
+  static: `from manim import *
+
+class StaticOnly(Scene):
+    def construct(self):
+        circle = Circle()
+        circle.set_fill(PINK, opacity=0.5)
+        square = Square()
+        square.rotate(PI / 4)
+        self.add(circle, square)
+`,
   opening: `from manim import *
 
 class OpeningManim(Scene):
