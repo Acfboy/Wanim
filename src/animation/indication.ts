@@ -348,7 +348,10 @@ export class Wiggle extends Animation {
   scale_about_point: number[] | null;
   rotate_about_point: number[] | null;
 
-  constructor(mobject: Mobject, options: WiggleOptions = {}) {
+  constructor(mobject: Mobject, options: WiggleOptions | number = {}) {
+    // Python `Wiggle(mobject, scale_value=1.1, ...)` allows `scale_value` to be
+    // passed positionally; accept a numeric second argument for parity.
+    if (typeof options === "number") options = { scale_value: options };
     const clsDefaults = classDefaultsOf(new.target);
     const {
       scale_value = (clsDefaults.scale_value as number | undefined) ?? 1.1,
