@@ -47,7 +47,12 @@ async function main() {
   const preset = argv[0] && !argv[0].startsWith("--") ? argv[0] : "square";
   const outIndex = argv.indexOf("--out");
   const out = outIndex >= 0 ? resolve(argv[outIndex + 1]) : null;
+  const codeIndex = argv.indexOf("--code");
+  const codePath = codeIndex >= 0 ? resolve(argv[codeIndex + 1]) : null;
+  const repeatIndex = argv.indexOf("--repeat");
+  const repeat = repeatIndex >= 0 ? Number(argv[repeatIndex + 1]) : 1;
   const timeoutMs = Number(process.env.EDITOR_SMOKE_TIMEOUT_MS ?? 240000);
+  const pythonCode = codePath !== null ? await readFile(codePath, "utf-8") : null;
 
   const server = await startServer();
   const port = server.address().port;
@@ -63,15 +68,28 @@ async function main() {
     // editor.js finishes loading its ESM imports asynchronously; wait until it
     // has installed the listeners and loaded the default preset.
     await page.waitForFunction("document.getElementById('code').value.length > 0", null, { timeout: 30000 });
-    await page.click(`[data-preset="${preset}"]`);
-    const codeLen = await page.evaluate(() => document.getElementById("code").value.length);
-    console.log(`preset ${preset}: ${codeLen} chars`);
-    await page.click("#run");
-    await page.waitForFunction(
-      "document.getElementById('status').textContent.startsWith('Playing back') || document.getElementById('status').textContent.startsWith('Error')",
-      null,
-      { timeout: timeoutMs },
-    );
+    if (pythonCode !== null) {
+      await page.evaluate((code) => { document.getElementById("code").value = code; }, pythonCode);
+      console.log(`code: ${pythonCode.length} chars from ${codePath}`);
+    } else {
+      await page.click(`[data-preset="${preset}"]`);
+      const codeLen = await page.evaluate(() => document.getElementById("code").value.length);
+      console.log(`preset ${preset}: ${codeLen} chars`);
+    }
+    const genFps = [];
+    for (let run = 0; run < repeat; run += 1) {
+      await page.evaluate(() => { document.getElementById("status").textContent = "__reset__"; });
+      await page.click("#run");
+      await page.waitForFunction(
+        "document.getElementById('status').textContent.startsWith('Playing back') || document.getElementById('status').textContent.startsWith('Error')",
+        null,
+        { timeout: timeoutMs },
+      );
+      const text = await page.textContent("#stats");
+      const match = /generation: .*\(([\d.]+) gen fps\)/.exec(text);
+      if (match) genFps.push(Number(match[1]));
+    }
+    if (genFps.length > 0) console.log(`gen fps (best): ${Math.max(...genFps).toFixed(1)}  runs: ${genFps.join(", ")}`);
     // Let a few frames play so the canvas is non-trivial.
     await page.waitForTimeout(1200);
     const status = await page.textContent("#status");

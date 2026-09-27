@@ -1415,8 +1415,16 @@ export class VMobject extends Mobject {
   }
 
   get_nth_curve_function(index: number): (t: number) => number[] {
-    const start = index * this.n_points_per_cubic_curve;
-    const points = rows(this.points, this.dim).slice(start, start + 4);
+    const nppcc = this.n_points_per_cubic_curve;
+    const start = index * nppcc;
+    // Read just the four control points of this curve.  Materialising every
+    // row (`pointRows(this.points)`) here made `get_curve_functions_with_lengths`
+    // O(n_curves * n_points) == O(n_points^2) per call, which dominated
+    // `point_from_proportion` (MoveAlongPath) and arc-length queries.
+    const points: number[][] = [];
+    for (let offset = 0; offset < 4; offset += 1) {
+      points.push(pointAt(this.points, start + offset, this.dim));
+    }
     return (t: number) => curveValue(points, t, this.dim);
   }
 
