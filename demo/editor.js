@@ -192,11 +192,13 @@ async function run() {
       recordFrames: true,
     });
     const { stats, frames, meta } = result;
+    const setupMs = Math.max(0, stats.totalMs - stats.playMs);
     statsEl.textContent =
       `scenes: ${names.join(", ")}\n` +
       `frames: ${stats.frames} (${stats.recordCount} records), plays: ${meta.num_plays}\n` +
       `generation: ${stats.totalMs.toFixed(0)} ms ` +
       `(${(stats.frames / (stats.totalMs / 1000)).toFixed(1)} gen fps)\n` +
+      `setup (construct/Tex): ${setupMs.toFixed(0)} ms · play loop: ${stats.playMs.toFixed(0)} ms\n` +
       `extract: ${stats.extractMs.toFixed(0)} ms · serialize: ${stats.serializeMs.toFixed(0)} ms`;
     setStatus("Playing back recorded frames.");
     player = wanim.play_frames(stage, meta, frames, {

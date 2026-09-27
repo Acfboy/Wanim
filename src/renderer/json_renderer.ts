@@ -16,6 +16,7 @@
  * (see ).
  */
 import { writeFileSync } from "node:fs";
+import type { NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
 import { Camera } from "../camera/camera.js";
 import { CapStyleType, LineJointType } from "../constants.js";
@@ -54,29 +55,96 @@ function intValue(value: unknown): number {
   return value instanceof PyInt ? value.value : Math.trunc(Number(value));
 }
 
-function plainValue(value: unknown): unknown {
-  return isNDArray(value) ? value.toArray() : value;
+/**
+ * Structural equality for serialized records (`PyInt` compared by value).
+ * Used to deduplicate identical consecutive frames; Python compares the record
+ * dicts directly, so doing the same avoids serializing every frame to a string
+ * just to build a comparison key.
+ */
+function recordsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a instanceof PyInt || b instanceof PyInt) return intValue(a) === intValue(b);
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      if (!recordsEqual(a[index], b[index])) return false;
+    }
+    return true;
+  }
+  if (a !== null && b !== null && typeof a === "object" && typeof b === "object") {
+    const keysA = Object.keys(a as object);
+    const keysB = Object.keys(b as object);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+      if (!recordsEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
-/** Mirrors `np.round(np.asarray(arr, dtype=float), nd).tolist()`. */
-function roundList(value: unknown, nd = _ROUND): unknown {
-  const source = plainValue(value);
-  if (!Array.isArray(source)) return roundNumber(Number(source), nd);
-  return source.map((entry) => roundList(entry, nd));
-}
-
-/** np.round rounds ties to even (unlike JS Math.round). */
-function roundNumber(value: number, nd: number): number {
-  if (!Number.isFinite(value)) return value;
-  const factor = 10 ** nd;
-  const scaled = value * factor;
+/** Round an already-scaled value, ties to even (np.round semantics). */
+function roundScaled(scaled: number): number {
   const floor = Math.floor(scaled);
   const diff = scaled - floor;
-  let rounded: number;
-  if (diff > 0.5) rounded = floor + 1;
-  else if (diff < 0.5) rounded = floor;
-  else rounded = floor % 2 === 0 ? floor : floor + 1;
-  return rounded / factor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/**
+ * Mirrors `np.round(np.asarray(arr, dtype=float), nd).tolist()`.
+ *
+ * For a C-contiguous NDArray this reads the backing typed array directly and
+ * builds the rounded nested arrays in one pass, instead of `toArray()`
+ * (materialise) followed by a second recursive rounding pass.  Serialization
+ * runs for every vmobject of every frame, so the two passes were a large part
+ * of scene-generation time.
+ */
+function roundList(value: unknown, nd = _ROUND): unknown {
+  const factor = 10 ** nd;
+  const roundOne = (entry: number): number =>
+    Number.isFinite(entry) ? roundScaled(entry * factor) / factor : entry;
+
+  const walk = (entry: unknown): unknown => {
+    if (typeof entry === "number") return roundOne(entry);
+    if (isNDArray(entry)) {
+      const arr = entry as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+      const shape = arr.shape;
+      const expected = shape.reduce((product, dim) => product * dim, 1);
+      if (
+        arr.data !== undefined &&
+        arr.data.length === expected &&
+        (arr.flags === undefined || arr.flags.C_CONTIGUOUS !== false)
+      ) {
+        const data = arr.data;
+        if (shape.length === 2) {
+          const rows = shape[0] ?? 0;
+          const cols = shape[1] ?? 0;
+          const out = new Array<unknown>(rows);
+          for (let row = 0; row < rows; row += 1) {
+            const line = new Array<number>(cols);
+            const base = row * cols;
+            for (let col = 0; col < cols; col += 1) line[col] = roundOne(Number(data[base + col]));
+            out[row] = line;
+          }
+          return out;
+        }
+        if (shape.length === 1) {
+          const count = shape[0] ?? 0;
+          const out = new Array<number>(count);
+          for (let index = 0; index < count; index += 1) out[index] = roundOne(Number(data[index]));
+          return out;
+        }
+      }
+      return walk(arr.toArray());
+    }
+    if (Array.isArray(entry)) return entry.map(walk);
+    return entry;
+  };
+  return walk(value);
 }
 
 /** Python `repr(float)`: integral floats keep a trailing `.0`. */
@@ -343,7 +411,6 @@ export class JSONCairoRenderer {
   _pending_frame: Record<string, unknown> | null = null;
   output_path: string;
   private _original_skipping_status: boolean;
-  private _lastFrameKey: string | null = null;
 
   constructor(outputPath: string, options: JSONCairoRendererOptions = {}) {
     const CameraClass = options.camera_class ?? Camera;
@@ -428,16 +495,14 @@ export class JSONCairoRenderer {
     if (record === null) {
       throw new Error("JSONCairoRenderer.add_frame called with no pending frame");
     }
-    const key = jsonDumpsPython(record.cam) + "|" + jsonDumpsPython(record.m);
-    if (this.frames.length > 0 && this._lastFrameKey === key) {
-      const last = this.frames[this.frames.length - 1] as Record<string, unknown>;
+    const last = this.frames[this.frames.length - 1] as Record<string, unknown> | undefined;
+    if (last !== undefined && recordsEqual(last.cam, record.cam) && recordsEqual(last.m, record.m)) {
       last.repeat = new PyInt(intValue(last.repeat) + numFrames);
       this._pending_frame = null;
       return;
     }
     record.repeat = new PyInt(numFrames);
     this.frames.push(record);
-    this._lastFrameKey = key;
     this._pending_frame = null;
   }
 
@@ -489,7 +554,6 @@ export class JSONCairoRenderer {
     this.frames = [];
     this._pending_frame = null;
     this.static_image = null;
-    this._lastFrameKey = null;
   }
 
   write_output(): string {

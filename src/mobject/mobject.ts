@@ -1,4 +1,4 @@
-import { array, concatenate, type NDArray } from "numpy-ts";
+import { add, array, concatenate, multiply, subtract, type NDArray } from "numpy-ts";
 import { MethodWithArgs } from "../data_structures.js";
 import { DEFAULT_MOBJECT_TO_EDGE_BUFFER, DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, DL, DOWN, IN, LEFT, MED_SMALL_BUFF, ORIGIN, OUT, RIGHT, TAU, UP } from "../constants.js";
 import { BLACK, ManimColor, WHITE, color_gradient, interpolate_color, type ParsableManimColor } from "../utils/color/core.js";
@@ -143,7 +143,25 @@ export function nonFiniteGeometryError(context?: string): Error {
 export function hasNonFinite(value: unknown): boolean {
   if (typeof value === "number") return !Number.isFinite(value);
   if (typeof value === "bigint") return false;
-  if (isNDArray(value)) return hasNonFinite((value as NDArray).toArray());
+  if (isNDArray(value)) {
+    // Scan the backing typed array directly when the data is C-contiguous;
+    // `toArray()` materialises every element (an extra full pass over the
+    // points, per vmobject, per frame in the serializer).
+    const arr = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+    const expected = arr.shape.reduce((product, dim) => product * dim, 1);
+    if (
+      arr.data !== undefined &&
+      arr.data.length === expected &&
+      (arr.flags === undefined || arr.flags.C_CONTIGUOUS !== false)
+    ) {
+      const data = arr.data;
+      for (let index = 0; index < data.length; index += 1) {
+        if (!Number.isFinite(Number(data[index]))) return true;
+      }
+      return false;
+    }
+    return hasNonFinite((value as NDArray).toArray());
+  }
   if (Array.isArray(value)) return value.some(hasNonFinite);
   if (ArrayBuffer.isView(value)) {
     const view = value as unknown as ArrayLike<unknown>;
@@ -1061,7 +1079,7 @@ export class Mobject {
     if (about_point !== undefined && about_point !== null) assertFinite(vector(about_point, this.dim));
     if (about_edge !== undefined && about_edge !== null) assertFinite(vector(about_edge, this.dim));
     this.apply_points_function_about_point(
-      (points) => pointArray(pointRows(points, this.dim).map((point) => point.map((value) => value * scale_factor))),
+      (points) => multiply(points, scale_factor) as NDArray,
       about_point ?? undefined,
       about_edge ?? undefined,
     );
@@ -1235,10 +1253,16 @@ export class Mobject {
 
   apply_points_function_about_point(func: (points: NDArray) => NDArray, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
     const center = about_point !== undefined && about_point !== null ? vector(about_point, this.dim) : this.get_critical_point(about_edge ?? ORIGIN);
+    // Shift/apply/unshift with numpy broadcasting instead of materialising the
+    // rows three times per submobject (`pointRows` -> `pointArray` -> `func` ->
+    // `pointRows` -> `pointArray`).  This path runs for every submobject of
+    // every transform/scale/rotate, so the allocations were a large cost.
+    const centerArray = array(center);
     for (const mobject of this.family_members_with_points()) {
-      const centered = pointRows(mobject.points, this.dim).map((point) => subtractPoints(point, center, this.dim));
-      const result = pointRows(func(pointArray(centered)), this.dim);
-      mobject.points = pointArray(result.map((point) => addPoints(point, center, this.dim)));
+      const points = mobject.points as unknown as NDArray;
+      const centered = subtract(points, centerArray) as NDArray;
+      const result = func(centered);
+      mobject.points = add(isNDArray(result) ? result : (array(result) as NDArray), centerArray) as NDArray;
     }
     return this;
   }
