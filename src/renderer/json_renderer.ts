@@ -462,6 +462,11 @@ export class JSONCairoRenderer {
     if (config.save_last_frame) {
       this.static_image = null;
       this.update_frame(scene);
+      // Commit the final frame so a `save_last_frame` render (and a scene with
+      // no animations) still produces a serialized frame for the renderer.
+      if (this._pending_frame !== null) {
+        this.add_frame(null);
+      }
     }
   }
 
