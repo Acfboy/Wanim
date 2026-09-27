@@ -26,6 +26,7 @@ import { PMobject } from "../mobject/types/point_cloud_mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { isNDArray } from "../utils/arrays.js";
 import { EndSceneEarlyException } from "../utils/exceptions.js";
+import { is_thenable } from "../utils/scheduler.js";
 import type { Scene } from "../scene/scene.js";
 
 const _ROUND = 6;
@@ -425,7 +426,7 @@ export class JSONCairoRenderer {
     this.file_writer = new _DummyFileWriter(this, _scene.constructor.name);
   }
 
-  play(scene: Scene, ...args: Array<unknown>): void {
+  play(scene: Scene, ...args: Array<unknown>): void | Promise<void> {
     // Reset skip_animations to the original state.
     this.skip_animations = this._original_skipping_status;
     this.update_skipping_status();
@@ -447,15 +448,22 @@ export class JSONCairoRenderer {
     // Save a static image, to avoid rendering non moving objects.
     this.save_static_frame_data(scene, scene.static_mobjects);
 
+    const finish = (): void => {
+      this.file_writer.end_animation(!this.skip_animations);
+      this.num_plays += 1;
+    };
+
+    let internal: void | Promise<void> = undefined;
     if (scene.is_current_animation_frozen_frame()) {
       this.update_frame(scene, scene.moving_mobjects);
       this.freeze_current_frame(scene.duration);
     } else {
-      scene.play_internal();
+      internal = scene.play_internal();
     }
-    this.file_writer.end_animation(!this.skip_animations);
-
-    this.num_plays += 1;
+    if (is_thenable(internal)) {
+      return Promise.resolve(internal).then(finish);
+    }
+    finish();
   }
 
   save_static_frame_data(_scene: Scene, _staticMobjects: Iterable<Mobject>): null {

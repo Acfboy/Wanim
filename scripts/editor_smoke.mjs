@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Headless smoke test for the Python editor demo: compile a preset with the
-// browser rapydscript compiler, run it through wanim and verify the canvas got
-// drawn (and, optionally, save a screenshot).
+// Headless smoke test for the live Python editor demo: compile a preset with
+// the browser rapydscript compiler, run it through wanim in real time and
+// verify the canvas got drawn (and, optionally, save a screenshot).
 //
-// Usage: node scripts/editor_smoke.mjs [preset] [--out screenshot.png]
+// Usage: node scripts/editor_smoke.mjs [preset] [--out screenshot.png] [--code file.py]
 import { createServer } from "node:http";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { extname, dirname, join, normalize, resolve } from "node:path";
@@ -44,15 +44,13 @@ function startServer() {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const preset = argv[0] && !argv[0].startsWith("--") ? argv[0] : "square";
+  const preset = argv[0] && !argv[0].startsWith("--") ? argv[0] : "sin";
   const outIndex = argv.indexOf("--out");
   const out = outIndex >= 0 ? resolve(argv[outIndex + 1]) : null;
   const codeIndex = argv.indexOf("--code");
   const codePath = codeIndex >= 0 ? resolve(argv[codeIndex + 1]) : null;
   const profileIndex = argv.indexOf("--profile");
   const profilePath = profileIndex >= 0 ? resolve(argv[profileIndex + 1]) : null;
-  const repeatIndex = argv.indexOf("--repeat");
-  const repeat = repeatIndex >= 0 ? Number(argv[repeatIndex + 1]) : 1;
   const timeoutMs = Number(process.env.EDITOR_SMOKE_TIMEOUT_MS ?? 240000);
   const pythonCode = codePath !== null ? await readFile(codePath, "utf-8") : null;
 
@@ -65,48 +63,41 @@ async function main() {
     const errors = [];
     page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text()); });
     page.on("pageerror", (error) => errors.push(String(error)));
-    await page.goto(`http://127.0.0.1:${port}/demo/editor.html`, { waitUntil: "load" });
-    await page.waitForFunction("typeof window.RapydScript !== 'undefined'", null, { timeout: 30000 });
-    // editor.js finishes loading its ESM imports asynchronously; wait until it
-    // has installed the listeners and loaded the default preset.
+    await page.goto(`http://127.0.0.1:${port}/demo/index.html`, { waitUntil: "load" });
+    // demo.js loads its ESM imports asynchronously; wait until the default
+    // preset has been inserted into the editor.
     await page.waitForFunction("document.getElementById('code').value.length > 0", null, { timeout: 30000 });
     if (pythonCode !== null) {
-      await page.evaluate((code) => { document.getElementById("code").value = code; }, pythonCode);
+      await page.evaluate((code) => {
+        const el = document.getElementById("code");
+        el.value = code;
+        el.dispatchEvent(new Event("input"));
+      }, pythonCode);
       console.log(`code: ${pythonCode.length} chars from ${codePath}`);
     } else {
-      await page.click(`[data-preset="${preset}"]`);
+      await page.selectOption("#preset", preset);
       const codeLen = await page.evaluate(() => document.getElementById("code").value.length);
       console.log(`preset ${preset}: ${codeLen} chars`);
     }
-    const genFps = [];
     let cdp = null;
     if (profilePath !== null) {
       cdp = await page.context().newCDPSession(page);
       await cdp.send("Profiler.enable");
+      await cdp.send("Profiler.start");
     }
-    for (let run = 0; run < repeat; run += 1) {
-      if (cdp !== null && run === repeat - 1) await cdp.send("Profiler.start");
-      await page.evaluate(() => { document.getElementById("status").textContent = "__reset__"; });
-      await page.click("#run");
-      await page.waitForFunction(
-        "document.getElementById('status').textContent.startsWith('Playing back') || document.getElementById('status').textContent.startsWith('Error')",
-        null,
-        { timeout: timeoutMs },
-      );
-      const text = await page.textContent("#stats");
-      const match = /generation: .*\(([\d.]+) gen fps\)/.exec(text);
-      if (match) genFps.push(Number(match[1]));
-      if (cdp !== null && run === repeat - 1) {
-        const { profile } = await cdp.send("Profiler.stop");
-        await writeFile(profilePath, JSON.stringify(profile));
-        console.log(`wrote profile -> ${profilePath}`);
-      }
+    await page.click("#run");
+    await page.waitForFunction(
+      "['Done.','Error.'].includes(document.getElementById('status').textContent)",
+      null,
+      { timeout: timeoutMs },
+    );
+    if (cdp !== null) {
+      const { profile } = await cdp.send("Profiler.stop");
+      await writeFile(profilePath, JSON.stringify(profile));
+      console.log(`wrote profile -> ${profilePath}`);
     }
-    if (genFps.length > 0) console.log(`gen fps (best): ${Math.max(...genFps).toFixed(1)}  runs: ${genFps.join(", ")}`);
-    // Let a few frames play so the canvas is non-trivial.
-    await page.waitForTimeout(1200);
     const status = await page.textContent("#status");
-    const stats = await page.textContent("#stats");
+    const output = await page.textContent("#output");
     const nonBlank = await page.evaluate(() => {
       const canvas = document.getElementById("stage");
       const ctx = canvas.getContext("2d");
@@ -118,11 +109,17 @@ async function main() {
       return lit;
     });
     if (out) await page.screenshot({ path: out });
+    const fpsMatch = /Done: (\d+) frames in ([\d.]+) s/.exec(output);
+    if (fpsMatch) {
+      const frames = Number(fpsMatch[1]);
+      const seconds = Number(fpsMatch[2]);
+      console.log(`live: ${frames} frames in ${seconds.toFixed(2)} s (${(frames / seconds).toFixed(1)} fps)`);
+    }
     console.log(`status: ${status.trim()}`);
-    console.log(stats.trim());
+    console.log(output.trim());
     console.log(`lit pixels: ${nonBlank}`);
     if (errors.length) console.error("browser errors:\n" + errors.join("\n"));
-    const ok = status.startsWith("Playing back") && nonBlank > 100;
+    const ok = status.startsWith("Done") && nonBlank > 100;
     process.exit(ok ? 0 : 1);
   } finally {
     await browser.close();

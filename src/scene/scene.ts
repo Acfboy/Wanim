@@ -13,6 +13,13 @@ import { Animation, Wait, prepare_animation } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
 import { EndSceneEarlyException, RerunSceneException } from "../utils/exceptions.js";
 import { is_gif_format, open_file } from "../utils/file_ops.js";
+import {
+  get_render_scheduler,
+  is_async_rendering,
+  is_thenable,
+  type Awaitable,
+  type RenderScheduler,
+} from "../utils/scheduler.js";
 import { DefaultSectionType } from "./section.js";
 
 /**
@@ -814,7 +821,7 @@ export class Scene {
     return time_progression;
   }
 
-  play(...args: Array<Animation | Mobject | ScenePlayOptions>): this {
+  play(...args: Array<Animation | Mobject | ScenePlayOptions>): this | Promise<this> {
     // NOTE: Python's signature is `play(*args, subcaption, subcaption_duration,
     // subcaption_offset, **kwargs)` with kwargs forwarded to the renderer.
     // The TS port reads a trailing plain object as those play options
@@ -849,6 +856,7 @@ export class Scene {
       return this;
     }
     const start_time = this.time;
+    let play_result: Awaitable<unknown> = undefined;
     if (typeof this.renderer?.play === "function") {
       // Mirror Python `self.renderer.play(self, *args, **kwargs)`: the
       // subcaption keys are consumed above; any remaining renderer kwargs ride
@@ -856,7 +864,7 @@ export class Scene {
       const rendererArgs: unknown[] = Object.keys(_rendererKwargs).length > 0
         ? [...playArgs, _rendererKwargs]
         : [...playArgs];
-      this.renderer.play(this, ...rendererArgs);
+      play_result = this.renderer.play(this, ...rendererArgs);
     } else {
       // NOTE: stand-in for `self.renderer.play(self, *args, **kwargs)` — with
       // no cairo renderer attached (plain `new Scene()` or a test stub that
@@ -872,16 +880,26 @@ export class Scene {
         animation.clean_up_from_scene(this);
       }
     }
-    const run_time = this.time - start_time;
-    if (subcaption) {
-      const duration = subcaption_duration ?? run_time;
-      // The start of the subcaption needs to be offset by the
-      // run_time of the animation because it is added after
-      // the animation has already been played (and Scene.time
-      // has already been updated).
-      this.add_subcaption(subcaption, duration, -run_time + (subcaption_offset ?? 0));
+    // The trailing bookkeeping (subcaptions) runs once the animation finishes.
+    // In real-time mode `play_internal` returns a promise and the caller
+    // (`await self.play(...)` from rapydscript, or the browser runner) awaits
+    // it; otherwise the whole body already ran synchronously.
+    const finish = (): this => {
+      const run_time = this.time - start_time;
+      if (subcaption) {
+        const duration = subcaption_duration ?? run_time;
+        // The start of the subcaption needs to be offset by the
+        // run_time of the animation because it is added after
+        // the animation has already been played (and Scene.time
+        // has already been updated).
+        this.add_subcaption(subcaption, duration, -run_time + (subcaption_offset ?? 0));
+      }
+      return this;
+    };
+    if (is_thenable(play_result)) {
+      return Promise.resolve(play_result).then(finish);
     }
-    return this;
+    return finish();
   }
 
   compile_animation_data(
@@ -932,7 +950,10 @@ export class Scene {
     }
   }
 
-  play_internal(skip_rendering = false): void {
+  play_internal(skip_rendering = false): void | Promise<void> {
+    if (is_async_rendering()) {
+      return this.play_internal_async(skip_rendering, get_render_scheduler()!);
+    }
     this.duration = this.get_run_time(this.animations);
     this.time_progression = this._get_animation_time_progression(
       this.animations,
@@ -951,6 +972,44 @@ export class Scene {
       }
     }
 
+    this.finish_play_internal();
+  }
+
+  /**
+   * Real-time variant of {@link play_internal}: identical work, but control is
+   * handed back to the event loop after every drawn frame and only resumed
+   * once the scheduler says the next logical frame is due.  The synchronous
+   * path above is left byte-for-byte intact so Node/test runs are unaffected.
+   */
+  private async play_internal_async(
+    skip_rendering: boolean,
+    scheduler: RenderScheduler,
+  ): Promise<void> {
+    this.duration = this.get_run_time(this.animations);
+    this.time_progression = this._get_animation_time_progression(
+      this.animations,
+      this.duration,
+    );
+    try {
+      for (const t of this.time_progression) {
+        this.update_to_time(t);
+        if (!skip_rendering && !this.skip_animation_preview) {
+          this.renderer?.render(this, t, this.moving_mobjects);
+        }
+        if (this.stop_condition !== null && this.stop_condition()) {
+          this.time_progression.close();
+          break;
+        }
+        if (scheduler.cancelled) break;
+        await scheduler.next_frame();
+        if (scheduler.cancelled) break;
+      }
+    } finally {
+      this.finish_play_internal();
+    }
+  }
+
+  private finish_play_internal(): void {
     for (const animation of this.animations) {
       animation.finish();
       animation.clean_up_from_scene(this);
@@ -963,7 +1022,7 @@ export class Scene {
       this.renderer.static_image = null;
     }
     // Closing the progress bar at the end of the play.
-    this.time_progression.close();
+    this.time_progression?.close();
   }
 
   interact(
@@ -1137,9 +1196,9 @@ export class Scene {
     duration: number = DEFAULT_WAIT_TIME,
     stop_condition: (() => boolean) | null = null,
     frozen_frame: boolean | null = null,
-  ): void {
+  ): this | Promise<this> {
     duration = Scene.validate_run_time(duration, this.wait as (...args: unknown[]) => unknown, "duration");
-    this.play(
+    return this.play(
       new Wait({ run_time: duration, stop_condition, frozen_frame }),
     );
   }
@@ -1167,14 +1226,14 @@ export class Scene {
     this.update_self(dt);
   }
 
-  pause(duration: number = DEFAULT_WAIT_TIME): void {
+  pause(duration: number = DEFAULT_WAIT_TIME): this | Promise<this> {
     duration = Scene.validate_run_time(duration, this.pause as (...args: unknown[]) => unknown, "duration");
-    this.wait(duration, null, true);
+    return this.wait(duration, null, true);
   }
 
-  wait_until(stop_condition: () => boolean, max_time = 60): void {
+  wait_until(stop_condition: () => boolean, max_time = 60): this | Promise<this> {
     max_time = Scene.validate_run_time(max_time, this.wait_until as (...args: unknown[]) => unknown, "max_time");
-    this.wait(max_time, stop_condition);
+    return this.wait(max_time, stop_condition);
   }
 
   is_current_animation_frozen_frame(): boolean {
@@ -1196,33 +1255,51 @@ export class Scene {
 
   updaters: Array<(dt: number) => void> = [];
 
-  render(preview = false): boolean {
+  render(preview = false): boolean | Promise<boolean> {
     this.setup();
+    let construct_result: Awaitable<unknown>;
     try {
-      this.construct();
+      construct_result = this.construct();
     } catch (error) {
-      if (error instanceof EndSceneEarlyException) {
-        // pass
-      } else if (error instanceof RerunSceneException) {
-        this.remove(...this.mobjects);
-        // TODO: The CairoRenderer does not have the method clear_screen()
-        this.renderer.clear_screen();
-        this.renderer.num_plays = 0;
-        // The rerun replaces the file writer; tear down its encode jobs so
-        // no worker is still writing a partial file the new writer may
-        // reuse. Encoder failures propagate: a rerun must not silently
-        // continue past corrupt output.
-        this.renderer.file_writer.abort_encode_jobs({
-          reraise_encoder_failures: true,
-        });
-        return true;
-      } else {
-        // A mid-play exception leaves an unsealed encode job whose
-        // non-daemon worker would hang the process at exit.
-        this.renderer.file_writer.abort_encode_jobs();
-        throw error;
-      }
+      return this.handle_render_error(error, preview);
     }
+    // In real-time mode `construct` is async (rapydscript emits
+    // `await self.play(...)`), so the render only finishes once it settles.
+    if (is_thenable(construct_result)) {
+      return Promise.resolve(construct_result).then(
+        () => this.finalize_render(preview),
+        (error: unknown) => this.handle_render_error(error, preview),
+      );
+    }
+    return this.finalize_render(preview);
+  }
+
+  private handle_render_error(error: unknown, preview: boolean): boolean {
+    if (error instanceof EndSceneEarlyException) {
+      // pass
+    } else if (error instanceof RerunSceneException) {
+      this.remove(...this.mobjects);
+      // TODO: The CairoRenderer does not have the method clear_screen()
+      this.renderer.clear_screen();
+      this.renderer.num_plays = 0;
+      // The rerun replaces the file writer; tear down its encode jobs so
+      // no worker is still writing a partial file the new writer may
+      // reuse. Encoder failures propagate: a rerun must not silently
+      // continue past corrupt output.
+      this.renderer.file_writer.abort_encode_jobs({
+        reraise_encoder_failures: true,
+      });
+      return true;
+    } else {
+      // A mid-play exception leaves an unsealed encode job whose
+      // non-daemon worker would hang the process at exit.
+      this.renderer.file_writer.abort_encode_jobs();
+      throw error;
+    }
+    return this.finalize_render(preview);
+  }
+
+  private finalize_render(preview: boolean): boolean {
     this.tear_down();
     // We have to reset these settings in case of multiple renders.
     this.renderer.scene_finished(this);

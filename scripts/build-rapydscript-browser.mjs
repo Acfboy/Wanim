@@ -17,7 +17,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const wanimRoot = resolve(here, "..");
 const repoRoot = resolve(wanimRoot, "..");
 const rapydscriptRoot = join(repoRoot, "third-party", "rapydscript-ng");
-const outDir = join(wanimRoot, "demo");
+const outDir = process.env.RAPYDSCRIPT_OUT_DIR
+  ? resolve(process.env.RAPYDSCRIPT_OUT_DIR)
+  : join(wanimRoot, "demo");
+mkdirSync(outDir, { recursive: true });
 
 if (!existsSync(join(rapydscriptRoot, "dev", "compiler.js"))) {
   console.error(
