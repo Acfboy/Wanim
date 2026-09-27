@@ -23,6 +23,8 @@ import { FadeIn } from "../../animation/fading.js";
 import { GrowFromCenter } from "../../animation/growing.js";
 import { Arc } from "../geometry/arc.js";
 import { Line } from "../geometry/line.js";
+import { MathTex, Tex, type MathTexOptions, type TexOptions } from "../text/tex_mobject.js";
+import { Text } from "../text/text_mobject.js";
 import {
   VMobjectFromSVGPath,
   type VMobjectFromSVGPathOptions,
@@ -151,12 +153,28 @@ export class Brace extends VMobjectFromSVGPath {
     return this;
   }
 
-  get_text(..._text: string[]): never {
-    throw new Error("TODO: text/tex not ported yet (Brace.get_text needs Tex)");
+  get_text(...args: Array<string | Record<string, unknown>>): Tex {
+    let kwargs: Record<string, unknown> = {};
+    let text: string[] = [];
+    if (args.length > 0 && typeof args[args.length - 1] === "object") {
+      kwargs = args.pop() as Record<string, unknown>;
+    }
+    text = args.map((value) => String(value));
+    const textMob = new Tex(...text, kwargs as TexOptions);
+    this.put_at_tip(textMob, true, kwargs);
+    return textMob;
   }
 
-  get_tex(..._tex: string[]): never {
-    throw new Error("TODO: text/tex not ported yet (Brace.get_tex needs MathTex)");
+  get_tex(...args: Array<string | Record<string, unknown>>): MathTex {
+    let kwargs: Record<string, unknown> = {};
+    let tex: string[] = [];
+    if (args.length > 0 && typeof args[args.length - 1] === "object") {
+      kwargs = args.pop() as Record<string, unknown>;
+    }
+    tex = args.map((value) => String(value));
+    const texMob = new MathTex(...tex, kwargs as MathTexOptions);
+    this.put_at_tip(texMob, true, kwargs);
+    return texMob;
   }
 
   get_tip(): number[] {
@@ -264,16 +282,14 @@ export class BraceLabel extends VMobject {
     obj: Mobject,
     text: string | string[] | VMobject,
     brace_direction: readonly number[] | NDArray = [...DOWN],
-    label_constructor: unknown = null,
+    label_constructor: unknown = MathTex,
     font_size = DEFAULT_FONT_SIZE,
     buff = 0.2,
     brace_config: BraceOptions | null = null,
     options: BraceLabelOptions = {},
   ) {
-    // NOTE: Python's label_constructor defaults to MathTex, which needs the
-    // text/LaTeX pipeline that is out of scope for this port; it is stored
-    // opaquely (null until set) and only invoked when label mobjects must be
-    // constructed (throwing a marked TODO for raw strings without one).
+    // NOTE: Python's label_constructor defaults to MathTex; it is stored and
+    // invoked when label mobjects must be constructed.
     const {
       brace_direction: directionOption,
       label_constructor: constructorOption,
@@ -315,23 +331,29 @@ export class BraceLabel extends VMobject {
     // NOTE: mirrors Python `BraceLabel.__init__`: a tuple/list of strings is
     // unpacked into the label constructor, otherwise the single text is
     // passed (plus font_size). VMobject inputs are returned as-is (mirroring
-    // NumberLine._create_label_tex leniency); anything else needs the text
-    // pipeline that is out of scope for this port.
+    // NumberLine._create_label_tex leniency); raw strings are turned into
+    // MathTex/Text via the ported text pipeline.
     if (text instanceof VMobject) return text;
     if (typeof label_constructor === "function") {
       const ctor = label_constructor as (...args: unknown[]) => unknown;
       const args = Array.isArray(text) ? [...text] : [String(text)];
-      const built = ctor(
-        ...args,
-        { ...(font_size !== null ? { font_size } : {}), ...kwargs },
-      );
+      const opts = { ...(font_size !== null ? { font_size } : {}), ...kwargs };
+      // NOTE: Python classes are callable without `new`, JS classes are not.
+      // Accept either a class or a plain factory function (same convention as
+      // NumberLine.toMobFactory).
+      let built: unknown;
+      try {
+        built = new (ctor as unknown as new (...a: unknown[]) => unknown)(...args, opts);
+      } catch {
+        built = ctor(...args, opts);
+      }
       if (built instanceof VMobject) return built;
-      throw new Error(
-        "TODO: text/tex not ported yet (BraceLabel label_constructor did not return a VMobject)",
+      throw new TypeError(
+        "BraceLabel label_constructor did not return a VMobject",
       );
     }
-    throw new Error(
-      "TODO: text/tex not ported yet (BraceLabel label construction needs MathTex/Text)",
+    throw new TypeError(
+      "BraceLabel label construction needs a label_constructor returning a VMobject",
     );
   }
 
@@ -400,26 +422,16 @@ export interface BraceTextOptions extends BraceLabelOptions {}
 
 /** Brace with a Text (rather than MathTex) label.
  *
- * NOTE (text/tex out of scope): Python defaults `label_constructor` to
- * `Text`, which needs the text-rendering pipeline that is not ported. A
- * caller-supplied constructor returning a VMobject works faithfully;
- * otherwise construction throws `TODO: text/tex not ported yet`.
+ * Python defaults `label_constructor` to `Text`; the ported text pipeline
+ * makes this fully usable with raw string labels.
  */
 export class BraceText extends BraceLabel {
   constructor(
     obj: Mobject,
     text: string | string[] | VMobject,
-    label_constructor: unknown = null,
+    label_constructor: unknown = Text,
     options: BraceTextOptions = {},
   ) {
-    if (label_constructor === null || label_constructor === undefined) {
-      const fromOptions = (options as BraceLabelOptions).label_constructor;
-      if (fromOptions === null || fromOptions === undefined) {
-        throw new Error("TODO: text/tex not ported yet (BraceText needs Text)");
-      }
-      super(obj, text, [...DOWN], fromOptions, DEFAULT_FONT_SIZE, 0.2, null, options);
-      return;
-    }
     super(obj, text, [...DOWN], label_constructor, DEFAULT_FONT_SIZE, 0.2, null, options);
   }
 }

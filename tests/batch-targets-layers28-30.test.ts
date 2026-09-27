@@ -3,6 +3,7 @@ import { array, type NDArray } from "numpy-ts";
 import { Brace, BraceLabel, BraceText } from "../src/mobject/svg/brace.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
 import { DecimalNumber, string_to_mob_map } from "../src/mobject/text/numbers.js";
+import { MathTex, Text } from "../src/mobject/text/index.js";
 import {
   Matrix,
   DecimalMatrix,
@@ -94,10 +95,12 @@ class TestMobjectMatrix extends MobjectMatrix {
 //   latex FileNotFoundError; TS returns VMobject as-is (documented leniency,
 //   same as NumberLine._create_label_tex).
 
-describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
-  it("Brace.get_text throws (python: Tex -> latex FileNotFoundError)", () => {
+describe("ported labels and remaining tex-only stubs", () => {
+  it("Brace.get_text builds a Tex at the tip", () => {
     const b = new Brace(new Square());
-    expect(() => b.get_text("hello")).toThrow(/text\/tex/);
+    const t = b.get_text("hello");
+    expect(t).toBeDefined();
+    expect(t.width).toBeGreaterThan(0);
   });
   it("VectorScene.get_basis_vector_labels throws", () => {
     const vs = new VectorScene();
@@ -127,8 +130,9 @@ describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
     const vs = new VectorScene();
     expect(() => vs.coords_to_vector([1, 2, 0])).toThrow(/text\/tex/);
   });
-  it("LabeledArrow.__init__ throws via Label (python: MathTex -> latex)", () => {
-    expect(() => new LabeledArrow("hi")).toThrow(/text\/tex/);
+  it("LabeledArrow.__init__ builds a string label (python: MathTex)", () => {
+    const arrow = new LabeledArrow("hi");
+    expect(arrow.label).toBeDefined();
   });
   it("PolarPlane.add_coordinates throws text/tex TODO (python: MathTex/DecimalNumber labels -> latex FileNotFoundError)", () => {
     // Python reaches label construction (MathTex via get_radian_label,
@@ -138,22 +142,24 @@ describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
     const pp = new PolarPlane();
     expect(() => pp.add_coordinates()).toThrow(/text\/tex not ported/);
   });
-  it("Matrix.__init__ default factory throws (python: MathTex -> latex)", () => {
-    expect(
-      () =>
-        new Matrix([
-          ["a", "b"],
-          ["c", "d"],
-        ]),
-    ).toThrow(/text\/tex/);
+  it("Matrix.__init__ default factory builds MathTex entries (python: MathTex)", () => {
+    const m = new Matrix([
+      ["a", "b"],
+      ["c", "d"],
+    ]);
+    expect(m.get_entries().submobjects.length).toBe(4);
+    for (const entry of m.get_entries().submobjects) {
+      expect(entry).toBeInstanceOf(MathTex);
+    }
   });
-  it("DecimalMatrix/IntegerMatrix defaults throw (python: DecimalNumber/Integer -> latex)", () => {
-    expect(() => new DecimalMatrix([[1, 2]])).toThrow(/text\/tex/);
-    expect(() => new IntegerMatrix([[1, 2]])).toThrow(/text\/tex/);
+  it("DecimalMatrix/IntegerMatrix defaults build entries (python: DecimalNumber/Integer)", () => {
+    expect(new DecimalMatrix([[1, 2]]).get_entries().submobjects.length).toBe(2);
+    expect(new IntegerMatrix([[1, 2]]).get_entries().submobjects.length).toBe(2);
   });
-  it("MobjectMatrix default (identity) still throws on brackets (python: MathTex brackets -> latex)", () => {
-    // NOTE: even the identity-factory matrix needs brackets in both impls.
-    expect(() => new MobjectMatrix([[new Square()]])).toThrow(/text\/tex/);
+  it("MobjectMatrix default (identity) builds entries and brackets (python: MathTex brackets)", () => {
+    const m = new MobjectMatrix([[new Square()]]);
+    expect(m.get_entries().submobjects.length).toBe(1);
+    expect(m.get_brackets().submobjects.length).toBe(2);
   });
   it("MathTable/IntegerTable/DecimalTable defaults throw (python: MathTex/Integer/DecimalNumber -> latex)", () => {
     expect(() => new MathTable([["a"]])).toThrow(/text\/tex/);
@@ -169,8 +175,10 @@ describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
 });
 
 describe("BraceText.__init__", () => {
-  it("default (Text) throws tex TODO; python Text works without latex (documented scope deviation)", () => {
-    expect(() => new BraceText(new Square(), "hello")).toThrow(/text\/tex/);
+  it("default (Text) builds a Text label", () => {
+    const bt = new BraceText(new Square(), "hello");
+    expect(bt.label).toBeInstanceOf(Text);
+    expect(bt.submobjects.length).toBe(2);
   });
   it("custom label_constructor returning a VMobject works", () => {
     const vm = new VMobject();
@@ -197,11 +205,10 @@ describe("BraceLabel.change_brace_label (tex-free VMobject path)", () => {
     expect(bl.brace).not.toBe(oldBrace);
     expect(bl.brace).toBeInstanceOf(Brace);
   });
-  it("string label without a constructor still throws tex TODO", () => {
+  it("string label without a constructor builds MathTex", () => {
     const bl = new BraceLabel(new Square(), new VMobject());
-    expect(() => bl.change_brace_label(new Square(), "hello")).toThrow(
-      /text\/tex/,
-    );
+    bl.change_brace_label(new Square(), "hello");
+    expect(bl.label).toBeInstanceOf(MathTex);
   });
 });
 

@@ -545,12 +545,13 @@ describe("FullScreenRectangle.__init__", () => {
 // Python needs LaTeX (Integer/MathTex) so neither constructs here; the TS
 // port throws `TODO: text/tex not ported yet` for the defaults. IntegerTable
 // with an explicit factory lays out a real 2x2 grid.
-describe("IntegerTable / IntegerMatrix (tex out of scope)", () => {
+describe("IntegerTable / IntegerMatrix (ported tex)", () => {
   it("IntegerTable default factory throws the tex TODO", () => {
     expect(() => new IntegerTable([[1, 2], [3, 4]])).toThrowError(/text\/tex not ported/);
   });
-  it("IntegerMatrix default factory throws the tex TODO", () => {
-    expect(() => new IntegerMatrix([[1, 2], [3, 4]])).toThrowError(/text\/tex not ported/);
+  it("IntegerMatrix default factory builds Integer entries", () => {
+    const m = new IntegerMatrix([[1, 2], [3, 4]]);
+    expect(m.get_entries().submobjects.length).toBe(4);
   });
   it("IntegerTable with an explicit factory builds the grid", () => {
     const t = new IntegerTable([[1, 2], [3, 4]], {

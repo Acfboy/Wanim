@@ -16,10 +16,9 @@
 // those values (1e-9 relative for floats; exact for discrete values;
 // arrays element-wise).
 //
-// OUT OF SCOPE (text/tex): LabeledPolygram's label is rendered text, so the
-// TS port throws a clearly-marked TODO stub there (as required); only the
-// missing-label TypeError, the stub behavior, and the underlying polylabel
-// pole computation (same algorithm LabeledPolygram uses) are tested.
+// NOTE: LabeledPolygram's label is now rendered through the ported text
+// pipeline (MathTex/Text). Tested: the missing-label TypeError, label
+// placement, and the underlying polylabel pole computation.
 import { describe, expect, it } from "vitest";
 import type { NDArray } from "numpy-ts";
 import { PI, TAU, DOWN, LEFT, RIGHT } from "../src/constants.js";
@@ -196,13 +195,12 @@ describe("LabeledPolygram", () => {
     );
   });
 
-  it("is a text/tex stub once a label is given (out of scope)", () => {
-    expect(
-      () =>
-        new LabeledPolygram([[0, 0, 0], [1, 0, 0], [1, 1, 0]], {
-          label: "Pole",
-        }),
-    ).toThrowError("TODO: text/tex not ported yet");
+  it("places a label at the pole once a label is given", () => {
+    const p = new LabeledPolygram([[0, 0, 0], [1, 0, 0], [1, 1, 0]], {
+      label: "Pole",
+    });
+    expect(p.label).toBeDefined();
+    expect(p.radius).toBeGreaterThan(0);
   });
 
   it("computes the pole of inaccessibility via polylabel (ground truth)", () => {

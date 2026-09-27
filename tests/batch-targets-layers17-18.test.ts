@@ -16,6 +16,7 @@ import { Vector } from "../src/mobject/geometry/line.js";
 import { Arrow, Line } from "../src/mobject/geometry/line.js";
 import { GrowArrow } from "../src/animation/growing.js";
 import { Matrix, MobjectMatrix, matrix_to_tex_string } from "../src/mobject/matrix.js";
+import { MathTex } from "../src/mobject/text/index.js";
 import { VectorScene } from "../src/scene/vector_space_scene.js";
 import { Dot, LabeledDot } from "../src/mobject/geometry/arc.js";
 import { Circle } from "../src/mobject/geometry/arc.js";
@@ -193,13 +194,12 @@ describe("Matrix (Mobject entries, brackets patched)", () => {
     expectPointClose(m.mob_matrix[1]![1]!.get_center(), [0.65, -0.4, 0], 1e-6);
   });
 
-  it("_add_brackets without patch throws the text/tex TODO", () => {
-    expect(
-      () =>
-        new MobjectMatrix([[new Square()]], {
-          element_to_mobject: ((x: unknown) => x) as unknown as Matrix["element_to_mobject"],
-        }),
-    ).toThrow(/text\/tex not ported yet/);
+  it("_add_brackets without patch builds MathTex brackets", () => {
+    const m = new MobjectMatrix([[new Square()]], {
+      element_to_mobject: ((x: unknown) => x) as unknown as Matrix["element_to_mobject"],
+    });
+    expect(m.get_brackets().submobjects.length).toBe(2);
+    expect(m.get_entries().submobjects.length).toBe(1);
   });
 });
 
@@ -276,8 +276,10 @@ describe("LabeledDot", () => {
     expect(close(ld.width, 1.4)).toBe(true);
   });
 
-  it("string labels throw the text/tex TODO", () => {
-    expect(() => new LabeledDot("x")).toThrow(/text\/tex not ported yet/);
+  it("string labels build a MathTex label", () => {
+    const ld = new LabeledDot("x");
+    expect(ld.submobjects.length).toBe(1);
+    expect(ld.submobjects[0]).toBeInstanceOf(MathTex);
   });
 });
 

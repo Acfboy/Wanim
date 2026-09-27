@@ -20,6 +20,7 @@ import {
 import { VMobject, VGroup } from "../types/vectorized_mobject.js";
 import { SVGMobject, type SVGMobjectOptions } from "../svg/svg_mobject.js";
 import { Line } from "../geometry/line.js";
+import { setMathTexLabelFactory } from "../geometry/arc.js";
 import { texToSvg } from "./mathjax.js";
 
 export const MATHTEX_SUBSTRING = "substring";
@@ -694,3 +695,8 @@ export class Title extends Tex {
     }
   }
 }
+
+// Registers the raw-string label renderer used by LabeledDot (see arc.ts).
+// Kept as a registry rather than an import in arc.ts to avoid the
+// arc.ts -> tex_mobject.ts -> line.ts -> arc.ts module cycle.
+setMathTexLabelFactory((label: string, color) => new MathTex(label, { color }));

@@ -43,6 +43,7 @@ import {
 } from "../src/mobject/geometry/polygram.js";
 import { SurroundingRectangle } from "../src/mobject/geometry/shape_matchers.js";
 import { Brace, BraceLabel, BraceText } from "../src/mobject/svg/brace.js";
+import { MathTex, Text } from "../src/mobject/text/index.js";
 import {
   Arrow3D,
   Cylinder,
@@ -615,8 +616,10 @@ describe("BraceLabel.shift_brace", () => {
     expectClose(bl.brace.width, 2.0);
   });
 
-  it("marks string labels as tex-backed stubs", () => {
-    expect(() => new BraceLabel(new Square(), "x")).toThrowError(/text\/tex not ported/);
+  it("builds string labels with MathTex by default", () => {
+    const bl = new BraceLabel(new Square(), "x");
+    expect(bl.label).toBeInstanceOf(MathTex);
+    expect(bl.submobjects.length).toBe(2);
   });
 });
 
@@ -627,8 +630,10 @@ describe("BraceLabel.shift_brace", () => {
 // accepts one returning a VMobject.
 // ---------------------------------------------------------------------------
 describe("BraceText", () => {
-  it("throws for the default Text label pipeline", () => {
-    expect(() => new BraceText(new Square(), "hello")).toThrowError(/text\/tex not ported/);
+  it("builds the default Text label pipeline", () => {
+    const bt = new BraceText(new Square(), "hello");
+    expect(bt.label).toBeInstanceOf(Text);
+    expect(bt.submobjects.length).toBe(2);
   });
 
   it("builds with a caller-supplied VMobject constructor", () => {
@@ -779,14 +784,14 @@ describe("DecimalMatrix / MobjectMatrix", () => {
     }
   }
 
-  it("marks the tex-backed paths as stubs", () => {
-    expect(() => new DecimalMatrix([[1, 2], [3, 4]], {})).toThrowError(
-      /text\/tex not ported/,
-    );
-    expect(() => new MobjectMatrix([[new Square()]], {})).toThrowError(
-      /text\/tex not ported/,
-    );
-    expect(() => new Matrix([[new Square()]], {})).toThrowError(/text\/tex not ported/);
+  it("builds default entries and MathTex brackets", () => {
+    const dm = new DecimalMatrix([[1, 2], [3, 4]], {});
+    expect(dm.get_brackets().submobjects.length).toBe(2);
+    const mm = new MobjectMatrix([[new Square()]], {});
+    expect(mm.get_entries().submobjects.length).toBe(1);
+    expect(mm.get_brackets().submobjects.length).toBe(2);
+    const m = new Matrix([[new Square()]], {});
+    expect(m.get_entries().submobjects.length).toBe(1);
   });
 
   it("organizes the mob matrix before centering", () => {

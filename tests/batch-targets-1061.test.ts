@@ -441,14 +441,15 @@ describe("ConvexHull.__init__", () => {
 });
 
 // ---------------------------------------------------------------------------
-// manim.mobject.geometry.labeled.LabeledLine — OUT OF SCOPE (text/tex)
-// Python needs latex (FileNotFoundError 'latex'); TS Label stub throws TODO.
+// manim.mobject.geometry.labeled.LabeledLine — now ported (MathTex via
+// MathJax), so a string label builds a Label at label_position.
 // ---------------------------------------------------------------------------
-describe("LabeledLine (text/tex out of scope)", () => {
-  it("throws the text/tex TODO like the other label paths", () => {
-    expect(() => new LabeledLine("x", 0.5, null, null, null, [-1, 0, 0], [1, 0, 0])).toThrowError(
-      /text\/tex/,
-    );
+describe("LabeledLine", () => {
+  it("builds a label for a string", () => {
+    const line = new LabeledLine("x", 0.5, null, null, null, [-1, 0, 0], [1, 0, 0]);
+    expect(line.label).toBeDefined();
+    expect(line.submobjects.length).toBe(1);
+    expect(line.label.get_center()[0]!).toBeCloseTo(0, 5);
   });
 });
 

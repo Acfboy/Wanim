@@ -1,26 +1,37 @@
 // Port of manim.mobject.matrix (Matrix and helpers).
 //
-// NOTE (text/tex out of scope): element mobjects default to MathTex and the
-// brackets/determinant helpers need MathTex/Tex (a LaTeX install). The
-// layout logic itself (_matrix_to_mob_matrix, _organize_mob_matrix,
-// get_columns/get_rows, row/column colors, entries) is pure mobject code and
-// is ported faithfully; every branch that would construct rendered text
-// throws `TODO: text/tex not ported yet` instead.
-import { DOWN, DR, MED_SMALL_BUFF, RIGHT } from "../constants.js";
+// Element mobjects default to MathTex, and the brackets/determinant helpers
+// use MathTex/Tex. Text rendering is provided by the ported MathJax/MathTex
+// pipeline, so no LaTeX install is required.
+import { DOWN, DR, LEFT, MED_SMALL_BUFF, RIGHT } from "../constants.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
-import { Mobject } from "./mobject.js";
 import { BackgroundRectangle } from "./geometry/shape_matchers.js";
 import { VGroup, VMobject } from "./types/vectorized_mobject.js";
+import { MathTex, Tex, type MathTexOptions } from "./text/tex_mobject.js";
+import {
+  DecimalNumber,
+  Integer,
+  type DecimalNumberOptions,
+  type DecimalNumberValue,
+} from "./text/numbers.js";
 
 export type MatrixElementFactory = (
   item: unknown,
   config?: Record<string, unknown>,
 ) => VMobject;
 
-function texNotPorted(name: string): () => never {
-  return () => {
-    throw new Error(`TODO: text/tex not ported yet (${name})`);
-  };
+function mathTexElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  // NOTE: mirrors Python `element_to_mobject(item, **config)` with the
+  // default `element_to_mobject=MathTex`.
+  return new MathTex(String(item), config as MathTexOptions);
+}
+
+function decimalNumberElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  return new DecimalNumber(item as DecimalNumberValue, config as DecimalNumberOptions);
+}
+
+function integerElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  return new Integer(item as DecimalNumberValue, config as DecimalNumberOptions);
 }
 
 export function matrix_to_tex_string(matrix: unknown): string {
@@ -39,8 +50,8 @@ export function matrix_to_tex_string(matrix: unknown): string {
   return prefix + stringRows.map((row) => row.join(" & ")).join(" \\\\ ") + suffix;
 }
 
-export function matrix_to_mobject(_matrix: unknown): VMobject {
-  throw new Error("TODO: text/tex not ported yet (matrix_to_mobject needs MathTex)");
+export function matrix_to_mobject(matrix: unknown): MathTex {
+  return new MathTex(matrix_to_tex_string(matrix));
 }
 
 export interface MatrixOptions {
@@ -85,7 +96,7 @@ export class Matrix extends VMobject {
       bracket_v_buff = MED_SMALL_BUFF,
       add_background_rectangles_to_entries = false,
       include_background_rectangle = false,
-      element_to_mobject = texNotPorted("Matrix element_to_mobject defaults to MathTex"),
+      element_to_mobject = mathTexElement,
       element_to_mobject_config = {},
       element_alignment_corner = [...DR],
       left_bracket = "[",
@@ -150,8 +161,30 @@ export class Matrix extends VMobject {
     return this;
   }
 
-  _add_brackets(_left = "[", _right = "]", _kwargs: Record<string, unknown> = {}): this {
-    throw new Error("TODO: text/tex not ported yet (Matrix._add_brackets needs MathTex)");
+  _add_brackets(left = "[", right = "]", kwargs: Record<string, unknown> = {}): this {
+    // Height per row of LaTeX array with default settings.
+    const BRACKET_HEIGHT = 0.5977;
+
+    const n = Math.floor(this.height / BRACKET_HEIGHT) + 1;
+    const emptyTexArray = [
+      "\\begin{array}{c}",
+      ...Array.from({ length: n }, () => "\\quad \\\\"),
+      "\\end{array}",
+    ].join("");
+    const texLeft = ["\\left" + left, emptyTexArray, "\\right."].join("");
+    const texRight = ["\\left.", emptyTexArray, "\\right" + right].join("");
+    const lBracket = new MathTex(texLeft, kwargs as MathTexOptions);
+    const rBracket = new MathTex(texRight, kwargs as MathTexOptions);
+
+    const bracketPair = new VGroup(lBracket, rBracket);
+    if (this.stretch_brackets) {
+      bracketPair.stretch_to_fit_height(this.height + 2 * this.bracket_v_buff);
+    }
+    lBracket.next_to(this, [...LEFT], this.bracket_h_buff);
+    rBracket.next_to(this, [...RIGHT], this.bracket_h_buff);
+    this.brackets = bracketPair;
+    this.add(lBracket, rBracket);
+    return this;
   }
 
   get_columns(): VGroup {
@@ -216,7 +249,7 @@ export interface DecimalMatrixOptions extends MatrixOptions {}
 export class DecimalMatrix extends Matrix {
   constructor(matrix: unknown[][], options: DecimalMatrixOptions = {}) {
     const {
-      element_to_mobject = texNotPorted("DecimalMatrix element_to_mobject defaults to DecimalNumber"),
+      element_to_mobject = decimalNumberElement,
       element_to_mobject_config = { num_decimal_places: 1 },
       ...rest
     } = options;
@@ -232,10 +265,7 @@ export interface IntegerMatrixOptions extends MatrixOptions {}
 
 export class IntegerMatrix extends Matrix {
   constructor(matrix: unknown[][], options: IntegerMatrixOptions = {}) {
-    const {
-      element_to_mobject = texNotPorted("IntegerMatrix element_to_mobject defaults to Integer"),
-      ...rest
-    } = options;
+    const { element_to_mobject = integerElement, ...rest } = options;
     super(matrix, { element_to_mobject, ...rest });
   }
 }
@@ -253,10 +283,33 @@ export class MobjectMatrix extends Matrix {
 }
 
 export function get_det_text(
-  _matrix: Matrix,
-  _determinant?: number | string | null,
-  _backgroundRect = false,
-  _initialScaleFactor = 2,
+  matrix: Matrix,
+  determinant: number | string | null = null,
+  backgroundRect = false,
+  initialScaleFactor = 2,
 ): VGroup {
-  throw new Error("TODO: text/tex not ported yet (get_det_text needs MathTex/Tex)");
+  const parens = new MathTex("(", ")");
+  parens.scale(initialScaleFactor);
+  parens.stretch_to_fit_height(matrix.height);
+  // NOTE: mirrors Python `l_paren, r_paren = parens` (unpacking the two
+  // MathTex parts).
+  const lParen = parens.submobjects[0] as VMobject;
+  const rParen = parens.submobjects[1] as VMobject;
+  lParen.next_to(matrix, [...LEFT], 0.1);
+  rParen.next_to(matrix, [...RIGHT], 0.1);
+  const det = new Tex("det");
+  det.scale(initialScaleFactor);
+  det.next_to(lParen, [...LEFT], 0.1);
+  if (backgroundRect) {
+    det.add_background_rectangle();
+  }
+  const detText = new VGroup(det, lParen, rParen);
+  if (determinant !== null && determinant !== undefined) {
+    const eq = new MathTex("=");
+    eq.next_to(rParen, [...RIGHT], 0.1);
+    const result = new MathTex(String(determinant));
+    result.next_to(eq, [...RIGHT], 0.2);
+    detText.add(eq, result);
+  }
+  return detText;
 }
