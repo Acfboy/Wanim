@@ -198,10 +198,19 @@ export class Camera {
       throw pilNotPorted();
     }
     const rgba = color_to_int_rgba(this.background_color, this.background_opacity);
-    const rows = Array.from({ length: height }, () =>
-      Array.from({ length: width }, () => [...rgba]),
-    );
-    this.background = array(rows.length > 0 ? rows : []).reshape(height, width, this.n_channels).astype("uint8") as NDArray;
+    // Fill a flat typed array instead of a `height * width` nested JS array:
+    // the nested form allocates ~400k sub-arrays for a 854x480 frame and was
+    // the single largest cost of constructing a Camera.
+    const channels = this.n_channels;
+    const count = height * width;
+    const data = new Uint8Array(count * channels);
+    for (let index = 0; index < count; index += 1) {
+      const base = index * channels;
+      for (let channel = 0; channel < channels; channel += 1) {
+        data[base + channel] = rgba[channel] ?? 0;
+      }
+    }
+    this.background = array(data).reshape(height, width, channels) as NDArray;
   }
 
   get_image(pixel_array?: unknown): unknown {

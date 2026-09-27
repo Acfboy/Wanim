@@ -253,13 +253,13 @@ export class ThreeDCamera extends Camera {
         (center[2] ?? 0) * (row[2] ?? 0)
       );
     };
-    return [...displayed].sort((a, b) => {
-      const ka = zKey(a);
-      const kb = zKey(b);
-      if (ka < kb) return -1;
-      if (ka > kb) return 1;
-      return 0;
-    });
+    // Compute each depth key exactly once per mobject (Python's
+    // `sorted(key=z_key)` is decorate-sort-undecorate).  Calling `zKey` from
+    // inside the comparator instead would recompute the centre O(n log n)
+    // times, which dominated 3D frame generation.
+    const keyed = displayed.map((mob, index) => ({ mob, key: zKey(mob), index }));
+    keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index));
+    return keyed.map((entry) => entry.mob);
   }
 
   get_phi(): number {
