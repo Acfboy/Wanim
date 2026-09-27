@@ -37,6 +37,26 @@ export * from "./utils/parameter_parsing.js";
 export * from "./utils/module_ops.js";
 export * from "./utils/typst_file_writing.js";
 export * from "./utils/qhull.js";
+export * from "./utils/bezier.js";
+export * from "./utils/paths.js";
+export * from "./utils/rate_functions.js";
+// NOTE: both ./animation/animation.js and ./utils/rate_functions.js export a
+// type named `RateFunction` (with different signatures); the explicit type
+// re-export below resolves the star-export ambiguity in favor of the
+// animation signature (manim.animation.animation.RateFunction).
+export type { RateFunction } from "./animation/animation.js";
+export * from "./utils/caching.js";
+export * from "./utils/family.js";
+export * from "./utils/deprecation.js";
+export * from "./utils/hash.js";
+export * from "./utils/debug.js";
+export * from "./utils/sounds.js";
+export * from "./utils/tex.js";
+export * from "./utils/tex_file_writing.js";
+// NOTE: ./utils/polylabel.js also exports an internal `Polygon` class that
+// would collide with ./mobject/geometry/polygram.js `Polygon`; only the public
+// helpers are re-exported here.
+export { Cell, polylabel } from "./utils/polylabel.js";
 export * from "./_config/logger_utils.js";
 export * from "./_config/utils.js";
 export * from "./camera/camera.js";
@@ -52,13 +72,17 @@ export * from "./mobject/types/vectorized_mobject.js";
 export * from "./mobject/types/point_cloud_mobject.js";
 export * from "./mobject/types/image_mobject.js";
 export * from "./mobject/graph.js";
+export * from "./mobject/matrix.js";
 export * from "./mobject/vector_field.js";
+export * from "./mobject/utils.js";
 export * from "./mobject/text/index.js";
 export * from "./mobject/text/numbers.js";
 export * from "./mobject/logo.js";
 export * from "./mobject/svg/svg_mobject.js";
 export * from "./mobject/svg/brace.js";
 export * from "./mobject/graphing/coordinate_systems.js";
+export * from "./mobject/graphing/number_line.js";
+export * from "./mobject/graphing/probability.js";
 export * from "./mobject/graphing/scale.js";
 export * from "./mobject/graphing/functions.js";
 export * from "./mobject/geometry/arc.js";
@@ -72,6 +96,7 @@ export * from "./mobject/three_d/three_dimensions.js";
 export * from "./mobject/three_d/three_d_utils.js";
 export * from "./mobject/three_d/polyhedra.js";
 export * from "./scene/scene.js";
+export * from "./scene/section.js";
 export * from "./scene/moving_camera_scene.js";
 export * from "./scene/three_d_scene.js";
 export * from "./scene/vector_space_scene.js";
@@ -81,6 +106,8 @@ export * from "./animation/changing.js";
 export * from "./animation/composition.js";
 export * from "./animation/creation.js";
 export * from "./animation/fading.js";
+export * from "./animation/growing.js";
+export * from "./animation/indication.js";
 export * from "./animation/movement.js";
 export * from "./animation/numbers.js";
 export * from "./animation/rotation.js";
@@ -97,4 +124,5 @@ export * from "./animation/speedmodifier.js";
 export * from "./animation/specialized.js";
 export * from "./animation/updaters/mobject_update_utils.js";
 export * from "./animation/updaters/update.js";
+export * from "./renderer/scene_runner.js";
 export * from "./renderer/index.js";

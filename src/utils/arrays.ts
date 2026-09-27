@@ -69,7 +69,13 @@ export function nestedRows(value: unknown): unknown[][] {
   }
   if (Array.isArray(value)) {
     if (value.length === 0) return [];
-    if (Array.isArray(value[0])) return value as unknown[][];
+    const first = value[0];
+    if (Array.isArray(first) || isNDArray(first)) {
+      // Normalize nested NDArray rows to plain arrays so a mixed list such as
+      // `[start_array, ndarray_point]` (common when a method returns an
+      // NDArray) is not mistaken for a row of scalars (which would yield NaN).
+      return value.map((item) => (isNDArray(item) ? (item.toArray() as unknown[]) : item)) as unknown[][];
+    }
     return [value as unknown[]];
   }
   if (ArrayBuffer.isView(value)) return [Array.from(value as unknown as ArrayLike<number>)];
@@ -79,7 +85,12 @@ export function nestedRows(value: unknown): unknown[][] {
 export function pointRows(value: unknown, dim = 3): number[][] {
   const rows = nestedRows(value);
   return rows.map((row) => {
-    const values = Array.isArray(row) ? row : [row];
+    const record = row as unknown;
+    const values = Array.isArray(record)
+      ? (record as unknown[])
+      : isNDArray(record)
+        ? ((record as NDArray).toArray() as unknown[])
+        : [record];
     const point = values.slice(0, dim).map(numeric);
     while (point.length < dim) point.push(0);
     return point;

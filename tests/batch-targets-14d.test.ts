@@ -391,12 +391,15 @@ describe("_BooleanOps._convert_vmobject_to_skia_path", () => {
     const b = new _BooleanOps();
     expect(b._convert_vmobject_to_skia_path(new VMobject()).commands.length).toBe(0);
     const bad = new VMobject();
-    bad.set_points([
+    // NOTE: set_points now guards against non-finite inputs (fail-fast on
+    // `scalar * DIRECTION`); assign the raw buffer directly to exercise the
+    // downstream non-finite handling this test targets.
+    (bad as unknown as { points: NDArray }).points = array([
       [0, 0, 0],
       [1, 1, NaN],
       [2, 2, 2],
       [3, 3, 3],
-    ]);
+    ]) as NDArray;
     expect(b._convert_vmobject_to_skia_path(bad).commands.length).toBe(0);
   });
 });

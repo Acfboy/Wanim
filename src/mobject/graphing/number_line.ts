@@ -6,7 +6,7 @@ import { interpolate } from "../../utils/bezier.js";
 import { merge_dicts_recursively } from "../../utils/config_ops.js";
 import { angle_of_vector, normalize } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
-import { Mobject } from "../mobject.js";
+import { Mobject, isPlainOptionsObject } from "../mobject.js";
 import { Line } from "../geometry/line.js";
 import type { ArrowTip } from "../geometry/tips.js";
 import { DecimalNumber, type DecimalNumberMobFactory } from "../text/numbers.js";
@@ -73,6 +73,33 @@ function isSinglePoint(point: unknown): boolean {
   return true;
 }
 
+/** Options bag for NumberLine (mirrors the Python keyword parameters). */
+export interface NumberLineOptions {
+  x_range?: readonly [number, number] | readonly [number, number, number] | null;
+  length?: number | null;
+  unit_size?: number;
+  include_ticks?: boolean;
+  tick_size?: number;
+  numbers_with_elongated_ticks?: Iterable<number> | null;
+  longer_tick_multiple?: number;
+  exclude_origin_tick?: boolean;
+  rotation?: number;
+  stroke_width?: number;
+  include_tip?: boolean;
+  tip_width?: number;
+  tip_height?: number;
+  tip_shape?: (new (...args: never[]) => ArrowTip) | null;
+  include_numbers?: boolean;
+  font_size?: number;
+  scaling?: _ScaleBase;
+  label_direction?: readonly number[] | NDArray;
+  label_constructor?: unknown;
+  line_to_number_buff?: number;
+  decimal_number_config?: Record<string, unknown> | null;
+  numbers_to_exclude?: Iterable<number> | null;
+  numbers_to_include?: Iterable<number> | null;
+}
+
 export class NumberLine extends VGroup {
   x_range: [number, number, number];
   x_min: number;
@@ -118,32 +145,32 @@ export class NumberLine extends VGroup {
   // get_tick_marks() has its faithful target to return.
   ticks: VGroup = new VGroup();
 
-  constructor(options: {
-    x_range?: readonly [number, number] | readonly [number, number, number] | null;
-    length?: number | null;
-    unit_size?: number;
-    include_ticks?: boolean;
-    tick_size?: number;
-    numbers_with_elongated_ticks?: Iterable<number> | null;
-    longer_tick_multiple?: number;
-    exclude_origin_tick?: boolean;
-    rotation?: number;
-    stroke_width?: number;
-    include_tip?: boolean;
-    tip_width?: number;
-    tip_height?: number;
-    tip_shape?: (new (...args: never[]) => ArrowTip) | null;
-    include_numbers?: boolean;
-    font_size?: number;
-    scaling?: _ScaleBase;
-    label_direction?: readonly number[] | NDArray;
-    label_constructor?: unknown;
-    line_to_number_buff?: number;
-    decimal_number_config?: Record<string, unknown> | null;
-    numbers_to_exclude?: Iterable<number> | null;
-    numbers_to_include?: Iterable<number> | null;
-  } = {}) {
+  constructor(
+    optionsOrRange: NumberLineOptions | readonly number[] | null = {},
+    ...extra: unknown[]
+  ) {
     super();
+    // Accept a trailing plain options bag as well as a Python-style positional
+    // x_range/length:
+    //   new NumberLine({ x_range: [-3, 3, 1] })
+    //   new NumberLine([-3, 3, 1], { length: 6 })
+    const options: NumberLineOptions = {};
+    const positionals: unknown[] = [];
+    const consume = (value: unknown): void => {
+      if (value === null || value === undefined) return;
+      if (isPlainOptionsObject(value)) {
+        Object.assign(options, value);
+        return;
+      }
+      positionals.push(value);
+    };
+    consume(optionsOrRange);
+    for (const item of extra) consume(item);
+    if (positionals.length > 0) options.x_range = positionals[0] as NumberLineOptions["x_range"];
+    if (positionals.length > 1) options.length = positionals[1] as number | null;
+    if (positionals.length > 2) options.unit_size = positionals[2] as number;
+    if (positionals.length > 3) options.include_ticks = positionals[3] as boolean;
+    if (positionals.length > 4) options.tick_size = positionals[4] as number;
     const frame_x_radius = Number(config.get("frame_x_radius") ?? 7.111111111111111);
     let x_range: [number, number, number];
     if (options.x_range === null || options.x_range === undefined) {
@@ -635,12 +662,18 @@ export class UnitInterval extends NumberLine {
     unit_size = 10,
     numbers_with_elongated_ticks: Iterable<number> | null = null,
     decimal_number_config: Record<string, unknown> | null = null,
-    options: ConstructorParameters<typeof NumberLine>[0] = {},
+    options: NumberLineOptions | readonly number[] | null = {},
   ) {
     const resolved_ticks = numbers_with_elongated_ticks ?? [0, 1];
     const resolved_decimal = decimal_number_config ?? { num_decimal_places: 1 };
+    const base_options: NumberLineOptions = options !== null && !Array.isArray(options)
+      ? { ...(options as NumberLineOptions) }
+      : {};
+    if (Array.isArray(options)) {
+      base_options.x_range = options as unknown as readonly [number, number, number];
+    }
     super({
-      ...options,
+      ...base_options,
       x_range: [0, 1, 0.1],
       unit_size,
       numbers_with_elongated_ticks: resolved_ticks,

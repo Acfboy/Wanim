@@ -1,5 +1,5 @@
 import { type NDArray } from "numpy-ts";
-import { Mobject, type MobjectSlice } from "../mobject.js";
+import { Mobject, isPlainOptionsObject, type MobjectSlice } from "../mobject.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Rectangle, type RectangleOptions } from "../geometry/polygram.js";
 import { Brace, type BraceOptions } from "../svg/brace.js";
@@ -245,6 +245,7 @@ export class SampleSpace extends Rectangle {
 }
 
 export interface BarChartOptions {
+  values?: number[];
   bar_names?: string[] | null;
   y_range?: number[] | null;
   x_length?: number | null;
@@ -277,7 +278,19 @@ export class BarChart extends Axes {
   x_labels: VGroup | null = null;
   bar_labels: VGroup | null = null;
 
-  constructor(values: number[] = [], options: BarChartOptions = {}) {
+  constructor(valuesOrOptions: number[] | BarChartOptions = [], options: BarChartOptions = {}) {
+    // Accept a leading options bag so `new BarChart({ values, bar_names })`
+    // mirrors the Python `BarChart(values, bar_names=..., ...)` call.
+    let values: number[] = [];
+    let opts: BarChartOptions = { ...options };
+    if (isPlainOptionsObject(valuesOrOptions)) {
+      const bag: BarChartOptions = { ...(valuesOrOptions as BarChartOptions) };
+      if (bag.values !== undefined) values = [...bag.values];
+      delete bag.values;
+      opts = { ...bag, ...opts };
+    } else {
+      values = valuesOrOptions as number[];
+    }
     const {
       bar_names = null,
       y_range = null,
@@ -297,7 +310,7 @@ export class BarChart extends Axes {
       y_axis_config: passed_y_axis_config = null,
       axis_config: passed_axis_config = null,
       tips = false,
-    } = options;
+    } = opts;
 
     const resolved_y_length = y_length ?? config.frame_height - 4;
     const x_range = [0, values.length, 1];

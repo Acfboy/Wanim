@@ -1,5 +1,5 @@
 import { allclose, array, NDArray } from "numpy-ts";
-import { Mobject, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
+import { Mobject, assertFinitePoints, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
@@ -268,6 +268,7 @@ export class VMobject extends Mobject {
   }
 
   set_points(points: unknown): this {
+    assertFinitePoints(points);
     this.points = (
       isNDArray(points) ? points.copy() : array(points as unknown[])
     ) as NDArray;
@@ -996,6 +997,7 @@ export class VMobject extends Mobject {
     const h1 = rows(handles1, this.dim);
     const h2 = rows(handles2, this.dim);
     const a2 = rows(anchors2, this.dim);
+    assertFinitePoints([a1, h1, h2, a2]);
     if (!(a1.length === h1.length && h1.length === h2.length && h2.length === a2.length)) {
       const error = new Error("assert len(anchors1) == len(handles1) == len(handles2) == len(anchors2)");
       error.name = "AssertionError";

@@ -89,6 +89,15 @@ export interface MobjectOptions {
   [key: string]: unknown;
 }
 
+/** Options bag accepted by ``Mobject.arrange`` (mirrors its Python kwargs). */
+export interface ArrangeOptions {
+  direction?: readonly number[] | NDArray;
+  buff?: number;
+  center?: boolean;
+  aligned_edge?: readonly number[] | NDArray;
+  [key: string]: unknown;
+}
+
 export type FunctionLike = (...args: any[]) => any;
 const overrideFunctions = new WeakMap<object, FunctionLike>();
 
@@ -115,8 +124,94 @@ function vector(value: unknown, dim = 3): number[] {
   return pointFrom(value, dim).toArray() as number[];
 }
 
+/**
+ * Hint appended to every non-finite geometry error. In JS there is no numpy
+ * broadcasting, so `3 * UP` evaluates `3 * [0,1,0]` to `NaN` instead of
+ * `[0,3,0]`; that silently poisons every downstream point and only explodes
+ * much later (renderer errors / truncated videos). See Mobject.shift/scale/
+ * move_to/set_points and renderer/json_renderer.ts.
+ */
+export const NON_FINITE_GEOMETRY_HINT =
+  "non-finite point/vector value (NaN/Infinity). Common cause: `scalar * DIRECTION` (e.g. `3 * UP`) — JS does not broadcast; use `[0,3,0]` or `scalePoint(UP, 3)` instead.";
+
+/** Build the actionable non-finite error (optionally prefixed with context). */
+export function nonFiniteGeometryError(context?: string): Error {
+  return new Error(context ? `${context}. ${NON_FINITE_GEOMETRY_HINT}` : NON_FINITE_GEOMETRY_HINT);
+}
+
+/** True if a number/array/NDArray/complex contains any non-finite component. */
+export function hasNonFinite(value: unknown): boolean {
+  if (typeof value === "number") return !Number.isFinite(value);
+  if (typeof value === "bigint") return false;
+  if (isNDArray(value)) return hasNonFinite((value as NDArray).toArray());
+  if (Array.isArray(value)) return value.some(hasNonFinite);
+  if (ArrayBuffer.isView(value)) {
+    const view = value as unknown as ArrayLike<unknown>;
+    for (let index = 0; index < view.length; index += 1) {
+      if (!Number.isFinite(Number(view[index]))) return true;
+    }
+    return false;
+  }
+  if (value !== null && typeof value === "object" && "re" in value && "im" in value) {
+    const complex = value as { re: number; im: number };
+    return !Number.isFinite(Number(complex.re)) || !Number.isFinite(Number(complex.im));
+  }
+  return false;
+}
+
+/** Throw the actionable non-finite error when any component is NaN/Infinity. */
+export function assertFinite(value: unknown, context?: string): void {
+  if (hasNonFinite(value)) throw nonFiniteGeometryError(context);
+}
+
+/** Backwards/readability alias used by point-setting entry points. */
+export function assertFinitePoints(value: unknown, context?: string): void {
+  assertFinite(value, context);
+}
+
 function isIterable(value: unknown): value is Iterable<unknown> {
   return value !== null && value !== undefined && typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function";
+}
+
+/** True for a plain (non-array, non-Mobject, non-NDArray) options/kwargs bag.
+ *  Class instances (ManimColor, Mobject, ...) are NOT bags, so a color or
+ *  direction passed positionally is never mistaken for kwargs. */
+export function isPlainOptionsObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value) || isNDArray(value)) return false;
+  if (value instanceof Mobject || value instanceof Map || value instanceof Set) return false;
+  if (ArrayBuffer.isView(value)) return false;
+  if (typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Split a positional-argument list into positional values and a merged
+ * options bag. A plain object whose keys intersect `optionKeys` is treated as
+ * the trailing/leading Python `**kwargs` bag; everything else stays
+ * positional. This lets `new Axes({ x_range, y_range })` and
+ * `axes.plot(fn, range, { color })` mirror manim's keyword arguments.
+ */
+export function splitArgsAndOptions(
+  args: unknown[],
+  optionKeys?: ReadonlySet<string>,
+): { positionals: unknown[]; options: Record<string, unknown> } {
+  let end = args.length;
+  while (end > 0 && args[end - 1] === undefined) end -= 1;
+  const positionals: unknown[] = [];
+  const options: Record<string, unknown> = {};
+  for (const arg of args.slice(0, end)) {
+    if (isPlainOptionsObject(arg)) {
+      const keys = Object.keys(arg);
+      if (optionKeys === undefined || keys.length === 0 || keys.some((key) => optionKeys.has(key))) {
+        Object.assign(options, arg);
+        continue;
+      }
+    }
+    positionals.push(arg);
+  }
+  return { positionals, options };
 }
 
 function pointArray(rows: number[][]): NDArray {
@@ -962,6 +1057,9 @@ export class Mobject {
   }
 
   scale(scale_factor: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    assertFinite(scale_factor);
+    if (about_point !== undefined && about_point !== null) assertFinite(vector(about_point, this.dim));
+    if (about_edge !== undefined && about_edge !== null) assertFinite(vector(about_edge, this.dim));
     this.apply_points_function_about_point(
       (points) => pointArray(pointRows(points, this.dim).map((point) => point.map((value) => value * scale_factor))),
       about_point ?? undefined,
@@ -975,7 +1073,12 @@ export class Mobject {
       throw new TypeError("shift expected at least 1 argument, got 0");
     }
     let total = Array.from({ length: this.dim }, () => 0);
-    for (const vectorValue of vectors) total = addPoints(total, vector(vectorValue, this.dim), this.dim);
+    for (const vectorValue of vectors) {
+      const component = vector(vectorValue, this.dim);
+      assertFinite(component);
+      total = addPoints(total, component, this.dim);
+    }
+    assertFinite(total);
     for (const mobject of this.family_members_with_points()) {
       mobject.points = pointArray(pointRows(mobject.points, this.dim).map((point) => addPoints(point, total, this.dim)));
     }
@@ -993,8 +1096,10 @@ export class Mobject {
     } else {
       target = vector(pointOrMobject, this.dim);
     }
+    assertFinite(target);
     const pointToAlign = this.get_critical_point(alignedEdge);
     const mask = vector(coorMask, this.dim);
+    assertFinite(mask);
     const delta = subtractPoints(target, pointToAlign, this.dim).map((value, index) => value * (mask[index] ?? 1));
     return this.shift(delta);
   }
@@ -1197,6 +1302,7 @@ export class Mobject {
   }
 
   copy_array_from(value: unknown): this {
+    assertFinitePoints(value);
     this.points = pointsFrom(value, this.dim);
     return this;
   }
@@ -1536,9 +1642,33 @@ export class Mobject {
     return this.__getattr__("set_foo");
   }
 
-  arrange(direction: readonly number[] = RIGHT, buff = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, center = true): this {
-    for (let index = 0; index < this.submobjects.length - 1; index += 1) this.submobjects[index + 1].next_to(this.submobjects[index], direction, buff);
-    if (center) this.center();
+  arrange(
+    directionOrOptions: readonly number[] | NDArray | ArrangeOptions = RIGHT,
+    buff = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
+    center = true,
+  ): this {
+    // NOTE: mirrors Python `arrange(direction=RIGHT, buff=..., center=True,
+    // **kwargs)`. A leading options bag `{ direction, buff, center,
+    // aligned_edge, ... }` is accepted (a raw direction is always an array,
+    // so a plain object is unambiguously the kwargs bag).
+    let direction: readonly number[] | NDArray = directionOrOptions as readonly number[];
+    let resolvedBuff = buff;
+    let resolvedCenter = center;
+    let alignedEdge: readonly number[] | NDArray = ORIGIN;
+    if (isPlainOptionsObject(directionOrOptions)) {
+      const options = directionOrOptions as ArrangeOptions;
+      direction = options.direction ?? RIGHT;
+      resolvedBuff = options.buff ?? DEFAULT_MOBJECT_TO_MOBJECT_BUFFER;
+      resolvedCenter = options.center ?? true;
+      alignedEdge = options.aligned_edge ?? ORIGIN;
+    }
+    assertFinite(vector(direction, this.dim));
+    assertFinite(resolvedBuff);
+    assertFinite(vector(alignedEdge, this.dim));
+    for (let index = 0; index < this.submobjects.length - 1; index += 1) {
+      this.submobjects[index + 1].next_to(this.submobjects[index], direction, resolvedBuff, alignedEdge);
+    }
+    if (resolvedCenter) this.center();
     return this;
   }
 
