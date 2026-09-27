@@ -54,6 +54,8 @@ export interface CanvasRenderStats {
   extractMs: number;
   serializeMs: number;
   drawMs: number;
+  /** Time spent inside `Scene.play` (animation interpolation + draw). */
+  playMs: number;
   totalMs: number;
 }
 
@@ -80,6 +82,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     extractMs: 0,
     serializeMs: 0,
     drawMs: 0,
+    playMs: 0,
     totalMs: 0,
   };
   onFrame: ((info: CanvasRenderProgress) => void) | null;
@@ -105,7 +108,9 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
       this._started = true;
       this._startedAt = performance.now();
     }
+    const startedAt = performance.now();
     super.play(scene, ...args as never[]);
+    this.stats.playMs += performance.now() - startedAt;
     this._emitProgress(true);
   }
 
@@ -172,6 +177,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this.stats.extractMs = 0;
     this.stats.serializeMs = 0;
     this.stats.drawMs = 0;
+    this.stats.playMs = 0;
     this._startedAt = performance.now();
     this._started = true;
   }

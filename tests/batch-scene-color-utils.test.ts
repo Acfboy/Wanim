@@ -268,11 +268,12 @@ describe("VMobject rgbas getters", () => {
     const vm = new VMobject();
     vm.set_points([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]]);
     vm.set_fill("RED", 0.5);
+    // Python-faithful: a flat color is a single row broadcast over the points.
     const fill = rowsOf(vm.get_fill_rgbas());
-    expect(fill).toHaveLength(4);
+    expect(fill).toHaveLength(1);
     for (const row of fill) expect(row[3]).toBeCloseTo(0.5, 12);
     const stroke = rowsOf(vm.get_stroke_rgbas());
-    expect(stroke).toHaveLength(4);
+    expect(stroke).toHaveLength(1);
   });
 
   it("falls back to zeros((1,4)) when the attribute is missing (python AttributeError path)", () => {

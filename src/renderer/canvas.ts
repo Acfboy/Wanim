@@ -219,10 +219,32 @@ export function computeSubpathRanges(
   return ranges;
 }
 
+/** Read a points NDArray as rows, avoiding `pointRows`' nested-array pass when
+ *  the data is a plain C-contiguous matrix (the common case). */
+function pointsToRows(value: NDArray): number[][] {
+  const arr = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+  const shape = arr.shape;
+  const data = arr.data;
+  const contiguous = arr.flags === undefined || arr.flags.C_CONTIGUOUS !== false;
+  if (data !== undefined && contiguous && shape.length === 2) {
+    const count = shape[0] ?? 0;
+    const dim = shape[1] ?? 0;
+    const rows = new Array<number[]>(count);
+    for (let index = 0; index < count; index += 1) {
+      const base = index * dim;
+      const row = new Array<number>(dim);
+      for (let c = 0; c < dim; c += 1) row[c] = Number(data[base + c] ?? 0);
+      rows[index] = row;
+    }
+    return rows;
+  }
+  return pointRows(value, 3);
+}
+
 /** Set `ctx`'s current path from a VMobject's points, mirroring `set_cairo_context_path`. */
 export function setCanvasPath(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
   const transformed = camera.transform_points_pre_display(vmobject, vmobject.points);
-  const points = pointRows(transformed, 3);
+  const points = pointsToRows(transformed);
   if (points.length === 0) return;
   const nppcc = vmobject.n_points_per_cubic_curve;
   const ranges = computeSubpathRanges(points, nppcc, vmobject.tolerance_for_point_equality, 2);
