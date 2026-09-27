@@ -2,3 +2,9 @@ node_modules/
 dist/
 *.log
 media/
+
+# Browser demo build artifacts (produced by `pnpm build:browser`)
+demo/wanim.browser.js
+demo/wanim.browser.js.map
+demo/fonts/
+demo/sample.mjson

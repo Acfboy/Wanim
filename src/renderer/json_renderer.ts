@@ -212,29 +212,8 @@ export function serialize_vmobject(vmobject: VMobject, camera?: unknown): Record
   return record;
 }
 
-/** Serialize one full frame: camera geometry plus the display list. */
-export function serialize_frame(camera: Camera, sceneMobjects: Iterable<Mobject>): Record<string, unknown> {
-  if (isThreeDCamera(camera)) {
-    // The z-ordering depends on the camera rotation matrix, which
-    // ThreeDCamera.capture_mobjects would regenerate first.
-    camera.reset_rotation_matrix();
-  }
-  const mobjects = camera.get_mobjects_to_display(sceneMobjects, true);
-  const unsupported = new Set<string>();
-  for (const mobject of mobjects) {
-    if (mobject instanceof PMobject || mobject instanceof AbstractImageMobject) {
-      unsupported.add(mobject.constructor.name);
-    }
-  }
-  if (unsupported.size > 0) {
-    const error = new Error(
-      "PMobjects and image mobjects cannot be serialized, found: "
-      + [...unsupported].sort().join(", "),
-    );
-    error.name = "NotImplementedError";
-    throw error;
-  }
-  const vmobjects = mobjects.filter((mobject): mobject is VMobject => mobject instanceof VMobject);
+/** Serialize the camera geometry part of a frame (`cam` in the mjson schema). */
+export function serialize_camera(camera: Camera): Record<string, unknown> {
   assertFiniteSerialized(camera.frame_center, "camera frame_center", camera.constructor.name);
   assertFiniteSerialized(camera.frame_width, "camera frame_width", camera.constructor.name);
   assertFiniteSerialized(camera.frame_height, "camera frame_height", camera.constructor.name);
@@ -255,8 +234,44 @@ export function serialize_frame(camera: Camera, sceneMobjects: Iterable<Mobject>
     cam.sa = Boolean(camera.should_apply_shading);
     cam.ep = Boolean(camera.exponential_projection);
   }
+  return cam;
+}
+
+/**
+ * Serialize one full frame: camera geometry plus the display list.
+ *
+ * `precomputedDisplay` lets callers that already extracted the display list
+ * (e.g. the Canvas backend, which needs it for drawing too) avoid extracting
+ * it twice.
+ */
+export function serialize_frame(
+  camera: Camera,
+  sceneMobjects: Iterable<Mobject>,
+  precomputedDisplay?: Mobject[],
+): Record<string, unknown> {
+  if (isThreeDCamera(camera)) {
+    // The z-ordering depends on the camera rotation matrix, which
+    // ThreeDCamera.capture_mobjects would regenerate first.
+    camera.reset_rotation_matrix();
+  }
+  const mobjects = precomputedDisplay ?? camera.get_mobjects_to_display(sceneMobjects, true);
+  const unsupported = new Set<string>();
+  for (const mobject of mobjects) {
+    if (mobject instanceof PMobject || mobject instanceof AbstractImageMobject) {
+      unsupported.add(mobject.constructor.name);
+    }
+  }
+  if (unsupported.size > 0) {
+    const error = new Error(
+      "PMobjects and image mobjects cannot be serialized, found: "
+      + [...unsupported].sort().join(", "),
+    );
+    error.name = "NotImplementedError";
+    throw error;
+  }
+  const vmobjects = mobjects.filter((mobject): mobject is VMobject => mobject instanceof VMobject);
   return {
-    cam,
+    cam: serialize_camera(camera),
     m: vmobjects.map((mobject) => serialize_vmobject(mobject, camera)),
   };
 }

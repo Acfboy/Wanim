@@ -66,7 +66,7 @@ export function default_camera_class(sceneClass: SceneConstructor): new (...args
   return Camera;
 }
 
-function construct_scene(sceneClass: SceneConstructor, renderer: JSONCairoRenderer): Scene {
+export function construct_scene(sceneClass: SceneConstructor, renderer: JSONCairoRenderer): Scene {
   // NOTE: Python's `scene_class(renderer=renderer)` forwards the keyword
   // through `**kwargs` down the MRO.  TS constructors do not share that
   // channel, so the renderer is routed into the options bag at the position

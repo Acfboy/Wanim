@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wanim Canvas2D preview</title>
+<link rel="stylesheet" href="./style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "wanim": "./wanim.browser.js",
+    "numpy-ts": "../node_modules/numpy-ts/dist/numpy-ts.browser.js"
+  }
+}
+</script>
+</head>
+<body>
+<header>
+  <h1>wanim · Canvas2D renderer</h1>
+  <p class="sub">Run manim-style JavaScript in the browser and rasterize it with the Canvas2D backend.</p>
+</header>
+
+<main>
+  <section class="editor-pane">
+    <div class="toolbar">
+      <button data-preset="basic">BasicScene</button>
+      <button data-preset="opening">OpeningManim</button>
+      <button data-preset="sine">SineCurve</button>
+      <select id="quality" title="quality">
+        <option value="-ql">-ql (854×480, 15fps)</option>
+        <option value="-qm">-qm (1280×720, 30fps)</option>
+        <option value="-qh">-qh (1920×1080, 60fps)</option>
+      </select>
+    </div>
+    <textarea id="code" spellcheck="false"></textarea>
+    <div class="actions">
+      <button id="preview" class="primary">开始预览 / Preview</button>
+      <button id="benchmark">极限帧率测试 / Benchmark</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+  </section>
+
+  <section class="stage-pane">
+    <div class="canvas-wrap">
+      <canvas id="stage" width="854" height="480"></canvas>
+    </div>
+    <div class="controls">
+      <label class="file">加载 .mjson
+        <input type="file" id="mjson-file" accept=".mjson,.json,application/json" />
+      </label>
+      <label class="check"><input type="checkbox" id="loop" checked /> loop playback</label>
+    </div>
+    <pre id="status">Idle.</pre>
+    <pre id="stats"></pre>
+  </section>
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
