@@ -3,8 +3,11 @@ dist/
 *.log
 media/
 
-# Browser demo build artifacts (produced by `pnpm build:browser`)
+# Browser demo build artifacts (produced by `pnpm build:demo`)
 demo/wanim.browser.js
 demo/wanim.browser.js.map
+demo/py2js.browser.js
+demo/py2js.browser.js.map
+demo/rapydscript.js
 demo/fonts/
 demo/*.mjson
