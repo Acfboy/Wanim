@@ -40,6 +40,7 @@ export * from "./utils/qhull.js";
 export * from "./_config/logger_utils.js";
 export * from "./_config/utils.js";
 export * from "./camera/camera.js";
+export * from "./camera/three_d_camera.js";
 export * from "./camera/mapping_camera.js";
 export * from "./camera/moving_camera.js";
 export * from "./camera/multi_camera.js";

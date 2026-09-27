@@ -2,7 +2,7 @@ import { config } from "../_config/utils.js";
 import { DEGREES, RendererType } from "../constants.js";
 import type { Animation } from "../animation/animation.js";
 import { Transform } from "../animation/transform.js";
-import { Camera } from "../camera/camera.js";
+import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { Mobject } from "../mobject/mobject.js";
 import { ValueTracker } from "../mobject/value_tracker.js";
 import { ThreeDAxes } from "../mobject/graphing/coordinate_systems.js";
@@ -23,15 +23,11 @@ export class ThreeDScene extends Scene {
   default_angled_camera_orientation_kwargs: Record<string, number>;
 
   constructor(
-    camera_class: new (...args: any[]) => any = Camera as unknown as new (...args: any[]) => any,
+    camera_class: new (...args: any[]) => any = ThreeDCamera as unknown as new (...args: any[]) => any,
     ambient_camera_rotation: unknown = null,
     default_angled_camera_orientation_kwargs: Record<string, number> | null = null,
     options: ThreeDSceneOptions = {},
   ) {
-    // NOTE: Python defaults camera_class to ThreeDCamera, which has not
-    // been ported yet (later batch); the Cairo Camera is used instead.
-    // All camera interaction goes through `any`-typed handles, so behavior
-    // binds to the real camera once it lands.
     super(
       (options.renderer as null) ?? null,
       options.camera_class ?? camera_class,

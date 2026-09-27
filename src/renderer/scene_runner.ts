@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { config } from "../_config/utils.js";
 import { Camera } from "../camera/camera.js";
 import { MovingCamera } from "../camera/moving_camera.js";
+import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { Scene } from "../scene/scene.js";
 import { MovingCameraScene } from "../scene/moving_camera_scene.js";
 import { SpecialThreeDScene, ThreeDScene } from "../scene/three_d_scene.js";
@@ -56,12 +57,12 @@ function isSubclassOf(ctor: unknown, base: unknown): boolean {
 
 /** The camera class the scene would use by default (mirrors __main__.py). */
 export function default_camera_class(sceneClass: SceneConstructor): new (...args: any[]) => Camera {
+  if (isSubclassOf(sceneClass, ThreeDScene)) {
+    return ThreeDCamera as unknown as new (...args: any[]) => Camera;
+  }
   if (isSubclassOf(sceneClass, MovingCameraScene)) {
     return MovingCamera as unknown as new (...args: any[]) => Camera;
   }
-  // NOTE: Python returns ThreeDCamera for ThreeDScene subclasses; that camera
-  // is not ported yet, so 3D scenes fall back to Camera here (and their
-  // serialized frames carry no 3D keys — see ).
   return Camera;
 }
 
