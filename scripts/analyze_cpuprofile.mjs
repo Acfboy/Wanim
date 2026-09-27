@@ -38,7 +38,10 @@ const label = (node) => {
   const frame = node.callFrame;
   const name = frame.functionName || "(anonymous)";
   const url = (frame.url || "").replace(/^file:\/\//, "");
-  const short = url.replace(/.*\/wanim\//, "").replace(/.*\/numpy-ts\//, "numpy-ts/");
+  const short = url
+    .replace(/^https?:\/\/[^/]+\//, "")
+    .replace(/.*\/wanim\//, "")
+    .replace(/.*\/numpy-ts\//, "numpy-ts/");
   return `${name} @ ${short}:${frame.lineNumber + 1}`;
 };
 

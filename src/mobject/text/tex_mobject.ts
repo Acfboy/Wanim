@@ -85,7 +85,11 @@ export class SingleStringMathTex extends SVGMobject {
 
     const svg_string = texToSvgCached(this._get_modified_expression(texString));
     (this as unknown as { _svg_string: string | null })._svg_string = svg_string;
-    this.generate_mobject();
+    // Use the SVG-mobject cache (as Python's SVGMobject.__init__ does): the
+    // first construction of a given expression parses the MathJax SVG, later
+    // ones clone the cached geometry.  Calling `generate_mobject()` directly
+    // re-parsed the SVG on every construction.
+    this.init_svg_mobject(true);
     this.move_into_position();
 
     this.init_colors();

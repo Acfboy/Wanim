@@ -5,7 +5,7 @@
 //
 // Usage: node scripts/editor_smoke.mjs [preset] [--out screenshot.png]
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { extname, dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,6 +49,8 @@ async function main() {
   const out = outIndex >= 0 ? resolve(argv[outIndex + 1]) : null;
   const codeIndex = argv.indexOf("--code");
   const codePath = codeIndex >= 0 ? resolve(argv[codeIndex + 1]) : null;
+  const profileIndex = argv.indexOf("--profile");
+  const profilePath = profileIndex >= 0 ? resolve(argv[profileIndex + 1]) : null;
   const repeatIndex = argv.indexOf("--repeat");
   const repeat = repeatIndex >= 0 ? Number(argv[repeatIndex + 1]) : 1;
   const timeoutMs = Number(process.env.EDITOR_SMOKE_TIMEOUT_MS ?? 240000);
@@ -77,7 +79,13 @@ async function main() {
       console.log(`preset ${preset}: ${codeLen} chars`);
     }
     const genFps = [];
+    let cdp = null;
+    if (profilePath !== null) {
+      cdp = await page.context().newCDPSession(page);
+      await cdp.send("Profiler.enable");
+    }
     for (let run = 0; run < repeat; run += 1) {
+      if (cdp !== null && run === repeat - 1) await cdp.send("Profiler.start");
       await page.evaluate(() => { document.getElementById("status").textContent = "__reset__"; });
       await page.click("#run");
       await page.waitForFunction(
@@ -88,6 +96,11 @@ async function main() {
       const text = await page.textContent("#stats");
       const match = /generation: .*\(([\d.]+) gen fps\)/.exec(text);
       if (match) genFps.push(Number(match[1]));
+      if (cdp !== null && run === repeat - 1) {
+        const { profile } = await cdp.send("Profiler.stop");
+        await writeFile(profilePath, JSON.stringify(profile));
+        console.log(`wrote profile -> ${profilePath}`);
+      }
     }
     if (genFps.length > 0) console.log(`gen fps (best): ${Math.max(...genFps).toFixed(1)}  runs: ${genFps.join(", ")}`);
     // Let a few frames play so the canvas is non-trivial.
