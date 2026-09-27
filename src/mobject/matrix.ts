@@ -21,6 +21,25 @@ export type MatrixElementFactory = (
   config?: Record<string, unknown>,
 ) => VMobject;
 
+/** Accept either a factory `(item, config) => VMobject` or a manim-style
+ * mobject class (`MathTex`, `Text`, ...), mirroring Python's
+ * `element_to_mobject(item, **config)` which is a class there. */
+function toElementFactory(
+  element_to_mobject: MatrixElementFactory | (new (...args: any[]) => VMobject),
+): MatrixElementFactory {
+  const isClass = /^class[\s{]/.test(Function.prototype.toString.call(element_to_mobject));
+  if (!isClass) return element_to_mobject as MatrixElementFactory;
+  const ctor = element_to_mobject as new (item: unknown, c?: Record<string, unknown>) => VMobject;
+  return (item, config = {}) => {
+    try {
+      return new ctor(item, config);
+    } catch {
+      // Plain text/tex classes require a string; numbers are stringified.
+      return new ctor(String(item), config);
+    }
+  };
+}
+
 function mathTexElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
   // NOTE: mirrors Python `element_to_mobject(item, **config)` with the
   // default `element_to_mobject=MathTex`.
@@ -62,7 +81,7 @@ export interface MatrixOptions {
   bracket_v_buff?: number;
   add_background_rectangles_to_entries?: boolean;
   include_background_rectangle?: boolean;
-  element_to_mobject?: MatrixElementFactory;
+  element_to_mobject?: MatrixElementFactory | (new (...args: any[]) => VMobject);
   element_to_mobject_config?: Record<string, unknown>;
   element_alignment_corner?: readonly number[];
   left_bracket?: string;
@@ -113,7 +132,7 @@ export class Matrix extends VMobject {
     this.bracket_v_buff = bracket_v_buff;
     this.add_background_rectangles_to_entries = add_background_rectangles_to_entries;
     this.include_background_rectangle = include_background_rectangle;
-    this.element_to_mobject = element_to_mobject;
+    this.element_to_mobject = toElementFactory(element_to_mobject);
     this.element_to_mobject_config = element_to_mobject_config;
     this.element_alignment_corner = element_alignment_corner;
     this.left_bracket = left_bracket;
