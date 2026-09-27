@@ -45,7 +45,14 @@ await build({
   platform: "browser",
   target: ["chrome110"],
   sourcemap,
-  minify,
+  // NOTE: identifiers (including parameter names) are deliberately *not*
+  // mangled.  py2js maps Python `**kwargs` onto wanim methods by reading the
+  // method's parameter names at runtime (`Function.prototype.toString`), so
+  // mangling them (esbuild's `minifyIdentifiers`, part of `minify: true`) would
+  // silently break calls like `self.set_camera_orientation(phi=..., theta=...)`.
+  // Whitespace/syntax minification is safe and, after gzip, nearly as small.
+  minifyWhitespace: minify,
+  minifySyntax: minify,
   // wanim's scene discovery is name-based (`prototype.constructor.name ===
   // "Scene"`); bundling turns `class Scene` into an anonymous class expression
   // unless names are preserved.

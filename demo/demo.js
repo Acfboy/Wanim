@@ -21,6 +21,9 @@ const py2js = await import("py2js");
 // Target logical frame rate for live playback.  Yields to requestAnimationFrame
 // until at least 1000/TARGET_FPS ms have passed before computing the next frame.
 const TARGET_FPS = 30;
+// Render resolution / animation frame rate (manim quality flag).  Kept fixed so
+// the UI stays simple; `-qm` is 1280x720 @ 30fps and matches TARGET_FPS.
+const QUALITY = "-qm";
 
 const PRESETS = {
   square: `from manim import *
@@ -79,13 +82,26 @@ class RotatingSphere(ThreeDScene):
         self.play(Rotate(sphere, 360 * DEGREES, OUT), run_time=2)
         self.wait(1)
 `,
+  threeDCamera: `from manim import *
+
+class ThreeDCameraRotation(ThreeDScene):
+    def construct(self):
+        axes = ThreeDAxes()
+        circle = Circle()
+        self.set_camera_orientation(phi=75 * DEGREES, theta=30 * DEGREES)
+        self.add(circle, axes)
+        self.begin_ambient_camera_rotation(rate=0.1)
+        self.wait()
+        self.stop_ambient_camera_rotation()
+        self.move_camera(phi=75 * DEGREES, theta=30 * DEGREES)
+        self.wait()
+`,
 };
 
 const codeEl = document.getElementById("code");
 const highlightEl = document.getElementById("highlight");
 const highlightCodeEl = document.getElementById("highlight-code");
 const presetEl = document.getElementById("preset");
-const qualityEl = document.getElementById("quality");
 const stage = document.getElementById("stage");
 const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
@@ -265,7 +281,7 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const result = await wanim.render_scene_to_canvas(sceneClass, stage, {
-      quality: qualityEl.value,
+      quality: QUALITY,
       realtime: true,
       fps: TARGET_FPS,
       drawFrames: true,
