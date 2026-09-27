@@ -459,6 +459,15 @@ export class Camera {
   }
 
   transform_points_pre_display(_mobject: Mobject, points: NDArray): NDArray {
+    // Check finiteness straight from the backing typed array: materialising
+    // every row here (and again in the draw path) was a large per-frame cost.
+    const flat = (points as NDArray & { data?: ArrayLike<number> }).data;
+    if (flat !== undefined) {
+      for (let index = 0; index < flat.length; index += 1) {
+        if (!Number.isFinite(Number(flat[index]))) return array([[0, 0, 0]]) as NDArray;
+      }
+      return points;
+    }
     const rows = pointRows(points, 3);
     if (!rows.flat().every((value) => Number.isFinite(Number(value)))) {
       return array([[0, 0, 0]]) as NDArray;

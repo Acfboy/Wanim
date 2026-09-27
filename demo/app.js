@@ -128,19 +128,18 @@ async function benchmark() {
       },
     });
     const { stats, meta } = result;
-    const seconds = stats.totalMs / 1000;
-    const totalFps = stats.frames / seconds;
+    const playMs = stats.playMs || (stats.totalMs - 0);
+    const playFps = playMs > 0 ? stats.frames / (playMs / 1000) : Infinity;
+    const setupMs = Math.max(0, stats.totalMs - playMs);
+    const totalFps = stats.frames / (stats.totalMs / 1000);
     const drawFps = stats.drawMs > 0 ? stats.frames / (stats.drawMs / 1000) : Infinity;
-    const genMs = stats.totalMs - stats.drawMs;
-    const genFps = genMs > 0 ? stats.frames / (genMs / 1000) : Infinity;
     statsEl.textContent =
       `scene: ${sceneClass.name}  quality: ${qualityEl.value}\n` +
       `frames: ${stats.frames}, plays: ${meta.num_plays}\n` +
-      `wall time: ${stats.totalMs.toFixed(0)} ms  →  ${totalFps.toFixed(1)} fps (limit)\n` +
-      `  extract display list: ${stats.extractMs.toFixed(0)} ms\n` +
-      `  canvas draw:          ${stats.drawMs.toFixed(0)} ms  →  ${drawFps.toFixed(1)} draw fps\n` +
-      `  scene/animation (total−draw): ${genMs.toFixed(0)} ms  →  ${genFps.toFixed(1)} fps\n` +
-      `per frame: ${(stats.totalMs / stats.frames).toFixed(2)} ms`;
+      `render loop (play): ${stats.playMs.toFixed(0)} ms  →  ${playFps.toFixed(1)} fps\n` +
+      `  canvas draw inside loop: ${stats.drawMs.toFixed(0)} ms  →  ${drawFps.toFixed(1)} fps\n` +
+      `one-time setup (construct/Tex): ${setupMs.toFixed(0)} ms\n` +
+      `total wall: ${stats.totalMs.toFixed(0)} ms  →  ${totalFps.toFixed(1)} fps`;
     setStatus("Benchmark complete.");
     console.log("[wanim benchmark]", stats);
   } catch (error) {

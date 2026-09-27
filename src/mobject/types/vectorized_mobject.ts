@@ -237,23 +237,21 @@ export class VMobject extends Mobject {
     if (options.background_stroke_width !== undefined) {
       this.background_stroke_width = options.background_stroke_width;
     }
-    // NOTE: the TS styling pipeline keeps rgbas expanded to one row per point
-    // (a documented deviation from Python's single-row arrays; see
-    //  and the batch-layer4 header). Seed the arrays
-    // here so the live `fill_color`/`stroke_color` getters have data before
-    // `init_colors()` re-applies the resolved colors.
-    const pointCount = Math.max(1, this.get_num_points());
+    // NOTE: rgba arrays follow Python/NumPy semantics: a single row for a flat
+    // color (broadcast over every point) and one row per stop only for a real
+    // gradient.  Earlier ports expanded these to one row *per point*, which
+    // made every style read/write and per-frame color interpolation O(points)
+    // instead of O(1); that dominated the render loop (see
+    // ).
     const fillColor = new ManimColor(options.fill_color ?? options.color ?? WHITE);
     const strokeColor = new ManimColor(options.stroke_color ?? options.color ?? WHITE);
-    this.fill_rgbas = array(
-      Array.from({ length: pointCount }, () => [...(fillColor.toRgb().toArray() as number[]), this.fill_opacity]),
-    ) as NDArray;
-    this.stroke_rgbas = array(
-      Array.from({ length: pointCount }, () => [...(strokeColor.toRgb().toArray() as number[]), this.stroke_opacity]),
-    ) as NDArray;
-    this.background_stroke_rgbas = array(
-      Array.from({ length: pointCount }, () => [0, 0, 0, this.background_stroke_opacity]),
-    ) as NDArray;
+    this.fill_rgbas = array([
+      [...(fillColor.toRgb().toArray() as number[]), this.fill_opacity],
+    ]) as NDArray;
+    this.stroke_rgbas = array([
+      [...(strokeColor.toRgb().toArray() as number[]), this.stroke_opacity],
+    ]) as NDArray;
+    this.background_stroke_rgbas = array([[0, 0, 0, this.background_stroke_opacity]]) as NDArray;
     this.init_colors();
   }
 
@@ -584,22 +582,6 @@ export class VMobject extends Mobject {
     return this;
   }
 
-  /** Port deviation: keep one rgba row per point after a style update (see
-   * the constructor comment). Python keeps whatever length the gradient
-   * produced; the TS rendering pipeline expects point-aligned rgbas, and the
-   * historical port rebuilt all three arrays on any style change. */
-  private _expand_rgbas_to_points(): void {
-    const record = this as unknown as Record<string, NDArray | undefined>;
-    const target = Math.max(1, this.get_num_points());
-    for (const arrayName of ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"]) {
-      const current = record[arrayName];
-      if (current === undefined || current === null) continue;
-      const length = current.shape[0] ?? 0;
-      if (length === 0 || length >= target) continue;
-      record[arrayName] = stretch_array_to_length(current, target);
-    }
-  }
-
   init_colors(propagate_colors = true): this {
     // Faithful port of Python VMobject.init_colors: re-apply the current
     // style through the setters (which own the rgba arrays). The fill/stroke
@@ -637,7 +619,6 @@ export class VMobject extends Mobject {
       for (const submob of this.submobjects) (submob as VMobject).set_fill(color, opacity, family);
     }
     this.update_rgbas_array("fill_rgbas", color ?? null, opacity ?? null);
-    this._expand_rgbas_to_points();
     if (opacity !== undefined && opacity !== null) this.fill_opacity = opacity;
     return this;
   }
@@ -675,7 +656,6 @@ export class VMobject extends Mobject {
       return this;
     }
     this.update_rgbas_array("stroke_rgbas", color ?? null, opacity ?? null);
-    this._expand_rgbas_to_points();
     if (width !== undefined) this.stroke_width = width;
     if (opacity !== undefined) this.stroke_opacity = opacity;
     return this;

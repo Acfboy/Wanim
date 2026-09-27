@@ -58,11 +58,13 @@ describe("VMobject live color properties", () => {
 });
 
 describe("VMobject gradient color arrays", () => {
-  it("set_fill([RED, BLUE]) builds a per-point gradient", () => {
+  it("set_fill([RED, BLUE]) builds a two-stop gradient (one row per stop)", () => {
     const v = styled();
     v.set_fill([RED, BLUE] as never);
     const colors = rowColors(v.fill_rgbas);
-    expect(colors.length).toBe(4);
+    // Python ground truth: two rows, one per color stop (broadcast over points
+    // at render time), not one row per point.
+    expect(colors.length).toBe(2);
     expect(colors[0]).toBe(RED);
     expect(colors[colors.length - 1]).toBe(BLUE);
   });

@@ -110,6 +110,19 @@ export function pointsFrom(value: unknown, dim = 3): Point3D {
 
 export function pointAt(value: NDArray | number[] | readonly number[], index: number, dim = 3): number[] {
   if (isNDArray(value)) {
+    // Fast path: read straight from the backing typed array.  `pointRows`
+    // materialises *every* row, so using it here would make a single-anchor
+    // access O(n_points) and, e.g., `get_start_anchors` O(n_points^2).
+    // Only valid for C-contiguous data (`.data` ignores strides).
+    const array = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+    const shape = array.shape;
+    const flat = array.data;
+    const contiguous = array.flags === undefined || array.flags.C_CONTIGUOUS !== false;
+    if (flat !== undefined && contiguous && (shape.length === 1 || shape.length === 2)) {
+      const rowDim = shape.length === 2 ? (shape[1] ?? 1) : 1;
+      const base = index * rowDim;
+      return Array.from({ length: dim }, (_, c) => numeric(flat[base + c] ?? 0));
+    }
     const rows = pointRows(value, dim);
     return rows[index] ?? [];
   }

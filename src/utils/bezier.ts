@@ -1,4 +1,4 @@
-import { array, roots as polyRoots, type NDArray } from "numpy-ts";
+import { add, array, multiply, roots as polyRoots, type NDArray } from "numpy-ts";
 import { isNDArray, nestedRows, numeric, pointRows } from "./arrays.js";
 
 function rawRows(value: number[] | number[][] | NDArray): number[][] {
@@ -154,6 +154,20 @@ export function interpolate(
     return array(
       alphas.map((a) => (1 - a) * (start as number) + a * (end as number)),
     ) as NDArray;
+  }
+  // Fast path: equal-shape array operands with a scalar alpha. This is the
+  // per-frame mobject point interpolation; doing it through numpy-ts keeps the
+  // data in typed storage instead of materialising nested JS arrays (which the
+  // general path below does).
+  if (typeof alpha === "number" && (isNDArray(start) || Array.isArray(start)) && (isNDArray(end) || Array.isArray(end))) {
+    const startArr = isNDArray(start) ? (start as NDArray) : (array(start as unknown) as NDArray);
+    const endArr = isNDArray(end) ? (end as NDArray) : (array(end as unknown) as NDArray);
+    const sameShape =
+      startArr.shape.length === endArr.shape.length &&
+      startArr.shape.every((value, index) => value === endArr.shape[index]);
+    if (sameShape) {
+      return add(multiply(startArr, 1 - alpha), multiply(endArr, alpha)) as NDArray;
+    }
   }
   const startRows = rowsOf(start as number[] | NDArray);
   const endRows = rowsOf(end as number[] | NDArray);

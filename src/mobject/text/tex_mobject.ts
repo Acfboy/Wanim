@@ -22,7 +22,7 @@ import { SVGMobject, type SVGMobjectOptions } from "../svg/svg_mobject.js";
 import { Line } from "../geometry/line.js";
 import { setMathTexLabelFactory } from "../geometry/arc.js";
 import { setTexFactory } from "../types/vectorized_mobject.js";
-import { texToSvg } from "./mathjax.js";
+import { texToSvg, texToSvgCached } from "./mathjax.js";
 
 export const MATHTEX_SUBSTRING = "substring";
 export const TEX_MOB_SCALE_FACTOR = 0.008;
@@ -83,7 +83,7 @@ export class SingleStringMathTex extends SVGMobject {
     this.tex_template = tex_template ?? null;
     this.tex_string = texString;
 
-    const svg_string = texToSvg(this._get_modified_expression(texString));
+    const svg_string = texToSvgCached(this._get_modified_expression(texString));
     (this as unknown as { _svg_string: string | null })._svg_string = svg_string;
     this.generate_mobject();
     this.move_into_position();

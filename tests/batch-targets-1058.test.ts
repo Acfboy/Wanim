@@ -176,14 +176,13 @@ describe("VMobject.set_color", () => {
     const v = new VMobject();
     v.set_points_as_corners([[0, 0, 0], [1, 0, 0], [1, 1, 0]]);
     expect(v.set_color("#FF0000")).toBe(v);
-    // NOTE: Python keeps a single rgba row here; the TS styling pipeline
-    // stretches rgbas to one row per point (documented deviation, cf.
-    // batch-layer4 header). Every row must carry the observable color.
+    // Python-faithful: a flat color is a single rgba row broadcast over the
+    // points (not one row per point).
     const fillRows = rowsOf(v.fill_rgbas, 4);
-    expect(fillRows.length).toBe(v.get_num_points());
+    expect(fillRows.length).toBe(1);
     for (const row of fillRows) expectRowsClose([row], [[1, 0, 0, 0]]);
     const strokeRows = rowsOf(v.stroke_rgbas, 4);
-    expect(strokeRows.length).toBe(v.get_num_points());
+    expect(strokeRows.length).toBe(1);
     for (const row of strokeRows) expectRowsClose([row], [[1, 0, 0, 1]]);
     expect(v.get_fill_color()?.to_hex()).toBe("#FF0000");
     expect(v.get_stroke_color()?.to_hex()).toBe("#FF0000");
