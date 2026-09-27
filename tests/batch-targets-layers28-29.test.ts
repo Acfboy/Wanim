@@ -86,17 +86,16 @@ class TestMatrix extends Matrix {
   }
 }
 
-describe("tex-only stubs throw TODO (no functional tests per scope)", () => {
-  it("LabeledLine.__init__ throws (python: FileNotFoundError 'latex')", () => {
-    expect(() => new LabeledLine("hi")).toThrow(/text\/tex/);
+describe("text labels (ported) and remaining stubs", () => {
+  it("LabeledLine.__init__ builds a string label", () => {
+    const line = new LabeledLine("hi");
+    expect(line.label).toBeDefined();
   });
-  it("LabeledPolygram.__init__ throws with a label (python: FileNotFoundError 'latex')", () => {
-    expect(
-      () =>
-        new LabeledPolygram([[0, 0, 0], [1, 0, 0], [0, 1, 0]], {
-          label: "hi",
-        }),
-    ).toThrow(/text\/tex/);
+  it("LabeledPolygram.__init__ places a label", () => {
+    const p = new LabeledPolygram([[0, 0, 0], [1, 0, 0], [0, 1, 0]], {
+      label: "hi",
+    });
+    expect(p.label).toBeDefined();
   });
   it("PolarPlane.get_coordinate_labels with explicit values reaches the text/tex TODO", () => {
     // Python reaches MathTex/DecimalNumber label construction and fails on

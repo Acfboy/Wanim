@@ -1,11 +1,20 @@
 import { array, type NDArray } from "numpy-ts";
-import { LEFT, MED_SMALL_BUFF, RIGHT } from "../../constants.js";
+import { DEFAULT_FONT_SIZE, LEFT, MED_SMALL_BUFF, RIGHT } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { RendererType } from "../../constants.js";
+import { WHITE } from "../../utils/color/core.js";
 import { isNDArray, pointRows, subtractPoints } from "../../utils/arrays.js";
 import { polylabel } from "../../utils/polylabel.js";
 import type { Mobject } from "../mobject.js";
-import { VGroup } from "../types/vectorized_mobject.js";
+import { VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { MathTex, type MathTexOptions } from "../text/tex_mobject.js";
+import { Text } from "../text/text_mobject.js";
+import {
+  BackgroundRectangle,
+  SurroundingRectangle,
+  type BackgroundRectangleOptions,
+  type SurroundingRectangleOptions,
+} from "./shape_matchers.js";
 import { Arrow, Line, type LineEndpoint, type LineOptions } from "./line.js";
 import { ArrowTriangleFilledTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
@@ -14,15 +23,15 @@ import { Polygram, type PolygramOptions } from "./polygram.js";
 /**
  * A label consisting of text surrounded by a frame.
  *
- * NOTE: text/tex rendering (MathTex, Text, Typst) is out of scope for the
- * entire port, and this class exists to display a text label — so the
- * constructor is a clearly-marked stub until text support lands. The
- * signature mirrors the Python original.
+ * Mirrors Python `Label(label, label_config, box_config, frame_config,
+ * **kwargs)`: string labels are rendered with MathTex, while MathTex/Text
+ * instances are used as-is. The label is wrapped in a `BackgroundRectangle`
+ * and a `SurroundingRectangle` frame.
  */
 export class Label extends VGroup {
-  rendered_label!: unknown;
-  background_rect!: unknown;
-  frame!: unknown;
+  rendered_label!: VMobject;
+  background_rect!: BackgroundRectangle;
+  frame!: SurroundingRectangle;
 
   constructor(
     label: string | unknown,
@@ -32,12 +41,57 @@ export class Label extends VGroup {
     options: Record<string, unknown> = {},
   ) {
     super();
-    void label;
-    void label_config;
-    void box_config;
-    void frame_config;
+    // NOTE: Python passes **kwargs to VGroup; the TS VGroup constructor only
+    // takes submobjects, so styling kwargs are dropped here.
     void options;
-    throw new Error("TODO: text/tex not ported yet");
+
+    // Setup Defaults
+    const default_label_config: Record<string, unknown> = {
+      color: WHITE,
+      font_size: DEFAULT_FONT_SIZE,
+    };
+    const default_box_config: Record<string, unknown> = {
+      color: null,
+      buff: 0.05,
+      fill_opacity: 1,
+      stroke_width: 0.5,
+    };
+    const default_frame_config: Record<string, unknown> = {
+      color: WHITE,
+      buff: 0.05,
+      stroke_width: 0.5,
+    };
+
+    // Merge Defaults
+    const mergedLabelConfig = { ...default_label_config, ...(label_config ?? {}) };
+    const mergedBoxConfig = { ...default_box_config, ...(box_config ?? {}) };
+    const mergedFrameConfig = { ...default_frame_config, ...(frame_config ?? {}) };
+
+    // Determine the type of label and instantiate the appropriate object
+    if (typeof label === "string") {
+      this.rendered_label = new MathTex(label, mergedLabelConfig as MathTexOptions);
+    } else if (label instanceof MathTex || label instanceof Text) {
+      this.rendered_label = label;
+    } else {
+      throw new TypeError(
+        "Unsupported label type. Must be MathTex, Tex, Text, Typst, or MathTypst.",
+      );
+    }
+
+    // Add a background box
+    this.background_rect = new BackgroundRectangle(
+      this.rendered_label,
+      mergedBoxConfig as BackgroundRectangleOptions,
+    );
+
+    // Add a frame around the label
+    this.frame = new SurroundingRectangle(
+      this.rendered_label,
+      mergedFrameConfig as SurroundingRectangleOptions,
+    );
+
+    // Add components to the VGroup
+    this.add(this.background_rect, this.rendered_label, this.frame);
   }
 }
 
@@ -114,8 +168,7 @@ export class LabeledLine extends Line {
     }
     super(start, end, positionalBuff ?? lineOptions.buff ?? 0, positionalPathArc ?? lineOptions.path_arc ?? 0, lineOptions);
 
-    // Create Label (text/tex rendering is out of scope; the Label stub
-    // throws here exactly where Python would build MathTex/Text).
+    // Create Label
     this.label = new Label(
       label as string,
       resolved_label_config,
@@ -238,10 +291,9 @@ export interface LabeledPolygramOptions extends PolygramOptions {
 /**
  * Constructs a polygram containing a label box at its pole of inaccessibility.
  *
- * NOTE: the label itself is rendered text (MathTex/Text/Typst in the Python
- * original), so constructing this class currently throws via the Label stub
- * (text/tex is out of scope for the entire port). The pole/radius computation
- * below mirrors the original verbatim.
+ * The label is built with `Label` (MathTex for raw strings, or the supplied
+ * Text/MathTex mobject). The pole/radius computation below mirrors the Python
+ * original verbatim.
  */
 export class LabeledPolygram extends Polygram {
   label!: Label;

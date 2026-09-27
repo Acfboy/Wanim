@@ -22,7 +22,8 @@
 //  (D3) Union/Difference/Intersection/Exclusion: Python computes via Skia
 //       `pathops`; TS throws TODO (no pathops among allowed deps). Only the
 //       argument-validation errors are shared ground truth.
-//  (D4) Label: TS constructor always throws TODO (text/tex not ported).
+//  (D4) Label: now builds via the ported MathTex/Text pipeline (text/tex is
+//       no longer out of scope).
 //  (D5) Cone._set_start_and_end_attributes faithfully mirrors the upstream
 //       quirk `direction * norm(direction)` (multiply, not normalize): with
 //       direction=[0,0,2], height=2 the end is start+[0,0,8]. TS additionally
@@ -659,11 +660,12 @@ describe("ConvexHull", () => {
 
 // ---------------------------------------------------------------------------
 // manim.mobject.geometry.labeled.Label
-// (D4) text/tex out of scope: TS throws TODO; Python needs MathTex/Text.
+// Text/tex is ported (MathTex via MathJax), so string labels now build.
 // ---------------------------------------------------------------------------
 describe("Label", () => {
-  it("defers construction until text support lands (D4)", () => {
-    expect(() => new Label("x")).toThrowError(/text\/tex|TODO/);
+  it("builds a string label (MathTex + box + frame)", () => {
+    const label = new Label("x");
+    expect(label.submobjects.length).toBe(3);
   });
 });
 

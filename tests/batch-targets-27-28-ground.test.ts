@@ -138,23 +138,30 @@ describe("Table.__init__ / _table_to_mob_table", () => {
   });
 });
 
-describe("matrix pure layout + tex stubs", () => {
+describe("matrix pure layout + ported tex", () => {
   it("matrix_to_tex_string matches python exactly", () => {
     expect(matrix_to_tex_string([[1, 2], [3, 4]])).toBe(
       "\\left[ \\begin{array}{cc}1 & 2 \\\\ 3 & 4\\end{array} \\right]",
     );
   });
-  it("matrix_to_mobject throws tex TODO (python: MathTex -> latex)", () => {
-    expect(() => matrix_to_mobject([[1, 2], [3, 4]])).toThrow(/text\/tex/);
+  it("matrix_to_mobject builds a MathTex (python: MathTex)", () => {
+    const mob = matrix_to_mobject([[1, 2], [3, 4]]);
+    expect(mob).toBeInstanceOf(MathTex);
+    expect(mob.height).toBeGreaterThan(0);
   });
-  it("Matrix._add_brackets throws tex TODO (python: MathTex brackets -> latex)", () => {
-    const m = Object.create(Matrix.prototype) as Matrix;
-    expect(() => m._add_brackets("[", "]", {})).toThrow(/text\/tex/);
+  it("Matrix._add_brackets builds two MathTex brackets", () => {
+    const m = new Matrix([[1, 2], [3, 4]]);
+    const ret = m._add_brackets("(", ")", {});
+    expect(ret).toBe(m);
+    expect(m.get_brackets().submobjects.length).toBe(2);
+    for (const bracket of m.get_brackets().submobjects) {
+      expect(bracket).toBeInstanceOf(MathTex);
+    }
   });
-  it("get_det_text throws tex TODO (python: MathTex/Tex -> latex)", () => {
-    const m = Object.create(Matrix.prototype) as Matrix;
-    expect(() => get_det_text(m)).toThrow(/text\/tex/);
-    expect(() => get_det_text(m, 3)).toThrow(/text\/tex/);
+  it("get_det_text builds the determinant VGroup", () => {
+    const m = new Matrix([[2, 0], [-1, 1]]);
+    expect(get_det_text(m).submobjects.length).toBe(3);
+    expect(get_det_text(m, 3).submobjects.length).toBe(5);
   });
   it("_matrix_to_mob_matrix maps via factory; rows/cols match python", () => {
     const sq = () => new Square();
@@ -178,17 +185,20 @@ describe("matrix pure layout + tex stubs", () => {
     const mapped = m._matrix_to_mob_matrix([[one]]);
     expect(mapped[0]?.[0]).toBe(one);
   });
-  it("Matrix default factory throws (python: MathTex -> latex)", () => {
-    expect(
-      () =>
-        new Matrix([
-          ["a", "b"],
-          ["c", "d"],
-        ]),
-    ).toThrow(/text\/tex/);
+  it("Matrix default factory builds MathTex entries", () => {
+    const m = new Matrix([
+      ["a", "b"],
+      ["c", "d"],
+    ]);
+    expect(m.get_entries().submobjects.length).toBe(4);
+    for (const entry of m.get_entries().submobjects) {
+      expect(entry).toBeInstanceOf(MathTex);
+    }
   });
-  it("MobjectMatrix default (identity) still throws on brackets", () => {
-    expect(() => new MobjectMatrix([[new Square()]])).toThrow(/text\/tex/);
+  it("MobjectMatrix default (identity) builds entries and brackets", () => {
+    const m = new MobjectMatrix([[new Square()]]);
+    expect(m.get_entries().submobjects.length).toBe(1);
+    expect(m.get_brackets().submobjects.length).toBe(2);
   });
 });
 
@@ -321,13 +331,15 @@ describe("text/tex out-of-scope symbols throw TODO (or are unported stubs)", () 
     expect(typeof Tex).toBe("function");
     expect(new Text("hi").get_family().length).toBeGreaterThan(0);
   });
-  it("Label.__init__ throws (python: MathTex -> latex)", () => {
-    expect(() => new Label("hi")).toThrow(/text\/tex/);
+  it("Label.__init__ builds via MathTex (python: MathTex)", () => {
+    const label = new Label("hi");
+    expect(label.submobjects.length).toBe(3);
   });
-  it("Brace.get_tex throws (python: MathTex -> latex)", () => {
-    expect(() => new Brace(new Square()).get_tex("x")).toThrow(/text\/tex/);
+  it("Brace.get_tex builds a MathTex at the tip (python: MathTex)", () => {
+    const tex = new Brace(new Square()).get_tex("x");
+    expect(tex).toBeInstanceOf(MathTex);
   });
-  it("BraceLabel.__init__ with VMobject works; string needs tex", () => {
+  it("BraceLabel.__init__ with VMobject works; string builds MathTex", () => {
     // NOTE deviation: python stringifies even VMobject text and calls
     // MathTex (needs latex); the TS port returns VMobject labels as-is
     // (same leniency as NumberLine._create_label_tex).
@@ -335,7 +347,8 @@ describe("text/tex out-of-scope symbols throw TODO (or are unported stubs)", () 
     const bl = new BraceLabel(new Square(), vm);
     expect(bl.label).toBe(vm);
     expect(bl.submobjects.length).toBe(2);
-    expect(() => new BraceLabel(new Square(), "hello")).toThrow(/text\/tex/);
+    const bl2 = new BraceLabel(new Square(), "hello");
+    expect(bl2.label).toBeInstanceOf(MathTex);
   });
   it("BraceLabel.change_label swaps to the new VMobject", () => {
     const bl = new BraceLabel(new Square(), new VMobject());

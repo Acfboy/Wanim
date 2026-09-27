@@ -218,13 +218,13 @@ describe("Star", () => {
 
 // ---------------------------------------------------------------------------
 // manim.mobject.geometry.labeled.LabeledArrow
-// NOTE: text/tex is OUT OF SCOPE for the entire port. Python itself needs a
-// latex binary here (LabeledArrow('x') raises FileNotFoundError: latex), and
-// the TS Label stub throws `TODO: text/tex not ported yet` at the same point.
+// Text/tex is ported (MathTex via MathJax), so a string label now builds.
 // ---------------------------------------------------------------------------
-describe("LabeledArrow (text/tex out of scope)", () => {
-  it("throws the marked text/tex TODO instead of building a label", () => {
-    expect(() => new LabeledArrow("x")).toThrow(/text\/tex/);
+describe("LabeledArrow", () => {
+  it("builds a string label instead of throwing", () => {
+    const arrow = new LabeledArrow("x");
+    expect(arrow.label).toBeDefined();
+    expect(arrow.submobjects.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -267,9 +267,11 @@ describe("BraceLabel", () => {
     expect(bl.brace).toBeInstanceOf(Brace);
     expect(bl.label).toBe(dot);
   });
-  it("raw string labels throw the marked text/tex TODO", () => {
+  it("raw string labels build via MathTex by default", () => {
     const sq = new Square(2.0);
-    expect(() => new BraceLabel(sq, "x")).toThrow(/text\/tex/);
+    const bl = new BraceLabel(sq, "x");
+    expect(bl.label).toBeDefined();
+    expect(bl.submobjects.length).toBe(2);
   });
   it("creation_anim defaults to Group(GrowFromCenter(brace), FadeIn(label))", () => {
     const sq = new Square(2.0);

@@ -27,6 +27,21 @@ export type TipConstructor = new (
   options?: Record<string, unknown>,
 ) => ArrowTip;
 
+/** Factory used by {@link LabeledDot} to render a raw-string label with
+ * MathTex. Registered by the text module (see tex_mobject.ts) rather than
+ * imported here, because arc.ts -> tex_mobject.ts -> line.ts -> arc.ts is a
+ * module cycle (same reasoning as Python's local `from manim import MathTex`
+ * inside `LabeledDot.__init__`). */
+let mathTexLabelFactory:
+  | ((label: string, color: ParsableManimColor) => VMobject)
+  | null = null;
+
+export function setMathTexLabelFactory(
+  factory: (label: string, color: ParsableManimColor) => VMobject,
+): void {
+  mathTexLabelFactory = factory;
+}
+
 let default_tip_shape: TipConstructor | null = null;
 
 /** Registers the default tip shape used by get_unpositioned_tip when no
@@ -606,12 +621,16 @@ export class LabeledDot extends Dot {
     const { buff: buffOption, ...rest } = options;
     const resolvedBuff = buffOption ?? buff;
     // NOTE: Python renders a `str` label as `MathTex(label, color=BLACK)`;
-    // text/tex rendering is out of scope for the entire port, so only
-    // pre-rendered mobject labels are supported here.
+    // the MathTex factory is registered by the text module to avoid the
+    // arc.ts -> tex_mobject.ts -> line.ts -> arc.ts import cycle.
     let renderedLabel: Mobject;
     if (typeof label === "string") {
-      void BLACK;
-      throw new Error("TODO: text/tex not ported yet (LabeledDot string label needs MathTex)");
+      if (mathTexLabelFactory === null) {
+        throw new Error(
+          "LabeledDot string label needs MathTex; import the text module (e.g. from the package root) before use",
+        );
+      }
+      renderedLabel = mathTexLabelFactory(label, BLACK);
     } else {
       renderedLabel = label;
     }

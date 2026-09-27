@@ -13,6 +13,7 @@ import { SampleSpace, BarChart } from "../src/mobject/graphing/probability.js";
 import { PolarPlane } from "../src/mobject/graphing/coordinate_systems.js";
 import { Label, LabeledLine, LabeledPolygram } from "../src/mobject/geometry/labeled.js";
 import { Brace, BraceLabel } from "../src/mobject/svg/brace.js";
+import { MathTex, Text } from "../src/mobject/text/index.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
 import {
   VectorScene,
@@ -140,22 +141,25 @@ describe("Table._table_to_mob_table / Table.__init__", () => {
   });
 });
 
-describe("matrix (tex stubs + pure layout)", () => {
-  it("matrix_to_mobject throws tex TODO", () => {
-    expect(() => matrix_to_mobject([[1, 2], [3, 4]])).toThrow(/text\/tex/);
+describe("matrix (ported tex + pure layout)", () => {
+  it("matrix_to_mobject builds a MathTex", () => {
+    const mob = matrix_to_mobject([[1, 2], [3, 4]]);
+    expect(mob).toBeInstanceOf(MathTex);
+    expect(mob.height).toBeGreaterThan(0);
   });
   it("matrix_to_tex_string is pure and matches python", () => {
     expect(matrix_to_tex_string([[1, 2], [3, 4]])).toBe(
       "\\left[ \\begin{array}{cc}1 & 2 \\\\ 3 & 4\\end{array} \\right]",
     );
   });
-  it("Matrix._add_brackets throws tex TODO", () => {
-    const m = Object.create(Matrix.prototype) as Matrix;
-    expect(() => m._add_brackets("[", "]", {})).toThrow(/text\/tex/);
+  it("Matrix._add_brackets builds two MathTex brackets", () => {
+    const m = new Matrix([[1, 2], [3, 4]]);
+    expect(m._add_brackets("[", "]", {})).toBe(m);
+    expect(m.get_brackets().submobjects.length).toBe(2);
   });
-  it("get_det_text throws tex TODO", () => {
-    const m = Object.create(Matrix.prototype) as Matrix;
-    expect(() => get_det_text(m)).toThrow(/text\/tex/);
+  it("get_det_text builds the determinant VGroup", () => {
+    const m = new Matrix([[2, 0], [-1, 1]]);
+    expect(get_det_text(m).submobjects.length).toBe(3);
   });
   it("_matrix_to_mob_matrix / get_rows / get_columns via bracket-free subclass", () => {
     // NOTE: Matrix.__init__ always calls _add_brackets (MathTex, out of
@@ -231,26 +235,24 @@ describe("GenericGraph._add_vertex", () => {
   });
 });
 
-describe("tex-only stubs throw TODO", () => {
-  it("Label.__init__ throws", () => {
-    expect(() => new Label("hi")).toThrow(/text\/tex/);
+describe("ported text labels", () => {
+  it("Label builds a string label", () => {
+    expect(new Label("hi").submobjects.length).toBe(3);
   });
-  it("LabeledLine.__init__ throws via Label", () => {
-    expect(() => new LabeledLine("hi")).toThrow(/text\/tex/);
+  it("LabeledLine builds a string label", () => {
+    expect(new LabeledLine("hi").label).toBeDefined();
   });
-  it("LabeledPolygram missing label raises TypeError; with label throws tex TODO", () => {
+  it("LabeledPolygram requires label; with label places it", () => {
     // python: TypeError "missing 1 required keyword-only argument: 'label'"
     expect(() => new LabeledPolygram([0, 0, 0], [1, 0, 0])).toThrow(TypeError);
-    expect(
-      () =>
-        new LabeledPolygram([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], {
-          label: "hi",
-        } as unknown as Record<string, unknown>),
-    ).toThrow(/text\/tex/);
+    const p = new LabeledPolygram([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], {
+      label: "hi",
+    } as unknown as Record<string, unknown>);
+    expect(p.label).toBeDefined();
   });
-  it("Brace.get_tex throws (python: latex FileNotFoundError)", () => {
+  it("Brace.get_tex builds a MathTex at the tip", () => {
     const b = new Brace(new Square());
-    expect(() => b.get_tex("x")).toThrow(/text\/tex/);
+    expect(b.get_tex("x")).toBeInstanceOf(MathTex);
   });
   it("VectorScene.get_vector_label throws", () => {
     const vs = new VectorScene();
@@ -295,7 +297,7 @@ describe("Brace / BraceLabel with VMobject labels (tex-free path)", () => {
     const n = Math.hypot(...dir);
     expect(close(n, 1.0, 1e-9)).toBe(true);
   });
-  it("BraceLabel.__init__ with VMobject label works; string needs tex", () => {
+  it("BraceLabel.__init__ with VMobject label works; string builds MathTex", () => {
     // NOTE deviation: python stringifies even VMobject text and calls
     // MathTex (needs latex); the TS port returns VMobject labels as-is
     // (same leniency as NumberLine._create_label_tex).
@@ -304,7 +306,7 @@ describe("Brace / BraceLabel with VMobject labels (tex-free path)", () => {
     const bl = new BraceLabel(sq, vm);
     expect(bl.submobjects.length).toBe(2);
     expect(bl.label).toBe(vm);
-    expect(() => new BraceLabel(new Square(), "hello")).toThrow(/text\/tex/);
+    expect(new BraceLabel(new Square(), "hello").label).toBeInstanceOf(MathTex);
   });
   it("BraceLabel.change_label swaps to the new VMobject", () => {
     const bl = new BraceLabel(new Square(), new VMobject());
