@@ -1,17 +1,27 @@
 import { describe, expect, test } from "vitest";
 import { array } from "numpy-ts";
 import {
+  applyMobject3DFlags,
   backgroundCss,
   colorStyle,
   computeSubpathRanges,
+  configureFrameCamera,
   deserialize_vmobject,
+  drawFrame,
+  isThreeDFrame,
+  PreviewThreeDCamera,
   setCanvasPath,
+  type MJSONFrame,
   type MJSONMobject,
 } from "../src/renderer/canvas.js";
 import { CanvasSceneRenderer } from "../src/renderer/canvas_renderer.js";
+import { serialize_frame } from "../src/renderer/json_renderer.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
+import { Cube } from "../src/mobject/three_d/three_dimensions.js";
 import { Camera } from "../src/camera/camera.js";
+import { ThreeDCamera } from "../src/camera/three_d_camera.js";
 import { VMobject } from "../src/mobject/types/vectorized_mobject.js";
+import { BLUE, DEGREES } from "../src/index.js";
 
 function cubic(a: number[], h1: number[], h2: number[], b: number[]): number[][] {
   return [a, h1, h2, b];
@@ -69,20 +79,22 @@ interface Call {
   args: number[];
 }
 
-function mockContext(): { ctx: CanvasRenderingContext2D; calls: Call[]; state: Record<string, unknown> } {
+function mockContext(): { ctx: CanvasRenderingContext2D; calls: Call[]; state: Record<string, unknown>; fillStyles: unknown[] } {
   const calls: Call[] = [];
   const state: Record<string, unknown> = {};
+  const fillStyles: unknown[] = [];
   const record = (name: string) => (...args: unknown[]) => {
     calls.push({ name, args: args.map(Number) });
   };
   const ctx = {
     calls,
     state,
+    fillStyles,
     setTransform: (...args: number[]) => {
       calls.push({ name: "setTransform", args });
       state.transform = args;
     },
-    set fillStyle(value: string | CanvasGradient) { state.fillStyle = value; calls.push({ name: "fillStyle", args: [] }); },
+    set fillStyle(value: string | CanvasGradient) { state.fillStyle = value; fillStyles.push(value); calls.push({ name: "fillStyle", args: [] }); },
     get fillStyle() { return state.fillStyle as string; },
     set strokeStyle(value: string | CanvasGradient) { state.strokeStyle = value; calls.push({ name: "strokeStyle", args: [] }); },
     get strokeStyle() { return state.strokeStyle as string; },
@@ -101,7 +113,7 @@ function mockContext(): { ctx: CanvasRenderingContext2D; calls: Call[]; state: R
     fillRect: record("fillRect"),
     createLinearGradient: () => ({ addColorStop: () => {} }),
   } as unknown as CanvasRenderingContext2D;
-  return { ctx, calls, state };
+  return { ctx, calls, state, fillStyles };
 }
 
 const pointRows = (value: unknown): number[][] => value as number[][];
@@ -164,5 +176,77 @@ describe("CanvasSceneRenderer", () => {
     expect(renderer.stats.frames).toBe(3);
     expect(Number.isFinite(renderer.stats.extractMs)).toBe(true);
     expect(Number.isFinite(renderer.stats.drawMs)).toBe(true);
+  });
+});
+
+function threeDFrame(overrides: Partial<MJSONFrame["cam"]> = {}): MJSONFrame {
+  return {
+    cam: {
+      fc: [0, 0, 0], fw: 14, fh: 8, "3d": true,
+      fd: 20, phi: 65 * DEGREES, theta: -45 * DEGREES, gamma: 0, zoom: 1,
+      ls: [-7, -9, 10], sh: 0.2, sa: true, ep: false,
+      ...overrides,
+    },
+    m: [],
+  };
+}
+
+describe("3D canvas rendering", () => {
+  test("isThreeDFrame only matches 3d cameras", () => {
+    expect(isThreeDFrame(threeDFrame())).toBe(true);
+    expect(isThreeDFrame({ cam: { fc: [0, 0, 0], fw: 14, fh: 8 }, m: [] })).toBe(false);
+  });
+
+  test("configureFrameCamera restores the 3D camera state", () => {
+    const cam = new PreviewThreeDCamera();
+    configureFrameCamera(cam, threeDFrame());
+    expect(cam.get_phi()).toBeCloseTo(65 * DEGREES, 12);
+    expect(cam.get_theta()).toBeCloseTo(-45 * DEGREES, 12);
+    expect(cam.get_focal_distance()).toBe(20);
+    expect(cam.get_zoom()).toBe(1);
+    expect(cam.should_apply_shading).toBe(true);
+    expect(cam.exponential_projection).toBe(false);
+    // Rotation matrix was regenerated from the restored angles.
+    const expected = new ThreeDCamera();
+    expected.set_phi(65 * DEGREES);
+    expected.set_theta(-45 * DEGREES);
+    expected.reset_rotation_matrix();
+    expect(cam.get_rotation_matrix().toArray()).toEqual(expected.get_rotation_matrix().toArray());
+  });
+
+  test("applyMobject3DFlags restores s3d / fif / fo", () => {
+    const cam = new PreviewThreeDCamera();
+    const vmobject = new Square(1);
+    applyMobject3DFlags(cam, vmobject, { p: [], sw: 0, bsw: 0, jt: 0, cs: 0, z: 0, s3d: true, fif: true, fo: [2, 0, 2] });
+    expect((vmobject as { shade_in_3d?: boolean }).shade_in_3d).toBe(true);
+    expect(cam.fixed_in_frame_mobjects.has(vmobject)).toBe(true);
+    const func = cam.fixed_orientation_mobjects.get(vmobject);
+    expect(func?.()).toEqual([2, 0, 2]);
+  });
+
+  test("drawFrame projects 3D points and shades shade_in_3d faces", () => {
+    const cam = new PreviewThreeDCamera();
+    const cube = new Cube(2);
+    cube.set_fill(BLUE, 1);
+    cam.set_phi(65 * DEGREES);
+    cam.set_theta(-45 * DEGREES);
+    const frame = serialize_frame(cam, [cube]) as unknown as MJSONFrame;
+    // Cube faces are marked shade_in_3d in the serialized records.
+    expect(frame.m.some((record) => record.s3d === true)).toBe(true);
+
+    const { ctx, calls, fillStyles } = mockContext();
+    drawFrame(ctx, cam, frame);
+    // The projected x of a raw corner differs from its world coordinate, i.e. a
+    // projection was actually applied before drawing.  (A Cube stores its
+    // geometry in face submobjects, not on the top-level VGroup.)
+    const face = cube.get_family().find(
+      (member) => member instanceof VMobject && member.get_num_points() > 0,
+    ) as VMobject;
+    const rawX = (face.points.toArray() as number[][])[0]![0]!;
+    const moveX = calls.find((call) => call.name === "moveTo")?.args[0];
+    expect(moveX).not.toBe(rawX);
+    // Shaded faces have two distinct rgba rows, so their fill is a gradient
+    // (an object) rather than a flat rgba string.
+    expect(fillStyles.some((style) => typeof style === "object")).toBe(true);
   });
 });

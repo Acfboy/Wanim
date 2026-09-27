@@ -17,7 +17,9 @@ import {
   clearCanvas,
   drawFrame,
   drawVmobject,
+  isThreeDFrame,
   PreviewCamera,
+  PreviewThreeDCamera,
   setCanvasTransform,
   backgroundCss,
   type CanvasCamera,
@@ -66,6 +68,7 @@ interface MutableCamera extends CanvasCamera {
   background_color: { to_hex(): string };
   background_opacity: number;
   get_mobjects_to_display(mobjects: Iterable<Mobject>, includeSubmobjects?: boolean): Mobject[];
+  reset_rotation_matrix?(): void;
 }
 
 /**
@@ -124,6 +127,12 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     if (this.skip_animations && !ignoreSkipping) return;
     const camera = this.camera as unknown as MutableCamera;
     const t0 = performance.now();
+    // A ThreeDCamera's z-sorting and projection depend on the rotation matrix,
+    // which `capture_mobjects` normally regenerates.  The Canvas backend draws
+    // from the display list directly, so regenerate it here.
+    if (typeof camera.reset_rotation_matrix === "function") {
+      camera.reset_rotation_matrix();
+    }
     const displayed = camera.get_mobjects_to_display(scene.mobjects, true) as Mobject[];
     const t1 = performance.now();
     this.stats.extractMs += t1 - t0;
@@ -235,9 +244,10 @@ export class MJSONPlayerHandle {
  */
 export class MJSONCanvasPlayer {
   readonly document: MJSONDocument;
+  readonly is3D: boolean;
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly camera: PreviewCamera;
+  private readonly camera: PreviewCamera | PreviewThreeDCamera;
   private readonly background: string;
   private readonly flatFrames: MJSONFrame[] = [];
 
@@ -251,13 +261,17 @@ export class MJSONCanvasPlayer {
     if (ctx === null) throw new Error("2d canvas context unavailable");
     this.ctx = ctx;
     this.background = backgroundCss(meta);
-    this.camera = new PreviewCamera({
+    const cameraOptions = {
       pixel_width: meta.width,
       pixel_height: meta.height,
       frame_rate: meta.frame_rate,
       background_color: meta.background_color,
       background_opacity: meta.background_opacity,
-    });
+    };
+    this.is3D = document.frames.some(isThreeDFrame);
+    this.camera = this.is3D
+      ? new PreviewThreeDCamera(cameraOptions)
+      : new PreviewCamera(cameraOptions);
     for (const frame of document.frames) {
       const repeat = Math.max(1, Math.trunc(frame.repeat ?? 1));
       for (let index = 0; index < repeat; index += 1) this.flatFrames.push(frame);
