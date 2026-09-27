@@ -14,19 +14,17 @@ export interface _HasUniforms {
   uniforms: Record<string, number | readonly number[]>;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 export function merge_dicts_recursively(...dicts: Array<Record<string, unknown>>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const dict of dicts) {
     for (const [key, value] of Object.entries(dict)) {
-      if (
-        key in result &&
-        result[key] !== null &&
-        typeof result[key] === "object" &&
-        !Array.isArray(result[key]) &&
-        value !== null &&
-        typeof value === "object" &&
-        !Array.isArray(value)
-      ) {
+      if (key in result && isPlainObject(result[key]) && isPlainObject(value)) {
         result[key] = merge_dicts_recursively(
           result[key] as Record<string, unknown>,
           value as Record<string, unknown>,
