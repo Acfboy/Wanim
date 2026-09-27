@@ -25,6 +25,7 @@
  */
 import { array, type NDArray } from "numpy-ts";
 import { Camera } from "../camera/camera.js";
+import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { CapStyleType, LineJointType } from "../constants.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { pointRows } from "../utils/arrays.js";
@@ -41,6 +42,12 @@ export interface MJSONMobject {
   cs: number;
   z: number;
   bi?: string | null;
+  /** 3D scenes only: `shade_in_3d` membership. */
+  s3d?: boolean;
+  /** 3D scenes only: fixed-in-frame membership. */
+  fif?: boolean;
+  /** 3D scenes only: evaluated fixed-orientation center. */
+  fo?: number[] | null;
   [key: string]: unknown;
 }
 
@@ -49,7 +56,18 @@ export interface MJSONCamera {
   fc: number[];
   fw: number;
   fh: number;
+  /** 3D scenes only: marks the frame as rendered through a `ThreeDCamera`. */
   "3d"?: boolean;
+  /** 3D scenes only: focal distance, euler angles, zoom, light source, shading. */
+  fd?: number;
+  phi?: number;
+  theta?: number;
+  gamma?: number;
+  zoom?: number;
+  ls?: number[];
+  sh?: number;
+  sa?: boolean;
+  ep?: boolean;
   [key: string]: unknown;
 }
 
@@ -88,6 +106,9 @@ export interface CanvasCamera {
   frame_center: readonly number[];
   cairo_line_width_multiple: number;
   transform_points_pre_display(mobject: VMobject, points: NDArray): NDArray;
+  /** Camera-applied colours (ThreeDCamera shades `shade_in_3d` faces). */
+  get_fill_rgbas?(vmobject: VMobject): NDArray;
+  get_stroke_rgbas?(vmobject: VMobject, background?: boolean): NDArray;
 }
 
 const CANVAS_LINE_JOIN: Record<string, CanvasLineJoin> = {
@@ -330,7 +351,10 @@ export function colorStyle(
 
 /** Fill the current path, mirroring `apply_fill`. */
 export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
-  const rgbas = pointRows(vmobject.get_fill_rgbas(), 4);
+  const source = camera.get_fill_rgbas !== undefined
+    ? camera.get_fill_rgbas(vmobject)
+    : vmobject.get_fill_rgbas();
+  const rgbas = pointRows(source, 4);
   ctx.fillStyle = colorStyle(ctx, camera, rgbas, vmobject) as string | CanvasGradient;
   ctx.fill();
 }
@@ -344,7 +368,10 @@ export function applyCanvasStroke(
 ): void {
   const width = vmobject.get_stroke_width(background);
   if (width === 0) return;
-  const rgbas = pointRows(vmobject.get_stroke_rgbas(background), 4);
+  const source = camera.get_stroke_rgbas !== undefined
+    ? camera.get_stroke_rgbas(vmobject, background)
+    : vmobject.get_stroke_rgbas(background);
+  const rgbas = pointRows(source, 4);
   ctx.strokeStyle = colorStyle(ctx, camera, rgbas, vmobject) as string | CanvasGradient;
   ctx.lineWidth = width * camera.cairo_line_width_multiple;
   const joint = CANVAS_LINE_JOIN[vmobject.joint_type];
@@ -375,6 +402,51 @@ export function backgroundCss(meta: Pick<MJSONMeta, "background_color" | "backgr
   return `rgba(${r}, ${g}, ${b}, ${clamp01(meta.background_opacity ?? 1)})`;
 }
 
+/** Whether a frame was serialized through a `ThreeDCamera`. */
+export function isThreeDFrame(frame: MJSONFrame): boolean {
+  return frame.cam["3d"] === true;
+}
+
+/**
+ * Restore the camera geometry stored in a frame.  For 3D frames this also
+ * restores the euler angles / projection state and regenerates the rotation
+ * matrix, mirroring `draw_frame` in the original manim renderer.
+ */
+export function configureFrameCamera(camera: CanvasCamera, frame: MJSONFrame): void {
+  const cam = frame.cam;
+  camera.frame_center = cam.fc;
+  camera.frame_width = cam.fw;
+  camera.frame_height = cam.fh;
+  if (!isThreeDFrame(frame) || !(camera instanceof ThreeDCamera)) return;
+  camera.set_phi(cam.phi ?? 0);
+  camera.set_theta(cam.theta ?? 0);
+  camera.set_gamma(cam.gamma ?? 0);
+  camera.set_focal_distance(cam.fd ?? 20);
+  camera.set_zoom(cam.zoom ?? 1);
+  if (Array.isArray(cam.ls)) camera.light_source.move_to(cam.ls as readonly number[]);
+  camera.shading_factor = cam.sh ?? 0.2;
+  camera.should_apply_shading = cam.sa ?? true;
+  camera.exponential_projection = cam.ep ?? false;
+  camera.reset_rotation_matrix();
+}
+
+/**
+ * Restore the per-mobject 3D membership flags (`s3d`/`fif`/`fo`) onto a freshly
+ * deserialized copy, mirroring the Python renderer's `draw_frame`.
+ */
+export function applyMobject3DFlags(
+  camera: ThreeDCamera,
+  vmobject: VMobject,
+  record: MJSONMobject,
+): void {
+  if (record.s3d) (vmobject as { shade_in_3d?: boolean }).shade_in_3d = true;
+  if (record.fif) camera.fixed_in_frame_mobjects.add(vmobject);
+  if (record.fo !== null && record.fo !== undefined) {
+    const center = record.fo;
+    camera.fixed_orientation_mobjects.set(vmobject, () => center);
+  }
+}
+
 /**
  * Draw one serialized frame onto `ctx`.  Restores the camera geometry stored in
  * the frame, clears the canvas and replays the display list.
@@ -385,14 +457,18 @@ export function drawFrame(
   frame: MJSONFrame,
   background = "#000000",
 ): void {
-  const cam = frame.cam;
-  camera.frame_center = cam.fc;
-  camera.frame_width = cam.fw;
-  camera.frame_height = cam.fh;
+  configureFrameCamera(camera, frame);
   clearCanvas(ctx, camera, background);
   setCanvasTransform(ctx, camera);
+  const threeD = isThreeDFrame(frame) && camera instanceof ThreeDCamera;
+  if (threeD) {
+    camera.fixed_in_frame_mobjects.clear();
+    camera.fixed_orientation_mobjects.clear();
+  }
   for (const record of frame.m) {
-    drawVmobject(ctx, camera, deserialize_vmobject(record));
+    const vmobject = deserialize_vmobject(record);
+    if (threeD) applyMobject3DFlags(camera, vmobject, record);
+    drawVmobject(ctx, camera, vmobject);
   }
 }
 
@@ -402,6 +478,14 @@ export function drawFrame(
  * backend never reads, so this override makes `init_background` a no-op.
  */
 export class PreviewCamera extends Camera {
+  override init_background(): void {
+    this.background = array([]) as NDArray;
+  }
+}
+
+/** 3D counterpart of {@link PreviewCamera}: a `ThreeDCamera` that never
+ *  allocates the (unused) RGBA pixel array. */
+export class PreviewThreeDCamera extends ThreeDCamera {
   override init_background(): void {
     this.background = array([]) as NDArray;
   }
