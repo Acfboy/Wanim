@@ -3,7 +3,9 @@ import { config } from "../../_config/utils.js";
 import {
   DEFAULT_ARROW_TIP_LENGTH,
   DEFAULT_DASH_LENGTH,
+  DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
   DEGREES,
+  LARGE_BUFF,
   LEFT,
   MED_SMALL_BUFF,
   ORIGIN,
@@ -21,6 +23,25 @@ import { ArrowTriangleFilledTip } from "./tips.js";
 import type { ArrowTip } from "./tips.js";
 import type { TipConstructor } from "./arc.js";
 import { set_grid_line_constructor, set_round_corners_constructors, isPlainOptionsBag } from "./polygram.js";
+
+/** Factory used by {@link Vector.coordinate_label} to build a Matrix label.
+ *  Registered by matrix.ts to avoid the line.ts -> matrix.ts ->
+ *  shape_matchers.ts -> line.ts import cycle. */
+export type MatrixFactory = (matrix: unknown[][], options?: Record<string, unknown>) => VMobject;
+let matrixFactory: MatrixFactory | null = null;
+export function setMatrixFactory(factory: MatrixFactory | null): void {
+  matrixFactory = factory;
+}
+
+/** Round half to even, mirroring `np.round` (used by coordinate_label). */
+function roundHalfEven(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  const floor = Math.floor(value);
+  const diff = value - floor;
+  if (diff < 0.5) return floor;
+  if (diff > 0.5) return floor + 1;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
 
 export type LineEndpoint = Mobject | readonly number[] | NDArray;
 
@@ -756,13 +777,46 @@ export class Vector extends Arrow {
   }
 
   coordinate_label(
-    _integer_labels = true,
-    _n_dim = 2,
-    _color?: ParsableManimColor | null,
-    _options: Record<string, unknown> = {},
-  ): never {
-    // NOTE: Python builds a `Matrix` (LaTeX-rendered) label here; text/tex
-    // is out of scope for the entire port.
-    throw new Error("TODO: text/tex not ported yet");
+    integer_labels = true,
+    n_dim = 2,
+    color: ParsableManimColor | null = null,
+    options: Record<string, unknown> = {},
+  ): VMobject {
+    // NOTE: mirrors Python `Vector.coordinate_label`: build a column Matrix
+    // from the (optionally integer-rounded) end point, scale it, then shift it
+    // next to the tip on the side the vector points to.
+    if (matrixFactory === null) {
+      throw new Error(
+        "Vector.coordinate_label requires manim.mobject.matrix (Matrix) to be loaded",
+      );
+    }
+    const end = pointRows(this.get_end(), 3)[0] ?? [0, 0, 0];
+    let vect = [...end];
+    if (integer_labels) {
+      // np.round (half-to-even) followed by astype(int) (truncation toward 0).
+      vect = vect.map((value) => Math.trunc(roundHalfEven(value)));
+    }
+    vect = vect.slice(0, n_dim);
+    const column = vect.map((value) => [value]);
+    const label = matrixFactory(column, { ...options });
+    label.scale(LARGE_BUFF - 0.2);
+
+    const shiftDir = [...end];
+    if ((shiftDir[0] ?? 0) >= 0) {
+      // Pointing right.
+      const left = label.get_left();
+      shiftDir[0] -= (left[0] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (LEFT[0] as number);
+      shiftDir[1] -= (left[1] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (LEFT[1] as number);
+      shiftDir[2] -= (left[2] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (LEFT[2] as number);
+    } else {
+      // Pointing left.
+      const right = label.get_right();
+      shiftDir[0] -= (right[0] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (RIGHT[0] as number);
+      shiftDir[1] -= (right[1] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (RIGHT[1] as number);
+      shiftDir[2] -= (right[2] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (RIGHT[2] as number);
+    }
+    label.shift(shiftDir);
+    if (color !== null && color !== undefined) label.set_color(color);
+    return label;
   }
 }

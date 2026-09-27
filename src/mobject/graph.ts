@@ -7,6 +7,7 @@ import { BLACK, type ParsableManimColor } from "../utils/color/core.js";
 import { PI } from "../constants.js";
 import { Dot, LabeledDot } from "./geometry/arc.js";
 import { Line } from "./geometry/line.js";
+import { MathTex } from "./text/tex_mobject.js";
 import type { Animation } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
 import { Create, Uncreate } from "../animation/creation.js";
@@ -431,10 +432,11 @@ export class GenericGraph extends VMobject {
         Object.entries(labels as Record<string, unknown>) as [GraphVertex, unknown][],
       );
     } else if (labels === true) {
-      // NOTE: Python builds `{v: MathTex(v, color=label_fill_color)}`; the
-      // text/LaTeX pipeline is out of scope for the entire port.
-      void label_fill_color;
-      throw new Error("TODO: text/tex not ported yet (Graph labels=True needs MathTex)");
+      // NOTE: mirrors Python `{v: MathTex(v, color=label_fill_color)}`; the
+      // value is stringified like Python's MathTex does.
+      this._labels = new Map(
+        vertices.map((v) => [v, new MathTex(String(v), { color: label_fill_color }) as unknown]),
+      );
     } else {
       this._labels = new Map();
     }
@@ -640,7 +642,6 @@ export class GenericGraph extends VMobject {
         : array([...(position as readonly number[])].map(Number)) as NDArray;
 
     let resolved_config: Record<string, unknown> = vertex_config ?? {};
-    void label_fill_color;
 
     if (this.vertices.has(vertex)) {
       const error = new Error(
@@ -652,9 +653,8 @@ export class GenericGraph extends VMobject {
 
     let resolvedLabel: unknown;
     if (label === true) {
-      // NOTE: Python renders `MathTex(vertex, color=label_fill_color)`;
-      // text/tex rendering is out of scope for the entire port.
-      throw new Error("TODO: text/tex not ported yet (Graph vertex label=True needs MathTex)");
+      // NOTE: mirrors Python `MathTex(vertex, color=label_fill_color)`.
+      resolvedLabel = new MathTex(String(vertex), { color: label_fill_color });
     } else if (this._labels.has(vertex)) {
       resolvedLabel = this._labels.get(vertex);
     } else if (!(label instanceof Mobject)) {

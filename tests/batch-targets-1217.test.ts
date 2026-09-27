@@ -202,11 +202,15 @@ describe("SampleSpace", () => {
     const div = ss.get_vertical_division([0.5, 0.5]);
     expect(div.submobjects.length).toBe(2);
   });
-  it("add_label stores label; add_title throws tex TODO", () => {
+  it("add_label stores label; add_title builds a Tex", () => {
     const ss = new SampleSpace();
     ss.add_label("hello");
     expect(ss.label).toBe("hello");
-    expect(() => ss.add_title()).toThrow(/text\/tex/);
+    ss.add_title();
+    expect(ss.title).toBeDefined();
+    expect(
+      (ss.title as unknown as { tex_string: string }).tex_string,
+    ).toContain("Sample space");
   });
 });
 

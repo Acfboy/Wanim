@@ -3,7 +3,7 @@ import { array, type NDArray } from "numpy-ts";
 import { VDict, VGroup, VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { Square, Rectangle } from "../src/mobject/geometry/polygram.js";
 import { Dot } from "../src/mobject/geometry/arc.js";
-import { Line } from "../src/mobject/geometry/line.js";
+import { Line, Vector } from "../src/mobject/geometry/line.js";
 import { LogBase } from "../src/mobject/graphing/scale.js";
 import {
   DecimalNumber,
@@ -137,22 +137,28 @@ describe("VDict batch (python ground truth)", () => {
 // LogBase.get_custom_labels / index_labels (text/tex stubs)
 // ---------------------------------------------------------------------------
 
-describe("LogBase.get_custom_labels + index_labels stubs", () => {
-  it("LogBase.get_custom_labels throws text/tex TODO (python builds Integer 10^exp labels)", () => {
-    // python: [Integer(base, unit='^{exp}')] per value; needs latex.
-    expect(() => new LogBase().get_custom_labels([1, 10, 100])).toThrow(
-      /text\/tex not ported/,
-    );
-    expect(() => new LogBase(2).get_custom_labels([2, 4], 1)).toThrow(
-      /text\/tex not ported/,
-    );
+describe("LogBase.get_custom_labels + index_labels (ported)", () => {
+  it("LogBase.get_custom_labels builds Integer 10^exp labels", () => {
+    // python: [Integer(base, unit='^{exp}')] per value.
+    const labels = new LogBase().get_custom_labels([1, 10, 100]) as Integer[];
+    expect(labels.map((m) => m.number)).toEqual([10, 10, 10]);
+    expect(labels.map((m) => m.unit)).toEqual(["^{0}", "^{1}", "^{2}"]);
+    const labels2 = new LogBase(2).get_custom_labels([2, 4], 1) as Integer[];
+    expect(labels2.map((m) => m.number)).toEqual([2, 2]);
+    expect(labels2.map((m) => m.unit)).toEqual(["^{1.0}", "^{2.0}"]);
   });
 
-  it("index_labels throws text/tex TODO (python builds one Integer per submobject)", () => {
+  it("index_labels builds one Integer per submobject", () => {
     const g = new VGroup(new Square(), new Square());
-    expect(() => index_labels(g)).toThrow(/text\/tex not ported/);
-    // defaults mirror python signature (label_height 0.15 etc.) — still stub.
-    expect(() => index_labels(g, 0.2, 3)).toThrow(/text\/tex not ported/);
+    const labels = index_labels(g);
+    expect(labels.submobjects.length).toBe(2);
+    expect(labels.submobjects.map((m) => (m as Integer).number)).toEqual([0, 1]);
+    // custom label_height/stroke width forward to the Integer labels.
+    const labels2 = index_labels(g, 0.2, 3);
+    for (const label of labels2.submobjects) {
+      expect((label as VMobject).height).toBeCloseTo(0.2, 6);
+      expect((label as VMobject).background_stroke_width).toBe(3);
+    }
   });
 });
 
@@ -336,29 +342,29 @@ describe("UnitInterval.__init__ (python: [0,1,0.1], unit 10)", () => {
 // VectorScene / LinearTransformationScene batch symbols
 // ---------------------------------------------------------------------------
 
-describe("VectorScene.write_vector_coordinates / vector_to_coords stubs", () => {
-  it("write_vector_coordinates throws (python Matrix + Write)", () => {
+describe("VectorScene.write_vector_coordinates / vector_to_coords (ported)", () => {
+  it("write_vector_coordinates builds the Matrix label", () => {
     const vs = new VectorScene();
-    expect(() => vs.write_vector_coordinates(new Square())).toThrow(
-      /text\/tex not ported/,
-    );
+    const coords = vs.write_vector_coordinates(new Vector([1, 2]));
+    expect(coords.get_entries().submobjects.length).toBe(2);
   });
 
-  it("vector_to_coords throws (python Matrix/Integer + played lines)", () => {
+  it("vector_to_coords returns [matrix, x_line, y_line]", () => {
     const vs = new VectorScene();
-    expect(() => vs.vector_to_coords([1, 2, 0])).toThrow(/text\/tex not ported/);
-    expect(() => vs.vector_to_coords([1, 2, 0], false)).toThrow(
-      /text\/tex not ported/,
-    );
+    const result = vs.vector_to_coords(new Vector([1, 2, 0]));
+    expect(result.length).toBe(3);
+    expect(result[0].get_entries().submobjects.length).toBe(2);
+    expect(result[1]).toBeInstanceOf(Line);
+    expect(result[2]).toBeInstanceOf(Line);
   });
 });
 
 describe("LinearTransformationScene batch symbols", () => {
-  it("write_vector_coordinates delegates to super then foregrounds (currently stub)", () => {
+  it("write_vector_coordinates delegates to super then foregrounds", () => {
     const scene = new LinearTransformationScene();
-    expect(() => scene.write_vector_coordinates(new Square())).toThrow(
-      /text\/tex not ported/,
-    );
+    const coords = scene.write_vector_coordinates(new Vector([1, 2]));
+    expect(coords.get_entries().submobjects.length).toBe(2);
+    expect(scene.foreground_mobjects).toContain(coords);
   });
 
   it("apply_matrix maps (1,0,0)->(0,1,0) for 90-degree rotation", () => {
@@ -584,13 +590,12 @@ describe("BarChart._add_x_axis_labels stub + geometry", () => {
     expect(bc.bars.submobjects.length).toBe(3);
     expect(bc.y_axis.numbers).toBeInstanceOf(VGroup);
     expect(bc.y_axis.numbers!.submobjects.length).toBe(4);
-    // bar_names still go through the unported Tex label stub.
-    expect(() => new BarChart([1, 2], { bar_names: ["a", "b"] })).toThrow(
-      /text\/tex not ported/,
-    );
+    // bar_names now build real Tex labels.
+    const named = new BarChart([1, 2], { bar_names: ["a", "b"] });
+    expect(named.x_axis.labels!.submobjects.length).toBe(2);
   });
 
-  it("bar geometry stays usable when label rendering is stubbed", () => {
+  it("bar geometry stays usable when the number pipeline is stubbed", () => {
     const spy = vi
       .spyOn(NumberLine.prototype, "get_number_mobject")
       .mockImplementation(() => new Square() as unknown as VMobject);
@@ -599,9 +604,11 @@ describe("BarChart._add_x_axis_labels stub + geometry", () => {
       expect(bc.bars.submobjects.length).toBe(3);
       const bars = bc.bars.submobjects as Rectangle[];
       expect(close((bars[1]?.height ?? NaN), 2 * (bars[0]?.height ?? NaN), 1e-6)).toBe(true);
-      // Tex label paths still throw with the number pipeline stubbed.
-      expect(() => bc._add_x_axis_labels()).toThrow(/text\/tex not ported/);
-      expect(() => bc.get_bar_labels()).toThrow(/text\/tex not ported/);
+      // Tex label paths build labels without touching the number pipeline.
+      bc.bar_names = ["a", "b", "c"];
+      bc._add_x_axis_labels();
+      expect(bc.x_axis.labels!.submobjects.length).toBe(3);
+      expect(bc.get_bar_labels().submobjects.length).toBe(3);
     } finally {
       spy.mockRestore();
     }

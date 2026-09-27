@@ -1,14 +1,10 @@
 // Port of manim.mobject.table.Table (plus MathTable/MobjectTable/
 // IntegerTable/DecimalTable).
 //
-// NOTE (text/tex out of scope): the default `element_to_mobject`
-// (Paragraph) and the MathTable/IntegerTable/DecimalTable defaults
-// (MathTex/Integer/DecimalNumber) need the LaTeX/text pipeline, so they
-// throw `TODO: text/tex not ported yet` when actually called to build an
-// entry (same convention as Matrix in ./matrix.ts). Every code path that
-// only needs already-constructed mobjects (MobjectTable, explicit
-// element_to_mobject factories, labels passed in by the caller, grid
-// layout, lines, colors, cells, create()) is ported faithfully.
+// The default `element_to_mobject` (Paragraph) and the
+// MathTable/IntegerTable/DecimalTable defaults (MathTex/Integer/
+// DecimalNumber) are provided by the ported text pipeline (MathJax-backed,
+// no local LaTeX needed), matching Python's defaults.
 // NOTE: import order matters at runtime: ./types/vectorized_mobject.js
 // (hence ../mobject/mobject.js) must evaluate before the animation modules
 // below, because mobject.js and animation.js import each other and only the
@@ -24,6 +20,9 @@ import { Line, type LineOptions } from "./geometry/line.js";
 import { Polygon } from "./geometry/polygram.js";
 import { BackgroundRectangle } from "./geometry/shape_matchers.js";
 import { get_vectorized_mobject_class } from "./utils.js";
+import { Paragraph } from "./text/text_mobject.js";
+import { MathTex, type MathTexOptions } from "./text/tex_mobject.js";
+import { DecimalNumber, Integer, type DecimalNumberOptions } from "./text/numbers.js";
 
 export type TableData = Iterable<Iterable<unknown>>;
 
@@ -32,10 +31,22 @@ export type TableElementFactory = (
   config?: Record<string, unknown>,
 ) => VMobject;
 
-function texNotPorted(name: string): TableElementFactory {
-  return () => {
-    throw new Error(`TODO: text/tex not ported yet (${name})`);
-  };
+// Element factories mirroring Python's defaults: `Paragraph` for Table,
+// `MathTex` for MathTable, `Integer`/`DecimalNumber` for the numeric tables.
+function paragraphElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  return new Paragraph(String(item), config as never);
+}
+
+function mathTexElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  return new MathTex(String(item), config as MathTexOptions);
+}
+
+function integerElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  return new Integer(item as number, config as DecimalNumberOptions);
+}
+
+function decimalNumberElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
+  return new DecimalNumber(item as number, config as DecimalNumberOptions);
 }
 
 export interface TableOptions {
@@ -126,7 +137,7 @@ export class Table extends VGroup {
       entries_background_color = BLACK,
       include_background_rectangle = false,
       background_rectangle_color = BLACK,
-      element_to_mobject = texNotPorted("Table element_to_mobject defaults to Paragraph"),
+      element_to_mobject = paragraphElement,
       element_to_mobject_config = {},
       arrange_in_grid_config = {},
       line_config = {},
@@ -419,9 +430,8 @@ export class Table extends VGroup {
   }
 
   /** Direct BackgroundRectangle construction (mirrors what
-   *  ``VMobject.add_background_rectangle`` does in Python). This avoids the
-   *  global factory hook, which stays unwired so the "TODO: ... not ported
-   *  yet" behavior asserted elsewhere is preserved. */
+   *  ``VMobject.add_background_rectangle`` does in Python) without going
+   *  through the global factory hook. */
   private _attach_background_rectangle(target: VMobject, color: ParsableManimColor): BackgroundRectangle {
     const rect = new BackgroundRectangle(target, { color: new ManimColor(color) });
     target.background_rectangle = rect;
@@ -543,7 +553,7 @@ export interface MathTableOptions extends TableOptions {}
 export class MathTable extends Table {
   constructor(table: TableData | TableOptions = [], options: MathTableOptions = {}) {
     const {
-      element_to_mobject = texNotPorted("MathTable element_to_mobject defaults to MathTex"),
+      element_to_mobject = mathTexElement,
       ...rest
     } = options;
     super(table, { element_to_mobject, ...rest });
@@ -567,7 +577,7 @@ export interface IntegerTableOptions extends TableOptions {}
 export class IntegerTable extends Table {
   constructor(table: TableData | TableOptions = [], options: IntegerTableOptions = {}) {
     const {
-      element_to_mobject = texNotPorted("IntegerTable element_to_mobject defaults to Integer"),
+      element_to_mobject = integerElement,
       ...rest
     } = options;
     super(table, { element_to_mobject, ...rest });
@@ -579,7 +589,7 @@ export interface DecimalTableOptions extends TableOptions {}
 export class DecimalTable extends Table {
   constructor(table: TableData | TableOptions = [], options: DecimalTableOptions = {}) {
     const {
-      element_to_mobject = texNotPorted("DecimalTable element_to_mobject defaults to DecimalNumber"),
+      element_to_mobject = decimalNumberElement,
       element_to_mobject_config = { num_decimal_places: 1 },
       ...rest
     } = options;

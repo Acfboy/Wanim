@@ -17,6 +17,7 @@ import { ImplicitFunction, ParametricFunction, type ParametricFunctionOptions } 
 import { NumberLine, type NumberLineOptions } from "./number_line.js";
 import { Surface } from "../three_d/three_dimensions.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
+import { MathTex, type MathTexOptions } from "../text/tex_mobject.js";
 
 /** Minimal structural surface a family member must provide for
  * prepare_for_nonlinear_transform (mirrors VMobject.get_num_curves /
@@ -1985,6 +1986,28 @@ export class ThreeDAxes extends Axes {
 export type AzimuthUnits = "PI radians" | "TAU radians" | "degrees" | "gradians" | null;
 export type AzimuthDirection = "CW" | "CCW";
 
+/** Minimal stand-in for Python's `format(value, "g")` (default precision 6):
+ * fixed notation while the exponent is in [-4, p), otherwise scientific with
+ * a signed two-digit exponent; trailing zeros are stripped in both cases. */
+function formatG(value: number, precision = 6): string {
+  if (!Number.isFinite(value)) return String(value);
+  if (value === 0) return "0";
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  const exponent = Math.floor(Math.log10(abs));
+  if (exponent >= -4 && exponent < precision) {
+    const decimals = Math.max(0, precision - 1 - exponent);
+    let text = abs.toFixed(decimals);
+    if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
+    return sign + text;
+  }
+  let [mantissa, exp] = abs.toExponential(precision - 1).split("e") as [string, string];
+  if (mantissa.includes(".")) mantissa = mantissa.replace(/0+$/, "").replace(/\.$/, "");
+  const expNum = Number(exp);
+  const expAbs = String(Math.abs(expNum)).padStart(2, "0");
+  return `${sign}${mantissa}e${expNum < 0 ? "-" : "+"}${expAbs}`;
+}
+
 /** Exact binary expansion of a float, mirroring `Fraction(float)` in
  * Python (which uses the exact binary value, not the decimal spelling).
  * BigInt keeps the expansion exact; PolarPlane.get_radian_label only feeds
@@ -2373,14 +2396,38 @@ export class PolarPlane extends Axes {
         ),
       );
     } else if (this.azimuth_units === "degrees") {
-      // NOTE: Python builds MathTex(f"{360 * label:g}^{\\circ}") labels here
-      // (gradians: 400 * label with ^{g}; None: plain {label:g}); MathTex
-      // needs the LaTeX pipeline that is out of scope for this port.
-      throw new Error("TODO: text/tex not ported yet (PolarPlane.get_coordinate_labels needs MathTex)");
+      a_tex = a_points.map((entry) =>
+        new MathTex(`${formatG(360 * entry.label)}^{\\circ}`, {
+          font_size: this.azimuth_label_font_size,
+        }).next_to(
+          entry.point,
+          entry.point,
+          this.azimuth_label_buff,
+          entry.point,
+        ),
+      );
     } else if (this.azimuth_units === "gradians") {
-      throw new Error("TODO: text/tex not ported yet (PolarPlane.get_coordinate_labels needs MathTex)");
+      a_tex = a_points.map((entry) =>
+        new MathTex(`${formatG(400 * entry.label)}^{g}`, {
+          font_size: this.azimuth_label_font_size,
+        }).next_to(
+          entry.point,
+          entry.point,
+          this.azimuth_label_buff,
+          entry.point,
+        ),
+      );
     } else if (this.azimuth_units === null || this.azimuth_units === undefined) {
-      throw new Error("TODO: text/tex not ported yet (PolarPlane.get_coordinate_labels needs MathTex)");
+      a_tex = a_points.map((entry) =>
+        new MathTex(formatG(entry.label), {
+          font_size: this.azimuth_label_font_size,
+        }).next_to(
+          entry.point,
+          entry.point,
+          this.azimuth_label_buff,
+          entry.point,
+        ),
+      );
     } else {
       // NOTE: unreachable in Python (the constructor rejects any other unit
       // string with ValueError); kept so the TS return type stays total.
@@ -2445,14 +2492,8 @@ export class PolarPlane extends Axes {
         string = "\\tfrac{" + String(frac.numerator) + "}{" + String(frac.denominator) + "}" + constant_label;
       }
     }
-    void string;
-    void font_size;
-    void kwargs;
-    // NOTE: Python returns `MathTex(string, font_size=font_size, **kwargs)`
-    // (the label string above is computed verbatim so only this line needs
-    // to change once text lands); MathTex needs the LaTeX pipeline that is
-    // out of scope for this port.
-    throw new Error("TODO: text/tex not ported yet (PolarPlane.get_radian_label needs MathTex)");
+    // NOTE: mirrors Python `MathTex(string, font_size=font_size, **kwargs)`.
+    return new MathTex(string, { font_size, ...(kwargs as MathTexOptions) });
   }
 }
 
@@ -2559,8 +2600,8 @@ export class ComplexPlane extends NumberPlane {
   ): VGroup {
     // NOTE: mirrors Python get_coordinate_labels(*numbers, **kwargs): a
     // trailing plain object is the kwargs bag. Each label is built with
-    // NumberLine.get_number_mobject (a DecimalNumber, i.e. text/tex, out of
-    // scope), so calls throw there with a TODO until text lands.
+    // NumberLine.get_number_mobject (a DecimalNumber rendered through the
+    // ported text pipeline).
     let kwargs: Record<string, unknown> = {};
     let numbers: ComplexNumberLike[] = args as ComplexNumberLike[];
     const last = args[args.length - 1];

@@ -5,8 +5,18 @@ import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtract
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
-import { CapStyleType, ORIGIN, OUT, PI, RendererType, RIGHT, UL, UP } from "../../constants.js";
+import { CapStyleType, LEFT, ORIGIN, OUT, PI, RendererType, RIGHT, UL, UP } from "../../constants.js";
 import { config } from "../../_config/utils.js";
+
+/** Factory used by {@link VDict} with `show_keys` to build the key labels.
+ *  Registered by the text module (tex_mobject.ts) to avoid a circular
+ *  import; `null` until that module is loaded, mirroring the same pattern as
+ *  `setMathTexLabelFactory` in geometry/arc.ts. */
+export type TexFactory = (text: string, color?: ParsableManimColor | null) => VMobject;
+let texFactory: TexFactory | null = null;
+export function setTexFactory(factory: TexFactory | null): void {
+  texFactory = factory;
+}
 
 export interface VMobjectOptions extends MobjectOptions {
   fill_color?: ParsableManimColor;
@@ -2178,7 +2188,15 @@ export class VDict extends VMobject {
     this._assert_valid_submobjects([value]);
     const mob = value;
     if (this.show_keys) {
-      throw new Error("TODO: text/tex not ported yet");
+      if (texFactory === null) {
+        throw new Error(
+          "VDict.show_keys requires the text module (manim.mobject.text.tex_mobject) to be loaded",
+        );
+      }
+      // NOTE: mirrors Python `Tex(str(key)).next_to(value, LEFT)` and adding
+      // the label to the value's own submobjects.
+      const keyText = texFactory(String(key)).next_to(value, [...LEFT]);
+      mob.add(keyText);
     }
     this.submob_dict.set(key, mob);
     super.add(value);

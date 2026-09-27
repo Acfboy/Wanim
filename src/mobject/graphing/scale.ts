@@ -1,5 +1,6 @@
 import { array, divide, log, type NDArray } from "numpy-ts";
 import { isNDArray, numeric } from "../../utils/arrays.js";
+import { Integer } from "../text/numbers.js";
 
 function valueError(message: string): Error {
   const error = new Error(message);
@@ -108,11 +109,20 @@ export class LogBase extends _ScaleBase {
   }
 
   override get_custom_labels(
-    _val_range: Iterable<number>,
-    _unit_decimal_places = 0,
-    ..._base_config: unknown[]
+    val_range: Iterable<number>,
+    unit_decimal_places = 0,
+    ...base_config: unknown[]
   ): unknown[] {
-    throw new Error("TODO: text/tex not ported yet");
+    // NOTE: mirrors Python `Integer(self.base, unit="^{%s}" %
+    // f"{self.inverse_function(i):.{unit_decimal_places}f}", **base_config)`.
+    // The exponent is formatted with fixed decimals (0 by default), then
+    // wrapped in a `^{...}` unit for the Integer label.
+    const config = (base_config[0] as Record<string, unknown> | undefined) ?? {};
+    return [...val_range].map((i) => {
+      const exponent = numeric(this.inverse_function(i));
+      const unit = `^{${exponent.toFixed(unit_decimal_places)}}`;
+      return new Integer(this.base, { unit, ...config });
+    });
   }
 }
 

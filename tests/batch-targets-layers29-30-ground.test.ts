@@ -61,15 +61,15 @@ function dictGraph(): Graph {
   });
 }
 
-describe("tex-only stubs (out of scope for the entire port)", () => {
-  it("Vector.coordinate_label throws tex TODO (python: Matrix -> latex)", () => {
+describe("text/tex labels now built", () => {
+  it("Vector.coordinate_label builds a Matrix (python: Matrix)", () => {
     const v = new Vector([1, 2, 0]);
-    expect(() => v.coordinate_label()).toThrow(/text\/tex/);
-    expect(() => v.coordinate_label(false, 3)).toThrow(/text\/tex/);
+    expect(v.coordinate_label().get_entries().submobjects.length).toBe(2);
+    expect(v.coordinate_label(false, 3).get_entries().submobjects.length).toBe(3);
   });
-  it("VectorScene.coords_to_vector throws tex TODO (python: Matrix+Write)", () => {
+  it("VectorScene.coords_to_vector runs the Matrix+Write sequence", () => {
     const vs = new VectorScene();
-    expect(() => vs.coords_to_vector([3, -2, 0])).toThrow(/text\/tex/);
+    expect(() => vs.coords_to_vector([3, -2, 0])).not.toThrow();
   });
 });
 
@@ -210,17 +210,16 @@ describe("GenericGraph.__init__ / Graph", () => {
     vecClose(g.vertices.get(3)!.get_center(), [2, 0, 0]);
     expect(g.toString()).toBe("Undirected graph on 3 vertices and 2 edges");
   });
-  it("labels=True throws tex TODO (python: MathTex -> latex FileNotFoundError)", () => {
-    expect(
-      () =>
-        new Graph([1, 2], [[1, 2]], {
-          layout: { 1: [0, 0, 0], 2: [1, 0, 0] } as unknown as Record<
-            string,
-            unknown
-          >,
-          labels: true,
-        }),
-    ).toThrow(/text\/tex/);
+  it("labels=True builds one MathTex per vertex (python: MathTex)", () => {
+    const g = new Graph([1, 2], [[1, 2]], {
+      layout: { 1: [0, 0, 0], 2: [1, 0, 0] } as unknown as Record<
+        string,
+        unknown
+      >,
+      labels: true,
+    });
+    const labels = [...(g as unknown as { _labels: Map<number, { tex_string: string }> })._labels.values()];
+    expect(labels.map((m) => m.tex_string).sort()).toEqual(["1", "2"]);
   });
   it("__getitem__ returns Dot vertices and Line edges (python ground truth)", () => {
     const g = new Graph([1, 2], [[1, 2]], {

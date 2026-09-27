@@ -6,11 +6,30 @@ import { Brace, type BraceOptions } from "../svg/brace.js";
 import { Axes } from "./coordinate_systems.js";
 import { config } from "../../_config/utils.js";
 import { DOWN, LEFT, MED_SMALL_BUFF, RIGHT, SMALL_BUFF, UP } from "../../constants.js";
-import { isNDArray, pointRows } from "../../utils/arrays.js";
+import { arange, isNDArray, pointRows } from "../../utils/arrays.js";
+import { MathTex, Tex } from "../text/tex_mobject.js";
 import { tuplify } from "../../utils/iterables.js";
 import { BLUE_E, DARK_GREY, GREEN_E, LIGHT_GREY, MAROON_B, YELLOW, color_gradient, type ParsableManimColor } from "../../utils/color/core.js";
 
 export const EPSILON = 0.0001;
+
+/** Invoke a `label_constructor` (a class like Tex/MathTex, or a plain
+ * factory) the way Python calls `label_constructor(text)`. */
+function constructLabel(ctor: unknown, text: string): VMobject & { font_size: number } {
+  if (typeof ctor !== "function") {
+    const error = new Error(`${String(ctor)} is not callable`);
+    error.name = "TypeError";
+    throw error;
+  }
+  const fn = ctor as (...args: unknown[]) => VMobject;
+  try {
+    return new (fn as unknown as new (t: string) => VMobject)(text) as VMobject & {
+      font_size: number;
+    };
+  } catch {
+    return fn(text) as VMobject & { font_size: number };
+  }
+}
 
 export interface SampleSpaceOptions extends RectangleOptions {
   default_label_scale_val?: number;
@@ -51,10 +70,15 @@ export class SampleSpace extends Rectangle {
     this.default_label_scale_val = default_label_scale_val;
   }
 
-  add_title(_title = "Sample space", _buff: number = MED_SMALL_BUFF): this {
-    // NOTE: Python builds a `Tex` title here; text/tex is out of scope for
-    // the entire port.
-    throw new Error("TODO: text/tex not ported yet (SampleSpace.add_title needs Tex)");
+  add_title(title: string = "Sample space", buff: number = MED_SMALL_BUFF): this {
+    // NOTE: mirrors Python `add_title`: build a Tex, clamp its width to the
+    // sample space, place it above and register it as `self.title`.
+    const title_mob = new Tex(title);
+    if (title_mob.width > this.width) title_mob.width = this.width;
+    title_mob.next_to(this, [...UP], buff);
+    this.title = title_mob;
+    this.add(title_mob);
+    return this;
   }
 
   add_label(label: string): this {
@@ -155,9 +179,9 @@ export class SampleSpace extends Rectangle {
       if (label instanceof VMobject) {
         label_mob = label;
       } else {
-        // NOTE: Python builds a `MathTex` label here; text/tex is out of
-        // scope for the entire port.
-        throw new Error("TODO: text/tex not ported yet (SampleSpace labels need MathTex)");
+        // NOTE: mirrors Python `MathTex(label).scale(self.default_label_scale_val)`.
+        label_mob = new MathTex(String(label));
+        label_mob.scale(this.default_label_scale_val);
       }
       label_mob.next_to(brace, direction, buff);
       braces.add(brace);
@@ -260,13 +284,11 @@ export interface BarChartOptions {
   tips?: boolean;
 }
 
-// NOTE: the bar geometry (_create_bar/_add_bars/change_bar_values) is ported
-// in full. The x-axis/bar labels and y-axis numbers need Tex/DecimalNumber
-// (text/tex, out of scope for the entire port), so _add_x_axis_labels and
-// get_bar_labels throw TODO errors and the y_axis.add_numbers() tail of
-// __init__ binds once the NumberLine integration lands; the bars themselves
-// cannot join the axes group yet because the TS Axes hierarchy is not
-// Mobject-based (no add/add_to_back); see .
+// NOTE: the bar geometry (_create_bar/_add_bars/change_bar_values) and the
+// x-axis/bar labels (Tex/MathTex via the ported text pipeline) are ported in
+// full. The bars cannot join the Axes group via Python's add/add_to_back
+// because the TS Axes hierarchy is not Mobject-based, so `add_to_back` is
+// called on the chart itself; see .
 export class BarChart extends Axes {
   values: number[];
   bar_names: string[] | null;
@@ -328,10 +350,9 @@ export class BarChart extends Axes {
     }
     const resolved_x_length = x_length ?? Math.min(values.length, config.frame_width - 2);
 
-    // NOTE: Python defaults x_axis_config to {"font_size": 24,
-    // "label_constructor": Tex}; Tex is out of scope, so the constructor is
-    // kept as an opaque placeholder until text lands.
-    const x_axis_config: Record<string, unknown> = { font_size: 24, label_constructor: "Tex" };
+    // NOTE: mirrors Python `x_axis_config = {"font_size": 24,
+    // "label_constructor": Tex}`.
+    const x_axis_config: Record<string, unknown> = { font_size: 24, label_constructor: Tex };
     Axes._update_default_configs([x_axis_config], [passed_x_axis_config]);
 
     super(
@@ -358,9 +379,8 @@ export class BarChart extends Axes {
       this._add_x_axis_labels();
     }
 
-    // NOTE: NumberLine.add_numbers builds DecimalNumber (text) labels and the
-    // TS Axes hierarchy is not Mobject-based yet, so this binds once the
-    // NumberLine integration lands.
+    // NOTE: NumberLine.add_numbers builds DecimalNumber (text) labels through
+    // the ported text pipeline, matching Python's `self.y_axis.add_numbers()`.
     (this as unknown as { y_axis?: { add_numbers?: () => void } }).y_axis?.add_numbers?.();
   }
 
@@ -405,23 +425,58 @@ export class BarChart extends Axes {
   }
 
   _add_x_axis_labels(): void {
-    // NOTE: labels are built with self.x_axis.label_constructor (Tex) and
-    // positioned via NumberLine helpers; text/tex is out of scope.
-    throw new Error("TODO: text/tex not ported yet (BarChart._add_x_axis_labels needs Tex labels)");
+    // NOTE: mirrors Python `_add_x_axis_labels`: like NumberLine.add_labels
+    // but the label sits below the axis for positive bars and above it for
+    // negative bars.
+    const bar_names = this.bar_names;
+    if (bar_names === null || bar_names === undefined) return;
+    // 0.5 shifted so labels are centered, not on ticks.
+    const val_range = [...arange(0.5, bar_names.length, 1)];
+    const labels = new VGroup();
+    const count = Math.min(val_range.length, bar_names.length);
+    for (let i = 0; i < count; i += 1) {
+      const value = val_range[i] as number;
+      const bar_name = bar_names[i] as string;
+      const direction = (this.values[i] ?? 0) < 0 ? [...UP] : [...DOWN];
+      const bar_name_label = constructLabel(this.x_axis.label_constructor, bar_name);
+      bar_name_label.font_size = this.x_axis.font_size;
+      bar_name_label.next_to(
+        this.x_axis.number_to_point(value),
+        direction,
+        this.x_axis.line_to_number_buff,
+      );
+      labels.add(bar_name_label);
+    }
+    this.x_axis.labels = labels;
+    this.x_axis.add(labels);
   }
 
   get_bar_labels(
     color: ParsableManimColor | null = null,
     font_size = 24,
     buff: number = MED_SMALL_BUFF,
-    label_constructor: unknown = "Tex",
+    label_constructor: unknown = Tex,
   ): VGroup {
-    void color;
-    void font_size;
-    void buff;
-    void label_constructor;
-    // NOTE: labels are MathTex/Tex mobjects (text/tex, out of scope).
-    throw new Error("TODO: text/tex not ported yet (BarChart.get_bar_labels needs Tex labels)");
+    // NOTE: mirrors Python `get_bar_labels`: annotate each bar with its
+    // value, using the bar's fill color unless an explicit color is given.
+    const bar_labels = new VGroup();
+    const bars = this.bars.submobjects as Rectangle[];
+    const count = Math.min(bars.length, this.values.length);
+    for (let i = 0; i < count; i += 1) {
+      const bar = bars[i] as Rectangle;
+      const value = this.values[i] ?? 0;
+      const bar_lbl = constructLabel(label_constructor, String(value));
+      if (color === null || color === undefined) {
+        bar_lbl.set_color(bar.get_fill_color());
+      } else {
+        bar_lbl.set_color(color);
+      }
+      bar_lbl.font_size = font_size;
+      const pos = value >= 0 ? [...UP] : [...DOWN];
+      bar_lbl.next_to(bar, pos, buff);
+      bar_labels.add(bar_lbl);
+    }
+    return bar_labels;
   }
 
   change_bar_values(values: Iterable<number>, update_colors = true): this {

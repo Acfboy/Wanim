@@ -21,6 +21,7 @@ import { VMobject, VGroup } from "../types/vectorized_mobject.js";
 import { SVGMobject, type SVGMobjectOptions } from "../svg/svg_mobject.js";
 import { Line } from "../geometry/line.js";
 import { setMathTexLabelFactory } from "../geometry/arc.js";
+import { setTexFactory } from "../types/vectorized_mobject.js";
 import { texToSvg } from "./mathjax.js";
 
 export const MATHTEX_SUBSTRING = "substring";
@@ -700,3 +701,8 @@ export class Title extends Tex {
 // Kept as a registry rather than an import in arc.ts to avoid the
 // arc.ts -> tex_mobject.ts -> line.ts -> arc.ts module cycle.
 setMathTexLabelFactory((label: string, color) => new MathTex(label, { color }));
+
+// Registers the key-label renderer used by VDict(show_keys=True); the
+// registry lives in vectorized_mobject.ts so it need not import this module
+// (which would create a cycle).
+setTexFactory((text, color) => new Tex(text, color === undefined || color === null ? {} : { color }));

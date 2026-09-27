@@ -354,9 +354,11 @@ describe("GenericGraph._create_vertex", () => {
     expect(cfg["label"]).toBe(sq);
     vecClose(mob.get_center(), [3, 0, 0], 1e-6);
   });
-  it("label=True needs MathTex (tex out of scope)", () => {
+  it("label=True builds a MathTex vertex label", () => {
     const g = twoNodeGraph();
-    expect(() => g._create_vertex(4, [0, 0, 0], true)).toThrow(/text\/tex/);
+    const [, , , mob] = g._create_vertex(4, [0, 0, 0], true);
+    const label = (mob as unknown as { submobjects: Array<{ tex_string: string }> }).submobjects[0];
+    expect(label.tex_string).toBe("4");
   });
   it("explicit vertex_mobject passes through by identity", () => {
     const g = twoNodeGraph();

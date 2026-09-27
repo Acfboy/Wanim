@@ -97,19 +97,21 @@ describe("text labels (ported) and remaining stubs", () => {
     });
     expect(p.label).toBeDefined();
   });
-  it("PolarPlane.get_coordinate_labels with explicit values reaches the text/tex TODO", () => {
-    // Python reaches MathTex/DecimalNumber label construction and fails on
-    // missing latex; the port builds the real axes and reaches the same
-    // DecimalNumber label path (unported text pipeline).
+  it("PolarPlane.get_coordinate_labels with explicit values builds labels", () => {
     const pp = new PolarPlane();
-    expect(() => pp.get_coordinate_labels([1, 2], [0.25])).toThrow(
-      /text\/tex not ported/,
-    );
+    const labels = pp.get_coordinate_labels([1, 2], [0.25]);
+    expect(labels.submobjects.length).toBe(2);
+    // [0.25] -> one radian label; python string for 1/4 is \tfrac{\pi}{2}.
+    const azimuth = labels.submobjects[1].submobjects;
+    expect(azimuth.length).toBe(1);
+    expect(
+      (azimuth[0] as unknown as { tex_string: string }).tex_string,
+    ).toBe("\\tfrac{\\pi}{2}");
   });
-  it("PolarPlane.get_coordinate_labels defaults reach the text/tex TODO", () => {
-    // Same documented deviation as add_coordinates (see header).
+  it("PolarPlane.get_coordinate_labels defaults build 20 azimuth labels", () => {
     const pp = new PolarPlane();
-    expect(() => pp.get_coordinate_labels()).toThrow(/text\/tex not ported/);
+    const labels = pp.get_coordinate_labels();
+    expect(labels.submobjects[1].submobjects.length).toBe(20);
   });
   it("NumberLine.get_number_mobject builds a positioned DecimalNumber", () => {
     const nl = new NumberLine({ x_range: [-3, 3, 1] });

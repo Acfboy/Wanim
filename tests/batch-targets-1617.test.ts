@@ -852,8 +852,13 @@ describe("Table.get_cell", () => {
 });
 
 describe("MathTable", () => {
-  it("default element factory throws the text/tex TODO stub", () => {
-    expect(() => new MathTable([[1, 2], [3, 4]])).toThrowError(/text\/tex not ported/);
+  it("default element factory builds MathTex entries", () => {
+    const t = new MathTable([
+      [1, 2],
+      [3, 4],
+    ]);
+    expect(t.mob_table.length).toBe(2);
+    expect(t.elements.submobjects.length).toBe(4);
   });
 
   it("works with an explicit VMobject factory", () => {

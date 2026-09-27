@@ -4,9 +4,9 @@
 // (original manim, original manim) — see the per-test comments. Float comparisons
 // use 1e-9 relative tolerance; discrete values are exact.
 //
-// OUT OF SCOPE (text/tex): IntegerTable/IntegerMatrix defaults, _get_axis_label
-// and BarChart axis labels need LaTeX; the TS port throws
-// `TODO: text/tex not ported yet` there and these tests assert exactly that.
+// NOTE: IntegerTable/IntegerMatrix defaults now build real MathTex/Integer
+// entries through the ported text pipeline (MathJax, no local LaTeX), so the
+// tests below assert the built grid rather than a TODO throw.
 
 import { describe, expect, it, vi } from "vitest";
 import { array } from "numpy-ts";
@@ -546,8 +546,9 @@ describe("FullScreenRectangle.__init__", () => {
 // port throws `TODO: text/tex not ported yet` for the defaults. IntegerTable
 // with an explicit factory lays out a real 2x2 grid.
 describe("IntegerTable / IntegerMatrix (ported tex)", () => {
-  it("IntegerTable default factory throws the tex TODO", () => {
-    expect(() => new IntegerTable([[1, 2], [3, 4]])).toThrowError(/text\/tex not ported/);
+  it("IntegerTable default factory builds Integer entries", () => {
+    const t = new IntegerTable([[1, 2], [3, 4]]);
+    expect(t.elements.submobjects.length).toBe(4);
   });
   it("IntegerMatrix default factory builds Integer entries", () => {
     const m = new IntegerMatrix([[1, 2], [3, 4]]);

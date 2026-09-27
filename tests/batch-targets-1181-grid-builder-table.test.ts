@@ -615,13 +615,13 @@ describe("Table labels, lines, colors and create", () => {
     expect(t.get_labels().submobjects.length).toBe(0);
   });
 
-  it("marks tex-backed factories as out of scope (TODO stubs)", () => {
-    // Text/tex rendering is out of scope for the whole port: the default
-    // Paragraph/MathTex/Integer/DecimalNumber factories throw.
-    expect(() => new Table([[new Square()]], {})).toThrowError(/text\/tex not ported/);
-    expect(() => new MathTable([["a"]], {})).toThrowError(/text\/tex not ported/);
-    expect(() => new IntegerTable([["1"]], {})).toThrowError(/text\/tex not ported/);
-    expect(() => new DecimalTable([["1.5"]], {})).toThrowError(/text\/tex not ported/);
+  it("default factories build Paragraph/MathTex/Integer/DecimalNumber entries", () => {
+    // Text/tex rendering now works through the MathJax-backed pipeline, so
+    // the defaults build real entries (one per data cell).
+    expect(new Table([[new Square()]]).elements.submobjects.length).toBe(1);
+    expect(new MathTable([["a"]]).elements.submobjects.length).toBe(1);
+    expect(new IntegerTable([["1"]]).elements.submobjects.length).toBe(1);
+    expect(new DecimalTable([["1.5"]]).elements.submobjects.length).toBe(1);
   });
 });
 
