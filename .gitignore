@@ -7,4 +7,4 @@ media/
 demo/wanim.browser.js
 demo/wanim.browser.js.map
 demo/fonts/
-demo/sample.mjson
+demo/*.mjson
