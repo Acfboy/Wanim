@@ -1697,7 +1697,9 @@ export class ThreeDAxes extends Axes {
       const pieces = new VGroup(...mob.get_pieces(this.num_axis_pieces).submobjects as VMobject[]);
       (mob as unknown as { pieces: VGroup }).pieces = pieces;
       mob.add(pieces);
-      (mob as unknown as VMobject).set_stroke(undefined, 0, undefined, false);
+      // Python: axis.set_stroke(width=0, family=False) — only the axis
+      // itself, leaving the pieces' stroke widths untouched.
+      (mob as unknown as VMobject).set_stroke(undefined, 0, undefined, { family: false });
       (mob as unknown as VMobject).set_shade_in_3d(true);
     }
   }
