@@ -8,9 +8,11 @@ import { createServer } from "node:http";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { extname, dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveDefaultFontFile } from "./font-resolver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wanimRoot = resolve(here, "..");
+const fontFile = resolveDefaultFontFile();
 
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -26,6 +28,11 @@ function startServer() {
       try {
         const url = new URL(req.url, "http://localhost");
         let path = decodeURIComponent(url.pathname);
+        if (/(^|\/)fonts\/[^/]+\.(ttf|otf)$/.test(path) && fontFile !== null) {
+          res.writeHead(200, { "Content-Type": "font/ttf", "Cache-Control": "no-store" });
+          res.end(await readFile(fontFile));
+          return;
+        }
         if (path.endsWith("/")) path += "index.html";
         const target = normalize(join(wanimRoot, path));
         if (!target.startsWith(wanimRoot)) { res.writeHead(403).end("Forbidden"); return; }
