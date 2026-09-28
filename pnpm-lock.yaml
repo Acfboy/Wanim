@@ -12,8 +12,8 @@ importers:
         specifier: ^3.2.2
         version: 3.2.2
       numpy-ts:
-        specifier: file:../harness/***REMOVED***
-        version: file:../harness/***REMOVED***
+        specifier: ^1.7.0
+        version: 1.7.0
       opentype.js:
         specifier: ^2.0.0
         version: 2.0.0
@@ -486,8 +486,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  numpy-ts@file:../harness/***REMOVED***:
-    resolution: {directory: ../harness/***REMOVED***, type: directory}
+  numpy-ts@1.7.0:
+    resolution: {integrity: sha512-pOWdSyfbdN2pb5P2XBDxz6JR3I5XPqxJvR0i/hi6QIFrt1FLoEDUi8nLqb9KdlleUNBgWM1i9xCaO7IBD2j1bQ==}
     engines: {node: '>=22'}
 
   obug@2.2.1:
@@ -955,7 +955,7 @@ snapshots:
 
   nanoid@3.3.19: {}
 
-  numpy-ts@file:../harness/***REMOVED***: {}
+  numpy-ts@1.7.0: {}
 
   obug@2.2.1: {}
 

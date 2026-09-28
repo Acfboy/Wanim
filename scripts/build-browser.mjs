@@ -7,16 +7,20 @@
 // paths are only reached by TeX/typst/font code that the Canvas2D demo does not
 // use.
 //
-// Output: demo/wanim.browser.js (+ .map), an ES module usable from an import
-// map entry `"wanim"`.
+// Output: dist/wanim.browser.js, an ES module usable from an import map entry
+// `"wanim"`.  `dist/` is gitignored: the demo page references it, so run
+// `pnpm build:demo` before `pnpm demo`.
 //
-// Env overrides (used by `build-demo-site.mjs`):
-//   WANIM_BROWSER_OUT  output file (default demo/wanim.browser.js)
-//   WANIM_FONTS_OUT    fonts directory (default: <output dir>/fonts)
+// The default font is *not* bundled: in the browser the bundle fetches
+// `<bundle dir>/fonts/DejaVuSans.ttf`, which the local demo server serves from
+// the machine's default English font (see `scripts/font-resolver.mjs`).  This
+// keeps the font out of the repository.
+//
+// Env overrides:
+//   WANIM_BROWSER_OUT  output file (default dist/wanim.browser.js)
 //   WANIM_MINIFY       "0" to disable minification (default: minify)
-//   WANIM_SOURCEMAP     "0" to omit the sourcemap (default: emit)
+//   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -24,18 +28,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const shim = (name) => resolve(here, "shims", name);
 
-const outfile = resolve(process.env.WANIM_BROWSER_OUT ?? resolve(root, "demo", "wanim.browser.js"));
+const outfile = resolve(process.env.WANIM_BROWSER_OUT ?? resolve(root, "dist", "wanim.browser.js"));
 const minify = process.env.WANIM_MINIFY !== "0";
-const sourcemap = process.env.WANIM_SOURCEMAP !== "0";
-
-// The browser bundle resolves the default font next to itself; copy it so
-// `Text`/Pango scenes work without a filesystem.
-const fontsDir = resolve(process.env.WANIM_FONTS_OUT ?? resolve(dirname(outfile), "fonts"));
-mkdirSync(fontsDir, { recursive: true });
-copyFileSync(
-  resolve(root, "src", "mobject", "text", "pango", "fonts", "DejaVuSans.ttf"),
-  resolve(fontsDir, "DejaVuSans.ttf"),
-);
+const sourcemap = process.env.WANIM_SOURCEMAP === "1";
 
 await build({
   entryPoints: [resolve(root, "dist", "index.js")],

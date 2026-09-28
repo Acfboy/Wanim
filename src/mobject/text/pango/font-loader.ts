@@ -23,22 +23,35 @@ const FONT_CACHE = new Map<string, Font>();
 /** True in a browser/worker (no synchronous filesystem). */
 const IS_BROWSER = typeof window !== "undefined" || typeof (globalThis as { importScripts?: unknown }).importScripts === "function";
 
-/** Bundled fallback font (DejaVu Sans), used when no font is specified. */
+/**
+ * Location of the default font.
+ *
+ * wanim does not bundle a font.  In Node the host's system font is used (see
+ * {@link resolveDefaultFontPath}); in the browser this URL is fetched and the
+ * demo server answers it with the host's default English font.
+ */
 export const DEFAULT_FONT_PATH = new URL("./fonts/DejaVuSans.ttf", import.meta.url).pathname;
 
 const SYSTEM_FONT_CANDIDATES = [
   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
   "/usr/share/fonts/dejavu/DejaVuSans.ttf",
   "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+  "/System/Library/Fonts/Supplemental/Arial.ttf",
+  "C:\\Windows\\Fonts\\arial.ttf",
 ];
 
-/** Resolve the default font file, preferring the bundled asset. */
+/**
+ * Resolve the default font file.
+ *
+ * The browser bundle is served next to a `fonts/` directory (provided by the
+ * demo server, not the repository), so its URL-derived path is authoritative
+ * there.  In Node we fall back to the source tree and then the system fonts.
+ */
 export function resolveDefaultFontPath(): string {
-  // In the browser the bundle is served next to its (copied) fonts, so the
-  // URL-derived path is authoritative and there is no fs to probe.
   if (IS_BROWSER) return DEFAULT_FONT_PATH;
   if (existsSync(DEFAULT_FONT_PATH)) return DEFAULT_FONT_PATH;
-  // When running from `dist/` the .ttf is not emitted by tsc; fall back to the
+  // When running from `dist/` the font is not emitted by tsc; fall back to the
   // source tree (e.g. tests / dev servers run from the project root).
   const cwdCandidate = path.resolve(process.cwd(), "src", "mobject", "text", "pango", "fonts", "DejaVuSans.ttf");
   if (existsSync(cwdCandidate)) return cwdCandidate;
@@ -46,7 +59,7 @@ export function resolveDefaultFontPath(): string {
     if (existsSync(candidate)) return candidate;
   }
   throw new Error(
-    `No font found. Expected the bundled font at ${DEFAULT_FONT_PATH}.`,
+    `No font found. Install a system font or set one explicitly (looked for ${DEFAULT_FONT_PATH}).`,
   );
 }
 

@@ -1,0 +1,747 @@
+diff --git a/src/baselib-internal.pyj b/src/baselib-internal.pyj
+index e0ec495..4f5667d 100644
+--- a/src/baselib-internal.pyj
++++ b/src/baselib-internal.pyj
+@@ -122,6 +122,42 @@ def ρσ_Iterable(iterable):
+     # with dicts in python
+     return Object.keys(iterable)
+ 
++
++def ρσ_super(cls, self):
++    # Python `super()`: a proxy that forwards attribute access to the parent
++    # prototype, binding methods to `self`.
++    parent = Object.getPrototypeOf(cls.prototype)
++    return v'new Proxy(Object.create(null), {get: function(target, name){ var f = parent[name]; if (typeof f === "function") return f.bind(self); return f; }})'
++
++
++def ρσ_dict_methods(obj):
++    # Attach Python dict methods (non-enumerable so the object can still be
++    # used as a plain options bag / spread) to a **kwargs object.
++    if Object.prototype.hasOwnProperty.call(obj, '__ρσ_dict_methods__'):
++        return obj
++    Object.defineProperties(obj, {
++        '__ρσ_dict_methods__': {'value': True, 'enumerable': False},
++        'get': {'value': def (key, defval=None):
++            return obj[key] if Object.prototype.hasOwnProperty.call(
++                obj, key
++            ) else defval
++        , 'enumerable': False},
++        'keys': {'value': def ():
++            return Object.keys(obj)
++        , 'enumerable': False},
++        'values': {'value': def ():
++            return Object.keys(obj).map(def (k): return obj[k];)
++        , 'enumerable': False},
++        'items': {'value': def ():
++            return Object.keys(obj).map(def (k): return [k, obj[k]];)
++        , 'enumerable': False},
++        '__contains__': {'value': def (key):
++            return Object.prototype.hasOwnProperty.call(obj, key)
++        , 'enumerable': False},
++    })
++    return obj
++
++
+ ρσ_desugar_kwargs = (def ():
+     if jstype(Object.assign) is 'function':
+         return def ():
+@@ -177,13 +213,35 @@ def ρσ_interpolate_kwargs_constructor(apply, f, supplied_args):
+ 
+ 
+ def ρσ_getitem(obj, key):
+-    if obj.__getitem__:
+-        return obj.__getitem__(key)
++    try:
++        g = obj.__getitem__
++    except:
++        g = undefined
++    if g:
++        return g.call(obj, key)
+     if jstype(key) is 'number' and key < 0:
++        # numpy-style arrays support negative indices natively; plain JS
++        # arrays index from the end via .length
++        if Array.isArray(obj.shape):
++            return v'obj[key]'
+         key += obj.length
+     return obj[key]
+ 
+ 
++def ρσ_getslice(obj, start, end):
++    if obj is undefined or obj is None:
++        return obj
++    # numpy-style arrays expose a string-based .slice API; translate the Python
++    # slice bounds into a "start:end" slice string.
++    if Array.isArray(obj.shape) and jstype(obj.slice) is 'function':
++        a = '' if start is undefined or start is None else String(start)
++        b = '' if end is undefined or end is None else String(end)
++        return obj.slice(a + ':' + b)
++    if jstype(obj.slice) is 'function':
++        return obj.slice(start, end)
++    raise new TypeError('object is not subscriptable')
++
++
+ def ρσ_setitem(obj, key, val):
+     if obj.__setitem__:
+         obj.__setitem__(key, val)
+diff --git a/src/output/functions.pyj b/src/output/functions.pyj
+index 341df63..6bda020 100644
+--- a/src/output/functions.pyj
++++ b/src/output/functions.pyj
+@@ -3,7 +3,8 @@
+ from __python__ import hash_literals
+ 
+ from ast import (
+-    AST_ClassCall, AST_New, has_calls, AST_Dot, AST_SymbolRef, is_node_type
++    AST_ClassCall, AST_New, has_calls, AST_Dot, AST_SymbolRef, is_node_type,
++    AST_GeneratorComprehension
+ )
+ from output.operators import print_getattr
+ from output.statements import print_bracketed
+@@ -152,6 +153,11 @@ def function_preamble(node, output, offset):
+             '{}'
+         )
+         output.end_statement()
++        if a.kwargs:
++            # Give the **kwargs object Python dict methods (get/keys/...).
++            output.indent()
++            output.spaced(kw, '=', 'ρσ_dict_methods(' + kw + ')')
++            output.end_statement()
+         # Read values from the kwargs object for any formal parameters
+         if a.has_defaults:
+             for dname in Object.keys(a.defaults):
+@@ -461,7 +467,15 @@ def print_function_call(self, output):
+             if not is_first:
+                 output.print('.concat(')
+             if expr.is_array:
+-                expr.value.print(output)
++                # A starred generator expression is iterable but not
++                # array-like, so `.apply` would pass no arguments.  Materialize
++                # it into an array first.
++                if is_node_type(expr.value, AST_GeneratorComprehension):
++                    output.print('Array.from(')
++                    expr.value.print(output)
++                    output.print(')')
++                else:
++                    expr.value.print(output)
+                 i += 1
+             else:
+                 output.print('[')
+diff --git a/src/output/operators.pyj b/src/output/operators.pyj
+index a16673a..5404231 100644
+--- a/src/output/operators.pyj
++++ b/src/output/operators.pyj
+@@ -26,6 +26,18 @@ def print_getattr(self, output, skip_expression):  # AST_Dot
+ def print_getitem(self, output):  # AST_Sub
+     expr = self.expression
+     prop = self.property
++    p = output.parent()
++    is_lvalue = is_node_type(p, AST_Assign) and p.left is self
++    if output.options.operator_overloading and not is_lvalue:
++        # Route every read subscript through the runtime helper so Python
++        # `__getitem__` works (Mobject/VGroup indexing) in addition to plain
++        # arrays, strings and numpy arrays.
++        output.print('ρσ_getitem(')
++        expr.print(output)
++        output.comma()
++        prop.print(output)
++        output.print(')')
++        return
+     if (
+         is_node_type(prop, AST_Number) or is_node_type(prop, AST_String)
+         or (is_node_type(prop, AST_SymbolRef) and prop.name
+@@ -38,6 +50,15 @@ def print_getitem(self, output):  # AST_Sub
+         is_node_type(prop, AST_Unary) and prop.operator is '-'
+         and is_node_type(prop.expression, AST_Number)
+     )
++    if is_negative_number and not is_lvalue:
++        # Route through the runtime helper: plain arrays index from the end via
++        # `.length`, while numpy-style arrays support negative indices directly.
++        output.print('ρσ_getitem(')
++        self.expression.print(output)
++        output.comma()
++        prop.print(output)
++        output.print(')')
++        return
+     is_repeatable = is_node_type(expr, AST_SymbolRef)
+     if is_repeatable:
+         expr.print(output)
+@@ -46,8 +67,11 @@ def print_getitem(self, output):  # AST_Sub
+         expr = {'print': def (): output.print('ρσ_expr_temp');}
+ 
+     if is_negative_number:
++        # Assignment target: keep the classic `a[a.length - 1] = ...` form.
+         output.print('['), expr.print(output)
+-        output.print('.length'), prop.print(output)
++        output.print('.length')
++        output.print('-')
++        prop.expression.print(output)
+         output.print(']')
+         return
+     is_repeatable = is_node_type(prop, AST_SymbolRef)
+@@ -115,6 +139,12 @@ def print_unary_prefix(self, output):
+     op = self.operator
+     if op is 'delete':
+         return print_delete(self.expression, output)
++    if output.options.operator_overloading and op is '-':
++        output.print('ρσ_op_neg')
++        output.with_parens(def ():
++            self.expression.print(output)
++        )
++        return
+     output.print(op)
+     if /^[a-z]/i.test(op):
+         output.space()
+@@ -211,9 +241,37 @@ function_ops = {
+     'nin': '!ρσ_in',
+ }
+ 
++# Arithmetic operators that can be routed through the Python-semantics runtime
++# helpers when `operator_overloading` is enabled.
++op_overload_map = {
++    '+': 'ρσ_op_add',
++    '-': 'ρσ_op_sub',
++    '*': 'ρσ_op_mul',
++    '/': 'ρσ_op_div',
++    '//': 'ρσ_op_floordiv',
++    '%': 'ρσ_op_mod',
++    '**': 'ρσ_op_pow',
++}
++
++compound_op_overload_map = {
++    '+=': 'ρσ_op_add',
++    '-=': 'ρσ_op_sub',
++    '*=': 'ρσ_op_mul',
++    '/=': 'ρσ_op_div',
++    '%=': 'ρσ_op_mod',
++    '**=': 'ρσ_op_pow',
++}
++
+ 
+ def print_binary_op(self, output):
+-    if function_ops[self.operator]:
++    if output.options.operator_overloading and op_overload_map[self.operator]:
++        output.print(op_overload_map[self.operator])
++        output.with_parens(def ():
++            self.left.print(output)
++            output.comma()
++            self.right.print(output)
++        )
++    elif function_ops[self.operator]:
+         output.print(function_ops[self.operator])
+         output.with_parens(def ():
+             self.left.print(output)
+@@ -363,6 +421,20 @@ def print_existential(self, output):
+ 
+ 
+ def print_assignment(self, output):
++    if (output.options.operator_overloading
++            and compound_op_overload_map[self.operator]
++            and (is_node_type(self.left, AST_SymbolRef)
++                 or is_node_type(self.left, AST_Symbol))):
++        # `x += y` -> `x = ρσ_op_add(x, y)` so Python `__iadd__`/array
++        # arithmetic works instead of JavaScript's stringify-then-coerce `+=`.
++        output.assign(self.left)
++        output.print(compound_op_overload_map[self.operator])
++        output.with_parens(def ():
++            self.left.print(output)
++            output.comma()
++            self.right.print(output)
++        )
++        return
+     flattened = False
+     left = self.left
+     if is_node_type(left, AST_Seq):
+diff --git a/src/output/stream.pyj b/src/output/stream.pyj
+index fe87930..ea40d02 100644
+--- a/src/output/stream.pyj
++++ b/src/output/stream.pyj
+@@ -79,6 +79,15 @@ output_stream_defaults = {
+     'module_cache_dir': '',
+     'js_version': 6,
+     'write_name': True,
++    # When true, arithmetic operators are emitted as calls to the
++    # `ρσ_op_*` runtime helpers instead of native JavaScript operators.
++    # This lets Python classes that overload `__add__`/`__mul__`/... (and
++    # numpy-style array arithmetic) keep working after translation.  Off by
++    # default so the compiler builds itself with plain JavaScript semantics.
++    'operator_overloading': False,
++    # When true, blocking scene methods are emitted as `await self.<method>(...)`
++    # (see the `await_scene_methods` parse option).
++    'await_scene_methods': False,
+ }
+ 
+ 
+diff --git a/src/parse.pyj b/src/parse.pyj
+index 5533155..8146141 100644
+--- a/src/parse.pyj
++++ b/src/parse.pyj
+@@ -5,6 +5,7 @@
+ from __python__ import hash_literals
+ 
+ from ast import (
++    AST,
+     AST_ArgsDef,
+     AST_Array,
+     AST_Assign,
+@@ -88,6 +89,7 @@ from ast import (
+     AST_Await,
+     AST_Assert,
+     AST_Existential,
++    AST_Token,
+     is_node_type,
+     TreeWalker
+ )
+@@ -251,6 +253,12 @@ def create_parser_ctx(
+     imported_module_ids, imported_modules,
+     importing_modules, options
+ ):
++    # Scene methods that block in manim and therefore must be awaited in the
++    # real-time renderer (see the `await_scene_methods` option above).
++    await_scene_method_names = {
++        'play': True, 'wait': True, 'pause': True, 'wait_until': True
++    }
++
+     def next():
+         S.prev = S.token
+         if S.peeked.length:
+@@ -622,6 +630,10 @@ def create_parser_ctx(
+             )
+             return await simple_statement()
+         elif tmp_ is 'keyword':
++            # `super` (and a few other keywords) can start an expression
++            # statement, e.g. `super().__init__(...)`.
++            if S.token.value is 'super':
++                return await simple_statement()
+             tmp_ = S.token.value
+             next()
+             if tmp_ is 'break':
+@@ -1418,6 +1430,7 @@ def create_parser_ctx(
+         ctor = AST_Method if in_class else AST_Function
+         return_annotation = None
+         is_generator = v'[]'
++        fn_is_async = v'[]'
+         docstrings = v'[]'
+ 
+         fn_argnames = await (async def ():
+@@ -1584,7 +1597,11 @@ def create_parser_ctx(
+             a = await block_(docstrings)
+             S.in_function -= 1
+             S.scoped_flags.pop()
+-            is_generator.push(bool(S.functions.pop().is_generator))
++            fn_state = S.functions.pop()
++            is_generator.push(bool(fn_state.is_generator))
++            # `await_scene_methods` may have flipped the function to async while
++            # its body was parsed.
++            fn_is_async.push(bool(fn_state.is_async))
+             S.classes.pop()
+             S.in_class.pop()
+             S.in_loop = loop
+@@ -1604,7 +1621,7 @@ def create_parser_ctx(
+         })
+         definition.return_annotation = return_annotation
+         definition.is_generator = is_generator[0]
+-        definition.is_async = is_async
++        definition.is_async = is_async or fn_is_async[0]
+         if is_node_type(definition, AST_Method):
+             definition.static = staticmethod
+             definition.is_getter = property_getter
+@@ -1652,6 +1669,97 @@ def create_parser_ctx(
+         )
+         return definition
+ 
++    async def lambda_():
++        # Python `lambda params: expression` support.  The body is a single
++        # expression, so it becomes an anonymous function returning it.
++        a = v'[]'
++        starargs_sym = undefined
++        kwargs_sym = undefined
++        defaults = {}
++        has_defaults = False
++        seen_names = {}
++        first = True
++
++        async def get_arg():
++            if not is_('name'):
++                croak('Name expected')
++            name = S.token.value
++            if has_prop(seen_names, name):
++                token_error(prev(), "Can't repeat parameter names")
++            seen_names[name] = True
++            sym = new AST_SymbolFunarg({
++                'name': name,
++                'start': S.token,
++                'end': S.token,
++                'annotation': None
++            })
++            next()
++            return sym
++
++        while not is_('punc', ':'):
++            if first:
++                first = False
++            else:
++                expect(',')
++            if is_('operator', '**'):
++                next()
++                if kwargs_sym:
++                    token_error(prev(), "Can't define multiple **kwargs")
++                kwargs_sym = await get_arg()
++            elif is_('operator', '*'):
++                next()
++                if starargs_sym:
++                    token_error(prev(), "Can't define multiple *args")
++                if kwargs_sym:
++                    token_error(prev(), "Can't define *args after **kwargs")
++                starargs_sym = await get_arg()
++            else:
++                if starargs_sym or kwargs_sym:
++                    token_error(
++                        prev(),
++                        "Can't define a formal parameter after"
++                        ' *args or **kwargs'
++                    )
++                arg = await get_arg()
++                a.push(arg)
++                if is_('operator', '='):
++                    next()
++                    defaults[arg.name] = await expression(False)
++                    has_defaults = True
++                else:
++                    if has_defaults:
++                        token_error(
++                            prev(),
++                            "Can't define required formal parameters"
++                            ' after optional formal parameters'
++                        )
++        expect(':')
++        body_expr = await expression(False)
++        argnames = new AST_ArgsDef({
++            'args': a,
++            'starargs': starargs_sym,
++            'kwargs': kwargs_sym,
++            'defaults': defaults,
++            'has_defaults': has_defaults,
++            'is_simple_func': (
++                not starargs_sym and not kwargs_sym and not has_defaults
++            ),
++        })
++        definition = new AST_Function({
++            'name': None,
++            'is_expression': True,
++            'is_anonymous': True,
++            'argnames': argnames,
++            'localvars': v'[]',
++            'decorators': v'[]',
++            'docstrings': v'[]',
++            'body': v'[new AST_Return({"value": body_expr})]',
++        })
++        definition.return_annotation = None
++        definition.is_generator = False
++        definition.is_async = False
++        return definition
++
+     async def if_():
+         cond = await expression(True)
+         body = await statement()
+@@ -1975,6 +2083,57 @@ def create_parser_ctx(
+             func.end = prev()
+             return await subscripts(func, allow_calls)
+ 
++        if is_('name') and S.token.value is 'lambda':
++            next()
++            func = await lambda_()
++            func.start = start
++            func.end = prev()
++            return await subscripts(func, allow_calls)
++
++        if is_('keyword', 'super') or (is_('name') and S.token.value is 'super'):
++            next()
++            cls_expr = None
++            if is_('punc', '('):
++                next()
++                if not is_('punc', ')'):
++                    cls_expr = await expression(False)
++                    if is_('punc', ','):
++                        next()
++                        await expression(False)
++                expect(')')
++            if cls_expr is None:
++                # Inside a method body `S.in_class[-1]` is False; walk back to
++                # the nearest enclosing class name.
++                cls_name = None
++                for v'var i = S.in_class.length - 1; i >= 0; i--':
++                    if S.in_class[i]:
++                        cls_name = S.in_class[i]
++                        break
++                if not cls_name:
++                    croak('super() used outside of a class method')
++                cls_expr = new AST_SymbolRef({
++                    'name': cls_name
++                })
++            _super_args = v'[]'
++            _super_args.push(new AST_CallArg({
++                'value': cls_expr, 'is_array': False
++            }))
++            _super_args.push(new AST_CallArg({
++                'value': new AST_This({
++                    'name': 'this', 'start': None, 'end': None
++                }),
++                'is_array': False
++            }))
++            return await subscripts(new AST_Call({
++                'start': start,
++                'expression': new AST_SymbolRef({'name': 'ρσ_super'}),
++                'args': new AST_CallArgs({
++                    'args': _super_args, 'kwargs': v'[]',
++                    'kwarg_items': v'[]', 'starargs': False
++                }),
++                'end': prev()
++            }), allow_calls)
++
+         if is_('keyword', 'await'):
+             next()
+             if S.in_function is 0 or not S.functions[-1].is_async:
+@@ -2381,6 +2540,18 @@ def create_parser_ctx(
+                     )
+ 
+                 _ca3 = v'[]'
++                if options.operator_overloading:
++                    _ca3.push(new AST_CallArg({
++                        'value': expr, 'is_array': False
++                    }))
++                    slice_expr = new AST_SymbolRef({'name': 'ρσ_getslice'})
++                else:
++                    slice_expr = new AST_Dot({
++                        'start': start,
++                        'expression': expr,
++                        'property': 'slice',
++                        'end': prev()
++                    })
+                 for _sb in slice_bounds:
+                     _ca3.push(new AST_CallArg({
+                         'value': _sb, 'is_array': False
+@@ -2388,12 +2559,7 @@ def create_parser_ctx(
+                 return await subscripts(
+                     new AST_Call({
+                         'start': start,
+-                        'expression': new AST_Dot({
+-                            'start': start,
+-                            'expression': expr,
+-                            'property': 'slice',
+-                            'end': prev()
+-                        }),
++                        'expression': slice_expr,
+                         'args': new AST_CallArgs({
+                             'args': _ca3, 'kwargs': v'[]',
+                             'kwarg_items': v'[]', 'starargs': False
+@@ -2497,12 +2663,24 @@ def create_parser_ctx(
+ 
+             # fall-through to basic function call
+             basic_args = await func_call_list()
+-            ret = await subscripts(new AST_Call({
++            call_node = new AST_Call({
+                 'start': start,
+                 'expression': expr,
+                 'args': basic_args,
+                 'end': prev()
+-            }), True)
++            })
++            if (options.await_scene_methods
++                    and S.in_function > 0
++                    and is_node_type(expr, AST_Dot)
++                    and is_node_type(expr.expression, AST_SymbolRef)
++                    and expr.expression.name is 'self'
++                    and has_prop(await_scene_method_names, expr.property)):
++                # Auto-await `self.play(...)`/`self.wait(...)` and mark the
++                # enclosing function async, so translated Python keeps working
++                # against the real-time renderer while looking synchronous.
++                S.functions[-1].is_async = True
++                call_node = new AST_Await({'value': call_node})
++            ret = await subscripts(call_node, True)
+             S.in_parenthesized_expr = prev_parens
+             return ret
+ 
+@@ -2853,6 +3031,8 @@ def create_parser_ctx(
+         toplevel.filename = options.filename
+         toplevel.imported_module_ids = imported_module_ids
+         toplevel.classes = scan_for_classes(toplevel.body)
++        if options.await_scene_methods:
++            annotate_await_scene_methods(toplevel)
+         toplevel.import_order = Object.keys(imported_modules).length
+         toplevel.module_id = module_id
+         imported_modules[module_id] = toplevel
+@@ -2986,6 +3166,92 @@ def create_parser_ctx(
+     return run_parser
+ 
+ 
++def _await_scene_transform(node, enclosing_fn, async_names, seen):
++    # Recursively replace `self.<async method>(...)` with `await self....(...)`.
++    # `async_names` maps the names of the enclosing class's methods that are
++    # already async (directly, via `await_scene_methods`, or transitively
++    # because they call another async method).  Rewriting happens before the
++    # AST is printed, so the enclosing function's `is_async` flag is still read
++    # by the code generator.
++    if is_node_type(node, AST_Token) or is_node_type(node, AST_Await):
++        return node
++    for key in node:
++        value = node[key]
++        if Array.isArray(value):
++            for i in range(value.length):
++                child = value[i]
++                if is_node_type(child, AST) and not is_node_type(child, AST_Token):
++                    child_fn = (
++                        child
++                        if (is_node_type(child, AST_Function)
++                            or is_node_type(child, AST_Method))
++                        else enclosing_fn
++                    )
++                    value[i] = _await_scene_transform(
++                        child, child_fn, async_names, seen
++                    )
++        elif is_node_type(value, AST) and not is_node_type(value, AST_Token):
++            child_fn = (
++                value
++                if (is_node_type(value, AST_Function)
++                    or is_node_type(value, AST_Method))
++                else enclosing_fn
++            )
++            node[key] = _await_scene_transform(
++                value, child_fn, async_names, seen
++            )
++    if is_node_type(node, AST_Call):
++        callee = node.expression
++        enclosing_is_init = (
++            is_node_type(enclosing_fn, AST_Method)
++            and enclosing_fn.name
++            and enclosing_fn.name.name is '__init__'
++        )
++        if (is_node_type(callee, AST_Dot)
++                and is_node_type(callee.expression, AST_SymbolRef)
++                and callee.expression.name is 'self'
++                and has_prop(async_names, callee.property)
++                and not enclosing_is_init
++                and not seen.has(node)):
++            seen.add(node)
++            if enclosing_fn:
++                enclosing_fn.is_async = True
++            return new AST_Await({'value': node})
++    return node
++
++
++def annotate_await_scene_methods(toplevel):
++    # Transitively propagate `await_scene_methods`' auto-await to calls of the
++    # user's own async helper methods.  Without this, a synchronous-looking
++    # `self.move_dot_and_draw_curve()` whose body contains `self.wait(...)`
++    # would return a pending promise that `construct` never waits for, so the
++    # helper's animations would run concurrently with the next statement.
++    classes = toplevel.classes or {}
++    for cls_name in Object.keys(classes):
++        cls = classes[cls_name]
++        methods = v'[]'
++        for item in cls.body:
++            if is_node_type(item, AST_Method):
++                methods.push(item)
++        if not methods.length:
++            continue
++        seen = v'new Set()'
++        for _round in range(16):
++            async_names = {}
++            for m in methods:
++                if m.is_async and m.name:
++                    async_names[m.name.name] = True
++            changed = False
++            for m in methods:
++                was = bool(m.is_async)
++                _await_scene_transform(m, m, async_names, seen)
++                if m.is_async and not was:
++                    changed = True
++            if not changed:
++                break
++    return toplevel
++
++
+ async def parse(text, options):
+     options = defaults(options, {
+         'filename': None,  # name of the file being parsed
+@@ -2999,6 +3265,16 @@ async def parse(text, options):
+         'classes': undefined,
+         'scoped_flags': {},  # Global scoped flags (used by the REPL)
+         'discard_asserts': False,
++        # When True, array slices are emitted as calls to the ρσ_getslice
++        # runtime helper so numpy arrays (whose .slice takes slice strings)
++        # can be sliced with Python syntax.
++        'operator_overloading': False,
++        # When True, blocking scene methods (`self.play(...)`,
++        # `self.wait(...)`, ...) are emitted as `await self.<method>(...)` and
++        # the enclosing function is marked async.  This lets a translated
++        # manim scene run against the real-time (yielding) wanim renderer while
++        # the user's Python keeps its synchronous look.
++        'await_scene_methods': False,
+         'module_cache_dir': '',
+         # When True, continue parsing past syntax errors (used by the
+         # LSP). See run_parser/block_.
+diff --git a/tools/cli.mjs b/tools/cli.mjs
+index e0c8cad..f97ec68 100644
+--- a/tools/cli.mjs
++++ b/tools/cli.mjs
+@@ -239,6 +239,17 @@ without the assert statements.`);
+ 
+ opt("uglify", 'u', 'bool', false, `Minify the output instead of pretty printing it.`);
+ 
++opt("operator_overloading", undefined, 'bool', false, `Emit arithmetic operators (+, -, *, /, //, %, ** and unary -)
++as calls to the ρσ_op_* runtime helpers so that Python classes which
++overload __add__/__mul__/... and numpy-style array arithmetic keep
++working. The helpers fall back to plain JavaScript semantics for
++numbers and strings. Off by default.`);
++
++opt("await_scene_methods", undefined, 'bool', false, `Emit blocking scene calls
++(self.play(...), self.wait(...), self.pause(...), self.wait_until(...)) as
++await expressions and mark the enclosing function async. Used for translating
++manim scenes that run against a real-time (yielding) renderer. Off by default.`);
++
+ opt("omit_baselib", 'm', 'bool', false, `Omit baselib functions. Use this if you have a
+ different way of ensuring they're imported. For example,
+ you could import one of the baselib-plain-*.js files directly
+diff --git a/tools/compile.mjs b/tools/compile.mjs
+index 83fe97c..4699585 100644
+--- a/tools/compile.mjs
++++ b/tools/compile.mjs
+@@ -62,6 +62,8 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
+         module_cache_dir: cache_dir,
+         source_map: !!argv.source_map,
+         source_map_line_offset: parseInt(argv.source_map_line_offset) || 0,
++        operator_overloading: !!argv.operator_overloading,
++        await_scene_methods: !!argv.await_scene_methods,
+     };
+ 
+     if (argv.comments) {
+@@ -108,6 +110,8 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
+             import_dirs: utils.get_import_dirs(argv.import_path),
+             discard_asserts: argv.discard_asserts,
+             module_cache_dir: cache_dir,
++            operator_overloading: !!argv.operator_overloading,
++            await_scene_methods: !!argv.await_scene_methods,
+         });
+     }
+ 
+diff --git a/tools/export.js b/tools/export.js
+index 61a2f5b..2e24367 100644
+--- a/tools/export.js
++++ b/tools/export.js
+@@ -266,12 +266,16 @@ async function compile(code, filename, options) {
+         filename: filename || '<eval>',
+         basedir: options.basedir || dirname(filename || ''),
+         libdir: options.libdir,
++        operator_overloading: !!options.operator_overloading,
++        await_scene_methods: !!options.await_scene_methods,
+     });
+     var out_ops = {
+         beautify: (options.beautify === undefined ? true : options.beautify),
+         private_scope: !options.bare,
+         omit_baselib: !!options.omit_baselib,
+         js_version: options.js_version || 6,
++        operator_overloading: !!options.operator_overloading,
++        await_scene_methods: !!options.await_scene_methods,
+     };
+     if (!out_ops.omit_baselib) out_ops.baselib_plain = data['baselib-plain-' + (out_ops.beautify ? 'pretty' : 'ugly') + '.js'];
+     var out = new RapydScript.OutputStream(out_ops);
