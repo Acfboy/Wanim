@@ -15,7 +15,6 @@ try {
   console.warn("numpy-ts configureWasm failed:", error.message);
 }
 
-const wanim = await import("wanim");
 const py2js = await import("py2js");
 
 // Target logical frame rate for live playback.  Yields to requestAnimationFrame
@@ -226,7 +225,6 @@ const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
 const runBtn = document.getElementById("run");
 
-let sandbox = null;
 let currentRender = null;
 let runGeneration = 0;
 
@@ -278,58 +276,6 @@ codeEl.addEventListener("keydown", (event) => {
   highlight();
 });
 
-// --- execution sandbox -----------------------------------------------------
-function createSandbox(runtime) {
-  const frame = document.createElement("iframe");
-  frame.style.display = "none";
-  document.body.appendChild(frame);
-  const win = frame.contentWindow;
-  for (const [key, value] of Object.entries(runtime.globals)) {
-    try { win[key] = value; } catch { /* read-only globals */ }
-  }
-  win.console = console;
-  win.globalThis = win;
-  win.__name__ = "__main__";
-  py2js.installPythonShims({
-    String: win.String,
-    get ρσ_str() { return win.ρσ_str; },
-  });
-  return { frame, win, injected: runtime.globals };
-}
-
-function destroySandbox() {
-  if (sandbox?.frame) sandbox.frame.remove();
-  sandbox = null;
-}
-
-function isSceneSubclass(value) {
-  if (typeof value !== "function") return false;
-  const proto = value.prototype;
-  if (proto === undefined || proto === null || typeof proto !== "object") return false;
-  if (proto === wanim.Scene.prototype) return false;
-  return proto instanceof wanim.Scene;
-}
-
-function discoverScenes(win, injected) {
-  const found = {};
-  for (const key of Object.keys(win)) {
-    if (key.startsWith("ρσ")) continue;
-    const value = win[key];
-    if (injected[key] === value) continue;
-    if (isSceneSubclass(value)) found[key] = value;
-  }
-  return found;
-}
-
-function applyNumpyNames(runtime, numpyNames) {
-  const extra = {};
-  for (const name of numpyNames) {
-    if (name === "*") Object.assign(extra, runtime.np);
-    else if (name in runtime.np) extra[name] = runtime.np[name];
-  }
-  return extra;
-}
-
 // --- compiler --------------------------------------------------------------
 let rapydscriptPromise = null;
 
@@ -339,7 +285,7 @@ function loadRapydscript() {
     // Lazy-load the ~1.4 MB compiler only when the user actually runs code.
     rapydscriptPromise = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "./rapydscript.js";
+      script.src = "../dist/rapydscript.js";
       script.onload = () => resolve();
       script.onerror = () => reject(new Error("Failed to load rapydscript.js"));
       document.head.appendChild(script);
@@ -348,25 +294,12 @@ function loadRapydscript() {
   return rapydscriptPromise;
 }
 
-async function compilePython(source) {
-  await loadRapydscript();
-  const pre = py2js.preprocessImports(source);
-  const js = await window.RapydScript.compile(pre.code, "scene.py", {
-    operator_overloading: true,
-    await_scene_methods: true,
-    bare: true,
-    beautify: true,
-  });
-  return { js, numpyNames: pre.numpyNames };
-}
-
 // --- run -------------------------------------------------------------------
 function stopCurrent() {
   if (currentRender !== null) {
     currentRender.abort();
     currentRender = null;
   }
-  destroySandbox();
 }
 
 async function run() {
@@ -376,39 +309,25 @@ async function run() {
   setOutput("Compiling…", false);
   setStatus("Compiling…");
   try {
-    const { js, numpyNames } = await compilePython(codeEl.value);
+    // The patched rapydscript compiler is loaded lazily on first run.
+    await loadRapydscript();
     if (generation !== runGeneration) return;
-
-    const runtime = py2js.buildRuntime();
-    Object.assign(runtime.globals, applyNumpyNames(runtime, numpyNames));
-    sandbox = createSandbox(runtime);
-    try {
-      sandbox.win.eval(js);
-    } catch (error) {
-      throw new Error(`translated JS threw: ${error.message}`);
-    }
-
-    const scenes = discoverScenes(sandbox.win, sandbox.injected);
-    const names = Object.keys(scenes);
-    if (names.length === 0) throw new Error("No Scene subclass found in the code.");
-    const sceneClass = scenes[names[0]];
 
     const controller = new AbortController();
     currentRender = controller;
-    setStatus(`Running ${names[0]}…`);
-    setOutput(`Running ${names[0]}…`, false);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    const result = await wanim.render_scene_to_canvas(sceneClass, stage, {
+    const { stats } = await py2js.runPythonOnCanvas(codeEl.value, stage, {
       quality: QUALITY,
       realtime: true,
       fps: TARGET_FPS,
       drawFrames: true,
       recordFrames: false,
       signal: controller.signal,
+      onScene: (name) => {
+        setStatus(`Running ${name}…`);
+        setOutput(`Running ${name}…`, false);
+      },
     });
     if (generation !== runGeneration) return;
-    const { stats } = result;
     setStatus("Done.");
     setOutput(
       `Done: ${stats.frames} frames in ${(stats.totalMs / 1000).toFixed(2)} s.\n` +
