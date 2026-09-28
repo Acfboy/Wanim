@@ -12,20 +12,20 @@
     }
   },
   "scripts": {
-    "build": "tsc && node -e \"require('node:fs').cpSync('src/mobject/text/pango/fonts','dist/mobject/text/pango/fonts',{recursive:true})\"",
+    "build": "tsc",
     "build:browser": "pnpm build && node scripts/build-browser.mjs",
+    "build:py2js": "node scripts/build-py2js.mjs",
     "build:rapydscript": "node scripts/build-rapydscript-browser.mjs",
-    "build:editor": "node scripts/build-editor.mjs",
-    "build:demo": "pnpm build:browser && pnpm build:rapydscript && pnpm build:editor",
-    "build:demo-site": "node scripts/build-demo-site.mjs",
+    "build:demo": "pnpm build:browser && pnpm build:rapydscript && pnpm build:py2js",
     "demo": "node scripts/demo-server.mjs",
-    "demo-site": "node scripts/demo-site-server.mjs",
     "smoke:editor": "node scripts/editor_smoke.mjs",
-    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:py2js": "tsc py2js/src/preprocess.ts --outDir py2js/dist --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck --strict && node py2js/tests/preprocess.node-test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "mathjax-full": "^3.2.2",
-    "numpy-ts": "file:../harness/***REMOVED***",
+    "numpy-ts": "^1.7.0",
     "opentype.js": "^2.0.0"
   },
   "devDependencies": {

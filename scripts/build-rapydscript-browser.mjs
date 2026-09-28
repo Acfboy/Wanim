@@ -1,43 +1,86 @@
 #!/usr/bin/env node
-// Produce a browser-loadable rapydscript compiler (`demo/rapydscript.js`) from
-// the (py2js-patched) third-party rapydscript-ng checkout.
+// Fetch, patch and build rapydscript-ng, then export the browser compiler.
 //
-// rapydscript-ng ships a `web-repl-export` command that embeds the compiler,
-// baselib and stdlib into a single classic script exposing `RapydScript`.  The
-// py2js patch threads the `operator_overloading` output option through
-// `tools/export.js` so the browser `compile()` emits `ρσ_op_*` calls.
+// wanim does not vendor rapydscript-ng: this script clones it from upstream at
+// the pinned commit, applies `py2js/patches/rapydscript-ng.patch`
+// (operator overloading + auto-`await` for `self.play`) and builds the compiler
+// with its own bootstrap (`node bin/rapydscript self --complete`).  The browser
+// build (`web-repl-export`) is copied to the demo site as `rapydscript.js`.
 //
-// Output: demo/rapydscript.js (gitignored build artifact).
+// Env overrides:
+//   RAPYDSCRIPT_DIR       checkout cache (default: <wanim>/.rapydscript-ng)
+//   RAPYDSCRIPT_OUT_DIR   where to write rapydscript.js (default: <wanim>/dist)
+//   RAPYDSCRIPT_FORCE     "1" to re-clone from scratch
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wanimRoot = resolve(here, "..");
-const repoRoot = resolve(wanimRoot, "..");
-const rapydscriptRoot = join(repoRoot, "third-party", "rapydscript-ng");
-const outDir = process.env.RAPYDSCRIPT_OUT_DIR
-  ? resolve(process.env.RAPYDSCRIPT_OUT_DIR)
-  : join(wanimRoot, "demo");
-mkdirSync(outDir, { recursive: true });
 
-if (!existsSync(join(rapydscriptRoot, "dev", "compiler.js"))) {
-  console.error(
-    `rapydscript-ng dev/compiler.js missing; run \`node bin/rapydscript self --complete\` in ${rapydscriptRoot}`,
-  );
-  process.exit(1);
+const RAPYDSCRIPT_REPO = "https://github.com/kovidgoyal/rapydscript-ng.git";
+// The upstream commit wanim's patch is written against (rapydscript-ng 0.8.6).
+const RAPYDSCRIPT_COMMIT = "818f18787c43c33ff00d7162fcd5aacc1186c6df";
+const PATCH = resolve(wanimRoot, "py2js", "patches", "rapydscript-ng.patch");
+
+const cacheDir = resolve(process.env.RAPYDSCRIPT_DIR ?? join(wanimRoot, ".rapydscript-ng"));
+const outDir = resolve(process.env.RAPYDSCRIPT_OUT_DIR ?? join(wanimRoot, "dist"));
+
+function git(args) {
+  execFileSync("git", ["-C", cacheDir, ...args], { stdio: "inherit" });
 }
 
-const tmp = join(outDir, ".rapydscript-export");
-rmSync(tmp, { recursive: true, force: true });
-mkdirSync(tmp, { recursive: true });
+function ensureCheckout() {
+  if (process.env.RAPYDSCRIPT_FORCE === "1") {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+  if (!existsSync(join(cacheDir, ".git"))) {
+    console.log(`wanim: cloning rapydscript-ng -> ${cacheDir}`);
+    rmSync(cacheDir, { recursive: true, force: true });
+    execFileSync("git", ["clone", RAPYDSCRIPT_REPO, cacheDir], { stdio: "inherit" });
+  }
+  git(["fetch", "--quiet", "origin", RAPYDSCRIPT_COMMIT]);
+  git(["checkout", "--force", "--detach", RAPYDSCRIPT_COMMIT]);
+  // Drop the previous patch (if any) so it can be applied cleanly every time.
+  git(["clean", "-fdq", "src", "tools"]);
+}
 
-execFileSync(process.execPath, ["bin/rapydscript", "web-repl-export", tmp], {
-  cwd: rapydscriptRoot,
-  stdio: "inherit",
-});
+function applyPatch() {
+  try {
+    execFileSync("git", ["-C", cacheDir, "apply", "--check", PATCH], { stdio: "pipe" });
+  } catch {
+    // Already applied (checked out at the patched state).
+    return;
+  }
+  git(["apply", PATCH]);
+}
 
-copyFileSync(join(tmp, "rapydscript.js"), join(outDir, "rapydscript.js"));
-rmSync(tmp, { recursive: true, force: true });
-console.log(`wanim: wrote ${join(outDir, "rapydscript.js")}`);
+function buildCompiler() {
+  console.log("wanim: building rapydscript compiler (self --complete)");
+  execFileSync(process.execPath, ["bin/rapydscript", "self", "--complete"], {
+    cwd: cacheDir,
+    stdio: "inherit",
+  });
+}
+
+function exportBrowserCompiler() {
+  const tmp = join(cacheDir, ".wanim-export");
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+  console.log("wanim: exporting rapydscript browser compiler (web-repl-export)");
+  execFileSync(process.execPath, ["bin/rapydscript", "web-repl-export", tmp], {
+    cwd: cacheDir,
+    stdio: "inherit",
+  });
+  mkdirSync(outDir, { recursive: true });
+  const out = join(outDir, "rapydscript.js");
+  copyFileSync(join(tmp, "rapydscript.js"), out);
+  rmSync(tmp, { recursive: true, force: true });
+  console.log(`wanim: wrote ${out}`);
+}
+
+ensureCheckout();
+applyPatch();
+buildCompiler();
+exportBrowserCompiler();

@@ -3,11 +3,16 @@ dist/
 *.log
 media/
 
-# Browser demo build artifacts (produced by `pnpm build:demo`)
-demo/wanim.browser.js
-demo/wanim.browser.js.map
-demo/py2js.browser.js
-demo/py2js.browser.js.map
-demo/rapydscript.js
-demo/fonts/
+# rapydscript-ng checkout cache (fetched by scripts/build-rapydscript-browser.mjs)
+.rapydscript-ng/
+
+# py2js build output (preprocess unit test)
+py2js/dist/
+
+# Fonts are never committed: Node uses the host's system font and the demo
+# server serves the host's default English font (scripts/font-resolver.mjs).
+src/mobject/text/pango/fonts/*.ttf
+src/mobject/text/pango/fonts/*.otf
+
+# Demo scratch
 demo/*.mjson
