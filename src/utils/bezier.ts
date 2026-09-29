@@ -386,12 +386,27 @@ export let CP_OPEN_MEMO: number[] = [0.5];
 export function get_smooth_cubic_bezier_handle_points(
   anchors: number[][] | NDArray,
 ): [NDArray, NDArray] {
+  const inputRows = rawRows(anchors);
+  if (inputRows.length === 1) {
+    const dim = inputRows[0]?.length ?? 0;
+    return [array([]).reshape(0, dim) as NDArray, array([]).reshape(0, dim) as NDArray];
+  }
+  const [h1, h2] = get_smooth_cubic_bezier_handle_points_rows(anchors);
+  return [array(h1) as NDArray, array(h2) as NDArray];
+}
+
+/** Plain point-row variant of {@link get_smooth_cubic_bezier_handle_points},
+ * used by VMobject.change_anchor_mode to avoid the NDArray round-trip of the
+ * (large) handle arrays. Values are computed identically. */
+export function get_smooth_cubic_bezier_handle_points_rows(
+  anchors: number[][] | NDArray,
+): [number[][], number[][]] {
   const rows = rawRows(anchors);
   const n_anchors = rows.length;
   const dim = rows[0]?.length ?? 0;
 
   if (n_anchors === 1) {
-    return [array([]).reshape(0, dim) as NDArray, array([]).reshape(0, dim) as NDArray];
+    return [[], []];
   }
 
   if (n_anchors === 2) {
@@ -401,18 +416,25 @@ export function get_smooth_cubic_bezier_handle_points(
       array([[1 / 3], [2 / 3]]),
     ) as NDArray;
     const valRows = pointRows(val, dim);
-    return [array(valRows[0] ?? []) as NDArray, array(valRows[1] ?? []) as NDArray];
+    return [[valRows[0] ?? []], [valRows[1] ?? []]];
   }
 
   if (is_closed(anchors)) {
-    return get_smooth_closed_cubic_bezier_handle_points(anchors);
+    return get_smooth_closed_cubic_bezier_handle_points_rows(anchors);
   }
-  return get_smooth_open_cubic_bezier_handle_points(anchors);
+  return get_smooth_open_cubic_bezier_handle_points_rows(anchors);
 }
 
 export function get_smooth_closed_cubic_bezier_handle_points(
   anchors: number[][] | NDArray,
 ): [NDArray, NDArray] {
+  const [h1, h2] = get_smooth_closed_cubic_bezier_handle_points_rows(anchors);
+  return [array(h1) as NDArray, array(h2) as NDArray];
+}
+
+export function get_smooth_closed_cubic_bezier_handle_points_rows(
+  anchors: number[][] | NDArray,
+): [number[][], number[][]] {
   const A = rawRows(anchors);
   const N = A.length - 1;
   const dim = A[0]?.length ?? 0;
@@ -500,7 +522,7 @@ export function get_smooth_closed_cubic_bezier_handle_points(
   }
   H2[N - 1] = (A[N] ?? []).map((v, c) => 2 * v - ((H1[0] ?? [])[c] ?? 0));
 
-  return [array(H1) as NDArray, array(H2) as NDArray];
+  return [H1, H2];
 }
 
 function choose(n: number, k: number): number {
@@ -596,6 +618,13 @@ export function proportions_along_bezier_curve_for_point(
 export function get_smooth_open_cubic_bezier_handle_points(
   anchors: number[][] | NDArray,
 ): [NDArray, NDArray] {
+  const [h1, h2] = get_smooth_open_cubic_bezier_handle_points_rows(anchors);
+  return [array(h1) as NDArray, array(h2) as NDArray];
+}
+
+export function get_smooth_open_cubic_bezier_handle_points_rows(
+  anchors: number[][] | NDArray,
+): [number[][], number[][]] {
   // NOTE: unlike rowsOf/pointRows, the anchor width is taken as-is from the
   // input (Python uses A.shape[1]); rows are NOT padded to 3 components.
   const A = rawRows(anchors);
@@ -629,39 +658,63 @@ export function get_smooth_open_cubic_bezier_handle_points(
   const Dp: number[][] = Array.from({ length: N }, () =>
     new Array(dim).fill(0),
   );
-  const add = (a: number[], b: number[]): number[] =>
-    a.map((v, c) => v + (b[c] ?? 0));
-  const scale = (a: number[], s: number): number[] => a.map((v) => v * s);
-  const sub = (a: number[], b: number[]): number[] =>
-    a.map((v, c) => v - (b[c] ?? 0));
-  Dp[0] = add(scale(A[0] ?? [], 0.5), A[1] ?? []);
-  for (let i = 1; i < N - 1; i += 1) {
-    const aux = add(scale(A[i] ?? [], 4), scale(A[i + 1] ?? [], 2));
-    Dp[i] = scale(sub(aux, Dp[i - 1] ?? []), cpAt(i));
+  // Flat loops (no per-component closure allocation). The expressions keep the
+  // exact association of the add/scale/sub helpers so results stay identical.
+  {
+    const a0 = A[0] ?? [];
+    const a1 = A[1] ?? [];
+    const d0 = Dp[0] ?? new Array(dim).fill(0);
+    for (let c = 0; c < dim; c += 1) d0[c] = 0.5 * (a0[c] ?? 0) + (a1[c] ?? 0);
   }
-  Dp[N - 1] = scale(
-    sub(
-      add(scale(A[N - 1] ?? [], 8), A[N] ?? []),
-      scale(Dp[N - 2] ?? [], 2),
-    ),
-    1 / (7 - 2 * cpAt(N - 2)),
-  );
+  for (let i = 1; i < N - 1; i += 1) {
+    const ai = A[i] ?? [];
+    const an = A[i + 1] ?? [];
+    const prev = Dp[i - 1] ?? [];
+    const row = Dp[i] ?? new Array(dim).fill(0);
+    const factor = cpAt(i);
+    for (let c = 0; c < dim; c += 1) {
+      const aux = 4 * (ai[c] ?? 0) + 2 * (an[c] ?? 0);
+      row[c] = (aux - (prev[c] ?? 0)) * factor;
+    }
+  }
+  {
+    const aN = A[N - 1] ?? [];
+    const aEnd = A[N] ?? [];
+    const prev = Dp[N - 2] ?? [];
+    const factor = 1 / (7 - 2 * cpAt(N - 2));
+    const row = Dp[N - 1] ?? new Array(dim).fill(0);
+    for (let c = 0; c < dim; c += 1) {
+      row[c] = ((8 * (aN[c] ?? 0) + (aEnd[c] ?? 0)) - 2 * (prev[c] ?? 0)) * factor;
+    }
+  }
 
   // Backward substitution. H1 aliases Dp, exactly as in Python.
   const H1 = Dp;
   for (let i = N - 2; i >= 0; i -= 1) {
-    H1[i] = sub(Dp[i] ?? [], scale(H1[i + 1] ?? [], cpAt(i)));
+    const dpi = Dp[i] ?? [];
+    const next = H1[i + 1] ?? [];
+    const factor = cpAt(i);
+    const row = H1[i] ?? new Array(dim).fill(0);
+    for (let c = 0; c < dim; c += 1) row[c] = (dpi[c] ?? 0) - (next[c] ?? 0) * factor;
   }
 
   const H2: number[][] = Array.from({ length: N }, () =>
     new Array(dim).fill(0),
   );
   for (let i = 0; i < N - 1; i += 1) {
-    H2[i] = sub(scale(A[i + 1] ?? [], 2), H1[i + 1] ?? []);
+    const an = A[i + 1] ?? [];
+    const next = H1[i + 1] ?? [];
+    const row = H2[i] ?? new Array(dim).fill(0);
+    for (let c = 0; c < dim; c += 1) row[c] = 2 * (an[c] ?? 0) - (next[c] ?? 0);
   }
-  H2[N - 1] = scale(add(A[N] ?? [], H1[N - 1] ?? []), 0.5);
+  {
+    const aEnd = A[N] ?? [];
+    const h = H1[N - 1] ?? [];
+    const row = H2[N - 1] ?? new Array(dim).fill(0);
+    for (let c = 0; c < dim; c += 1) row[c] = ((aEnd[c] ?? 0) + (h[c] ?? 0)) * 0.5;
+  }
 
-  return [array(H1) as NDArray, array(H2) as NDArray];
+  return [H1, H2];
 }
 
 export function is_closed(points: number[][] | NDArray): boolean {

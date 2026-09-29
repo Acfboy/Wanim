@@ -106,6 +106,8 @@ export interface CoordinateAxisLike extends Mobject {
   get_unit_vector(): number[];
   get_projection(point: unknown): number[];
   number_to_point(number: unknown): NDArray;
+  number_to_point_flat?(number: number): number[];
+  number_to_point_flat_many?(values: readonly number[]): number[][];
   point_to_number(point: unknown): number | NDArray;
   _create_label_tex(label: unknown, label_constructor?: unknown, kwargs?: Record<string, unknown>): VMobject;
   get_number_mobject(
@@ -519,9 +521,21 @@ export class CoordinateSystem extends VGroup {
     // (its NumberLine carries the scaling), with a linear default for a bare
     // CoordinateSystem.
     const scaling: _ScaleBase = this.x_axis?.scaling ?? new LinearBase();
+    // Internal flat evaluator: lets ParametricFunction.generate_points build
+    // the sampled points without materialising an NDArray per sample. Only
+    // Axes implements `_coords_to_point_scalar_flat`; a bare CoordinateSystem
+    // falls back to the normal (NDArray) path.
+    const scalarFlat = (this as unknown as { _coords_to_point_scalar_flat?: (values: readonly number[]) => number[] })._coords_to_point_scalar_flat;
+    const scalarFlatBatch = (this as unknown as { _coords_to_points_scalar_flat?: (xs: readonly number[], ys: readonly number[]) => number[][] })._coords_to_points_scalar_flat;
+    const pointFlat = typeof scalarFlat === "function"
+      ? (t: number): number[] => scalarFlat.call(this, [t, function_(t)])
+      : undefined;
+    const pointsFlat = typeof scalarFlatBatch === "function"
+      ? (ts: readonly number[]): number[][] => scalarFlatBatch.call(this, ts, ts.map((t) => function_(t)))
+      : undefined;
     const graph = new ParametricFunction(
       (t: number) => this.coords_to_point(t, function_(t)),
-      { t_range, scaling, use_vectorized: resolvedUseVectorized, ...resolvedOptions },
+      { t_range, scaling, use_vectorized: resolvedUseVectorized, _point_flat: pointFlat, _points_flat: pointsFlat, ...resolvedOptions },
     );
     graph.underlying_function = function_;
 
@@ -1361,7 +1375,82 @@ export class Axes extends CoordinateSystem {
     return axis;
   }
 
+  /** Flat scalar fast path for `coords_to_point`: one value per axis, summed
+   * into a plain point row without any NDArray allocation. Mirrors the
+   * single-coordinate branch of coords_to_point (and is reused by
+   * `CoordinateSystem.plot` through the internal `_point_flat` hook). */
+  private _coords_to_point_scalar_flat(values: readonly number[]): number[] {
+    const axes = this.get_axes().submobjects as Mobject[];
+    const first = axes[0] as (CoordinateAxisLike & { x_min?: number; x_max?: number }) | undefined;
+    if (first === undefined) return [0, 0, 0];
+    const used = Math.min(values.length, axes.length);
+    const originShift = Axes._origin_shift([(first.x_min ?? 0), (first.x_max ?? 0)]);
+    const origin = typeof first.number_to_point_flat === "function"
+      ? first.number_to_point_flat(originShift)
+      : (pointRows(first.number_to_point(originShift), 3)[0] ?? [0, 0, 0]);
+    let point: number[] = [0, 0, 0];
+    for (let index = 0; index < used; index += 1) {
+      const axis = axes[index] as unknown as CoordinateAxisLike;
+      const row: number[] = typeof axis.number_to_point_flat === "function"
+        ? axis.number_to_point_flat(values[index] ?? 0)
+        : (pointRows(axis.number_to_point(values[index] ?? 0), 3)[0] ?? [0, 0, 0]);
+      if (index === 0) {
+        point = [...row];
+      } else {
+        const dims = Math.max(point.length, row.length);
+        const next = new Array<number>(dims);
+        for (let dim = 0; dim < dims; dim += 1) {
+          next[dim] = (point[dim] ?? 0) + (row[dim] ?? 0) - (origin[dim] ?? 0);
+        }
+        point = next;
+      }
+    }
+    return point;
+  }
+
+  /** Batch flat scalar path mirroring `_coords_to_point_scalar_flat` for paired
+   * x/y value lists, reading each axis once. Used by `CoordinateSystem.plot`
+   * through the internal `_points_flat` hook. */
+  _coords_to_points_scalar_flat(xs: readonly number[], ys: readonly number[]): number[][] {
+    const axes = this.get_axes().submobjects as Mobject[];
+    const first = axes[0] as (CoordinateAxisLike & { x_min?: number; x_max?: number }) | undefined;
+    if (first === undefined) return [];
+    const originShift = Axes._origin_shift([(first.x_min ?? 0), (first.x_max ?? 0)]);
+    const origin = typeof first.number_to_point_flat === "function"
+      ? first.number_to_point_flat(originShift)
+      : (pointRows(first.number_to_point(originShift), 3)[0] ?? [0, 0, 0]);
+    const n = Math.min(xs.length, ys.length);
+    const xAxis = axes[0] as unknown as CoordinateAxisLike;
+    const yAxis = axes[1] as unknown as CoordinateAxisLike | undefined;
+    const dims = Math.max(origin.length, this.dim);
+    const out: number[][] = new Array(n);
+    const xMany = typeof xAxis.number_to_point_flat_many === "function";
+    const yMany = yAxis !== undefined && typeof yAxis.number_to_point_flat_many === "function";
+    if (xMany && (yAxis === undefined || yMany)) {
+      const xRows = xAxis.number_to_point_flat_many!(xs.slice(0, n));
+      const yRows = yAxis === undefined ? null : yAxis.number_to_point_flat_many!(ys.slice(0, n));
+      for (let i = 0; i < n; i += 1) {
+        const xr = xRows[i] ?? [];
+        const point = new Array<number>(dims);
+        for (let d = 0; d < dims; d += 1) {
+          point[d] = (xr[d] ?? 0) + (yRows === null ? 0 : ((yRows[i]?.[d] ?? 0) - (origin[d] ?? 0)));
+        }
+        out[i] = point;
+      }
+      return out;
+    }
+    for (let i = 0; i < n; i += 1) {
+      out[i] = this._coords_to_point_scalar_flat([xs[i] ?? 0, ys[i] ?? 0]);
+    }
+    return out;
+  }
+
   override coords_to_point(...coords: (number | number[] | NDArray)[]): NDArray {
+    // Fast path: all-scalar coordinates (the c2p(t, f(t)) idiom used by every
+    // graph sample) skip the array normalization below entirely.
+    if (coords.every((entry) => typeof entry === "number")) {
+      return array(this._coords_to_point_scalar_flat(coords as number[])) as NDArray;
+    }
     // NOTE: mirrors Python Axes.coords_to_point: points are built per axis
     // via `axis.number_to_point`, shifted so the axes-center maps to the
     // origin the constructor shifted onto. The NumberLine axes are real
@@ -1425,25 +1514,16 @@ export class Axes extends CoordinateSystem {
     // NOTE: mirrors Python `origin = self.x_axis.number_to_point(
     // self._origin_shift([self.x_axis.x_min, self.x_axis.x_max]))`.
     const first = axes[0] as CoordinateAxisLike & { x_min?: number; x_max?: number };
-    const origin = pointRows(
-      first.number_to_point(
-        Axes._origin_shift([(first.x_min ?? 0), (first.x_max ?? 0)]),
-      ),
-      3,
-    )[0] ?? [0, 0, 0];
+    const originShift = Axes._origin_shift([(first.x_min ?? 0), (first.x_max ?? 0)]);
+    const origin = typeof first.number_to_point_flat === "function"
+      ? first.number_to_point_flat(originShift)
+      : (pointRows(first.number_to_point(originShift), 3)[0] ?? [0, 0, 0]);
     const axisAt = (index: number): CoordinateAxisLike =>
       axes[index] as unknown as CoordinateAxisLike;
 
     // Single-coordinate form: one value per axis, summed into one point.
     if (singleScalars !== null) {
-      const used = Math.min(singleScalars.length, axes.length);
-      let point: number[] = [0, 0, 0];
-      for (let index = 0; index < used; index += 1) {
-        const row = pointRows(axisAt(index).number_to_point(singleScalars[index] ?? 0), 3)[0] ?? [0, 0, 0];
-        if (index === 0) point = [...row];
-        else point = point.map((value, dim) => value + (row[dim] ?? 0) - (origin[dim] ?? 0));
-      }
-      return array(point) as NDArray;
+      return array(this._coords_to_point_scalar_flat(singleScalars)) as NDArray;
     }
 
     // NOTE: mirrors `zip(other_axes, coords[1:], strict=False)` — extra
