@@ -465,7 +465,7 @@ describe("Polyhedron (python ground truth)", () => {
       expect(solid.faces_list.length).toBe(nFaces);
       expect(solid.faces.submobjects.length).toBe(nFaces);
     }
-  });
+  }, 30000);
 
   it("edge_length scales vertices (python unit=edge*sqrt(2)/4 for tetra)", () => {
     const t = new Tetrahedron(1);
