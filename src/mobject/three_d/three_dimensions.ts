@@ -439,6 +439,13 @@ export class Cube extends VGroup {
     this.set_fill(fillColorOption ?? fill_color, fillOpacityOption ?? fill_opacity);
     this.set_stroke(undefined, strokeWidthOption ?? stroke_width);
     this.generate_points();
+    // NOTE: Python's Mobject.__init__ calls init_colors() *after*
+    // generate_points(), which (with family=True) propagates the Cube's
+    // fill/stroke style onto the freshly added Square faces. In particular
+    // stroke_width=0 must reach the faces, otherwise they keep the VMobject
+    // default 4. TS runs generate_points() after super(), so mirror the
+    // propagation explicitly.
+    this.init_colors();
   }
 
   generate_points(): this {
