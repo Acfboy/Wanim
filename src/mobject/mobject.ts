@@ -1697,40 +1697,43 @@ export class Mobject {
   }
 
   next_to(
-    mobjectOrPoint: Mobject | readonly number[] | NDArray,
+    mobject_or_point: Mobject | readonly number[] | NDArray,
     direction: readonly number[] | NDArray = RIGHT,
     buff = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
-    alignedEdge: readonly number[] | NDArray = ORIGIN,
-    submobjectToAlign: Mobject | null = null,
-    indexOfSubmobjectToAlign: number | null = null,
-    coorMask: readonly number[] | NDArray = [1, 1, 1],
+    aligned_edge: readonly number[] | NDArray = ORIGIN,
+    submobject_to_align: Mobject | null = null,
+    index_of_submobject_to_align: number | null = null,
+    coor_mask: readonly number[] | NDArray = [1, 1, 1],
   ): this {
+    // NOTE: the parameter names mirror Python's `next_to` exactly so that the
+    // py2js kwargs bridge can map Python keyword arguments such as
+    // `aligned_edge=`/`coor_mask=` onto their positional slots.
     const npDirection = pointFrom(direction, this.dim).toArray() as number[];
-    const npAlignedEdge = pointFrom(alignedEdge, this.dim).toArray() as number[];
+    const npAlignedEdge = pointFrom(aligned_edge, this.dim).toArray() as number[];
     let targetPoint: number[];
-    if (mobjectOrPoint instanceof Mobject) {
-      const mob = mobjectOrPoint;
-      const targetAligner = indexOfSubmobjectToAlign !== null && indexOfSubmobjectToAlign !== undefined
-        ? (mob.__getitem__(indexOfSubmobjectToAlign) as Mobject)
+    if (mobject_or_point instanceof Mobject) {
+      const mob = mobject_or_point;
+      const targetAligner = index_of_submobject_to_align !== null && index_of_submobject_to_align !== undefined
+        ? (mob.__getitem__(index_of_submobject_to_align) as Mobject)
         : mob;
       targetPoint = targetAligner.get_critical_point(
         addPoints(npAlignedEdge, npDirection, this.dim),
       );
     } else {
-      targetPoint = vector(mobjectOrPoint, this.dim);
+      targetPoint = vector(mobject_or_point, this.dim);
     }
     let aligner: Mobject;
-    if (submobjectToAlign !== null && submobjectToAlign !== undefined) {
-      aligner = submobjectToAlign;
-    } else if (indexOfSubmobjectToAlign !== null && indexOfSubmobjectToAlign !== undefined) {
-      aligner = this.__getitem__(indexOfSubmobjectToAlign) as Mobject;
+    if (submobject_to_align !== null && submobject_to_align !== undefined) {
+      aligner = submobject_to_align;
+    } else if (index_of_submobject_to_align !== null && index_of_submobject_to_align !== undefined) {
+      aligner = this.__getitem__(index_of_submobject_to_align) as Mobject;
     } else {
       aligner = this;
     }
     const pointToAlign = aligner.get_critical_point(
       subtractPoints(npAlignedEdge, npDirection, this.dim),
     );
-    const mask = vector(coorMask, this.dim);
+    const mask = vector(coor_mask, this.dim);
     const delta = addPoints(
       subtractPoints(targetPoint, pointToAlign, this.dim),
       scalePoint(npDirection, buff, this.dim),
