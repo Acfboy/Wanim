@@ -149,6 +149,20 @@ function zipPairs<T, U>(first: readonly T[], second: readonly U[]): Array<[T, U]
   return Array.from({ length }, (_, index) => [first[index] as T, second[index] as U]);
 }
 
+/** numpy-faithful `np.arange`: the number of elements is
+ * `max(0, ceil((stop - start) / step))` and the values are `start + i * step`
+ * (numpy sizes the range up front from the float division, so a value exactly
+ * at the stop can be included when that division rounds up — e.g.
+ * `np.arange(-1/3, -1, -1/3)` has 3 elements). The shared `arange` helper uses
+ * a strict comparison and misses that final element. */
+function npArange(start: number, stop: number, step = 1): number[] {
+  if (step === 0) throw new Error("step cannot be zero");
+  const length = Math.max(0, Math.ceil((stop - start) / step));
+  const result: number[] = [];
+  for (let i = 0; i < length; i += 1) result.push(start + i * step);
+  return result;
+}
+
 /** Dispatches `self._origin_shift(axis_range)` the way Python's MRO does.
 // In Python, NumberPlane extends Axes so the abstract CoordinateSystem stub
 // is never hit; the TS hierarchy has NumberPlane extending CoordinateSystem
@@ -729,7 +743,31 @@ export class CoordinateSystem extends VGroup {
     // constructor): a plain bag in the label/x_val slot carries them.
     let label: number | string | VMobject = labelOrOptions as number | string | VMobject;
     let x_val = x_valOrOptions as number | null;
-    const merged_options: Record<string, unknown> = { ...options };
+    // The Python→JS translation maps keyword names onto the TS parameter
+    // names.  Python's names are `label`, `x_val` and `dot`, but this port
+    // names the first two `labelOrOptions`/`x_valOrOptions` (options-bag
+    // support) and the bundler renames `dot` to avoid a collision, so those
+    // keywords arrive in the trailing options bag instead. Fold them back
+    // into their Python slots (everything else stays label-constructor
+    // kwargs).
+    const remaining_options: Record<string, unknown> = { ...options };
+    if (!isPlainOptionsObject(labelOrOptions) && "label" in remaining_options) {
+      label = remaining_options["label"] as number | string | VMobject;
+      delete remaining_options["label"];
+    }
+    if (
+      (x_valOrOptions === null || x_valOrOptions === undefined) &&
+      !isPlainOptionsObject(x_valOrOptions) &&
+      "x_val" in remaining_options
+    ) {
+      x_val = remaining_options["x_val"] as number | null;
+      delete remaining_options["x_val"];
+    }
+    if (!dot && typeof remaining_options["dot"] === "boolean") {
+      dot = remaining_options["dot"] as boolean;
+      delete remaining_options["dot"];
+    }
+    const merged_options: Record<string, unknown> = remaining_options;
     if (isPlainOptionsObject(labelOrOptions)) {
       Object.assign(merged_options, labelOrOptions);
       label = "f(x)";
@@ -1645,6 +1683,7 @@ export class NumberPlane extends Axes {
       stroke_opacity: 1,
     };
     const userAxisConfig = bag["axis_config"] as Record<string, unknown> | null | undefined;
+    const userXAxisConfig = bag["x_axis_config"] as Record<string, unknown> | null | undefined;
     const userYAxisConfig = bag["y_axis_config"] as Record<string, unknown> | null | undefined;
     Axes._update_default_configs(
       [axis_config, y_axis_config, background_style],
@@ -1656,7 +1695,10 @@ export class NumberPlane extends Axes {
       resolvedXLength,
       resolvedYLength,
       axis_config,
-      null,
+      // NOTE: Python leaves `x_axis_config` in **kwargs and forwards it to
+      // Axes.__init__ (which merges it into the per-axis config), so it must
+      // ride through here instead of being dropped.
+      userXAxisConfig ?? null,
       y_axis_config,
     );
     this.axis_config = axis_config;
@@ -1732,8 +1774,8 @@ export class NumberPlane extends Axes {
     }
     const ranges: number[][] = [
       [0],
-      arange(step, Math.min(x_max - x_min, x_max), step),
-      arange(-step, Math.max(x_min - x_max, x_min), -step),
+      npArange(step, Math.min(x_max - x_min, x_max), step),
+      npArange(-step, Math.max(x_min - x_max, x_min), -step),
     ];
     for (const inputs of ranges) {
       inputs.forEach((x, k) => {
