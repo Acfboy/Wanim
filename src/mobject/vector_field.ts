@@ -68,7 +68,11 @@ export class VectorField extends VGroup {
       this.color_scheme = options.color_scheme ?? default_color_scheme;
       this.rgbs = this.colors.map((color) => pointRows(new ManimColor(color).toRgb(), 3)[0] ?? [0, 0, 0]);
       const pos_to_rgb = (position: number[] | NDArray): number[] => {
-        const value = this.color_scheme(vectorOf(this.func(position)));
+        // NOTE: Python passes the raw vector (an ndarray) to the user
+        // color_scheme, which may call numpy routines such as
+        // `np.linalg.norm(vec)`. Hand it an NDArray; the default scheme uses
+        // `norm(vectorOf(vec))`, and vectorOf accepts either form.
+        const value = this.color_scheme(array(vectorOf(this.func(position))));
         const clipped = _clip(value, this.min_color_scheme_value, this.max_color_scheme_value);
         let alpha = (clipped - this.min_color_scheme_value) / (this.max_color_scheme_value - this.min_color_scheme_value);
         alpha *= this.rgbs.length - 1;
