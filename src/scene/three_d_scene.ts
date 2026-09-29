@@ -176,7 +176,6 @@ export class ThreeDScene extends Scene {
     added_anims: Animation[] = [],
     kwargs: Record<string, unknown> = {},
   ): void {
-    void kwargs;
     const anims: Animation[] = [];
     if (config.renderer === RendererType.CAIRO) {
       const value_tracker_pairs: Array<[number | null, ValueTracker]> = [
@@ -235,7 +234,14 @@ export class ThreeDScene extends Scene {
       }
       anims.push(new Transform(cam as Mobject, cam2 as Mobject));
     }
-    this.play(...anims, ...added_anims);
+    // NOTE: Python does `self.play(*anims + added_anims, **kwargs)`; forward
+    // the extra play options (e.g. run_time) as a trailing bag so the
+    // animation duration is honoured.
+    if (Object.keys(kwargs).length > 0) {
+      this.play(...anims, ...added_anims, kwargs);
+    } else {
+      this.play(...anims, ...added_anims);
+    }
     // These lines are added to improve performance. If manim thinks that frame_center is moving,
     // it is required to redraw every object. These lines remove frame_center from the Scene once
     // its animation is done, ensuring that manim does not think that it is moving. Since the
