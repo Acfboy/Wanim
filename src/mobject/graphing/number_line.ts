@@ -4,6 +4,7 @@ import { DEFAULT_ARROW_TIP_LENGTH, DOWN, LEFT, MED_SMALL_BUFF, OUT, UP } from ".
 import { isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
 import { merge_dicts_recursively } from "../../utils/config_ops.js";
+import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { angle_of_vector, normalize } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Mobject, isPlainOptionsObject } from "../mobject.js";
@@ -84,7 +85,16 @@ export interface NumberLineOptions {
   longer_tick_multiple?: number;
   exclude_origin_tick?: boolean;
   rotation?: number;
+  // NOTE: NumberLine extends Line in Python, so it forwards these VMobject
+  // style kwargs through Line.__init__. The TS port extends VGroup, so the
+  // values are read back and applied to the baseline here (ticks inherit
+  // them via match_style).
   stroke_width?: number;
+  color?: ParsableManimColor;
+  stroke_color?: ParsableManimColor;
+  fill_color?: ParsableManimColor;
+  stroke_opacity?: number;
+  fill_opacity?: number;
   include_tip?: boolean;
   tip_width?: number;
   tip_height?: number;
@@ -241,10 +251,18 @@ export class NumberLine extends VGroup {
     } else {
       this.scale(this.unit_size);
     }
-    // NOTE: Python passes stroke_width into Line.__init__; this VGroup-based
-    // port applies it to the baseline stroke instead (same observable style,
-    // which get_tick().match_style inherits for the ticks below).
-    this.set_stroke(undefined, stroke_width, undefined, false);
+    // NOTE: Python passes the style kwargs (color, stroke_color, fill_color,
+    // stroke_opacity, fill_opacity, stroke_width) into Line.__init__, which
+    // seeds them through VMobject.__init__. This VGroup-based port reproduces
+    // that seeding on the baseline (same fill/stroke rgba layout: `color` sets
+    // both rgb channels while the fill keeps alpha 0). get_tick() calls
+    // match_style(this) below, so the ticks inherit the same style.
+    const fillColor = (options.fill_color ?? options.color ?? WHITE) as ParsableManimColor;
+    const strokeColor = (options.stroke_color ?? options.color ?? WHITE) as ParsableManimColor;
+    const fillOpacity = options.fill_opacity ?? 0;
+    const strokeOpacity = options.stroke_opacity ?? 1;
+    this.set_fill(fillColor, fillOpacity, false);
+    this.set_stroke(strokeColor, stroke_width, strokeOpacity, false);
     this.center();
     if (this.include_tip) {
       // NOTE: Python calls self.add_tip(tip_shape=..., tip_length=tip_height,
@@ -255,7 +273,10 @@ export class NumberLine extends VGroup {
       // baseline to the tip base (before the tip is added, as in Python); the
       // logical endpoints stay at the original x_range ends via the
       // get_start/get_end overrides below (mirroring TipableVMobject).
-      const tipLine = new Line(this.get_start(), this.get_end());
+      // NOTE: Python's TipableVMobject.get_unpositioned_tip styles the tip
+      // with `self.get_color()` (both fill and stroke), so the helper Line is
+      // seeded with the axis color before add_tip.
+      const tipLine = new Line(this.get_start(), this.get_end(), { color: this.get_color() });
       tipLine.add_tip(null, this.tip_shape as never, this.tip_height, this.tip_width);
       const tip = tipLine.tip;
       if (tip !== undefined) {
