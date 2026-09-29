@@ -37,6 +37,43 @@ function paragraphElement(item: unknown, config: Record<string, unknown> = {}): 
   return new Paragraph(String(item), config as never);
 }
 
+/**
+ * Python calls `element_to_mobject(item, **element_to_mobject_config)`.
+ *
+ * A `element_to_mobject` written in the (translated) Python source is compiled
+ * by the patched rapydscript into a function that only recognises a trailing
+ * *kwargs object* — one tagged with the module-local `kwargs-object` symbol —
+ * and silently drops any other trailing object.  A plain TS factory, on the
+ * other hand, expects `element_to_mobject_config` as a plain second argument.
+ *
+ * To support both, tag the config for rapydscript-compiled factories (detected
+ * via `__handles_kwarg_interpolation__`) so they unpack it exactly like
+ * Python's `**config`, leaving plain factories untouched.
+ */
+function elementConfigFor(
+  factory: TableElementFactory,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const handlesKwargs = (factory as { __handles_kwarg_interpolation__?: unknown })
+    .__handles_kwarg_interpolation__ === true;
+  if (!handlesKwargs || Object.keys(config).length === 0) return config;
+  // Mirror the `detectKwargs` contract: a kwargs object is any object carrying
+  // a `kwargs-object` symbol (or legacy string key).  The exact symbol is
+  // private to the compiled module, so answer `true` for it via a Proxy.
+  const tagged = { ...config };
+  return new Proxy(tagged, {
+    get(target, property, receiver) {
+      if (typeof property === "symbol" && String(property).includes("kwargs-object")) {
+        return true;
+      }
+      if (typeof property === "string" && property.startsWith("kwargs-object-Symbol-")) {
+        return true;
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
 function mathTexElement(item: unknown, config: Record<string, unknown> = {}): VMobject {
   return new MathTex(String(item), config as MathTexOptions);
 }
@@ -210,7 +247,12 @@ export class Table extends VGroup {
 
   _table_to_mob_table(table: unknown[][]): VMobject[][] {
     return table.map((row) =>
-      row.map((item) => this.element_to_mobject(item, this.element_to_mobject_config)),
+      row.map((item) =>
+        this.element_to_mobject(
+          item,
+          elementConfigFor(this.element_to_mobject, this.element_to_mobject_config),
+        ),
+      ),
     );
   }
 
