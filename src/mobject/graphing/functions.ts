@@ -255,7 +255,355 @@ export interface ImplicitFunctionOptions extends VMobjectOptions {
 
 export type IsolineComputer = (fn: (p: [number, number]) => number, pmin: [number, number], pmax: [number, number], min_depth: number, max_quads: number) => number[][][];
 
-let isolineComputer: IsolineComputer | null = null;
+// ---------------------------------------------------------------------------
+// Isoline extraction
+//
+// Faithful TypeScript port of the `isosurfaces` package's 2D `plot_isoline`
+// (https://github.com/jared-hughes/isosurfaces), which Python manim imports in
+// `ImplicitFunction.generate_points`. Reproducing it exactly (adaptive
+// quadtree + simplicial triangulation + curve tracing) keeps the emitted curve
+// structurally identical to the reference; the pip package must not be added
+// as a dependency.
+// ---------------------------------------------------------------------------
+
+interface ValuedPoint {
+  pos: number[];
+  val: number;
+}
+
+interface IsoTriangle {
+  vertices: ValuedPoint[];
+  next: IsoTriangle | null;
+  next_bisect_point: ValuedPoint | null;
+  prev: IsoTriangle | null;
+  visited: boolean;
+}
+
+interface IsoCell {
+  vertices: ValuedPoint[];
+  depth: number;
+  children: IsoCell[];
+  parent: IsoCell | null;
+  child_direction: number;
+}
+
+function valuedPoint(pos: number[], val: number): ValuedPoint {
+  return { pos: [pos[0] ?? 0, pos[1] ?? 0], val };
+}
+
+function pointValue(pos: number[], fn: (p: [number, number]) => number): ValuedPoint {
+  return valuedPoint(pos, fn([pos[0] ?? 0, pos[1] ?? 0]));
+}
+
+function midpointPoint(p1: ValuedPoint, p2: ValuedPoint, fn: (p: [number, number]) => number): ValuedPoint {
+  const pos = [(p1.pos[0]! + p2.pos[0]!) / 2, (p1.pos[1]! + p2.pos[1]!) / 2];
+  return valuedPoint(pos, fn([pos[0]!, pos[1]!]));
+}
+
+function intersectZero(p1: ValuedPoint, p2: ValuedPoint, fn: (p: [number, number]) => number): ValuedPoint {
+  const denom = p1.val - p2.val;
+  const k1 = -p2.val / denom;
+  const k2 = p1.val / denom;
+  const pos = [
+    k1 * p1.pos[0]! + k2 * p2.pos[0]!,
+    k1 * p1.pos[1]! + k2 * p2.pos[1]!,
+  ];
+  return valuedPoint(pos, fn([pos[0]!, pos[1]!]));
+}
+
+function binarySearchZero(
+  p1: ValuedPoint,
+  p2: ValuedPoint,
+  fn: (p: [number, number]) => number,
+  tol: number[],
+): [ValuedPoint, boolean] {
+  if (Math.abs(p2.pos[0]! - p1.pos[0]!) < tol[0]! && Math.abs(p2.pos[1]! - p1.pos[1]!) < tol[1]!) {
+    const pt = intersectZero(p1, p2, fn);
+    const isZero =
+      pt.val === 0 ||
+      (Math.sign(pt.val - p1.val) === Math.sign(p2.val - pt.val) && pt.val < 1e200);
+    return [pt, isZero];
+  }
+  const mid = midpointPoint(p1, p2, fn);
+  if (mid.val === 0) return [mid, true];
+  if ((mid.val > 0) === (p1.val > 0)) return binarySearchZero(mid, p2, fn, tol);
+  return binarySearchZero(p1, mid, fn, tol);
+}
+
+function verticesFromExtremes(
+  pmin: number[],
+  pmax: number[],
+  fn: (p: [number, number]) => number,
+): ValuedPoint[] {
+  const w = [pmax[0]! - pmin[0]!, pmax[1]! - pmin[1]!];
+  const result: ValuedPoint[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    const pos = [
+      pmin[0]! + ((i >> 0) & 1) * w[0]!,
+      pmin[1]! + ((i >> 1) & 1) * w[1]!,
+    ];
+    result.push(pointValue(pos, fn));
+  }
+  return result;
+}
+
+function computeChildren(cell: IsoCell, fn: (p: [number, number]) => number): void {
+  const first = cell.vertices[0]!;
+  const last = cell.vertices[3]!;
+  for (let i = 0; i < cell.vertices.length; i += 1) {
+    const vertex = cell.vertices[i]!;
+    const pmin = [(first.pos[0]! + vertex.pos[0]!) / 2, (first.pos[1]! + vertex.pos[1]!) / 2];
+    const pmax = [(last.pos[0]! + vertex.pos[0]!) / 2, (last.pos[1]! + vertex.pos[1]!) / 2];
+    cell.children.push({
+      vertices: verticesFromExtremes(pmin, pmax, fn),
+      depth: cell.depth + 1,
+      children: [],
+      parent: cell,
+      child_direction: i,
+    });
+  }
+}
+
+function shouldDescendDeepCell(cell: IsoCell, tol: number[]): boolean {
+  const w = [
+    cell.vertices[3]!.pos[0]! - cell.vertices[0]!.pos[0]!,
+    cell.vertices[3]!.pos[1]! - cell.vertices[0]!.pos[1]!,
+  ];
+  if (w[0]! < 10 * tol[0]! && w[1]! < 10 * tol[1]!) return false;
+  if (cell.vertices.every((v) => Number.isNaN(v.val))) return false;
+  if (cell.vertices.some((v) => Number.isNaN(v.val))) return true;
+  const sign0 = Math.sign(cell.vertices[0]!.val);
+  return cell.vertices.slice(1).some((v) => Math.sign(v.val) !== sign0);
+}
+
+function buildTree(
+  fn: (p: [number, number]) => number,
+  pmin: number[],
+  pmax: number[],
+  minDepth: number,
+  maxCells: number,
+  tol: number[],
+): IsoCell {
+  const branchingFactor = 4;
+  const cap = Math.max(branchingFactor ** minDepth, maxCells);
+  const root: IsoCell = {
+    vertices: verticesFromExtremes(pmin, pmax, fn),
+    depth: 0,
+    children: [],
+    parent: null,
+    child_direction: 0,
+  };
+  const queue: IsoCell[] = [root];
+  let leafCount = 1;
+  while (queue.length > 0 && leafCount < cap) {
+    const cell = queue.shift()!;
+    if (cell.depth < minDepth || shouldDescendDeepCell(cell, tol)) {
+      computeChildren(cell, fn);
+      queue.push(...cell.children);
+      leafCount += branchingFactor - 1;
+    }
+  }
+  return root;
+}
+
+function fourTriangles(
+  a: ValuedPoint,
+  b: ValuedPoint,
+  c: ValuedPoint,
+  d: ValuedPoint,
+  center: ValuedPoint,
+): IsoTriangle[] {
+  const make = (v0: ValuedPoint, v1: ValuedPoint): IsoTriangle => ({
+    vertices: [v0, v1, center],
+    next: null,
+    next_bisect_point: null,
+    prev: null,
+    visited: false,
+  });
+  return [make(a, b), make(b, c), make(c, d), make(d, a)];
+}
+
+class Triangulator {
+  triangles: IsoTriangle[] = [];
+  hangingNext = new Map<string, IsoTriangle>();
+  private root: IsoCell;
+  private fn: (p: [number, number]) => number;
+  private tol: number[];
+
+  constructor(root: IsoCell, fn: (p: [number, number]) => number, tol: number[]) {
+    this.root = root;
+    this.fn = fn;
+    this.tol = tol;
+  }
+
+  triangulate(): IsoTriangle[] {
+    this.triangulateInside(this.root);
+    return this.triangles;
+  }
+
+  private triangulateInside(quad: IsoCell): void {
+    if (quad.children.length === 0) return;
+    for (const child of quad.children) this.triangulateInside(child);
+    this.crossingRow(quad.children[0]!, quad.children[1]!);
+    this.crossingRow(quad.children[2]!, quad.children[3]!);
+    this.crossingCol(quad.children[0]!, quad.children[2]!);
+    this.crossingCol(quad.children[1]!, quad.children[3]!);
+  }
+
+  private crossingRow(a: IsoCell, b: IsoCell): void {
+    if (a.children.length > 0 && b.children.length > 0) {
+      this.crossingRow(a.children[1]!, b.children[0]!);
+      this.crossingRow(a.children[3]!, b.children[2]!);
+    } else if (a.children.length > 0) {
+      this.crossingRow(a.children[1]!, b);
+      this.crossingRow(a.children[3]!, b);
+    } else if (b.children.length > 0) {
+      this.crossingRow(a, b.children[0]!);
+      this.crossingRow(a, b.children[2]!);
+    } else {
+      const faceDualA = this.faceDual(a);
+      const faceDualB = this.faceDual(b);
+      let triangles: IsoTriangle[];
+      if (a.depth < b.depth) {
+        const edgeDual = this.edgeDual(b.vertices[2]!, b.vertices[0]!);
+        triangles = fourTriangles(b.vertices[2]!, faceDualB, b.vertices[0]!, faceDualA, edgeDual);
+      } else {
+        const edgeDual = this.edgeDual(a.vertices[3]!, a.vertices[1]!);
+        triangles = fourTriangles(a.vertices[3]!, faceDualB, a.vertices[1]!, faceDualA, edgeDual);
+      }
+      this.addFourTriangles(triangles);
+    }
+  }
+
+  private crossingCol(a: IsoCell, b: IsoCell): void {
+    if (a.children.length > 0 && b.children.length > 0) {
+      this.crossingCol(a.children[2]!, b.children[0]!);
+      this.crossingCol(a.children[3]!, b.children[1]!);
+    } else if (a.children.length > 0) {
+      this.crossingCol(a.children[2]!, b);
+      this.crossingCol(a.children[3]!, b);
+    } else if (b.children.length > 0) {
+      this.crossingCol(a, b.children[0]!);
+      this.crossingCol(a, b.children[1]!);
+    } else {
+      const faceDualA = this.faceDual(a);
+      const faceDualB = this.faceDual(b);
+      let triangles: IsoTriangle[];
+      if (a.depth < b.depth) {
+        const edgeDual = this.edgeDual(b.vertices[0]!, b.vertices[1]!);
+        triangles = fourTriangles(b.vertices[0]!, faceDualB, b.vertices[1]!, faceDualA, edgeDual);
+      } else {
+        const edgeDual = this.edgeDual(a.vertices[2]!, a.vertices[3]!);
+        triangles = fourTriangles(a.vertices[2]!, faceDualB, a.vertices[3]!, faceDualA, edgeDual);
+      }
+      this.addFourTriangles(triangles);
+    }
+  }
+
+  private addFourTriangles(triangles: IsoTriangle[]): void {
+    for (let i = 0; i < 4; i += 1) {
+      this.nextSandwich(triangles[i]!, triangles[(i + 1) % 4]!, triangles[(i + 2) % 4]!);
+    }
+    this.triangles.push(...triangles);
+  }
+
+  private setNext(tri1: IsoTriangle, tri2: IsoTriangle, vpos: ValuedPoint, vneg: ValuedPoint): void {
+    if (!(vpos.val > 0 && vneg.val <= 0)) return;
+    const [intersection, isZero] = binarySearchZero(vpos, vneg, this.fn, this.tol);
+    if (!isZero) return;
+    tri1.next_bisect_point = intersection;
+    tri1.next = tri2;
+    tri2.prev = tri1;
+  }
+
+  private nextSandwich(a: IsoTriangle, b: IsoTriangle, c: IsoTriangle): void {
+    const center = b.vertices[2]!;
+    const x = b.vertices[0]!;
+    const y = b.vertices[1]!;
+
+    if (center.val > 0 && y.val <= 0) this.setNext(b, c, center, y);
+    if (x.val > 0 && center.val <= 0) this.setNext(b, a, x, center);
+
+    const id = `${x.pos[0]! + y.pos[0]!},${x.pos[1]! + y.pos[1]!}`;
+    if (y.val > 0 && x.val <= 0) {
+      const hanging = this.hangingNext.get(id);
+      if (hanging !== undefined) {
+        this.setNext(b, hanging, y, x);
+        this.hangingNext.delete(id);
+      } else {
+        this.hangingNext.set(id, b);
+      }
+    } else if (y.val <= 0 && x.val > 0) {
+      const hanging = this.hangingNext.get(id);
+      if (hanging !== undefined) {
+        this.setNext(hanging, b, x, y);
+        this.hangingNext.delete(id);
+      } else {
+        this.hangingNext.set(id, b);
+      }
+    }
+  }
+
+  private edgeDual(p1: ValuedPoint, p2: ValuedPoint): ValuedPoint {
+    if ((p1.val > 0) !== (p2.val > 0)) return midpointPoint(p1, p2, this.fn);
+    const dt = 0.01;
+    const df1 = this.fn([
+      p1.pos[0]! * (1 - dt) + p2.pos[0]! * dt,
+      p1.pos[1]! * (1 - dt) + p2.pos[1]! * dt,
+    ]);
+    const df2 = this.fn([
+      p1.pos[0]! * dt + p2.pos[0]! * (1 - dt),
+      p1.pos[1]! * dt + p2.pos[1]! * (1 - dt),
+    ]);
+    if ((df1 > 0) === (df2 > 0)) return midpointPoint(p1, p2, this.fn);
+    return intersectZero(valuedPoint(p1.pos, df1), valuedPoint(p2.pos, df2), this.fn);
+  }
+
+  private faceDual(quad: IsoCell): ValuedPoint {
+    return midpointPoint(quad.vertices[0]!, quad.vertices[3]!, this.fn);
+  }
+}
+
+function traceCurves(triangles: IsoTriangle[]): number[][][] {
+  const curves: number[][][] = [];
+  for (const triangle of triangles) {
+    if (triangle.visited || triangle.next === null) continue;
+    const active: ValuedPoint[] = [];
+    let cursor: IsoTriangle | null = triangle;
+    const start = triangle;
+    let closedLoop = false;
+    while (cursor.prev !== null) {
+      cursor = cursor.prev;
+      if (cursor === start) {
+        closedLoop = true;
+        break;
+      }
+    }
+    while (cursor !== null && !cursor.visited) {
+      if (cursor.next_bisect_point !== null) active.push(cursor.next_bisect_point);
+      cursor.visited = true;
+      cursor = cursor.next;
+    }
+    if (closedLoop && active.length > 0) active.push(active[0]!);
+    curves.push(active.map((v) => [v.pos[0]!, v.pos[1]!]));
+  }
+  return curves;
+}
+
+export function computeIsoline(
+  fn: (p: [number, number]) => number,
+  pmin: [number, number],
+  pmax: [number, number],
+  minDepth = 5,
+  maxQuads = 10000,
+): number[][][] {
+  const tol = [(pmax[0] - pmin[0]) / 1000, (pmax[1] - pmin[1]) / 1000];
+  const tree = buildTree(fn, pmin, pmax, minDepth, maxQuads, tol);
+  const triangles = new Triangulator(tree, fn, tol).triangulate();
+  return traceCurves(triangles);
+}
+
+let isolineComputer: IsolineComputer | null = computeIsoline;
 
 export function setIsolineComputer(computer: IsolineComputer | null): void {
   isolineComputer = computer;
@@ -268,7 +616,6 @@ export class ImplicitFunction extends VMobject {
   use_smoothing: boolean;
   x_range: number[];
   y_range: number[];
-  private __constructed = false;
 
   constructor(func: ImplicitFunctionT, options: ImplicitFunctionOptions = {}) {
     const {
@@ -292,12 +639,12 @@ export class ImplicitFunction extends VMobject {
       -config.frame_height / 2,
       config.frame_height / 2,
     ];
-    this.__constructed = true;
     // The base Mobject constructor already called generate_points(), but at
     // that time the ranges were not yet assigned (TS requires super() first,
     // whereas Python sets them before super().__init__()). Regenerate now
     // that the fields are available so points are populated at construction.
-    // (No-op while no isoline computer is registered; see generate_points.)
+    // A programmatic `setIsolineComputer(null)` keeps the old lazy behavior
+    // (empty until generate_points is called explicitly).
     if (isolineComputer !== null) this.generate_points();
   }
 
@@ -308,7 +655,6 @@ export class ImplicitFunction extends VMobject {
     // a no-op; the constructor regenerates afterwards.
     if (this.x_range === undefined || this.y_range === undefined) return this;
     if (isolineComputer === null) {
-      if (!this.__constructed) return this;
       throw new Error("TODO: ImplicitFunction.generate_points needs the `isosurfaces` plot_isoline routine, not ported yet");
     }
     const pmin: [number, number] = [this.x_range[0] ?? 0, this.y_range[0] ?? 0];
