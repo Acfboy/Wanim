@@ -1,7 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
 import { DEFAULT_ARROW_TIP_LENGTH, DOWN, LEFT, MED_SMALL_BUFF, OUT, UP } from "../../constants.js";
-import { isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
+import { isNDArray, norm, numeric, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
 import { merge_dicts_recursively } from "../../utils/config_ops.js";
 import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
@@ -341,6 +341,51 @@ export class NumberLine extends VGroup {
     return super.get_end();
   }
 
+  // Cached flat endpoints of the baseline: `[sx, sy, sz, ex, ey, ez]`.
+  // Every point mutation replaces `this.points` with a fresh NDArray, so the
+  // cache is invalidated by comparing the reference (plus the tip identities,
+  // since get_start/get_end may read the tip apex). This turns the repeated
+  // `pointAt` + `throw_error_if_no_points` work in the graphing hot paths into
+  // a single computation per transform. A single cache object keeps the
+  // per-call Proxy trap count down (Mobject instances are Proxies).
+  private _endpointsCache: {
+    points: unknown;
+    tip: unknown;
+    startTip: unknown;
+    flat: number[];
+  } | null = null;
+
+  private _ensure_endpoints_flat(): number[] {
+    const cache = this._endpointsCache;
+    const points = this.points;
+    const tip = this.tip;
+    const startTip = this.start_tip;
+    if (
+      cache !== null &&
+      cache.points === points &&
+      cache.tip === tip &&
+      cache.startTip === startTip
+    ) {
+      return cache.flat;
+    }
+    const start = this.get_start();
+    const end = this.get_end();
+    const dim = Math.max(start.length, end.length, this.dim);
+    const flat = new Array<number>(dim * 2);
+    for (let i = 0; i < dim; i += 1) {
+      flat[i] = start[i] ?? 0;
+      flat[dim + i] = end[i] ?? 0;
+    }
+    this._endpointsCache = { points, tip, startTip, flat };
+    return flat;
+  }
+
+  override get_start_and_end(): [number[], number[]] {
+    const flat = this._ensure_endpoints_flat();
+    const dim = flat.length / 2;
+    return [flat.slice(0, dim), flat.slice(dim)];
+  }
+
   static _decimal_places_from_step(step: number): number {
     const step_str = pythonFloatStr(step);
     if (!step_str.includes(".")) return 0;
@@ -474,6 +519,61 @@ export class NumberLine extends VGroup {
     return this.point_to_number(point);
   }
 
+  /** Internal flat-array fast path for a single scalar `number_to_point`.
+   * Returns a plain point row (`[x, y, z]`) so hot callers (Axes.coords_to_point,
+   * tick/label placement) avoid allocating an NDArray for every point. The
+   * public `number_to_point` still wraps this in an NDArray at the boundary. */
+  number_to_point_flat(number: number): number[] {
+    const scaled = this.scaling.inverse_function(number);
+    const value = typeof scaled === "number" ? scaled : numeric(pointRows(scaled, 1)[0]?.[0] ?? 0);
+    const xMin = this.x_range[0] ?? 0;
+    const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
+    const alpha = (value - xMin) / span;
+    const flat = this._ensure_endpoints_flat();
+    const dim = flat.length / 2;
+    const result = new Array<number>(dim);
+    for (let i = 0; i < dim; i += 1) {
+      result[i] = (1 - alpha) * (flat[i] ?? 0) + alpha * (flat[dim + i] ?? 0);
+    }
+    return result;
+  }
+
+  /** Shared scalar interpolation of the baseline endpoints (mirrors
+   * `interpolate(start, end, alpha)` for the point-row case, without the
+   * numpy-ts round-trip). */
+  private _interpolate_points_flat(alpha: number): number[] {
+    const flat = this._ensure_endpoints_flat();
+    const dim = flat.length / 2;
+    const result = new Array<number>(dim);
+    for (let i = 0; i < dim; i += 1) {
+      result[i] = (1 - alpha) * (flat[i] ?? 0) + alpha * (flat[dim + i] ?? 0);
+    }
+    return result;
+  }
+
+  /** Batch variant of {@link number_to_point_flat}: applies the same mapping
+   * to many values while reading the endpoint/scaling constants only once.
+   * Used by Axes.plot's vectorized sampling path. */
+  number_to_point_flat_many(values: readonly number[]): number[][] {
+    const flat = this._ensure_endpoints_flat();
+    const dim = flat.length / 2;
+    const xMin = this.x_range[0] ?? 0;
+    const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
+    const scaling = this.scaling;
+    const out: number[][] = new Array(values.length);
+    for (let i = 0; i < values.length; i += 1) {
+      const scaled = scaling.inverse_function(values[i] ?? 0);
+      const value = typeof scaled === "number" ? scaled : numeric(pointRows(scaled, 1)[0]?.[0] ?? 0);
+      const alpha = (value - xMin) / span;
+      const row = new Array<number>(dim);
+      for (let d = 0; d < dim; d += 1) {
+        row[d] = (1 - alpha) * (flat[d] ?? 0) + alpha * (flat[dim + d] ?? 0);
+      }
+      out[i] = row;
+    }
+    return out;
+  }
+
   number_to_point(number: number | number[] | NDArray): NDArray {
     // NOTE: mirrors Python `number = np.asarray(number);
     // scalar = number.ndim == 0` (a 0-d array counts as scalar) followed by
@@ -484,15 +584,14 @@ export class NumberLine extends VGroup {
     const scaled = this.scaling.inverse_function(number as number);
     const x_min = this.x_range[0] ?? 0;
     const span = (this.x_range[1] ?? 0) - (this.x_range[0] ?? 0);
-    const [start, end] = this.get_start_and_end();
     if (scalar) {
       const value =
         typeof scaled === "number"
           ? scaled
-          : Number(pointRows(scaled, 1)[0]?.[0] ?? 0);
-      const result = interpolate(start, end, (value - x_min) / span);
-      return (isNDArray(result) ? result : array(result as unknown as number[])) as NDArray;
+          : numeric(pointRows(scaled, 1)[0]?.[0] ?? 0);
+      return array(this._interpolate_points_flat((value - x_min) / span)) as NDArray;
     }
+    const [start, end] = this.get_start_and_end();
     // NOTE: one alpha per input value (np.vstack semantics); flatten any
     // nesting element-wise rather than reading a single point row.
     const flat: number[] = [];

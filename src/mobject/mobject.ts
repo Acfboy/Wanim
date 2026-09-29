@@ -1334,7 +1334,7 @@ export class Mobject {
   set_points(points: unknown): this { return this.copy_array_from(points); }
 
   get_start(): number[] { this.throw_error_if_no_points("get_start"); return pointAt(this.points, 0, this.dim); }
-  get_end(): number[] { this.throw_error_if_no_points("get_end"); return pointAt(this.points, pointRows(this.points, this.dim).length - 1, this.dim); }
+  get_end(): number[] { this.throw_error_if_no_points("get_end"); return pointAt(this.points, this.get_num_points() - 1, this.dim); }
   get_midpoint(): NDArray { return this.point_from_proportion(0.5); }
 
   get_start_and_end(): [number[], number[]] {

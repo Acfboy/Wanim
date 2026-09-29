@@ -2,7 +2,7 @@ import { array, type NDArray } from "numpy-ts";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { config } from "../../_config/utils.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
-import { arange, isNDArray, numeric, pointRows } from "../../utils/arrays.js";
+import { arange, isNDArray, numeric, pointAt, pointRows } from "../../utils/arrays.js";
 import { LinearBase, type _ScaleBase } from "./scale.js";
 
 export type ParametricFunctionT = (t: number) => number[] | readonly number[] | NDArray;
@@ -14,6 +14,12 @@ export interface ParametricFunctionOptions extends VMobjectOptions {
   discontinuities?: number[] | null;
   use_smoothing?: boolean;
   use_vectorized?: boolean;
+  /** Internal: flat point-row evaluator set by CoordinateSystem.plot so that
+   * generate_points can avoid the per-sample NDArray round-trip. Not part of
+   * the public API. */
+  _point_flat?: (t: number) => number[];
+  /** Internal: batch variant of `_point_flat` (one call per sampled t-list). */
+  _points_flat?: (ts: readonly number[]) => number[][];
 }
 
 export class ParametricFunction extends VMobject {
@@ -30,6 +36,9 @@ export class ParametricFunction extends VMobject {
   // plot_polar_graph (mirrors Python's `graph.underlying_function = ...`);
   // read by input_to_graph_point/coords and plot_antiderivative_graph.
   underlying_function?: (t: number) => unknown;
+  // Internal flat point evaluator (see ParametricFunctionOptions._point_flat).
+  _point_flat?: (t: number) => number[];
+  _points_flat?: (ts: readonly number[]) => number[][];
 
   constructor(function_: ParametricFunctionT, options: ParametricFunctionOptions = {}) {
     const {
@@ -39,15 +48,22 @@ export class ParametricFunction extends VMobject {
       discontinuities = null,
       use_smoothing = true,
       use_vectorized = false,
+      _point_flat = undefined,
+      _points_flat = undefined,
       ...rest
     } = options;
     super(rest);
 
     function internal_parametric_function(t: number): NDArray {
-      return array(function_(t)) as NDArray;
+      // Mirrors Python `np.asarray(function(t))`: an NDArray result is passed
+      // through without a copy, everything else is wrapped.
+      const value = function_(t);
+      return isNDArray(value) ? (value as NDArray) : (array(value) as NDArray);
     }
 
     this.function = internal_parametric_function;
+    this._point_flat = _point_flat;
+    this._points_flat = _points_flat;
     const full_range: [number, number, number] = t_range.length === 2
       ? [t_range[0] ?? 0, t_range[1] ?? 1, 0.01]
       : [t_range[0] ?? 0, t_range[1] ?? 1, t_range[2] ?? 0.01];
@@ -97,44 +113,60 @@ export class ParametricFunction extends VMobject {
       // scaling.function(t2)])`. NOTE: the scaled samples form a flat 1-D
       // list (not one row per sample), so they are flattened element-wise
       // rather than read via pointRows.
-      const scaledOut = this.scaling.function(arange(t1, t2, this.t_step));
-      const scaledRaw: unknown = isNDArray(scaledOut) ? scaledOut.toArray() : scaledOut;
-      const scaled: number[] = [];
-      const collect = (v: unknown): void => {
-        if (Array.isArray(v)) for (const item of v) collect(item);
-        else scaled.push(numeric(v));
-      };
-      collect(scaledRaw);
-      const endValue = this.scaling.function(t2);
-      const t_values = [
-        ...scaled,
-        typeof endValue === "number" ? endValue : (pointRows(endValue, 1)[0]?.[0] ?? 0),
-      ];
+      let t_values: number[];
+      if (this.scaling instanceof LinearBase) {
+        // LinearBase.function is a plain multiply; skip the numpy-ts array
+        // round-trip for the per-sample t values (hot for graph plots).
+        const factor = this.scaling.scale_factor;
+        const base = arange(t1, t2, this.t_step);
+        t_values = base.map((value) => factor * value);
+        t_values.push(factor * t2);
+      } else {
+        const scaledOut = this.scaling.function(arange(t1, t2, this.t_step));
+        const scaledRaw: unknown = isNDArray(scaledOut) ? scaledOut.toArray() : scaledOut;
+        const scaled: number[] = [];
+        const collect = (v: unknown): void => {
+          if (Array.isArray(v)) for (const item of v) collect(item);
+          else scaled.push(numeric(v));
+        };
+        collect(scaledRaw);
+        const endValue = this.scaling.function(t2);
+        t_values = [
+          ...scaled,
+          typeof endValue === "number" ? endValue : (pointRows(endValue, 1)[0]?.[0] ?? 0),
+        ];
+      }
       let point_list: number[][];
+      // Hot path: extract the first point row without materialising every row
+      // of the returned NDArray (`pointRows` calls `toArray()` on all data).
+      const getPoint = (t: number): number[] => {
+        if (this._point_flat !== undefined) return this._point_flat(t);
+        const value = this.get_point_from_function(t);
+        if (isNDArray(value)) return pointAt(value as NDArray, 0, this.dim);
+        return pointRows(value, this.dim)[0] ?? new Array(this.dim).fill(0);
+      };
       if (this.use_vectorized) {
         // Python calls self.function(t_range) once with the whole array;
         // accept a vectorized result, else fall back to per-sample calls.
         const out = (this.function as unknown as (t: unknown) => unknown)(array(t_values));
         if (typeof out !== "object" || out === null || !("shape" in (out as Record<string, unknown>))) {
-          point_list = t_values.map(
-            (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
-          );
+          point_list = t_values.map(getPoint);
         } else {
           const asArray = (out as NDArray).toArray() as unknown;
           point_list = Array.isArray(asArray) && Array.isArray(asArray[0])
             ? (asArray as unknown[][]).map((row) => (row as unknown[]).map(Number))
-            : t_values.map(
-              (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
-            );
+            : t_values.map(getPoint);
         }
+      } else if (this._points_flat !== undefined) {
+        // Internal batch path: evaluate all samples with the axis constants
+        // read once (no NDArray per sample).
+        point_list = this._points_flat(t_values);
       } else {
         // NOTE: Python calls self.function(t) here; for FunctionGraph that
         // is the wrapped parametric form, so the polymorphic
         // get_point_from_function (which yields the parametric form for
         // FunctionGraph) is used instead.
-        point_list = t_values.map(
-          (t) => pointRows(this.get_point_from_function(t), this.dim)[0] ?? new Array(this.dim).fill(0),
-        );
+        point_list = t_values.map(getPoint);
       }
       this.start_new_path(point_list[0]);
       this.add_points_as_corners(point_list.slice(1));

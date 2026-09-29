@@ -2,7 +2,7 @@ import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, assertFinitePoints, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
-import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
+import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { CapStyleType, LEFT, ORIGIN, OUT, PI, RendererType, RIGHT, UL, UP } from "../../constants.js";
@@ -41,11 +41,46 @@ export interface VMobjectOptions extends MobjectOptions {
 }
 
 function rows(value: unknown, dim: number): number[][] {
+  // Fast path: read a C-contiguous 2-D NDArray straight from its typed
+  // backing store. `pointRows` would first materialise the whole array via
+  // `toArray()` and then copy each row again, which dominates smoothing of
+  // high-resolution graphs.
+  if (isNDArray(value)) {
+    const array = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+    const shape = array.shape;
+    const flat = array.data;
+    if (
+      flat !== undefined &&
+      shape.length === 2 &&
+      shape[1] === dim &&
+      flat.length === shape[0] * dim &&
+      (array.flags === undefined || array.flags.C_CONTIGUOUS !== false)
+    ) {
+      const count = shape[0] ?? 0;
+      const result = new Array<number[]>(count);
+      for (let i = 0; i < count; i += 1) {
+        const row = new Array<number>(dim);
+        const base = i * dim;
+        for (let c = 0; c < dim; c += 1) row[c] = flat[base + c] ?? 0;
+        result[i] = row;
+      }
+      return result;
+    }
+  }
   return pointRows(value, dim);
 }
 
 function asPoints(rowsValue: number[][], dim: number): NDArray {
-  return array(rowsValue.length > 0 ? rowsValue : []).reshape(rowsValue.length, dim) as NDArray;
+  // Build the backing typed array directly: `array(nested).reshape(...)` is
+  // several times slower for the large point buffers used by graphs/curves.
+  if (rowsValue.length === 0) return array([]).reshape(0, dim) as NDArray;
+  const flat = new Float64Array(rowsValue.length * dim);
+  for (let i = 0; i < rowsValue.length; i += 1) {
+    const row = rowsValue[i] ?? [];
+    const base = i * dim;
+    for (let c = 0; c < dim; c += 1) flat[base + c] = row[c] ?? 0;
+  }
+  return array(flat).reshape(rowsValue.length, dim) as NDArray;
 }
 
 function curveValue(points: number[][], t: number, dim: number): number[] {
@@ -1014,7 +1049,13 @@ export class VMobject extends Mobject {
 
   append_points(points: unknown): this {
     const current = rows(this.points, this.dim);
-    const additions = rows(points, this.dim);
+    // Fast path: plain rows already exactly `dim` wide need no re-slicing.
+    const additions: number[][] =
+      Array.isArray(points) &&
+      (points.length === 0 ||
+        (Array.isArray(points[0]) && (points[0] as number[]).length === this.dim))
+        ? (points as number[][])
+        : rows(points, this.dim);
     this.points = asPoints([...current, ...additions], this.dim);
     return this;
   }
@@ -1283,10 +1324,12 @@ export class VMobject extends Mobject {
     const nppcc = this.n_points_per_cubic_curve;
     for (const submob of this.family_members_with_points()) {
       const vmob = submob as VMobject;
-      const subpaths = vmob.get_subpaths();
+      // Work on plain point rows end-to-end: the previous implementation went
+      // rows -> NDArray subpaths -> rows again (and padded/realigned each
+      // time), which dominated smoothing of high-resolution graphs.
+      const subpaths = this._subpaths_rows(rows(vmob.points, this.dim));
       vmob.clear_points();
-      for (const subpath of subpaths) {
-        const subpathRows = rows(subpath, this.dim);
+      for (const subpathRows of subpaths) {
         const stepped: number[][] = [];
         for (let index = 0; index < subpathRows.length; index += nppcc) {
           stepped.push([...(subpathRows[index] ?? new Array(this.dim).fill(0))]);
@@ -1296,24 +1339,26 @@ export class VMobject extends Mobject {
         let h1: number[][];
         let h2: number[][];
         if (mode === "smooth") {
-          const [h1arr, h2arr] = get_smooth_cubic_bezier_handle_points(anchors);
-          h1 = pointRows(h1arr, this.dim);
-          h2 = pointRows(h2arr, this.dim);
+          const [h1rows, h2rows] = get_smooth_cubic_bezier_handle_points_rows(anchors);
+          h1 = h1rows;
+          h2 = h2rows;
         } else {
           const a1 = anchors.slice(0, -1);
           const a2 = anchors.slice(1);
           h1 = pointRows(interpolate(array(a1) as NDArray, array(a2) as NDArray, 1.0 / 3) as NDArray, this.dim);
           h2 = pointRows(interpolate(array(a1) as NDArray, array(a2) as NDArray, 2.0 / 3) as NDArray, this.dim);
         }
-        const newSubpath = subpathRows.map((row) => [...row]);
+        // `subpathRows` is a fresh slice whose rows are not shared with any
+        // other live data, so the handle slots can be overwritten in place.
+        const newSubpath = subpathRows;
         let h1Index = 0;
         for (let index = 1; index < newSubpath.length; index += nppcc) {
-          newSubpath[index] = [...(h1[h1Index] ?? new Array(this.dim).fill(0))];
+          newSubpath[index] = h1[h1Index] ?? new Array(this.dim).fill(0);
           h1Index += 1;
         }
         let h2Index = 0;
         for (let index = 2; index < newSubpath.length; index += nppcc) {
-          newSubpath[index] = [...(h2[h2Index] ?? new Array(this.dim).fill(0))];
+          newSubpath[index] = h2[h2Index] ?? new Array(this.dim).fill(0);
           h2Index += 1;
         }
         vmob.append_points(newSubpath);
@@ -1768,8 +1813,9 @@ export class VMobject extends Mobject {
   *_gen_subpaths_from_points(
     points: NDArray,
     filter_func: (n: number) => boolean,
+    allRows?: number[][],
   ): Generator<NDArray, void, void> {
-    const all = rows(points, this.dim);
+    const all = allRows ?? rows(points, this.dim);
     const nppcc = this.n_points_per_cubic_curve;
     const split_points: number[] = [0];
     for (let n = nppcc; n < all.length; n += nppcc) {
@@ -1783,11 +1829,48 @@ export class VMobject extends Mobject {
     }
   }
 
+  /** Fast inline equivalent of `consider_points_equals` for equal-length point
+   * rows: `np.allclose(p, q, rtol=1e-5, atol=tolerance_for_point_equality)`
+   * without the numpy-ts allocation churn. Falls back to the general method for
+   * mismatched/empty shapes. */
+  private _point_rows_equal(p: readonly number[], q: readonly number[]): boolean {
+    if (p.length !== q.length || p.length === 0) {
+      return this.consider_points_equals(p, q);
+    }
+    const rtol = 1e-5;
+    const atol = this.tolerance_for_point_equality;
+    for (let i = 0; i < p.length; i += 1) {
+      const x = p[i] ?? 0;
+      const y = q[i] ?? 0;
+      if (!(Math.abs(x - y) <= atol + rtol * Math.abs(y))) return false;
+    }
+    return true;
+  }
+
+  /** Split `all` (plain point rows) into subpaths, mirroring
+   * `_gen_subpaths_from_points` without the NDArray round-trip. */
+  private _subpaths_rows(all: number[][]): number[][][] {
+    const nppcc = this.n_points_per_cubic_curve;
+    const split_points: number[] = [0];
+    for (let n = nppcc; n < all.length; n += nppcc) {
+      if (!this._point_rows_equal(all[n - 1] ?? [], all[n] ?? [])) split_points.push(n);
+    }
+    split_points.push(all.length);
+    const subpaths: number[][][] = [];
+    for (let index = 0; index < split_points.length - 1; index += 1) {
+      const start = split_points[index] ?? 0;
+      const end = split_points[index + 1] ?? 0;
+      if (end - start >= nppcc) subpaths.push(all.slice(start, end));
+    }
+    return subpaths;
+  }
+
   get_subpaths_from_points(points: NDArray): NDArray[] {
     const all = rows(points, this.dim);
     return [...this._gen_subpaths_from_points(
       points,
-      (n) => !this.consider_points_equals(all[n - 1] ?? [], all[n] ?? []),
+      (n) => !this._point_rows_equal(all[n - 1] ?? [], all[n] ?? []),
+      all,
     )];
   }
 
