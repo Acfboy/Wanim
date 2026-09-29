@@ -16,7 +16,7 @@ import { interpolate, inverse_interpolate } from "../utils/bezier.js";
 import { cloneNumericArray, linspace } from "../utils/arrays.js";
 import { there_and_back, wiggle } from "../utils/rate_functions.js";
 import { normalize } from "../utils/space_ops.js";
-import { GREY, ManimColor, type ParsableManimColor } from "../utils/color/core.js";
+import { GREY, ManimColor, WHITE, type ParsableManimColor } from "../utils/color/core.js";
 import { DEFAULT_STROKE_WIDTH, ORIGIN, RIGHT, SMALL_BUFF, TAU, UP } from "../constants.js";
 
 export interface FocusOnOptions extends TransformOptions {
@@ -39,12 +39,16 @@ export class FocusOn extends Transform {
   ) {
     const { opacity: _o, color: _c, run_time: _r, ...rest } = options;
     void _o; void _c; void _r;
+    // NOTE: Python builds `Dot(radius=frame_x_radius + frame_y_radius,
+    // stroke_width=0, fill_color=self.color, fill_opacity=0)`; `color` keeps
+    // its WHITE default (so the stroke is WHITE) while the fill is `self.color`.
     const starting_dot = new Dot(
       [...ORIGIN],
       Number(config.frame_x_radius) + Number(config.frame_y_radius),
       0,
       0,
-      color,
+      WHITE,
+      { fill_color: color },
     );
     super(starting_dot, { ...rest, run_time, remover: true });
     this.focus_point = focus_point;
@@ -53,7 +57,10 @@ export class FocusOn extends Transform {
   }
 
   override create_target(): Dot {
-    const little_dot = new Dot([...ORIGIN], 0, 0, 1, this.color);
+    // Python: `little_dot = Dot(radius=0)` (default color WHITE, stroke_width
+    // 0), then `set_fill(self.color, opacity=self.opacity)`; the stroke stays
+    // WHITE.
+    const little_dot = new Dot([...ORIGIN], 0);
     little_dot.set_fill(this.color, this.opacity);
     const focusPoint = this.focus_point;
     little_dot.add_updater((d: Mobject) => d.move_to(focusPoint as Mobject));
