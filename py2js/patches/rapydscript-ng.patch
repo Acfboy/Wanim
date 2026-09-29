@@ -127,10 +127,38 @@ index 341df63..6bda020 100644
              else:
                  output.print('[')
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..5404231 100644
+index a16673a..1cf483b 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
-@@ -26,6 +26,18 @@ def print_getattr(self, output, skip_expression):  # AST_Dot
+@@ -12,8 +12,26 @@ from output.loops import unpack_tuple
+ 
+ 
+ def print_getattr(self, output, skip_expression):  # AST_Dot
++    expr = self.expression
++    p = output.parent()
++    # A call binds `this` on its own (`square.scale(1.5)`) and an assignment
++    # target has to stay an lvalue (`square.x = ...`), so only plain reads are
++    # routed through the runtime helper.
++    is_callee = is_node_type(p, AST_BaseCall) and p.expression is self
++    is_lvalue = is_node_type(p, AST_Assign) and p.left is self
++    if (output.options.operator_overloading and not skip_expression
++            and not is_callee and not is_lvalue):
++        # Route value/reference reads through ρσ_getdot so a bound Mobject
++        # method read (`ApplyMethod(square.scale, ...)`, updaters) comes back
++        # as a Python bound method carrying `__self__`/`__func__`.  Non-function
++        # values and functions without an Mobject receiver pass through.
++        output.print('ρσ_getdot(')
++        expr.print(output)
++        output.comma()
++        output.print('"' + output.make_name(self.property) + '"')
++        output.print(')')
++        return
+     if not skip_expression:
+-        expr = self.expression
+         expr.print(output)
+     if is_node_type(expr, AST_Number) and expr.value >= 0:
+         if not /[xa-f.]/i.test(output.last()):
+@@ -26,6 +44,18 @@ def print_getattr(self, output, skip_expression):  # AST_Dot
  def print_getitem(self, output):  # AST_Sub
      expr = self.expression
      prop = self.property
@@ -149,7 +177,7 @@ index a16673a..5404231 100644
      if (
          is_node_type(prop, AST_Number) or is_node_type(prop, AST_String)
          or (is_node_type(prop, AST_SymbolRef) and prop.name
-@@ -38,6 +50,15 @@ def print_getitem(self, output):  # AST_Sub
+@@ -38,6 +68,15 @@ def print_getitem(self, output):  # AST_Sub
          is_node_type(prop, AST_Unary) and prop.operator is '-'
          and is_node_type(prop.expression, AST_Number)
      )
@@ -165,7 +193,7 @@ index a16673a..5404231 100644
      is_repeatable = is_node_type(expr, AST_SymbolRef)
      if is_repeatable:
          expr.print(output)
-@@ -46,8 +67,11 @@ def print_getitem(self, output):  # AST_Sub
+@@ -46,8 +85,11 @@ def print_getitem(self, output):  # AST_Sub
          expr = {'print': def (): output.print('ρσ_expr_temp');}
  
      if is_negative_number:
@@ -178,7 +206,7 @@ index a16673a..5404231 100644
          output.print(']')
          return
      is_repeatable = is_node_type(prop, AST_SymbolRef)
-@@ -115,6 +139,12 @@ def print_unary_prefix(self, output):
+@@ -115,6 +157,12 @@ def print_unary_prefix(self, output):
      op = self.operator
      if op is 'delete':
          return print_delete(self.expression, output)
@@ -191,7 +219,7 @@ index a16673a..5404231 100644
      output.print(op)
      if /^[a-z]/i.test(op):
          output.space()
-@@ -211,9 +241,37 @@ function_ops = {
+@@ -211,9 +259,37 @@ function_ops = {
      'nin': '!ρσ_in',
  }
  
@@ -230,7 +258,7 @@ index a16673a..5404231 100644
          output.print(function_ops[self.operator])
          output.with_parens(def ():
              self.left.print(output)
-@@ -363,6 +421,20 @@ def print_existential(self, output):
+@@ -363,6 +439,20 @@ def print_existential(self, output):
  
  
  def print_assignment(self, output):

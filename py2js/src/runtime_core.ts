@@ -411,6 +411,56 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return -a;
   }
 
+  /**
+   * Python bound-method semantics for attribute *reads*.
+   *
+   * rapydscript compiles `square.scale` to a plain JS property read, which
+   * returns the unbound prototype function (no `__self__`).  Python instead
+   * yields a bound method carrying `__self__`/`__func__`, which `ApplyMethod`
+   * and the updater helpers rely on.  The patched compiler emits `ρσ_getdot`
+   * for non-callee reads (when `operator_overloading` is on); this rebuilds
+   * the CPython shape for data-property methods on a Mobject receiver and
+   * returns everything else unchanged:
+   *   - non-function values;
+   *   - functions whose receiver is not a Mobject (`np.linalg.norm`);
+   *   - accessor properties, whose getter result (`mobject.animate`, a
+   *     callable Proxy) must not be re-bound into a plain wrapper.
+   */
+  function isMobjectLike(value: unknown): boolean {
+    const Mobject = wanim.Mobject as (new (...args: Any[]) => Any) | undefined;
+    return typeof Mobject === "function" && value instanceof (Mobject as Any);
+  }
+
+  function isAccessorProperty(obj: Any, name: string): boolean {
+    let cur: Any = obj;
+    while (cur !== null && cur !== undefined) {
+      const descriptor = Object.getOwnPropertyDescriptor(cur, name);
+      if (descriptor !== undefined) {
+        return typeof descriptor.get === "function" || typeof descriptor.set === "function";
+      }
+      cur = Object.getPrototypeOf(cur);
+    }
+    return false;
+  }
+
+  function getDot(obj: Any, name: string): Any {
+    const value = (obj as Any)[name];
+    if (typeof value !== "function") return value;
+    if (!isMobjectLike(obj)) return value;
+    if (isAccessorProperty(obj, name)) return value;
+    if ((value as Any).__self__ === obj) return value;
+    const bound = function (this: Any, ...args: Any[]): Any {
+      return (value as Any).apply(obj, args);
+    } as Any;
+    bound.__self__ = obj;
+    bound.__func__ = value;
+    // `always`/`f_always` key off these historical spellings
+    // (see `bind_mobject_method` in wanim).
+    bound.mobject = obj;
+    bound.originalMethod = value;
+    return bound;
+  }
+
   function isNativeClass(fn: unknown): fn is new (...args: Any[]) => Any {
     return typeof fn === "function" && /^class[\s{]/.test(Function.prototype.toString.call(fn));
   }
@@ -592,6 +642,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_op_mod = pythonMod;
     globals.ρσ_op_pow = pythonPow;
     globals.ρσ_op_neg = pythonNeg;
+    globals.ρσ_getdot = getDot;
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -608,5 +659,6 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonMod,
     pythonPow,
     pythonNeg,
+    getDot,
   };
 }
