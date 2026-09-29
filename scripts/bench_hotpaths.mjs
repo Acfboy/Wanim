@@ -36,6 +36,13 @@ const num = (flag, fallback) => {
 const repeat = num("--repeat", 7);
 const jsonIndex = args.indexOf("--json");
 const jsonPath = jsonIndex >= 0 ? args[jsonIndex + 1] : null;
+const baselineIndex = args.indexOf("--baseline");
+const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
+let baseline = null;
+if (baselinePath) {
+  const fs = await import("node:fs");
+  baseline = JSON.parse(fs.readFileSync(baselinePath, "utf-8"));
+}
 
 const wanim = await import("wanim");
 const {
@@ -128,12 +135,34 @@ wanim.run_scene(BenchSinCos, out);
 results.run_scene_ms = performance.now() - t0;
 
 const fmt = (v, digits = 2) => (v < 0.01 ? v.toExponential(2) : v.toFixed(digits));
-console.log("hot-path benchmark (median of runs)");
-console.log("  coords_to_point(t, sin t) :", fmt(results.coords_to_point_us), "us/call");
-console.log("  NumberLine.number_to_point:", fmt(results.number_to_point_us), "us/call");
-console.log("  axes.plot(sin) 203 samples :", fmt(results.plot_ms, 3), "ms");
-console.log("  SinAndCos construct        :", fmt(results.construct_ms, 3), "ms");
-console.log("  run_scene (construct+ser.) :", fmt(results.run_scene_ms, 3), "ms");
+const rows = [
+  ["coords_to_point(t, sin t)", "coords_to_point_us", "us/call", 2],
+  ["NumberLine.number_to_point", "number_to_point_us", "us/call", 2],
+  ["axes.plot(sin) 203 samples", "plot_ms", "ms", 3],
+  ["SinAndCos construct", "construct_ms", "ms", 3],
+  ["run_scene (construct+ser.)", "run_scene_ms", "ms", 3],
+];
+if (baseline) {
+  console.log("hot-path benchmark (median); delta vs baseline");
+  console.log(
+    `  ${"case".padEnd(30)} ${"before".padStart(11)} ${"after".padStart(11)} ${"speedup".padStart(9)}`,
+  );
+  for (const [label, key, unit, digits] of rows) {
+    const before = baseline[key] ?? 0;
+    const after = results[key] ?? 0;
+    const speedup = after > 0 ? before / after : 0;
+    console.log(
+      `  ${label.padEnd(30)} ${(fmt(before, digits) + " " + unit).padStart(11)} ${(fmt(after, digits) + " " + unit).padStart(11)} ${(speedup.toFixed(1) + "x").padStart(9)}`,
+    );
+  }
+} else {
+  console.log("hot-path benchmark (median of runs)");
+  console.log("  coords_to_point(t, sin t) :", fmt(results.coords_to_point_us), "us/call");
+  console.log("  NumberLine.number_to_point:", fmt(results.number_to_point_us), "us/call");
+  console.log("  axes.plot(sin) 203 samples :", fmt(results.plot_ms, 3), "ms");
+  console.log("  SinAndCos construct        :", fmt(results.construct_ms, 3), "ms");
+  console.log("  run_scene (construct+ser.) :", fmt(results.run_scene_ms, 3), "ms");
+}
 
 if (jsonPath) {
   const fs = await import("node:fs");
