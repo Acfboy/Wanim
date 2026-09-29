@@ -1,6 +1,6 @@
-import { array, type NDArray } from "numpy-ts";
+import { type NDArray } from "numpy-ts";
 import { Mobject } from "../mobject.js";
-import { VGroup, VMobject } from "../types/vectorized_mobject.js";
+import { VGroup } from "../types/vectorized_mobject.js";
 import { pointRows, isNDArray } from "../../utils/arrays.js";
 import { Polygon, type PolygramOptions } from "../geometry/polygram.js";
 import { Graph } from "../graph.js";
@@ -43,20 +43,16 @@ export class Polyhedron extends VGroup {
     );
     this.edges = this.get_edges(this.faces_list);
     this.faces = this.create_faces(this.face_coords);
-    this.graph = new Graph(this.vertex_indices, this.edges, {});
-    // NOTE: the TS Graph does not support layout=/vertex_type yet, so its
-    // vertices are empty placeholder VMobjects sitting at the origin; seed
-    // one point per vertex so the layout move below lands on the intended
-    // centers (mirroring what Python's Graph(layout=...) with Dot3D
-    // vertices does). Without points move_to() would silently no-op and
-    // extract_face_coords()/update_faces() would read all-zero centers.
-    for (const [index, position] of this.layout) {
-      const vertex = this.graph.vertices.get(index);
-      if (vertex instanceof VMobject && vertex.get_num_points() === 0) {
-        vertex.set_points(array([[...position]]) as NDArray);
-      }
-      vertex?.move_to(position);
-    }
+    // NOTE: Python builds the graph with `Graph(self.vertex_indices,
+    // self.edges, layout=self.layout, **self.graph_config)`, so the vertices
+    // are real Dot3D mobjects placed at the vertex coordinates (and the edges
+    // are stroke-opacity-0 lines). The TS Graph now supports a Map layout and
+    // a custom `vertex_type`, so pass them through instead of seeding one
+    // placeholder point per vertex.
+    this.graph = new Graph(this.vertex_indices, this.edges, {
+      layout: this.layout,
+      ...this.graph_config,
+    } as unknown as Record<string, unknown>);
     this.add(this.faces, this.graph);
     this.add_updater((mob: Mobject) => {
       this.update_faces(mob);
