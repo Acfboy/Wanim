@@ -80,12 +80,31 @@ export class Polygram extends VMobject {
       vertex_groups = args.slice(0, -1);
     }
     super({ color: BLUE, ...options });
+    // Build the closed polyline directly: each edge (v_i -> v_{i+1}) is one
+    // cubic whose four control points are the linear interpolants at t =
+    // 0, 1/3, 2/3, 1. This is exactly what
+    // start_new_path + add_points_as_corners produce, without the repeated
+    // numpy row extraction / interpolation allocations (polygons and arrow
+    // tips are built constantly).
+    const nppcc = this.n_points_per_cubic_curve;
+    const flat_points: number[][] = [];
     for (const vertices of vertex_groups) {
       const rows = pointRows(vertices, this.dim);
       if (rows.length === 0) continue;
-      const [first_vertex, ...rest] = rows;
-      this.start_new_path(first_vertex);
-      this.add_points_as_corners([...rest, first_vertex ?? [0, 0, 0]]);
+      const count = rows.length;
+      for (let i = 0; i < count; i += 1) {
+        const start = rows[i] ?? [];
+        const end = rows[(i + 1) % count] ?? [];
+        for (let j = 0; j < nppcc; j += 1) {
+          const t = nppcc === 1 ? 0 : j / (nppcc - 1);
+          flat_points.push(
+            start.map((value, column) => (1 - t) * value + t * (end[column] ?? 0)),
+          );
+        }
+      }
+    }
+    if (flat_points.length > 0) {
+      this.points = array(flat_points) as NDArray;
     }
   }
 
