@@ -252,6 +252,16 @@ function pointArray(rows: number[][]): NDArray {
   return array(rows) as NDArray;
 }
 
+/** Select min/max/center from a pre-scanned column, mirroring the tail of
+ *  {@link Mobject.get_extremum_along_dim} (NaN anywhere poisons the result). */
+function extremumValue(min: number, max: number, nan: boolean, count: number, key: number): number {
+  if (count === 0) return 0;
+  if (nan) return NaN;
+  if (key < 0) return min;
+  if (key === 0) return (min + max) / 2;
+  return max;
+}
+
 export function repeat_array_impl(value: NDArray, count: number, dim = 3): NDArray {
   if (!Number.isInteger(count)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
   if (count <= 0) throw new TypeError("reduce() of empty iterable with no initial value");
@@ -865,7 +875,35 @@ export class Mobject {
   get_critical_point(direction: readonly number[] | NDArray): number[] {
     const result = Array.from({ length: this.dim }, () => 0);
     const boundary = this.get_points_defining_boundary();
-    const directionValues = pointRows(direction, this.dim)[0] ?? [];
+    const directionValues = Array.isArray(direction) && (direction.length === 0 || typeof (direction as readonly unknown[])[0] === "number")
+      ? direction as readonly number[]
+      : pointRows(direction, this.dim)[0] ?? [];
+    const dim = this.dim;
+    // Fast path: one flat pass over a C-contiguous boundary collects the
+    // extrema for all three axes at once, instead of three `pointRows`/
+    // `_cContiguousRows` passes. NaN poisons min/max exactly like
+    // `get_extremum_along_dim`.
+    const flat = _cContiguousRows(boundary);
+    if (flat !== null && flat.rowDim >= 3 && flat.rowCount > 0 && dim === 3) {
+      const { data, rowDim, rowCount } = flat;
+      let min0 = Infinity; let max0 = -Infinity;
+      let min1 = Infinity; let max1 = -Infinity;
+      let min2 = Infinity; let max2 = -Infinity;
+      let nan0 = false; let nan1 = false; let nan2 = false;
+      for (let row = 0; row < rowCount; row += 1) {
+        const base = row * rowDim;
+        const v0 = Number(data[base]);
+        if (v0 !== v0) nan0 = true; else { if (v0 < min0) min0 = v0; if (v0 > max0) max0 = v0; }
+        const v1 = Number(data[base + 1]);
+        if (v1 !== v1) nan1 = true; else { if (v1 < min1) min1 = v1; if (v1 > max1) max1 = v1; }
+        const v2 = Number(data[base + 2]);
+        if (v2 !== v2) nan2 = true; else { if (v2 < min2) min2 = v2; if (v2 > max2) max2 = v2; }
+      }
+      result[0] = extremumValue(min0, max0, nan0, rowCount, Number(directionValues[0] ?? 0));
+      result[1] = extremumValue(min1, max1, nan1, rowCount, Number(directionValues[1] ?? 0));
+      result[2] = extremumValue(min2, max2, nan2, rowCount, Number(directionValues[2] ?? 0));
+      return result;
+    }
     for (let dim = 0; dim < this.dim; dim += 1) {
       result[dim] = this.get_extremum_along_dim(boundary, dim, Number(directionValues[dim] ?? 0));
     }
@@ -1169,11 +1207,31 @@ export class Mobject {
     assertFinite(scale_factor);
     if (about_point !== undefined && about_point !== null) assertFinite(vector(about_point, this.dim));
     if (about_edge !== undefined && about_edge !== null) assertFinite(vector(about_edge, this.dim));
-    this.apply_points_function_about_point(
-      (points) => multiply(points, scale_factor) as NDArray,
-      about_point ?? undefined,
-      about_edge ?? undefined,
-    );
+    const center = about_point !== undefined && about_point !== null
+      ? vector(about_point, this.dim)
+      : this.get_critical_point(about_edge ?? ORIGIN);
+    const dim = this.dim;
+    for (const mobject of this.family_members_with_points()) {
+      // Fast path: `(p - center) * k + center` in one flat typed-array pass,
+      // matching `apply_points_function_about_point`'s numpy op order.
+      const flat = _cContiguousRows(mobject.points);
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0) {
+        const { data, rowDim, rowCount } = flat;
+        const out = mobject.points.copy() as NDArray;
+        const outData = (out as NDArray & { data: Float64Array }).data;
+        for (let row = 0; row < rowCount; row += 1) {
+          const base = row * rowDim;
+          for (let d = 0; d < dim; d += 1) {
+            outData[base + d] = ((data[base + d] ?? 0) - (center[d] ?? 0)) * scale_factor + (center[d] ?? 0);
+          }
+        }
+        mobject.points = out;
+      } else {
+        const centerArray = array(center);
+        const points = mobject.points as unknown as NDArray;
+        mobject.points = add(multiply(subtract(points, centerArray) as NDArray, scale_factor) as NDArray, centerArray) as NDArray;
+      }
+    }
     return this;
   }
 
@@ -1188,8 +1246,26 @@ export class Mobject {
       total = addPoints(total, component, this.dim);
     }
     assertFinite(total);
+    const dim = this.dim;
     for (const mobject of this.family_members_with_points()) {
-      mobject.points = pointArray(pointRows(mobject.points, this.dim).map((point) => addPoints(point, total, this.dim)));
+      // Fast path: C-contiguous (n, dim) points get a single flat typed-array
+      // pass instead of materialising every row (`pointRows` -> `addPoints` ->
+      // `pointArray`), which dominated per-tick transforms.
+      const flat = _cContiguousRows(mobject.points);
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0) {
+        const { data, rowDim, rowCount } = flat;
+        const out = mobject.points.copy() as NDArray;
+        const outData = (out as NDArray & { data: Float64Array }).data;
+        for (let row = 0; row < rowCount; row += 1) {
+          const base = row * rowDim;
+          for (let d = 0; d < dim; d += 1) {
+            outData[base + d] = (data[base + d] ?? 0) + (total[d] ?? 0);
+          }
+        }
+        mobject.points = out;
+      } else {
+        mobject.points = pointArray(pointRows(mobject.points, this.dim).map((point) => addPoints(point, total, this.dim)));
+      }
     }
     return this;
   }
@@ -1249,15 +1325,52 @@ export class Mobject {
 
   rotate(angle: number, axis: readonly number[] | NDArray = [...OUT], about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
     const rot_matrix = pointRows(rotation_matrix(angle, axis), 3);
-    this.apply_points_function_about_point(
-      (points) => pointArray(
-        pointRows(points, this.dim).map((point) =>
-          rot_matrix.map((row) => point.reduce((sum, value, index) => sum + value * (row[index] ?? 0), 0)).slice(0, this.dim),
-        ),
-      ),
-      about_point ?? undefined,
-      about_edge ?? undefined,
-    );
+    const dim = this.dim;
+    const center = about_point !== undefined && about_point !== null
+      ? vector(about_point, dim)
+      : this.get_critical_point(about_edge ?? ORIGIN);
+    const cx = center[0] ?? 0;
+    const cy = center[1] ?? 0;
+    const cz = center[2] ?? 0;
+    const r00 = rot_matrix[0]?.[0] ?? 0;
+    const r01 = rot_matrix[0]?.[1] ?? 0;
+    const r02 = rot_matrix[0]?.[2] ?? 0;
+    const r10 = rot_matrix[1]?.[0] ?? 0;
+    const r11 = rot_matrix[1]?.[1] ?? 0;
+    const r12 = rot_matrix[1]?.[2] ?? 0;
+    const r20 = rot_matrix[2]?.[0] ?? 0;
+    const r21 = rot_matrix[2]?.[1] ?? 0;
+    const r22 = rot_matrix[2]?.[2] ?? 0;
+    for (const mobject of this.family_members_with_points()) {
+      // Fast path: apply the 3x3 rotation row-wise on the flat backing store,
+      // reproducing the old `sum_j (p_j - c_j) * R_ij + c_i` accumulation.
+      const flat = _cContiguousRows(mobject.points);
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && dim === 3) {
+        const { data, rowDim, rowCount } = flat;
+        const out = mobject.points.copy() as NDArray;
+        const outData = (out as NDArray & { data: Float64Array }).data;
+        for (let row = 0; row < rowCount; row += 1) {
+          const base = row * rowDim;
+          const x = (data[base] ?? 0) - cx;
+          const y = (data[base + 1] ?? 0) - cy;
+          const z = (data[base + 2] ?? 0) - cz;
+          outData[base] = ((0 + x * r00) + y * r01) + z * r02 + cx;
+          outData[base + 1] = ((0 + x * r10) + y * r11) + z * r12 + cy;
+          outData[base + 2] = ((0 + x * r20) + y * r21) + z * r22 + cz;
+        }
+        mobject.points = out;
+      } else {
+        const centerArray = array(center);
+        const points = mobject.points as unknown as NDArray;
+        const centered = subtract(points, centerArray) as NDArray;
+        const result = pointArray(
+          pointRows(centered, dim).map((point) =>
+            rot_matrix.map((row) => point.reduce((sum, value, index) => sum + value * (row[index] ?? 0), 0)).slice(0, dim),
+          ),
+        );
+        mobject.points = add(result, centerArray) as NDArray;
+      }
+    }
     return this;
   }
 
