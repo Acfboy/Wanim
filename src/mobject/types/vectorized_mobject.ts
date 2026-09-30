@@ -3,7 +3,7 @@ import { Mobject, assertFinitePoints, type MobjectOptions, type MobjectSlice, ty
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
-import { shoelace_direction, rotate_vector } from "../../utils/space_ops.js";
+import { shoelace_direction, rotate_vector, rotation_matrix } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { CapStyleType, LEFT, ORIGIN, OUT, PI, RendererType, RIGHT, UL, UP } from "../../constants.js";
 import { config } from "../../_config/utils.js";
@@ -417,16 +417,34 @@ export class VMobject extends Mobject {
   }
 
   rotate_sheen_direction(angle: number, axis: number[] | readonly number[] | NDArray = [...OUT], family = true): this {
+    // Hoist the rotation matrix and apply it with scalar math: the previous
+    // per-submobject `rotate_vector` rebuilt a 3x3 matrix (trig + numpy
+    // matmul) for every family member on every rotate.
+    const rot = pointRows(rotation_matrix(angle, axis), 3);
+    const r00 = rot[0]?.[0] ?? 0; const r01 = rot[0]?.[1] ?? 0; const r02 = rot[0]?.[2] ?? 0;
+    const r10 = rot[1]?.[0] ?? 0; const r11 = rot[1]?.[1] ?? 0; const r12 = rot[1]?.[2] ?? 0;
+    const r20 = rot[2]?.[0] ?? 0; const r21 = rot[2]?.[1] ?? 0; const r22 = rot[2]?.[2] ?? 0;
+    const dim = this.dim;
+    const rotateOne = (vec: number[] | readonly number[] | NDArray): number[] => {
+      if (!Array.isArray(vec) || vec.length > 3) {
+        return [...(rows(rotate_vector(vec, angle, axis), dim)[0] ?? [])];
+      }
+      const x = vec[0] ?? 0;
+      const y = vec[1] ?? 0;
+      const z = vec[2] ?? 0;
+      const out = [
+        (r00 * x + r01 * y) + r02 * z,
+        (r10 * x + r11 * y) + r12 * z,
+        (r20 * x + r21 * y) + r22 * z,
+      ];
+      return dim < 3 ? out.slice(0, dim) : out;
+    };
     if (family) {
       for (const submob of this.get_family()) {
-        (submob as VMobject).sheen_direction = [
-          ...(rows(rotate_vector((submob as VMobject).sheen_direction, angle, axis), this.dim)[0] ?? []),
-        ];
+        (submob as VMobject).sheen_direction = rotateOne((submob as VMobject).sheen_direction);
       }
     } else {
-      this.sheen_direction = [
-        ...(rows(rotate_vector(this.sheen_direction, angle, axis), this.dim)[0] ?? []),
-      ];
+      this.sheen_direction = rotateOne(this.sheen_direction);
     }
     return this;
   }
