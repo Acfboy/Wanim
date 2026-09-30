@@ -149,7 +149,7 @@ export class QuickHull {
     const rows = toRowMatrix(points);
     const count = rows.length;
     const dim = rows[0]?.length ?? 0;
-    const rng = random.default_rng();
+    const rng = random.default_rng(0);
     const picked = rng.choice(count, dim + 1, false) as unknown;
     const indices: number[] = Array.isArray(picked)
       ? (picked as unknown[]).map((item) => Math.trunc(Number(item)))
