@@ -15,6 +15,37 @@ const logger = {
   info(..._args: unknown[]): void {},
 };
 
+// The camera background is a `pixel_height * pixel_width * n_channels` constant,
+// but converting that typed array into a numpy-ts NDArray costs tens of ms (and
+// allocates enough to exhaust the numpy-ts WASM heap). Every Camera with the
+// same shape/color rebuilds an identical array, so memoize it. The returned
+// NDArray is treated as read-only: `reset()` only copies *from* it.
+const BACKGROUND_CACHE = new Map<string, NDArray>();
+const BACKGROUND_CACHE_MAX = 8;
+
+function cachedBackground(
+  height: number,
+  width: number,
+  channels: number,
+  rgba: readonly number[],
+): NDArray {
+  const key = `${height}x${width}x${channels}:${rgba.join(",")}`;
+  const cached = BACKGROUND_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  const count = height * width;
+  const data = new Uint8Array(count * channels);
+  for (let index = 0; index < count; index += 1) {
+    const base = index * channels;
+    for (let channel = 0; channel < channels; channel += 1) {
+      data[base + channel] = rgba[channel] ?? 0;
+    }
+  }
+  const built = array(data).reshape(height, width, channels) as NDArray;
+  if (BACKGROUND_CACHE.size >= BACKGROUND_CACHE_MAX) BACKGROUND_CACHE.clear();
+  BACKGROUND_CACHE.set(key, built);
+  return built;
+}
+
 export const LINE_JOIN_MAP: Record<string, string | null> = {
   AUTO: null,
   ROUND: "ROUND",
@@ -198,19 +229,7 @@ export class Camera {
       throw pilNotPorted();
     }
     const rgba = color_to_int_rgba(this.background_color, this.background_opacity);
-    // Fill a flat typed array instead of a `height * width` nested JS array:
-    // the nested form allocates ~400k sub-arrays for a 854x480 frame and was
-    // the single largest cost of constructing a Camera.
-    const channels = this.n_channels;
-    const count = height * width;
-    const data = new Uint8Array(count * channels);
-    for (let index = 0; index < count; index += 1) {
-      const base = index * channels;
-      for (let channel = 0; channel < channels; channel += 1) {
-        data[base + channel] = rgba[channel] ?? 0;
-      }
-    }
-    this.background = array(data).reshape(height, width, channels) as NDArray;
+    this.background = cachedBackground(height, width, this.n_channels, rgba);
   }
 
   get_image(pixel_array?: unknown): unknown {
