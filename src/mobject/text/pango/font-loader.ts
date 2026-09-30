@@ -178,6 +178,60 @@ export interface GlyphPath {
   glyph: Glyph;
 }
 
+/** Minimal shape of the opentype.js path commands we serialize. */
+interface PathCommandLike {
+  type: string;
+  x?: number;
+  y?: number;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+}
+
+function formatCoordinate(value: number | undefined, factor: number): string {
+  if (value === undefined || !Number.isFinite(value)) return "0";
+  const rounded = Math.round(value * factor) / factor;
+  return (Object.is(rounded, -0) ? 0 : rounded).toFixed(2);
+}
+
+/**
+ * Serialize an opentype.js `Path` to SVG path data.
+ *
+ * opentype.js' own `Path.toPathData` rounds through string concatenation
+ * (`Math.round(decimalPart + "e+" + places)`), which yields `NaN` when a
+ * coordinate's fractional part serializes in exponent notation (e.g. `1e-7`).
+ * Fine-scaled glyph outlines -- CJK glyphs at the default text size, in
+ * particular -- hit this for some sizes, so wanim emits the path data itself.
+ */
+export function pathToSvgData(path: { commands: PathCommandLike[] }, decimalPlaces = 2): string {
+  const factor = 10 ** decimalPlaces;
+  const num = (value: number | undefined): string => formatCoordinate(value, factor);
+  let d = "";
+  for (const command of path.commands) {
+    switch (command.type) {
+      case "M":
+        d += `M${num(command.x)} ${num(command.y)}`;
+        break;
+      case "L":
+        d += `L${num(command.x)} ${num(command.y)}`;
+        break;
+      case "C":
+        d += `C${num(command.x1)} ${num(command.y1)} ${num(command.x2)} ${num(command.y2)} ${num(command.x)} ${num(command.y)}`;
+        break;
+      case "Q":
+        d += `Q${num(command.x1)} ${num(command.y1)} ${num(command.x)} ${num(command.y)}`;
+        break;
+      case "Z":
+        d += "Z";
+        break;
+      default:
+        break;
+    }
+  }
+  return d;
+}
+
 /** Get the SVG path data for a single glyph (mirrors `getGlyphPath`). */
 export function getGlyphPath(
   font: Font,
@@ -191,7 +245,7 @@ export function getGlyphPath(
   const scale = fontSize / (font.unitsPerEm || 1000);
   const glyphPath: Path = glyph.getPath(x, y, fontSize);
   return {
-    path: glyphPath.toPathData(2),
+    path: pathToSvgData(glyphPath),
     advanceWidth: glyph.advanceWidth ? glyph.advanceWidth * scale : 0,
     leftSideBearing: glyph.leftSideBearing ? glyph.leftSideBearing * scale : 0,
     glyph,
@@ -265,7 +319,7 @@ export function getTextPaths(
         char,
         charIndex,
         glyphIndex,
-        path: glyphPath.toPathData(2),
+        path: pathToSvgData(glyphPath),
         x: currentX,
         y: glyphY,
         advanceWidth: (glyph.advanceWidth ?? 0) * scale,
@@ -282,7 +336,7 @@ export function getTextPaths(
           char,
           charIndex,
           glyphIndex: 0,
-          path: glyphPath.toPathData(2),
+          path: pathToSvgData(glyphPath),
           x: currentX,
           y: glyphY,
           advanceWidth: (notdefGlyph.advanceWidth ?? 0) * scale,

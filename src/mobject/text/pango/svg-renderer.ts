@@ -8,7 +8,7 @@
 
 import type { Font } from "opentype.js";
 import { parseMarkup, buildStyledRuns, type StyledRun } from "./markup-parser.js";
-import { getFontMetrics, getTextPaths, loadFontSync, resolveDefaultFontPath, parseFontFromBuffer, type FontMetrics } from "./font-loader.js";
+import { getFontMetrics, getTextPaths, loadFontSync, resolveDefaultFontPath, parseFontFromBuffer, pathToSvgData, type FontMetrics } from "./font-loader.js";
 import { generateDecorations, type Decoration } from "./decorator.js";
 
 const DEFAULT_FONT_SIZE = 48;
@@ -140,7 +140,7 @@ export class PangoRenderer {
 
       let pathData = glyph.path;
       const glyphObj = font.glyphs.get(glyph.glyphIndex);
-      if (glyphObj) pathData = glyphObj.getPath(0, 0, fontSize).toPathData(2);
+      if (glyphObj) pathData = pathToSvgData(glyphObj.getPath(0, 0, fontSize));
 
       svgContent += `  <path d="${pathData}" fill="${currentColor}" transform="translate(${pathX.toFixed(2)}, ${yOffset.toFixed(2)})" />\n`;
     }
