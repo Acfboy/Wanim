@@ -81,6 +81,10 @@ export interface SliderOptions {
   init_value?: number;
   color?: ParsableManimColor;
   stroke_width?: number;
+  /** Opacity of the track line (0 = invisible). Defaults to 1. */
+  track_opacity?: number;
+  /** Opacity of the knob (0 = invisible). Defaults to 1. */
+  knob_opacity?: number;
   /** Knob radius (world units). */
   knob_radius?: number;
   /** Extra pick radius around the track (world units). */
@@ -93,6 +97,10 @@ export interface SliderOptions {
  * `value_range` is inclusive: dragging to `start` yields the first element, to
  * `end` the last. `init_value` (defaulting to the first element) sets the knob
  * position at construction time.
+ *
+ * `attach(mobject)` parents a mobject to the knob so it follows the value;
+ * while anything is attached the knob itself is hidden, so the attached mobject
+ * is what the user sees (use `unattach` to restore the knob).
  */
 export class Slider extends VGroup implements InteractiveControl {
   readonly [INTERACTIVE_CONTROL] = true;
@@ -101,10 +109,14 @@ export class Slider extends VGroup implements InteractiveControl {
   value_range: [number, number];
   accent_color: ParsableManimColor;
   stroke_width: number;
+  track_opacity: number;
+  knob_opacity: number;
   knob_radius: number;
   hit_radius: number;
   track: Line;
   knob: Dot;
+  /** Mobjects currently parented to the knob via {@link attach}. */
+  attached: Mobject[] = [];
   private _value: number;
 
   constructor(options: SliderOptions = {}) {
@@ -116,6 +128,8 @@ export class Slider extends VGroup implements InteractiveControl {
       init_value,
       color = YELLOW,
       stroke_width = 6,
+      track_opacity = 1,
+      knob_opacity = 1,
       knob_radius = 0.12,
       hit_radius = 0.3,
     } = options;
@@ -126,6 +140,8 @@ export class Slider extends VGroup implements InteractiveControl {
     this.value_range = [low, high];
     this.accent_color = color;
     this.stroke_width = stroke_width;
+    this.track_opacity = track_opacity;
+    this.knob_opacity = knob_opacity;
     this.knob_radius = knob_radius;
     this.hit_radius = hit_radius;
     this._value = init_value ?? low;
@@ -136,11 +152,12 @@ export class Slider extends VGroup implements InteractiveControl {
       color,
       stroke_width,
     });
+    this.track.set_stroke(color, stroke_width, track_opacity);
     this.knob = new Dot({
       point: this._pointForValue(this._value),
       radius: knob_radius,
       color,
-      fill_opacity: 1,
+      fill_opacity: knob_opacity,
       stroke_width: 0,
     });
     this.add(this.track, this.knob);
@@ -157,6 +174,42 @@ export class Slider extends VGroup implements InteractiveControl {
     const [x, y, z] = this._pointForValue(clamped);
     this.knob.move_to([x, y, z]);
     return this;
+  }
+
+  /**
+   * Parent `mobject` to the knob so it moves with the slider value. The knob
+   * becomes transparent so only the attached mobject is visible.
+   */
+  attach(mobject: Mobject): this {
+    if (this.attached.includes(mobject)) return this;
+    this.attached.push(mobject);
+    this.knob.add(mobject);
+    this._update_knob_visibility();
+    return this;
+  }
+
+  /**
+   * Detach one mobject (or, with no argument, every attached mobject). When
+   * nothing remains attached the knob's configured opacity is restored.
+   */
+  unattach(mobject?: Mobject): this {
+    if (mobject === undefined) {
+      for (const attached of [...this.attached]) this.knob.remove(attached);
+      this.attached = [];
+    } else {
+      if (!this.attached.includes(mobject)) return this;
+      this.knob.remove(mobject);
+      this.attached = this.attached.filter((candidate) => candidate !== mobject);
+    }
+    this._update_knob_visibility();
+    return this;
+  }
+
+  private _update_knob_visibility(): void {
+    const opacity = this.attached.length > 0 ? 0 : this.knob_opacity;
+    // `family = false`: only the knob's own points change, never the attached
+    // mobjects' styles.
+    this.knob.set_opacity(opacity, false);
   }
 
   is_hit(point: readonly number[]): boolean {

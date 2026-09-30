@@ -136,6 +136,32 @@ describe("Slider", () => {
     expect(slider.is_hit([0, 1, 0])).toBe(false);
     expect(slider.is_hit([5, 0, 0])).toBe(false);
   });
+
+  test("opacity options, attach hides the knob and follows the value", () => {
+    const slider = new Slider({
+      start: [-2, 0, 0],
+      end: [2, 0, 0],
+      value_range: [0, 1],
+      track_opacity: 0.2,
+      knob_opacity: 0.8,
+    });
+    expect(slider.track.get_stroke_opacity()).toBeCloseTo(0.2, 6);
+    expect(slider.knob.get_fill_opacity()).toBeCloseTo(0.8, 6);
+
+    const marker = new Circle(0.1);
+    marker.move_to(slider.knob.get_center());
+    slider.attach(marker);
+    expect(slider.knob.get_fill_opacity()).toBe(0);
+    expect(slider.attached).toContain(marker);
+
+    slider.set_value(1);
+    expect(marker.get_center()[0]).toBeCloseTo(slider.knob.get_center()[0], 6);
+    expect(marker.get_center()[0]).toBeCloseTo(2, 6);
+
+    slider.unattach();
+    expect(slider.attached.length).toBe(0);
+    expect(slider.knob.get_fill_opacity()).toBeCloseTo(0.8, 6);
+  });
 });
 
 describe("Switch", () => {
@@ -235,11 +261,11 @@ describe("InteractiveScene", () => {
     await host.advance(1);
     expect(scene.widths.length).toBe(before);
 
-    // Finish the last phase: buttons stay resident but are greyed out.
+    // Finish the last phase: the run's controls are disabled (the DOM host
+    // removes them when the run is torn down).
     host.click("进入下一步");
     await host.advance(1);
     await done;
-    expect(host.buttons.size).toBe(2);
     expect(host.buttonsEnabled).toBe(false);
   });
 
