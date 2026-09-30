@@ -296,6 +296,16 @@ export class TipableVMobject extends VMobject {
         cy + sin * bx + cos * by + shiftY,
         (meta.base[2] ?? 0) + shiftZ,
       ]);
+      // Keep the same side effect the general path has: the perpendicular
+      // positioning axis is recorded once. (The rotation it would drive is the
+      // identity in-plane, so it is not applied.)
+      if (this._init_positioning_axis === undefined) {
+        this._init_positioning_axis = [
+          Math.sin(angles[1] ?? 0),
+          -Math.cos(angles[1] ?? 0),
+          0,
+        ];
+      }
       return tip;
     }
     // Rotates the tip along the azimuthal
