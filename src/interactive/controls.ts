@@ -16,12 +16,12 @@
  * move afterwards.
  */
 import type { ParsableManimColor } from "../utils/color/index.js";
-import { BLUE, GREY_B, WHITE, YELLOW } from "../utils/color/index.js";
+import { BLUE_E, GREY_C, WHITE, YELLOW } from "../utils/color/index.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VGroup } from "../mobject/types/vectorized_mobject.js";
 import { Dot } from "../mobject/geometry/arc.js";
 import { Line } from "../mobject/geometry/line.js";
-import { RoundedRectangle } from "../mobject/geometry/polygram.js";
+import { Rectangle } from "../mobject/geometry/polygram.js";
 import { DecimalNumber, type DecimalNumberOptions, type DecimalNumberValue } from "../mobject/text/numbers.js";
 import type { InteractiveHost } from "./host.js";
 
@@ -219,8 +219,8 @@ export interface SwitchOptions {
  */
 export class Switch extends VGroup implements InteractiveControl {
   readonly [INTERACTIVE_CONTROL] = true;
-  track: RoundedRectangle;
-  knob: Mobject;
+  track: Rectangle;
+  knob: Rectangle;
   track_width: number;
   track_height: number;
   accent_color: ParsableManimColor;
@@ -234,27 +234,29 @@ export class Switch extends VGroup implements InteractiveControl {
     } else {
       bag = { ...valueOrOptions, ...options };
     }
-    const { value = false, width = 0.9, height = 0.45, color = BLUE } = bag;
+    const { value = false, width = 0.66, height = 0.33, color = BLUE_E } = bag;
     this.track_width = width;
     this.track_height = height;
     this.accent_color = color;
     this._value = value;
 
-    const radius = height / 2 - 0.02;
-    this.track = new RoundedRectangle({
+    // Off: white track with a grey knob; on: blue track with a white knob. The
+    // knob covers exactly one half (with a little padding).
+    const pad = height * 0.14;
+    this.track = new Rectangle({
       width,
       height,
-      corner_radius: height / 2,
       stroke_width: 0,
     });
-    this.track.set_fill(GREY_B, 1);
-    this.knob = new Dot({
-      point: [...(this.track.get_center() as number[])],
-      radius,
+    this.track.set_fill(WHITE, 1);
+    this.knob = new Rectangle({
+      width: width / 2 - 2 * pad,
+      height: height - 2 * pad,
       color: WHITE,
-      fill_opacity: 1,
       stroke_width: 0,
     });
+    this.knob.set_fill(WHITE, 1);
+    this.knob.move_to(this.track.get_center());
     this.add(this.track, this.knob);
     this._apply_state();
   }
@@ -297,11 +299,13 @@ export class Switch extends VGroup implements InteractiveControl {
   on_release(): void {}
 
   private _apply_state(): void {
-    const trackColor = this._value ? this.accent_color : GREY_B;
-    this.track.set_fill(trackColor, 1);
+    // Off: white track, grey knob (left). On: blue track, white knob (right).
+    const on = this._value;
+    this.track.set_fill(on ? this.accent_color : WHITE, 1);
+    this.knob.set_fill(on ? WHITE : GREY_C, 1);
     const center = this.track.get_center();
-    const offset = (this.track_width / 2) - (this.track_height / 2);
-    const x = (center[0] ?? 0) + (this._value ? offset : -offset);
+    const quarter = this.track_width / 4;
+    const x = (center[0] ?? 0) + (on ? quarter : -quarter);
     this.knob.move_to([x, center[1] ?? 0, center[2] ?? 0]);
   }
 }
@@ -315,7 +319,9 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
   editing = false;
 
   constructor(numberValue: DecimalNumberValue = 0, options: DecimalNumberOptions = {}) {
-    super(numberValue, options);
+    // Grouping separators (10,000) make the caret/glyph mapping confusing for a
+    // live-edited number, so the interactive input defaults to no grouping.
+    super(numberValue, { group_with_commas: false, ...options });
   }
 
   override get_value(): DecimalNumberValue {
@@ -365,5 +371,27 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     const value = this.get_value();
     const scalar = typeof value === "number" ? value : value.re;
     return scalar.toFixed(this.num_decimal_places);
+  }
+
+  /**
+   * World-space anchor for the character insertion point at `index` (0 = before
+   * the first glyph, `glyphs` = after the last). Used by the browser host to
+   * draw the editing marker under the digit being edited. Returns `null` when
+   * the number has no glyphs yet.
+   */
+  interactive_caret_anchor(index: number): number[] | null {
+    // `_set_submobjects_from_number` adds one submobject per displayed
+    // character (in order); unit/background submobjects, if any, come after.
+    const display = this._get_num_string(this.number);
+    const glyphs = this.submobjects.slice(0, display.length);
+    if (glyphs.length === 0) return null;
+    const bottom = this.get_bottom();
+    const y = bottom[1] ?? 0;
+    if (index >= glyphs.length) {
+      const right = glyphs[glyphs.length - 1]!.get_right();
+      return [right[0] ?? 0, y, 0];
+    }
+    const left = glyphs[Math.max(0, index)]!.get_left();
+    return [left[0] ?? 0, y, 0];
   }
 }
