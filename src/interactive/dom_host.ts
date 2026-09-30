@@ -16,7 +16,9 @@
  */
 import type { Mobject } from "../mobject/mobject.js";
 import type {
+  InteractiveButtonIcon,
   InteractiveHost,
+  KeyHandlers,
   PointerHandlers,
   TextEditOptions,
 } from "./host.js";
@@ -49,20 +51,39 @@ function isBlockedNumberKey(event: KeyboardEvent): boolean {
 const CONTROLS_BARS = new WeakMap<HTMLCanvasElement, HTMLElement>();
 
 const ENABLED_STYLE = {
-  background: "#b07d4f",
-  color: "#fdf9f3",
-  border: "1px solid #7d5834",
+  background: "#0d3b66",
+  color: "#dbe9f7",
+  border: "1px solid #0d3b66",
   cursor: "pointer",
   opacity: "1",
 };
 
 const DISABLED_STYLE = {
-  background: "#d8cbc0",
-  color: "#9b8f82",
-  border: "1px solid #c4b5a6",
+  background: "#5c6b7a",
+  color: "#aeb9c4",
+  border: "1px solid #5c6b7a",
   cursor: "not-allowed",
   opacity: "1",
 };
+
+/** Small inline SVG icons (24x24 viewBox) for the control buttons. */
+const BUTTON_ICONS: Record<InteractiveButtonIcon, string> = {
+  restart: "M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
+  next: "M8 5v14l11-7z",
+};
+
+function applyIcon(button: HTMLButtonElement, icon: InteractiveButtonIcon): void {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.style.display = "block";
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", BUTTON_ICONS[icon]);
+  path.setAttribute("fill", "currentColor");
+  svg.appendChild(path);
+  button.appendChild(svg);
+}
 
 function ensureStyles(): void {
   if (document.getElementById("wanim-interactive-styles") !== null) return;
@@ -70,7 +91,12 @@ function ensureStyles(): void {
   style.id = "wanim-interactive-styles";
   style.textContent = `
 .wanim-interactive-button {
-  padding: 6px 16px;
+  padding: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 0;
   font: inherit;
   font-weight: 600;
@@ -122,17 +148,22 @@ export class DomInteractiveHost implements InteractiveHost {
       this.controls = document.createElement("div");
       this.controls.className = "wanim-interactive-controls";
       this.controls.style.display = "flex";
-      this.controls.style.gap = "0.5rem";
-      this.controls.style.marginTop = "0.5rem";
-      this.controls.style.justifyContent = "center";
-      // Place the bar below the canvas *wrapper* when there is one, so a flex
-      // layout that centres the canvas still shows the buttons underneath
-      // rather than beside it.
-      const anchor = canvas.parentElement ?? canvas;
-      const anchorParent = anchor.parentElement;
-      if (anchorParent !== null) anchorParent.insertBefore(this.controls, anchor.nextSibling);
-      else if (canvas.parentElement !== null) canvas.parentElement.appendChild(this.controls);
-      else document.body.appendChild(this.controls);
+      this.controls.style.gap = "6px";
+      this.controls.style.zIndex = "10";
+      // Overlay the bottom-left corner of the canvas.
+      const wrapper = canvas.parentElement;
+      if (wrapper !== null) {
+        if (getComputedStyle(wrapper).position === "static") wrapper.style.position = "relative";
+        this.controls.style.position = "absolute";
+        this.controls.style.left = "8px";
+        this.controls.style.bottom = "8px";
+        wrapper.appendChild(this.controls);
+      } else {
+        this.controls.style.position = "fixed";
+        this.controls.style.left = "8px";
+        this.controls.style.bottom = "8px";
+        document.body.appendChild(this.controls);
+      }
       CONTROLS_BARS.set(canvas, this.controls);
     }
   }
@@ -192,11 +223,14 @@ export class DomInteractiveHost implements InteractiveHost {
     return dispose;
   }
 
-  addButton(label: string, onClick: () => void): () => void {
+  addButton(label: string, onClick: () => void, icon?: InteractiveButtonIcon): () => void {
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = label;
     button.className = "wanim-interactive-button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    if (icon !== undefined) applyIcon(button, icon);
+    else button.textContent = label;
     button.addEventListener("click", onClick);
     this.controls.appendChild(button);
     this.buttonEls.push(button);
@@ -212,6 +246,34 @@ export class DomInteractiveHost implements InteractiveHost {
   setButtonsEnabled(enabled: boolean): void {
     this.buttonsEnabled = enabled;
     this.applyButtonStyle();
+  }
+
+  onKey(handlers: KeyHandlers): () => void {
+    const listener = (event: KeyboardEvent): void => {
+      if (this.editor !== null) return;
+      if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target !== null &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.code === "Space") {
+        event.preventDefault();
+        handlers.next();
+      } else if (event.key === "r" || event.key === "R") {
+        handlers.restart();
+      }
+    };
+    window.addEventListener("keydown", listener);
+    const dispose = (): void => {
+      window.removeEventListener("keydown", listener);
+    };
+    this.disposers.push(dispose);
+    return dispose;
   }
 
   beginTextEdit(mobject: Mobject, camera: unknown, options: TextEditOptions): void {

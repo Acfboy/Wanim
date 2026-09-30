@@ -301,8 +301,8 @@ export class Switch extends VGroup implements InteractiveControl {
   private _apply_state(): void {
     // Off: white track, grey knob (left). On: blue track, white knob (right).
     const on = this._value;
-    this.track.set_fill(on ? this.accent_color : WHITE, 1);
-    this.knob.set_fill(on ? WHITE : GREY_C, 1);
+    this.track.set_fill(on ? this.accent_color : GREY_C, 1);
+    this.knob.set_fill(WHITE, 1);
     const center = this.track.get_center();
     const quarter = this.track_width / 4;
     const x = (center[0] ?? 0) + (on ? quarter : -quarter);
