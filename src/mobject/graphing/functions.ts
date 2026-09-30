@@ -244,6 +244,13 @@ export class FunctionGraph extends ParametricFunction {
     });
     this.x_range = resolved_range;
     this.parametric_function = parametric_function;
+    // Fast path: FunctionGraph is always a 2D graph `[t, f(t), 0]`, so feed
+    // generate_points a flat scalar sampler instead of materialising a fresh
+    // 3-element NDArray (and unwrapping it) for every sample. Numerically
+    // identical to `np.array([t, function(t), 0])` for scalar functions.
+    const flatPoint = (t: number): number[] => [t, numeric(function_(t)), 0];
+    this._point_flat = flatPoint;
+    this._points_flat = (ts: readonly number[]): number[][] => ts.map(flatPoint);
     // NOTE: super() already stored the wrapped parametric form as
     // self.function (exactly like Python, where ParametricFunction.__init__
     // overwrites the raw assignment); get_function() therefore returns the
