@@ -34,6 +34,17 @@ function pointRows(value: unknown): number[][] {
   return value as number[][];
 }
 
+/**
+ * Whether a key press should be swallowed by the numeric inline editor:
+ * single printable characters other than a digit, `-` or `.` (letters, ...).
+ * Navigation/editing keys and modifier shortcuts are left alone.
+ */
+function isBlockedNumberKey(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  if (event.key.length !== 1) return false;
+  return !/[0-9.\-]/.test(event.key);
+}
+
 /** One control bar per canvas, so re-runs reuse (never duplicate) the buttons. */
 const CONTROLS_BARS = new WeakMap<HTMLCanvasElement, HTMLElement>();
 
@@ -71,7 +82,15 @@ function ensureStyles(): void {
   overflow: hidden;
   white-space: pre;
 }
-.wanim-inline-editor::selection { background: rgba(176, 125, 79, 0.35); }
+.wanim-inline-editor::selection { background: transparent; }
+.wanim-inline-marker {
+  pointer-events: none;
+  z-index: 1001;
+  color: #ffffff;
+  font: 700 15px ui-monospace, monospace;
+  line-height: 1;
+  transform: translateX(-50%);
+}
 `;
   document.head.appendChild(style);
 }
@@ -83,6 +102,11 @@ export class DomInteractiveHost implements InteractiveHost {
   private readonly buttonEls: HTMLButtonElement[] = [];
   private readonly disposers: Array<() => void> = [];
   private editor: HTMLTextAreaElement | null = null;
+  private marker: HTMLDivElement | null = null;
+  private caretRaf = 0;
+  private editorMobject: Mobject | null = null;
+  private editorCamera: CameraLike | null = null;
+  private editorOptions: TextEditOptions | null = null;
   private closing = false;
   private buttonsEnabled = true;
 
@@ -192,62 +216,188 @@ export class DomInteractiveHost implements InteractiveHost {
 
   beginTextEdit(mobject: Mobject, camera: unknown, options: TextEditOptions): void {
     this.endTextEdit();
-    const rect = this.mobjectClientRect(mobject, camera as CameraLike);
-    const height = Math.max(18, rect.height);
+    this.editorMobject = mobject;
+    this.editorCamera = camera as CameraLike;
+    this.editorOptions = options;
+    this.closing = false;
+
+    // A borderless, fully transparent editor laid over the rendered number:
+    // the canvas digits show through and update live. The visible caret is our
+    // own element (the native one cannot track the rendered glyphs).
     const textarea = document.createElement("textarea");
     textarea.className = "wanim-inline-editor";
     textarea.value = options.initial;
     textarea.rows = 1;
-    // A borderless, transparent editor sitting exactly on the rendered number:
-    // the canvas digits show through and update live, so it reads as editing
-    // the number itself rather than a separate box.
     textarea.style.position = "fixed";
     textarea.style.zIndex = "1000";
-    textarea.style.left = `${rect.left}px`;
-    textarea.style.top = `${rect.top}px`;
-    textarea.style.width = `${Math.max(24, rect.width)}px`;
-    textarea.style.height = `${height}px`;
     textarea.style.margin = "0";
     textarea.style.padding = "0";
     textarea.style.background = "transparent";
     textarea.style.color = "transparent";
-    textarea.style.caretColor = "#1f6feb";
-    textarea.style.textAlign = "center";
-    textarea.style.font = `${Math.max(12, height * 0.85)}px ui-monospace, monospace`;
-    textarea.style.lineHeight = `${height}px`;
+    textarea.style.caretColor = "transparent";
+    textarea.style.textAlign = "left";
     textarea.style.resize = "none";
     document.body.appendChild(textarea);
-    this.editor = textarea;
-    this.closing = false;
 
-    textarea.addEventListener("input", () => options.onInput(textarea.value));
+    const marker = document.createElement("div");
+    marker.className = "wanim-inline-marker";
+    marker.textContent = "^";
+    marker.style.position = "fixed";
+    document.body.appendChild(marker);
+
+    this.editor = textarea;
+    this.marker = marker;
+    this.positionEditor();
+
+    textarea.addEventListener("input", () => {
+      // Keep the editor numeric-only (letters/non-numeric pastes are dropped),
+      // with at most one leading minus sign.
+      const raw = textarea.value.replace(/[^0-9.\-]/g, "");
+      const negative = raw.includes("-");
+      let cleaned = raw.replace(/-/g, "");
+      if (negative) cleaned = "-" + cleaned;
+      if (cleaned !== textarea.value) {
+        textarea.value = cleaned;
+        textarea.setSelectionRange(cleaned.length, cleaned.length);
+      }
+      options.onInput(textarea.value);
+    });
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        options.onCommit(textarea.value);
-        this.endTextEdit();
+        this.commitEditor();
       } else if (event.key === "Escape") {
         event.preventDefault();
         options.onCancel?.();
         this.endTextEdit();
+      } else if (isBlockedNumberKey(event)) {
+        // Single printable non-digit keys are ignored so the editor text never
+        // drifts away from the rendered number.
+        event.preventDefault();
       }
     });
     textarea.addEventListener("blur", () => {
       if (this.closing) return;
-      options.onCommit(textarea.value);
-      this.endTextEdit();
+      this.commitEditor();
     });
+    // Capture phase: fires before the canvas handler so clicking anywhere else
+    // commits the edit. It is added *after* the opening pointerdown, so it does
+    // not close the editor on the very click that opened it.
+    document.addEventListener("pointerdown", this.onDocumentPointerDown, true);
 
     textarea.focus();
-    textarea.select();
+    // Put the insertion point at the end (not a full selection): the `^` marker
+    // tracks `selectionStart`, so an end caret reads most naturally.
+    const end = textarea.value.length;
+    textarea.setSelectionRange(end, end);
+    this.caretRaf = requestAnimationFrame(this.caretLoop);
   }
 
   endTextEdit(): void {
+    if (this.caretRaf !== 0) {
+      cancelAnimationFrame(this.caretRaf);
+      this.caretRaf = 0;
+    }
+    document.removeEventListener("pointerdown", this.onDocumentPointerDown, true);
+    this.editorOptions = null;
+    this.editorMobject = null;
+    this.editorCamera = null;
     const editor = this.editor;
-    if (editor === null) return;
-    this.closing = true;
-    this.editor = null;
-    editor.remove();
+    if (editor !== null) {
+      this.closing = true;
+      this.editor = null;
+      editor.remove();
+    }
+    if (this.marker !== null) {
+      this.marker.remove();
+      this.marker = null;
+    }
+  }
+
+  /** Commit the open editor (if any) to its owner and close it. */
+  private commitEditor(): void {
+    const editor = this.editor;
+    const options = this.editorOptions;
+    if (editor !== null && options !== null) options.onCommit(editor.value);
+    this.endTextEdit();
+  }
+
+  private readonly onDocumentPointerDown = (event: PointerEvent): void => {
+    if (this.editor === null) return;
+    if (event.target === this.editor) return;
+    this.commitEditor();
+  };
+
+  private readonly caretLoop = (): void => {
+    if (this.editor === null) return;
+    this.positionEditor();
+    this.caretRaf = requestAnimationFrame(this.caretLoop);
+  };
+
+  /**
+   * Keep the transparent editor glued to the rendered number and place the `^`
+   * marker under the digit at the current insertion point. Runs every frame
+   * while editing so the marker follows both the number's changing width and
+   * the text cursor.
+   */
+  private positionEditor(): void {
+    const editor = this.editor;
+    const marker = this.marker;
+    if (editor === null || marker === null || this.editorMobject === null || this.editorCamera === null) return;
+    const rect = this.mobjectClientRect(this.editorMobject, this.editorCamera);
+    const height = Math.max(16, rect.height);
+    editor.style.left = `${rect.left}px`;
+    editor.style.top = `${rect.top}px`;
+    editor.style.width = `${Math.max(24, rect.width)}px`;
+    editor.style.height = `${height}px`;
+    editor.style.font = `${Math.max(12, height * 0.85)}px ui-monospace, monospace`;
+    editor.style.lineHeight = `${height}px`;
+
+    const index = editor.selectionStart ?? editor.value.length;
+    const anchor = this.inlineAnchor(this.editorMobject, index);
+    if (anchor !== null) {
+      const client = this.worldToClient(anchor, this.editorMobject, this.editorCamera);
+      marker.style.left = `${client.x}px`;
+      marker.style.top = `${client.y + 2}px`;
+    } else {
+      marker.style.left = `${rect.left + rect.width + 2}px`;
+      marker.style.top = `${rect.top + rect.height + 2}px`;
+    }
+  }
+
+  /** Ask the control for its character insertion anchor (world coordinates). */
+  private inlineAnchor(mobject: Mobject, index: number): number[] | null {
+    const provider = mobject as { interactive_caret_anchor?: (index: number) => number[] | null };
+    if (typeof provider.interactive_caret_anchor !== "function") return null;
+    try {
+      return provider.interactive_caret_anchor(index);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Convert a single world point to client (viewport) coordinates. */
+  private worldToClient(point: number[], mobject: Mobject, camera: CameraLike): { x: number; y: number } {
+    const canvasRect = this.canvas.getBoundingClientRect();
+    if (typeof camera.points_to_subpixel_coords !== "function") {
+      return { x: canvasRect.left + canvasRect.width / 2, y: canvasRect.top + canvasRect.height / 2 };
+    }
+    let corners: number[][] = [];
+    try {
+      corners = pointRows(camera.points_to_subpixel_coords(mobject, [point]));
+    } catch {
+      corners = [];
+    }
+    const row = corners[0];
+    if (row === undefined) {
+      return { x: canvasRect.left + canvasRect.width / 2, y: canvasRect.top + canvasRect.height / 2 };
+    }
+    const scaleX = this.canvas.width > 0 ? canvasRect.width / this.canvas.width : 1;
+    const scaleY = this.canvas.height > 0 ? canvasRect.height / this.canvas.height : 1;
+    return {
+      x: (row[0] ?? 0) * scaleX + canvasRect.left,
+      y: (row[1] ?? 0) * scaleY + canvasRect.top,
+    };
   }
 
   nextFrame(): Promise<void> {
