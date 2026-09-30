@@ -108,6 +108,22 @@ function clamp01(value: number): number {
   return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
+/** `[r, g, b, alpha]` for a color without going through the numpy-ts
+ * `to_rgba_with_alpha` round-trip when the internal `(4,)` array is directly
+ * readable. `alpha` overrides the stored alpha, matching
+ * `ManimColor.to_rgba_with_alpha`. */
+function colorRgbaValues(color: ManimColor, alpha: number): number[] {
+  const internal = color.internal_value as NDArray | undefined;
+  if (internal !== undefined && internal !== null) {
+    const shape = internal.shape;
+    const data = (internal as NDArray & { data?: ArrayLike<number> }).data;
+    if (shape.length === 1 && shape[0] === 4 && data !== undefined && data.length === 4) {
+      return [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0, alpha];
+    }
+  }
+  return color.to_rgba_with_alpha(alpha).toArray() as number[];
+}
+
 /** Fast check for a `(1, 4)` C-contiguous rgba array, returning its backing
  * numbers. Used to avoid the `pointRows` round-trip in the uniform style
  * paths (the overwhelmingly common case: one color for the whole mobject). */
@@ -612,7 +628,7 @@ export class VMobject extends Mobject {
             ? color
             : new ManimColor(color as ParsableManimColor);
       const alpha = opacity === null || opacity === undefined ? 0.0 : Number(opacity);
-      const raw = c.to_rgba_with_alpha(alpha).toArray() as number[];
+      const raw = colorRgbaValues(c, alpha);
       const row = [raw[0] ?? 0, raw[1] ?? 0, raw[2] ?? 0, raw[3] ?? 0];
       if (sheen_factor !== 0) {
         return array([
@@ -695,7 +711,7 @@ export class VMobject extends Mobject {
         let a = currA;
         if (hasColor) {
           const c = color instanceof ManimColor ? color : new ManimColor(color as ParsableManimColor);
-          const raw = c.to_rgba_with_alpha(hasOpacity ? Number(opacity) : 0).toArray() as number[];
+          const raw = colorRgbaValues(c, hasOpacity ? Number(opacity) : 0);
           r = raw[0] ?? 0;
           g = raw[1] ?? 0;
           b = raw[2] ?? 0;
@@ -995,8 +1011,11 @@ export class VMobject extends Mobject {
     // Python: `if np.all(self.get_fill_opacities() == 0)` — stroke color is
     // used only when *every* fill opacity is zero (np.all([]) is True, so an
     // empty fill array also yields the stroke color).
-    const opacities = rgbaRows(this.fill_rgbas).map((row) => row[3] ?? 0);
-    return (opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color()) as ManimColor;
+    const single = singleRgbaData(this.fill_rgbas);
+    const allZero = single !== null
+      ? (single[3] ?? 0) === 0
+      : rgbaRows(this.fill_rgbas).every((row) => (row[3] ?? 0) === 0);
+    return (allZero ? this.get_stroke_color() : this.get_fill_color()) as ManimColor;
   }
 
   set_color(color?: ParsableManimColor | Iterable<ManimColor>, family?: boolean): this;
