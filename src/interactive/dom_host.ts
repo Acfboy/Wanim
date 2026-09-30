@@ -50,6 +50,9 @@ function isBlockedNumberKey(event: KeyboardEvent): boolean {
 /** One control bar per canvas, so re-runs reuse (never duplicate) the buttons. */
 const CONTROLS_BARS = new WeakMap<HTMLCanvasElement, HTMLElement>();
 
+/** Which host currently owns a control bar (so a stale run won't remove it). */
+const CONTROLS_OWNER = new WeakMap<HTMLElement, DomInteractiveHost>();
+
 const ENABLED_STYLE = {
   background: "#0d3b66",
   color: "#dbe9f7",
@@ -166,11 +169,13 @@ export class DomInteractiveHost implements InteractiveHost {
       }
       CONTROLS_BARS.set(canvas, this.controls);
     }
+    CONTROLS_OWNER.set(this.controls, this);
   }
 
   /**
-   * Detach this run's listeners and grey out its buttons, but leave the button
-   * bar resident under the canvas (a later run reuses it).
+   * Tear this run down: detach listeners/editor and remove the control bar (so
+   * no icons linger once the run ends). If a newer run has already taken over
+   * the bar, only this run's listeners are detached.
    */
   dispose(): void {
     for (const dispose of this.disposers.splice(0)) {
@@ -181,8 +186,11 @@ export class DomInteractiveHost implements InteractiveHost {
       }
     }
     this.endTextEdit();
-    this.buttonsEnabled = false;
-    this.applyButtonStyle();
+    if (CONTROLS_OWNER.get(this.controls) === this) {
+      CONTROLS_OWNER.delete(this.controls);
+      CONTROLS_BARS.delete(this.canvas);
+      this.controls.remove();
+    }
   }
 
   pointFromEvent(event: PointerEvent, camera: unknown): number[] {

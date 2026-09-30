@@ -62,9 +62,9 @@ export interface InteractiveHost {
   /** Add an overlay button; returns a disposer that detaches its click handler. */
   addButton(label: string, onClick: () => void, icon?: InteractiveButtonIcon): () => void;
   /**
-   * Enable/disable the overlay buttons. Buttons stay resident (so they never
-   * disappear from under the canvas); they are simply greyed out while an
-   * action is unavailable (e.g. while an animation plays).
+   * Enable/disable the overlay buttons. Buttons are greyed out while an action
+   * is unavailable (e.g. while an animation plays); they are removed entirely
+   * when the run is torn down (see `dispose` on the DOM host).
    */
   setButtonsEnabled(enabled: boolean): void;
   /** Register keyboard shortcuts (space = next, r = restart). */
