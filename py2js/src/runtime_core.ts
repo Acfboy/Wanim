@@ -610,6 +610,29 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (typeof fn !== "function") continue;
       facade[name] = (x: Any, ...rest: Any[]) => scalarize(fn(asNd(x), ...rest));
     }
+    // Plain-number fast path: `np.cos(t)` on a scalar otherwise boxes the value
+    // into an NDArray, dispatches through numpy-ts (WASM/alloc), then unwraps —
+    // ~30µs per call, which dominates e.g. a `ParametricFunction` lambda called
+    // once per sample.  A JS double is bit-identical to numpy's float64 result
+    // for these elementwise functions, so answer directly.  `rint` is excluded
+    // (numpy rounds half to even; `Math.round` does not).
+    const numberUfuncs: Record<string, (x: number) => number> = {
+      sin: Math.sin, cos: Math.cos, tan: Math.tan,
+      arcsin: Math.asin, arccos: Math.acos, arctan: Math.atan,
+      sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+      exp: Math.exp, log: Math.log, log2: Math.log2, log10: Math.log10,
+      sqrt: Math.sqrt, cbrt: Math.cbrt, abs: Math.abs, absolute: Math.abs,
+      sign: Math.sign, floor: Math.floor, ceil: Math.ceil, trunc: Math.trunc,
+      square: (x) => x * x, reciprocal: (x) => 1 / x,
+      deg2rad: (x) => (x * Math.PI) / 180, rad2deg: (x) => (x * 180) / Math.PI,
+    };
+    for (const name of Object.keys(numberUfuncs)) {
+      const fast = numberUfuncs[name];
+      const wrapped = facade[name];
+      if (typeof wrapped !== "function") continue;
+      facade[name] = (x: Any, ...rest: Any[]) =>
+        typeof x === "number" && rest.length === 0 ? fast(x) : wrapped(x, ...rest);
+    }
     // numpy-ts requires an array shape; Python accepts an int (`np.zeros(3)`).
     for (const name of ["zeros", "ones", "empty"]) {
       const fn = (np as Any)[name];
