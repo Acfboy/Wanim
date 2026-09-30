@@ -934,10 +934,22 @@ export class VMobject extends Mobject {
   }
 
   get_fill_color(): ManimColor {
+    const single = singleRgbaData(this.fill_rgbas);
+    if (single !== null) {
+      return ((single[0] ?? 0) !== 0 || (single[1] ?? 0) !== 0 || (single[2] ?? 0) !== 0 || (single[3] ?? 0) !== 0
+        ? new ManimColor(array([single[0] ?? 0, single[1] ?? 0, single[2] ?? 0]) as ParsableManimColor)
+        : null) as ManimColor;
+    }
     return (this.get_fill_colors()[0] ?? null) as ManimColor;
   }
 
   get_stroke_color(background = false): ManimColor | null {
+    const single = singleRgbaData(background ? this.background_stroke_rgbas : this.stroke_rgbas);
+    if (single !== null) {
+      return (single[0] ?? 0) !== 0 || (single[1] ?? 0) !== 0 || (single[2] ?? 0) !== 0 || (single[3] ?? 0) !== 0
+        ? new ManimColor(array([single[0] ?? 0, single[1] ?? 0, single[2] ?? 0]) as ParsableManimColor)
+        : null;
+    }
     return this.get_stroke_colors(background)[0] ?? null;
   }
 
