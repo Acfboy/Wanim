@@ -1146,8 +1146,61 @@ export class VMobject extends Mobject {
     return this.set_style(options);
   }
 
+  /** Uniform fast path for {@link match_style}: when both objects carry a
+   *  single rgba row for fill/stroke/background and the source has no sheen or
+   *  background-image to bake in, copy the scalar style directly instead of
+   *  round-tripping through `get_style()`/`set_style()` (which build several
+   *  colour/opacity arrays and then refill them). The assignments reproduce
+   *  exactly what `set_style(get_style())` would leave behind, including the
+   *  `background_stroke_color` / opacity bookkeeping. Returns false to fall
+   *  back to the faithful full path. */
+  private _match_uniform_style(source: VMobject): boolean {
+    if (source.sheen_factor || source.background_image) return false;
+    const sFill = singleRgbaData(source.fill_rgbas);
+    const sStroke = singleRgbaData(source.stroke_rgbas);
+    const sBack = singleRgbaData(source.background_stroke_rgbas);
+    const tFill = singleRgbaData(this.fill_rgbas);
+    const tStroke = singleRgbaData(this.stroke_rgbas);
+    const tBack = singleRgbaData(this.background_stroke_rgbas);
+    if (sFill === null || sStroke === null || sBack === null) return false;
+    if (tFill === null || tStroke === null || tBack === null) return false;
+    const sf0 = sFill[0] ?? 0; const sf1 = sFill[1] ?? 0; const sf2 = sFill[2] ?? 0; const sf3 = sFill[3] ?? 0;
+    const ss0 = sStroke[0] ?? 0; const ss1 = sStroke[1] ?? 0; const ss2 = sStroke[2] ?? 0; const ss3 = sStroke[3] ?? 0;
+    const sb0 = sBack[0] ?? 0; const sb1 = sBack[1] ?? 0; const sb2 = sBack[2] ?? 0; const sb3 = sBack[3] ?? 0;
+    if (tFill[0] !== sf0 || tFill[1] !== sf1 || tFill[2] !== sf2 || tFill[3] !== sf3) {
+      this.fill_rgbas = array([[sf0, sf1, sf2, sf3]]) as NDArray;
+    }
+    this.fill_opacity = sf3;
+    if (tStroke[0] !== ss0 || tStroke[1] !== ss1 || tStroke[2] !== ss2 || tStroke[3] !== ss3) {
+      this.stroke_rgbas = array([[ss0, ss1, ss2, ss3]]) as NDArray;
+    }
+    this.stroke_width = source.get_stroke_width();
+    this.stroke_opacity = ss3;
+    if (sb0 === 0 && sb1 === 0 && sb2 === 0 && sb3 === 0) {
+      // `set_background_stroke(null, ...)` only rewrites the alpha channel and
+      // leaves the existing rgb / colour field untouched.
+      if ((tBack[3] ?? 0) !== sb3) {
+        this.background_stroke_rgbas = array([[tBack[0] ?? 0, tBack[1] ?? 0, tBack[2] ?? 0, sb3]]) as NDArray;
+      }
+    } else {
+      if (tBack[0] !== sb0 || tBack[1] !== sb1 || tBack[2] !== sb2 || tBack[3] !== sb3) {
+        this.background_stroke_rgbas = array([[sb0, sb1, sb2, sb3]]) as NDArray;
+      }
+      const bgColor = this.background_stroke_color;
+      const bgRgb = bgColor === null || bgColor === undefined ? null : colorRgbaValues(bgColor, 0);
+      if (bgRgb === null || bgRgb[0] !== sb0 || bgRgb[1] !== sb1 || bgRgb[2] !== sb2) {
+        this.background_stroke_color = new ManimColor(array([sb0, sb1, sb2]) as ParsableManimColor);
+      }
+    }
+    this.background_stroke_width = source.get_stroke_width(true);
+    this.background_stroke_opacity = sb3;
+    return true;
+  }
+
   match_style(vmobject: VMobject, family = true): this {
-    this.set_style({ ...(vmobject.get_style() as Parameters<VMobject["set_style"]>[0]), family: false });
+    if (!this._match_uniform_style(vmobject)) {
+      this.set_style({ ...(vmobject.get_style() as Parameters<VMobject["set_style"]>[0]), family: false });
+    }
     if (family) {
       // Does its best to match up submobject lists, and
       // match styles accordingly
