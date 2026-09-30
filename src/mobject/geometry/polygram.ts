@@ -1,7 +1,7 @@
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { addPoints, isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { adjacent_n_tuples, adjacent_pairs } from "../../utils/iterables.js";
-import { angle_between_vectors, normalize, regular_vertices } from "../../utils/space_ops.js";
+import { angle_between_vectors, normalize } from "../../utils/space_ops.js";
 import { QuickHull, type Facet, type SubFacet } from "../../utils/qhull.js";
 import { DOWN, RIGHT, TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
 import { BLUE, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
@@ -311,6 +311,25 @@ export function isPlainOptionsBag(value: unknown): boolean {
     && typeof (value as { get_num_points?: unknown }).get_num_points !== "function";
 }
 
+/** Vertices of a regular n-gon as plain rows. Scalar equivalent of
+ * `regular_vertices` (which builds them through numpy rotate_vector /
+ * compass_directions): starting vector `radius * RIGHT` rotated by the
+ * resolved start angle, then at angular steps of `TAU / n`. */
+function regularVertexRows(
+  n: number,
+  radius: number,
+  start_angle: number | null,
+): { rows: number[][]; resolved: number } {
+  const resolved = start_angle ?? (n % 2 === 0 ? 0 : TAU / 4);
+  const step = TAU / n;
+  const rows: number[][] = new Array(n);
+  for (let k = 0; k < n; k += 1) {
+    const angle = resolved + k * step;
+    rows[k] = [radius * Math.cos(angle), radius * Math.sin(angle), 0];
+  }
+  return { rows, resolved };
+}
+
 export interface RegularPolygramOptions extends PolygramOptions {
   density?: number;
   radius?: number;
@@ -353,9 +372,8 @@ export class RegularPolygram extends Polygram {
     // Utility function for generating the individual polygon vertices.
     const gen_polygon_vertices = (
       angle: number | null,
-    ): [number[][], number | null] => {
-      const [reg_vertices, resolved] = regular_vertices(count, radius, angle);
-      const reg_rows = pointRows(reg_vertices, 3);
+    ): [number[][], number] => {
+      const { rows: reg_rows, resolved } = regularVertexRows(count, radius, angle);
       const vertices: number[][] = [];
       let i = 0;
       for (;;) {
@@ -454,18 +472,16 @@ export class Star extends Polygon {
       resolved_inner_radius =
         outer_radius / (Math.cos(inner_angle) * inverse_x);
     }
-    const [outer_vertices, resolved_start_angle] = regular_vertices(
+    const { rows: outer_rows, resolved: resolved_start_angle } = regularVertexRows(
       n,
       outer_radius,
       start_angle,
     );
-    const [inner_vertices] = regular_vertices(
+    const { rows: inner_rows } = regularVertexRows(
       n,
       resolved_inner_radius,
-      (resolved_start_angle ?? 0) + inner_angle,
+      resolved_start_angle + inner_angle,
     );
-    const outer_rows = pointRows(outer_vertices, 3);
-    const inner_rows = pointRows(inner_vertices, 3);
     const vertices: number[][] = [];
     for (let index = 0; index < n; index += 1) {
       vertices.push([...(outer_rows[index] ?? [0, 0, 0])]);
