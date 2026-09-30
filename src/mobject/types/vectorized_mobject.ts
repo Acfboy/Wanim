@@ -335,12 +335,14 @@ export class VMobject extends Mobject {
     // instead of O(1); that dominated the render loop (see
     // ).
     const fillColor = new ManimColor(options.fill_color ?? options.color ?? WHITE);
-    const strokeColor = new ManimColor(options.stroke_color ?? options.color ?? WHITE);
+    const strokeColor = options.fill_color === undefined && options.stroke_color === undefined
+      ? fillColor
+      : new ManimColor(options.stroke_color ?? options.color ?? WHITE);
     this.fill_rgbas = array([
-      [...(fillColor.toRgb().toArray() as number[]), this.fill_opacity],
+      colorRgbaValues(fillColor, this.fill_opacity),
     ]) as NDArray;
     this.stroke_rgbas = array([
-      [...(strokeColor.toRgb().toArray() as number[]), this.stroke_opacity],
+      colorRgbaValues(strokeColor, this.stroke_opacity),
     ]) as NDArray;
     this.background_stroke_rgbas = array([[0, 0, 0, this.background_stroke_opacity]]) as NDArray;
     this.init_colors();
@@ -807,7 +809,7 @@ export class VMobject extends Mobject {
     if (background[3] !== this.background_stroke_opacity) return false;
     const background_color = this.background_stroke_color;
     if (background_color === null || background_color === undefined) return false;
-    const rgb = background_color.to_rgb().toArray() as number[];
+    const rgb = colorRgbaValues(background_color, 0);
     return background[0] === (rgb[0] ?? 0) && background[1] === (rgb[1] ?? 0) && background[2] === (rgb[2] ?? 0);
   }
 
