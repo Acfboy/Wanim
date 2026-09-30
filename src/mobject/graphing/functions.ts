@@ -310,6 +310,11 @@ interface ValuedPoint {
   val: number;
 }
 
+/** Internal 2-argument isoline function. The public `computeIsoline` accepts
+ * the Python-style `fn([x, y])`; the implementation calls `fn(x, y)` so the hot
+ * recursion does not allocate a fresh `[x, y]` array on every evaluation. */
+type IsoFn = (x: number, y: number) => number;
+
 interface IsoTriangle {
   vertices: ValuedPoint[];
   next: IsoTriangle | null;
@@ -327,33 +332,34 @@ interface IsoCell {
 }
 
 function valuedPoint(pos: number[], val: number): ValuedPoint {
-  return { pos: [pos[0] ?? 0, pos[1] ?? 0], val };
+  // NOTE: `pos` is always a freshly-built 2-element array (or a read-only
+  // position shared with an existing point), so store it without copying.
+  return { pos, val };
 }
 
-function pointValue(pos: number[], fn: (p: [number, number]) => number): ValuedPoint {
-  return valuedPoint(pos, fn([pos[0] ?? 0, pos[1] ?? 0]));
+function pointValue(pos: number[], fn: IsoFn): ValuedPoint {
+  return { pos, val: fn(pos[0]!, pos[1]!) };
 }
 
-function midpointPoint(p1: ValuedPoint, p2: ValuedPoint, fn: (p: [number, number]) => number): ValuedPoint {
-  const pos = [(p1.pos[0]! + p2.pos[0]!) / 2, (p1.pos[1]! + p2.pos[1]!) / 2];
-  return valuedPoint(pos, fn([pos[0]!, pos[1]!]));
+function midpointPoint(p1: ValuedPoint, p2: ValuedPoint, fn: IsoFn): ValuedPoint {
+  const x = (p1.pos[0]! + p2.pos[0]!) / 2;
+  const y = (p1.pos[1]! + p2.pos[1]!) / 2;
+  return valuedPoint([x, y], fn(x, y));
 }
 
-function intersectZero(p1: ValuedPoint, p2: ValuedPoint, fn: (p: [number, number]) => number): ValuedPoint {
+function intersectZero(p1: ValuedPoint, p2: ValuedPoint, fn: IsoFn): ValuedPoint {
   const denom = p1.val - p2.val;
   const k1 = -p2.val / denom;
   const k2 = p1.val / denom;
-  const pos = [
-    k1 * p1.pos[0]! + k2 * p2.pos[0]!,
-    k1 * p1.pos[1]! + k2 * p2.pos[1]!,
-  ];
-  return valuedPoint(pos, fn([pos[0]!, pos[1]!]));
+  const x = k1 * p1.pos[0]! + k2 * p2.pos[0]!;
+  const y = k1 * p1.pos[1]! + k2 * p2.pos[1]!;
+  return valuedPoint([x, y], fn(x, y));
 }
 
 function binarySearchZero(
   p1: ValuedPoint,
   p2: ValuedPoint,
-  fn: (p: [number, number]) => number,
+  fn: IsoFn,
   tol: number[],
 ): [ValuedPoint, boolean] {
   if (Math.abs(p2.pos[0]! - p1.pos[0]!) < tol[0]! && Math.abs(p2.pos[1]! - p1.pos[1]!) < tol[1]!) {
@@ -372,7 +378,7 @@ function binarySearchZero(
 function verticesFromExtremes(
   pmin: number[],
   pmax: number[],
-  fn: (p: [number, number]) => number,
+  fn: IsoFn,
 ): ValuedPoint[] {
   const w = [pmax[0]! - pmin[0]!, pmax[1]! - pmin[1]!];
   const result: ValuedPoint[] = [];
@@ -386,7 +392,7 @@ function verticesFromExtremes(
   return result;
 }
 
-function computeChildren(cell: IsoCell, fn: (p: [number, number]) => number): void {
+function computeChildren(cell: IsoCell, fn: IsoFn): void {
   const first = cell.vertices[0]!;
   const last = cell.vertices[3]!;
   for (let i = 0; i < cell.vertices.length; i += 1) {
@@ -416,7 +422,7 @@ function shouldDescendDeepCell(cell: IsoCell, tol: number[]): boolean {
 }
 
 function buildTree(
-  fn: (p: [number, number]) => number,
+  fn: IsoFn,
   pmin: number[],
   pmax: number[],
   minDepth: number,
@@ -433,9 +439,12 @@ function buildTree(
     child_direction: 0,
   };
   const queue: IsoCell[] = [root];
+  let head = 0;
   let leafCount = 1;
-  while (queue.length > 0 && leafCount < cap) {
-    const cell = queue.shift()!;
+  while (head < queue.length && leafCount < cap) {
+    // Index-based dequeue: `Array.shift()` is O(n) and this loop is quadratic
+    // with it (Python uses a `deque.popleft()`). FIFO order is unchanged.
+    const cell = queue[head++]!;
     if (cell.depth < minDepth || shouldDescendDeepCell(cell, tol)) {
       computeChildren(cell, fn);
       queue.push(...cell.children);
@@ -466,10 +475,10 @@ class Triangulator {
   triangles: IsoTriangle[] = [];
   hangingNext = new Map<string, IsoTriangle>();
   private root: IsoCell;
-  private fn: (p: [number, number]) => number;
+  private fn: IsoFn;
   private tol: number[];
 
-  constructor(root: IsoCell, fn: (p: [number, number]) => number, tol: number[]) {
+  constructor(root: IsoCell, fn: IsoFn, tol: number[]) {
     this.root = root;
     this.fn = fn;
     this.tol = tol;
@@ -586,14 +595,14 @@ class Triangulator {
   private edgeDual(p1: ValuedPoint, p2: ValuedPoint): ValuedPoint {
     if ((p1.val > 0) !== (p2.val > 0)) return midpointPoint(p1, p2, this.fn);
     const dt = 0.01;
-    const df1 = this.fn([
+    const df1 = this.fn(
       p1.pos[0]! * (1 - dt) + p2.pos[0]! * dt,
       p1.pos[1]! * (1 - dt) + p2.pos[1]! * dt,
-    ]);
-    const df2 = this.fn([
+    );
+    const df2 = this.fn(
       p1.pos[0]! * dt + p2.pos[0]! * (1 - dt),
       p1.pos[1]! * dt + p2.pos[1]! * (1 - dt),
-    ]);
+    );
     if ((df1 > 0) === (df2 > 0)) return midpointPoint(p1, p2, this.fn);
     return intersectZero(valuedPoint(p1.pos, df1), valuedPoint(p2.pos, df2), this.fn);
   }
@@ -629,6 +638,20 @@ function traceCurves(triangles: IsoTriangle[]): number[][][] {
   return curves;
 }
 
+/** Shared isoline core taking a 2-argument function (see {@link IsoFn}). */
+function computeIsolineInternal(
+  fn: IsoFn,
+  pmin: [number, number],
+  pmax: [number, number],
+  minDepth: number,
+  maxQuads: number,
+): number[][][] {
+  const tol = [(pmax[0] - pmin[0]) / 1000, (pmax[1] - pmin[1]) / 1000];
+  const tree = buildTree(fn, pmin, pmax, minDepth, maxQuads, tol);
+  const triangles = new Triangulator(tree, fn, tol).triangulate();
+  return traceCurves(triangles);
+}
+
 export function computeIsoline(
   fn: (p: [number, number]) => number,
   pmin: [number, number],
@@ -636,10 +659,7 @@ export function computeIsoline(
   minDepth = 5,
   maxQuads = 10000,
 ): number[][][] {
-  const tol = [(pmax[0] - pmin[0]) / 1000, (pmax[1] - pmin[1]) / 1000];
-  const tree = buildTree(fn, pmin, pmax, minDepth, maxQuads, tol);
-  const triangles = new Triangulator(tree, fn, tol).triangulate();
-  return traceCurves(triangles);
+  return computeIsolineInternal((x, y) => fn([x, y]), pmin, pmax, minDepth, maxQuads);
 }
 
 let isolineComputer: IsolineComputer | null = computeIsoline;
@@ -698,12 +718,26 @@ export class ImplicitFunction extends VMobject {
     }
     const pmin: [number, number] = [this.x_range[0] ?? 0, this.y_range[0] ?? 0];
     const pmax: [number, number] = [this.x_range[1] ?? 0, this.y_range[1] ?? 0];
-    const curves = isolineComputer(
-      (u) => this.function(u[0] ?? 0, u[1] ?? 0),
-      pmin,
-      pmax,
-      this.min_depth,
-      this.max_quads,
+    // The default computer is the ported isoline routine itself; call it with
+    // the user function's native `(x, y)` signature so its hot recursion does
+    // not allocate an argument array per evaluation. An injected computer
+    // (tests) still receives the Python-style single-array wrapper.
+    const curves = (
+      isolineComputer === computeIsoline
+        ? computeIsolineInternal(
+            (x, y) => this.function(x, y),
+            pmin,
+            pmax,
+            this.min_depth,
+            this.max_quads,
+          )
+        : isolineComputer(
+            (u) => this.function(u[0] ?? 0, u[1] ?? 0),
+            pmin,
+            pmax,
+            this.min_depth,
+            this.max_quads,
+          )
     )
       .filter((curve) => curve.length > 0)
       .map((curve) => curve.map((point) => [point[0] ?? 0, point[1] ?? 0, 0]));
