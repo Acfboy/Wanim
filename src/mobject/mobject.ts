@@ -252,6 +252,13 @@ function pointArray(rows: number[][]): NDArray {
   return array(rows) as NDArray;
 }
 
+/** True when a point backing store is a float64 typed array or a plain JS
+ *  number array, i.e. writable with fractional transform results. Integer
+ *  dtype arrays must use the numpy path so the transform upcasts them. */
+function isFloatPointData(data: unknown): data is Float64Array | number[] {
+  return data instanceof Float64Array || Array.isArray(data);
+}
+
 /** Select min/max/center from a pre-scanned column, mirroring the tail of
  *  {@link Mobject.get_extremum_along_dim} (NaN anywhere poisons the result). */
 function extremumValue(min: number, max: number, nan: boolean, count: number, key: number): number {
@@ -1215,7 +1222,7 @@ export class Mobject {
       // Fast path: `(p - center) * k + center` in one flat typed-array pass,
       // matching `apply_points_function_about_point`'s numpy op order.
       const flat = _cContiguousRows(mobject.points);
-      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0) {
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && isFloatPointData(flat.data)) {
         const { data, rowDim, rowCount } = flat;
         const out = mobject.points.copy() as NDArray;
         const outData = (out as NDArray & { data: Float64Array }).data;
@@ -1252,7 +1259,7 @@ export class Mobject {
       // pass instead of materialising every row (`pointRows` -> `addPoints` ->
       // `pointArray`), which dominated per-tick transforms.
       const flat = _cContiguousRows(mobject.points);
-      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0) {
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && isFloatPointData(flat.data)) {
         const { data, rowDim, rowCount } = flat;
         const out = mobject.points.copy() as NDArray;
         const outData = (out as NDArray & { data: Float64Array }).data;
@@ -1345,7 +1352,7 @@ export class Mobject {
       // Fast path: apply the 3x3 rotation row-wise on the flat backing store,
       // reproducing the old `sum_j (p_j - c_j) * R_ij + c_i` accumulation.
       const flat = _cContiguousRows(mobject.points);
-      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && dim === 3) {
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && dim === 3 && isFloatPointData(flat.data)) {
         const { data, rowDim, rowCount } = flat;
         const out = mobject.points.copy() as NDArray;
         const outData = (out as NDArray & { data: Float64Array }).data;
@@ -1443,15 +1450,46 @@ export class Mobject {
         (full_matrix[row] as number[])[col] = matrix_rows[row]?.[col] ?? 0;
       }
     }
-    this.apply_points_function_about_point(
-      (points) => pointArray(
-        pointRows(points, this.dim).map((point) =>
-          full_matrix.map((_, row) => point.reduce((sum, value, col) => sum + value * ((full_matrix[row] as number[])[col] ?? 0), 0)),
-        ),
-      ),
-      resolved_point,
-      resolved_edge,
-    );
+    const dim = this.dim;
+    const center = resolved_point !== undefined && resolved_point !== null
+      ? vector(resolved_point, dim)
+      : this.get_critical_point(resolved_edge ?? ORIGIN);
+    // Fast path: apply the (dim x dim) matrix row-wise on the flat backing
+    // store, mirroring `apply_points_function_about_point`'s numpy op order.
+    const m00 = full_matrix[0]?.[0] ?? 0; const m01 = full_matrix[0]?.[1] ?? 0; const m02 = full_matrix[0]?.[2] ?? 0;
+    const m10 = full_matrix[1]?.[0] ?? 0; const m11 = full_matrix[1]?.[1] ?? 0; const m12 = full_matrix[1]?.[2] ?? 0;
+    const m20 = full_matrix[2]?.[0] ?? 0; const m21 = full_matrix[2]?.[1] ?? 0; const m22 = full_matrix[2]?.[2] ?? 0;
+    const cx = center[0] ?? 0;
+    const cy = center[1] ?? 0;
+    const cz = center[2] ?? 0;
+    for (const mobject of this.family_members_with_points()) {
+      const flat = _cContiguousRows(mobject.points);
+      if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && dim === 3 && isFloatPointData(flat.data)) {
+        const { data, rowDim, rowCount } = flat;
+        const out = mobject.points.copy() as NDArray;
+        const outData = (out as NDArray & { data: Float64Array }).data;
+        for (let row = 0; row < rowCount; row += 1) {
+          const base = row * rowDim;
+          const x = (data[base] ?? 0) - cx;
+          const y = (data[base + 1] ?? 0) - cy;
+          const z = (data[base + 2] ?? 0) - cz;
+          outData[base] = ((0 + x * m00) + y * m01) + z * m02 + cx;
+          outData[base + 1] = ((0 + x * m10) + y * m11) + z * m12 + cy;
+          outData[base + 2] = ((0 + x * m20) + y * m21) + z * m22 + cz;
+        }
+        mobject.points = out;
+      } else {
+        const centerArray = array(center);
+        const points = mobject.points as unknown as NDArray;
+        const centered = subtract(points, centerArray) as NDArray;
+        const result = pointArray(
+          pointRows(centered, dim).map((point) =>
+            full_matrix.map((_, row) => point.reduce((sum, value, col) => sum + value * ((full_matrix[row] as number[])[col] ?? 0), 0)),
+          ),
+        );
+        mobject.points = add(result, centerArray) as NDArray;
+      }
+    }
     return this;
   }
 
