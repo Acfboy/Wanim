@@ -115,9 +115,33 @@ function singleRgbaData(value: NDArray | undefined): ArrayLike<number> | null {
   if (value === undefined || value === null) return null;
   const shape = value.shape;
   if (shape.length !== 2 || shape[0] !== 1 || shape[1] !== 4) return null;
-  const data = (value as NDArray & { data?: ArrayLike<number> }).data;
+  const array = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+  const data = array.data;
   if (data === undefined || data.length !== 4) return null;
+  if (array.flags !== undefined && array.flags.C_CONTIGUOUS === false) return null;
   return data;
+}
+
+/** Materialise a `(N, 4)` C-contiguous rgba array into plain rows directly
+ * from its typed backing store, avoiding `pointRows`' `toArray()` round-trip.
+ * Falls back to `pointRows` for any other shape/layout. */
+function rgbaRows(value: NDArray | undefined): number[][] {
+  if (value === undefined || value === null) return pointRows(value, 4);
+  const shape = value.shape;
+  if (shape.length === 2 && shape[1] === 4) {
+    const array = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+    const data = array.data;
+    const count = shape[0] ?? 0;
+    if (data !== undefined && data.length === count * 4 && (array.flags === undefined || array.flags.C_CONTIGUOUS !== false)) {
+      const result = new Array<number[]>(count);
+      for (let i = 0; i < count; i += 1) {
+        const base = i * 4;
+        result[i] = [data[base] ?? 0, data[base + 1] ?? 0, data[base + 2] ?? 0, data[base + 3] ?? 0];
+      }
+      return result;
+    }
+  }
+  return pointRows(value, 4);
 }
 
 /** Unwrap a style value that may be a list/array of colors (as returned by
@@ -900,12 +924,12 @@ export class VMobject extends Mobject {
   }
 
   get_fill_opacity(): number {
-    const values = pointRows(this.fill_rgbas, 4).map((row) => row[3] ?? 0);
+    const values = rgbaRows(this.fill_rgbas).map((row) => row[3] ?? 0);
     return values.length === 0 ? this.fill_opacity : values.every((value) => value === 0) ? 0 : values[0];
   }
 
   get_fill_colors(): Array<ManimColor | null> {
-    return pointRows(this.get_fill_rgbas(), 4).map((rgba) =>
+    return rgbaRows(this.get_fill_rgbas()).map((rgba) =>
       rgba.some((value) => value !== 0)
         ? new ManimColor(array(rgba.slice(0, 3)) as ParsableManimColor)
         : null,
@@ -913,11 +937,11 @@ export class VMobject extends Mobject {
   }
 
   get_fill_opacities(): NDArray {
-    return array(pointRows(this.get_fill_rgbas(), 4).map((rgba) => rgba[3] ?? 0)) as NDArray;
+    return array(rgbaRows(this.get_fill_rgbas()).map((rgba) => rgba[3] ?? 0)) as NDArray;
   }
 
   get_stroke_opacity(background = false): number {
-    const values = pointRows(background ? this.background_stroke_rgbas : this.stroke_rgbas, 4).map((row) => row[3] ?? 0);
+    const values = rgbaRows(background ? this.background_stroke_rgbas : this.stroke_rgbas).map((row) => row[3] ?? 0);
     if (background) return values.length === 0 ? this.background_stroke_opacity : values[0] ?? 0;
     return values.length === 0 ? this.stroke_opacity : values[0] ?? 0;
   }
@@ -944,7 +968,7 @@ export class VMobject extends Mobject {
   }
 
   get_stroke_colors(background = false): Array<ManimColor | null> {
-    return pointRows(this.get_stroke_rgbas(background), 4).map((rgba) =>
+    return rgbaRows(this.get_stroke_rgbas(background)).map((rgba) =>
       rgba.some((value) => value !== 0)
         ? new ManimColor(array(rgba.slice(0, 3)) as ParsableManimColor)
         : null,
@@ -953,7 +977,7 @@ export class VMobject extends Mobject {
 
   get_stroke_opacities(background = false): NDArray {
     return array(
-      pointRows(this.get_stroke_rgbas(background), 4).map((rgba) => rgba[3] ?? 0),
+      rgbaRows(this.get_stroke_rgbas(background)).map((rgba) => rgba[3] ?? 0),
     ) as NDArray;
   }
 
@@ -971,7 +995,7 @@ export class VMobject extends Mobject {
     // Python: `if np.all(self.get_fill_opacities() == 0)` — stroke color is
     // used only when *every* fill opacity is zero (np.all([]) is True, so an
     // empty fill array also yields the stroke color).
-    const opacities = pointRows(this.fill_rgbas, 4).map((row) => row[3] ?? 0);
+    const opacities = rgbaRows(this.fill_rgbas).map((row) => row[3] ?? 0);
     return (opacities.every((value) => value === 0) ? this.get_stroke_color() : this.get_fill_color()) as ManimColor;
   }
 
