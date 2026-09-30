@@ -267,7 +267,7 @@ const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
 const runBtn = document.getElementById("run");
 
-let currentRender = null;
+let currentRun = null;
 let runGeneration = 0;
 
 function setStatus(text) {
@@ -340,15 +340,22 @@ function loadRapydscript() {
 }
 
 // --- run -------------------------------------------------------------------
-function stopCurrent() {
-  if (currentRender !== null) {
-    currentRender.abort();
-    currentRender = null;
+async function stopCurrent() {
+  const run = currentRun;
+  if (run === null) return;
+  currentRun = null;
+  run.controller.abort();
+  // Wait for the previous run (and its interactive scene loop) to fully stop
+  // before the next one starts, so their schedulers/hosts don't overlap.
+  try {
+    await run.promise;
+  } catch {
+    /* the aborted run may reject; ignore */
   }
 }
 
 async function run() {
-  stopCurrent();
+  await stopCurrent();
   const generation = ++runGeneration;
   setBusy(true);
   setOutput("Compiling…", false);
@@ -359,8 +366,7 @@ async function run() {
     if (generation !== runGeneration) return;
 
     const controller = new AbortController();
-    currentRender = controller;
-    const { stats } = await py2js.runPythonOnCanvas(codeEl.value, stage, {
+    const promise = py2js.runPythonOnCanvas(codeEl.value, stage, {
       quality: QUALITY,
       realtime: true,
       fps: TARGET_FPS,
@@ -372,6 +378,8 @@ async function run() {
         setOutput(`Running ${name}…`, false);
       },
     });
+    currentRun = { controller, promise };
+    const { stats } = await promise;
     if (generation !== runGeneration) return;
     setStatus("Done.");
     setOutput(
@@ -386,7 +394,7 @@ async function run() {
     console.error(error);
   } finally {
     if (generation === runGeneration) {
-      currentRender = null;
+      currentRun = null;
       setBusy(false);
     }
   }

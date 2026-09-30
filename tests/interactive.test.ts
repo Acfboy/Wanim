@@ -51,7 +51,7 @@ class FakeHost implements InteractiveHost {
     };
   }
 
-  addButton(label: string, onClick: () => void): () => void {
+  addButton(label: string, onClick: () => void, _icon?: unknown): () => void {
     this.buttons.set(label, onClick);
     // Buttons stay resident; only the handler is detached.
     return () => {};
@@ -59,6 +59,10 @@ class FakeHost implements InteractiveHost {
 
   setButtonsEnabled(enabled: boolean): void {
     this.buttonsEnabled = enabled;
+  }
+
+  onKey(_handlers: unknown): () => void {
+    return () => {};
   }
 
   beginTextEdit(_mobject: unknown, _camera: unknown, options: TextEditOptions): void {

@@ -256,8 +256,14 @@ export class InteractiveScene extends Scene {
         up: () => this.handle_pointer_up(),
       }),
     );
-    this._disposers.push(host.addButton("从头再来", () => this.restart()));
-    this._disposers.push(host.addButton("进入下一步", () => this.next_step()));
+    this._disposers.push(host.addButton("从头再来", () => this.restart(), "restart"));
+    this._disposers.push(host.addButton("进入下一步", () => this.next_step(), "next"));
+    this._disposers.push(
+      host.onKey({
+        next: () => this.next_step(),
+        restart: () => this.restart(),
+      }),
+    );
   }
 
   private uninstall_host(): void {

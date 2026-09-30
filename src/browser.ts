@@ -149,7 +149,11 @@ export async function render_scene_to_canvas(
     if (is_thenable(rendered)) await rendered;
   } finally {
     options.signal?.removeEventListener("abort", onAbort);
-    if (scheduler !== null) set_render_scheduler(previousScheduler);
+    // Only restore if a newer run has not already installed its own scheduler:
+    // an aborted run can finish after the next run has started.
+    if (scheduler !== null && get_render_scheduler() === scheduler) {
+      set_render_scheduler(previousScheduler);
+    }
     interactiveHost?.dispose();
   }
   return {

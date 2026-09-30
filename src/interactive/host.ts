@@ -40,6 +40,17 @@ export interface TextEditOptions {
   onCancel?: () => void;
 }
 
+/** Callbacks for the scene-level keyboard shortcuts. */
+export interface KeyHandlers {
+  /** Advance to the next story phase. */
+  next: () => void;
+  /** Restart the whole story. */
+  restart: () => void;
+}
+
+/** Icon names the host knows how to draw (fallback is the text label). */
+export type InteractiveButtonIcon = "restart" | "next";
+
 /** Environment services an {@link InteractiveScene} needs. */
 export interface InteractiveHost {
   /** `true` when the host can service continuous interaction (a browser). */
@@ -49,13 +60,15 @@ export interface InteractiveHost {
   /** Register pointer callbacks; returns a disposer. */
   onPointer(handlers: PointerHandlers): () => void;
   /** Add an overlay button; returns a disposer that detaches its click handler. */
-  addButton(label: string, onClick: () => void): () => void;
+  addButton(label: string, onClick: () => void, icon?: InteractiveButtonIcon): () => void;
   /**
    * Enable/disable the overlay buttons. Buttons stay resident (so they never
    * disappear from under the canvas); they are simply greyed out while an
    * action is unavailable (e.g. while an animation plays).
    */
   setButtonsEnabled(enabled: boolean): void;
+  /** Register keyboard shortcuts (space = next, r = restart). */
+  onKey(handlers: KeyHandlers): () => void;
   /** Open an inline editor anchored to `mobject`. */
   beginTextEdit(mobject: Mobject, camera: unknown, options: TextEditOptions): void;
   /** Close any open inline editor. */
@@ -73,10 +86,13 @@ export class NullInteractiveHost implements InteractiveHost {
   onPointer(_handlers: PointerHandlers): () => void {
     return () => {};
   }
-  addButton(_label: string, _onClick: () => void): () => void {
+  addButton(_label: string, _onClick: () => void, _icon?: InteractiveButtonIcon): () => void {
     return () => {};
   }
   setButtonsEnabled(_enabled: boolean): void {}
+  onKey(_handlers: KeyHandlers): () => void {
+    return () => {};
+  }
   beginTextEdit(_mobject: Mobject, _camera: unknown, _options: TextEditOptions): void {}
   endTextEdit(): void {}
   nextFrame(): Promise<void> {
