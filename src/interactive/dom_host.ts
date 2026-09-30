@@ -4,9 +4,12 @@
  * Wires an `InteractiveScene` to a real `<canvas>`:
  *  - pointer events on the canvas are converted to world-space points using the
  *    scene camera's frame geometry;
- *  - the two control buttons ("restart" / "next") are appended below the canvas;
- *  - `InputDecimalNumber` editing opens a small `<textarea>` positioned over the
- *    number.
+ *  - the two control buttons ("restart" / "next") live in a bar below the
+ *    canvas. The bar is reused across runs so the buttons never disappear; the
+ *    buttons are greyed out (disabled) while an action is unavailable;
+ *  - `InputDecimalNumber` editing opens a transparent `<textarea>` laid exactly
+ *    over the rendered number, so it looks like the number itself is being
+ *    edited: the caret blinks in place and the rendered digits update live.
  *
  * This module only touches `document` inside its methods, so importing it in a
  * non-DOM environment is safe; the class is simply never instantiated there.
@@ -31,33 +34,89 @@ function pointRows(value: unknown): number[][] {
   return value as number[][];
 }
 
+/** One control bar per canvas, so re-runs reuse (never duplicate) the buttons. */
+const CONTROLS_BARS = new WeakMap<HTMLCanvasElement, HTMLElement>();
+
+const ENABLED_STYLE = {
+  background: "#b07d4f",
+  color: "#fdf9f3",
+  border: "1px solid #7d5834",
+  cursor: "pointer",
+  opacity: "1",
+};
+
+const DISABLED_STYLE = {
+  background: "#d8cbc0",
+  color: "#9b8f82",
+  border: "1px solid #c4b5a6",
+  cursor: "not-allowed",
+  opacity: "1",
+};
+
+function ensureStyles(): void {
+  if (document.getElementById("wanim-interactive-styles") !== null) return;
+  const style = document.createElement("style");
+  style.id = "wanim-interactive-styles";
+  style.textContent = `
+.wanim-interactive-button {
+  padding: 6px 16px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 600;
+}
+.wanim-inline-editor {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  overflow: hidden;
+  white-space: pre;
+}
+.wanim-inline-editor::selection { background: rgba(176, 125, 79, 0.35); }
+`;
+  document.head.appendChild(style);
+}
+
 export class DomInteractiveHost implements InteractiveHost {
   readonly live = true;
   private readonly canvas: HTMLCanvasElement;
   private readonly controls: HTMLElement;
+  private readonly buttonEls: HTMLButtonElement[] = [];
   private readonly disposers: Array<() => void> = [];
   private editor: HTMLTextAreaElement | null = null;
   private closing = false;
+  private buttonsEnabled = true;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.controls = document.createElement("div");
-    this.controls.className = "wanim-interactive-controls";
-    this.controls.style.display = "flex";
-    this.controls.style.gap = "0.5rem";
-    this.controls.style.marginTop = "0.5rem";
-    this.controls.style.justifyContent = "center";
-    // Place the bar below the canvas *wrapper* when there is one, so a flex
-    // layout that centres the canvas still shows the buttons underneath rather
-    // than beside it.
-    const anchor = canvas.parentElement ?? canvas;
-    const anchorParent = anchor.parentElement;
-    if (anchorParent !== null) anchorParent.insertBefore(this.controls, anchor.nextSibling);
-    else if (canvas.parentElement !== null) canvas.parentElement.appendChild(this.controls);
-    else document.body.appendChild(this.controls);
+    ensureStyles();
+    const existing = CONTROLS_BARS.get(canvas);
+    if (existing !== undefined && existing.isConnected) {
+      // Reuse the resident bar; drop the previous run's buttons.
+      this.controls = existing;
+      this.controls.replaceChildren();
+    } else {
+      this.controls = document.createElement("div");
+      this.controls.className = "wanim-interactive-controls";
+      this.controls.style.display = "flex";
+      this.controls.style.gap = "0.5rem";
+      this.controls.style.marginTop = "0.5rem";
+      this.controls.style.justifyContent = "center";
+      // Place the bar below the canvas *wrapper* when there is one, so a flex
+      // layout that centres the canvas still shows the buttons underneath
+      // rather than beside it.
+      const anchor = canvas.parentElement ?? canvas;
+      const anchorParent = anchor.parentElement;
+      if (anchorParent !== null) anchorParent.insertBefore(this.controls, anchor.nextSibling);
+      else if (canvas.parentElement !== null) canvas.parentElement.appendChild(this.controls);
+      else document.body.appendChild(this.controls);
+      CONTROLS_BARS.set(canvas, this.controls);
+    }
   }
 
-  /** Remove the control bar (the host is per render, so this is a teardown). */
+  /**
+   * Detach this run's listeners and grey out its buttons, but leave the button
+   * bar resident under the canvas (a later run reuses it).
+   */
   dispose(): void {
     for (const dispose of this.disposers.splice(0)) {
       try {
@@ -67,7 +126,8 @@ export class DomInteractiveHost implements InteractiveHost {
       }
     }
     this.endTextEdit();
-    this.controls.remove();
+    this.buttonsEnabled = false;
+    this.applyButtonStyle();
   }
 
   pointFromEvent(event: PointerEvent, camera: unknown): number[] {
@@ -113,43 +173,49 @@ export class DomInteractiveHost implements InteractiveHost {
     button.type = "button";
     button.textContent = label;
     button.className = "wanim-interactive-button";
-    button.style.padding = "0.35rem 0.9rem";
-    button.style.borderRadius = "0.4rem";
-    button.style.border = "1px solid #3b6ea5";
-    button.style.background = "#1f6feb";
-    button.style.color = "#fff";
-    button.style.cursor = "pointer";
     button.addEventListener("click", onClick);
     this.controls.appendChild(button);
+    this.buttonEls.push(button);
+    this.applyButtonStyle();
+    // Keep the button resident; only its click handler is detached.
     const dispose = (): void => {
       button.removeEventListener("click", onClick);
-      button.remove();
     };
     this.disposers.push(dispose);
     return dispose;
   }
 
+  setButtonsEnabled(enabled: boolean): void {
+    this.buttonsEnabled = enabled;
+    this.applyButtonStyle();
+  }
+
   beginTextEdit(mobject: Mobject, camera: unknown, options: TextEditOptions): void {
     this.endTextEdit();
+    const rect = this.mobjectClientRect(mobject, camera as CameraLike);
+    const height = Math.max(18, rect.height);
     const textarea = document.createElement("textarea");
+    textarea.className = "wanim-inline-editor";
     textarea.value = options.initial;
     textarea.rows = 1;
+    // A borderless, transparent editor sitting exactly on the rendered number:
+    // the canvas digits show through and update live, so it reads as editing
+    // the number itself rather than a separate box.
     textarea.style.position = "fixed";
     textarea.style.zIndex = "1000";
-    textarea.style.fontSize = "13px";
-    textarea.style.padding = "2px 4px";
-    textarea.style.textAlign = "center";
-    textarea.style.border = "1px solid #1f6feb";
-    textarea.style.borderRadius = "3px";
-    textarea.style.background = "#111";
-    textarea.style.color = "#fff";
-    textarea.style.resize = "none";
-    textarea.style.overflow = "hidden";
-    const rect = this.mobjectClientRect(mobject, camera as CameraLike);
     textarea.style.left = `${rect.left}px`;
     textarea.style.top = `${rect.top}px`;
-    textarea.style.width = `${Math.max(48, rect.width + 24)}px`;
-    textarea.style.height = `${Math.max(24, rect.height + 10)}px`;
+    textarea.style.width = `${Math.max(24, rect.width)}px`;
+    textarea.style.height = `${height}px`;
+    textarea.style.margin = "0";
+    textarea.style.padding = "0";
+    textarea.style.background = "transparent";
+    textarea.style.color = "transparent";
+    textarea.style.caretColor = "#1f6feb";
+    textarea.style.textAlign = "center";
+    textarea.style.font = `${Math.max(12, height * 0.85)}px ui-monospace, monospace`;
+    textarea.style.lineHeight = `${height}px`;
+    textarea.style.resize = "none";
     document.body.appendChild(textarea);
     this.editor = textarea;
     this.closing = false;
@@ -189,6 +255,19 @@ export class DomInteractiveHost implements InteractiveHost {
       if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
       else setTimeout(resolve, 16);
     });
+  }
+
+  private applyButtonStyle(): void {
+    const style = this.buttonsEnabled ? ENABLED_STYLE : DISABLED_STYLE;
+    for (const button of this.buttonEls) {
+      if (!button.isConnected) continue;
+      button.disabled = !this.buttonsEnabled;
+      button.style.background = style.background;
+      button.style.color = style.color;
+      button.style.border = style.border;
+      button.style.cursor = style.cursor;
+      button.style.opacity = style.opacity;
+    }
   }
 
   private pixelToWorld(pixelX: number, pixelY: number, camera: CameraLike): number[] {

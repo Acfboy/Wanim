@@ -137,6 +137,7 @@ export class InteractiveScene extends Scene {
         break;
       }
     } finally {
+      host.setButtonsEnabled(false);
       this.uninstall_host();
     }
   }
@@ -165,6 +166,10 @@ export class InteractiveScene extends Scene {
 
   private async run_phase(phase: Phase, host: InteractiveHost): Promise<"next" | "restart" | "abort" | "finish"> {
     this._phaseKind = phase.kind;
+    // Buttons are unavailable while a phase function (typically a `play`
+    // animation) runs; they light up again once the scene is idle and the user
+    // can interact / advance.
+    host.setButtonsEnabled(false);
     const result = phase.run.call(this);
     if (is_thenable(result)) await result;
     if (!host.live) {
@@ -173,7 +178,10 @@ export class InteractiveScene extends Scene {
       this.tick();
       return "next";
     }
-    return this.interactive_loop(host);
+    host.setButtonsEnabled(true);
+    const action = await this.interactive_loop(host);
+    host.setButtonsEnabled(false);
+    return action;
   }
 
   private async interactive_loop(host: InteractiveHost): Promise<"next" | "restart" | "abort"> {

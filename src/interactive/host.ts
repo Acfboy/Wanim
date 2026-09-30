@@ -48,8 +48,14 @@ export interface InteractiveHost {
   pointFromEvent(event: PointerEvent, camera: unknown): number[];
   /** Register pointer callbacks; returns a disposer. */
   onPointer(handlers: PointerHandlers): () => void;
-  /** Add an overlay button; returns a disposer that removes it. */
+  /** Add an overlay button; returns a disposer that detaches its click handler. */
   addButton(label: string, onClick: () => void): () => void;
+  /**
+   * Enable/disable the overlay buttons. Buttons stay resident (so they never
+   * disappear from under the canvas); they are simply greyed out while an
+   * action is unavailable (e.g. while an animation plays).
+   */
+  setButtonsEnabled(enabled: boolean): void;
   /** Open an inline editor anchored to `mobject`. */
   beginTextEdit(mobject: Mobject, camera: unknown, options: TextEditOptions): void;
   /** Close any open inline editor. */
@@ -70,6 +76,7 @@ export class NullInteractiveHost implements InteractiveHost {
   addButton(_label: string, _onClick: () => void): () => void {
     return () => {};
   }
+  setButtonsEnabled(_enabled: boolean): void {}
   beginTextEdit(_mobject: Mobject, _camera: unknown, _options: TextEditOptions): void {}
   endTextEdit(): void {}
   nextFrame(): Promise<void> {
