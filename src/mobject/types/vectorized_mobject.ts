@@ -104,6 +104,22 @@ function isIterable(value: unknown): value is Iterable<unknown> {
   return value !== null && value !== undefined && typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function";
 }
 
+function clamp01(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
+/** Fast check for a `(1, 4)` C-contiguous rgba array, returning its backing
+ * numbers. Used to avoid the `pointRows` round-trip in the uniform style
+ * paths (the overwhelmingly common case: one color for the whole mobject). */
+function singleRgbaData(value: NDArray | undefined): ArrayLike<number> | null {
+  if (value === undefined || value === null) return null;
+  const shape = value.shape;
+  if (shape.length !== 2 || shape[0] !== 1 || shape[1] !== 4) return null;
+  const data = (value as NDArray & { data?: ArrayLike<number> }).data;
+  if (data === undefined || data.length !== 4) return null;
+  return data;
+}
+
 /** Unwrap a style value that may be a list/array of colors (as returned by
  * get_style()) down to a single color, mirroring the single-color behavior
  * of set_fill/set_stroke in this port. */
@@ -553,6 +569,40 @@ export class VMobject extends Mobject {
     // Likewise, opacity can either be a float, or a tuple of floats.
     // If self.sheen_factor is not zero, and only one color was passed in,
     // a second slightly light color will automatically be added for the gradient.
+    const sheen_factor = this.sheen_factor;
+    // Fast path: a single color and a single/scalar opacity (the common,
+    // uniform case). Avoids `tuplify`/`make_even`/`pointRows` and the
+    // redundant `new ManimColor(...)` copy when a ManimColor is already given.
+    const singleColor =
+      color === null ||
+      color === undefined ||
+      typeof color === "string" ||
+      color instanceof ManimColor ||
+      !isIterable(color);
+    const singleOpacity = opacity === null || opacity === undefined || typeof opacity === "number";
+    if (singleColor && singleOpacity) {
+      const c =
+        color === null || color === undefined
+          ? BLACK
+          : color instanceof ManimColor
+            ? color
+            : new ManimColor(color as ParsableManimColor);
+      const alpha = opacity === null || opacity === undefined ? 0.0 : Number(opacity);
+      const raw = c.to_rgba_with_alpha(alpha).toArray() as number[];
+      const row = [raw[0] ?? 0, raw[1] ?? 0, raw[2] ?? 0, raw[3] ?? 0];
+      if (sheen_factor !== 0) {
+        return array([
+          row,
+          [
+            clamp01((row[0] ?? 0) + sheen_factor),
+            clamp01((row[1] ?? 0) + sheen_factor),
+            clamp01((row[2] ?? 0) + sheen_factor),
+            row[3] ?? 0,
+          ],
+        ]) as NDArray;
+      }
+      return array([row]) as NDArray;
+    }
     const colors: ManimColor[] = (
       tuplify(color as unknown as ManimColor) as unknown[]
     ).map((c) => (c === null || c === undefined ? BLACK : new ManimColor(c as ParsableManimColor)));
@@ -564,7 +614,6 @@ export class VMobject extends Mobject {
       [...(pointRows(c.to_rgba_with_alpha(evenOpacities[index] ?? 0), 4)[0] ?? [0, 0, 0, 0])],
     );
 
-    const sheen_factor = this.get_sheen_factor();
     if (sheen_factor !== 0 && rows.length === 1) {
       const light_rows: number[][] = rows.map((row) => [...row]);
       for (const row of light_rows) {
@@ -582,15 +631,67 @@ export class VMobject extends Mobject {
     color: ParsableManimColor | Iterable<ManimColor> | null = null,
     opacity: number | Iterable<number> | null = null,
   ): this {
-    let rgbas = this.generate_rgbas_array(color, opacity as number & Iterable<number>);
     const record = this as unknown as Record<string, unknown>;
-    if (!(array_name in this) || record[array_name] === undefined) {
+    const hasColor = color !== null && color !== undefined;
+    const hasOpacity = opacity !== null && opacity !== undefined;
+
+    // Fast path: neither channel changes. Python only stretches the current
+    // array when it is shorter than the freshly generated one (which, for
+    // `(None, None)`, is a single row), so an existing array is returned
+    // unchanged.
+    if (!hasColor && !hasOpacity) {
+      if (!(array_name in (this as unknown as object))) {
+        record[array_name] = this.generate_rgbas_array(color, opacity as unknown as number & Iterable<number>);
+      }
+      return this;
+    }
+
+    let curr_rgbas: NDArray | undefined;
+    if (array_name in (this as unknown as object)) {
+      curr_rgbas = record[array_name] as NDArray | undefined;
+    }
+
+    // Fast path: a uniform (single color and/or scalar opacity) update of a
+    // single-row rgba array. This skips `generate_rgbas_array`'s tuple
+    // machinery, the stretch round-trip and the `array(pointRows(...))`
+    // rebuild, touching at most four numbers instead of the whole array.
+    const uniformColor =
+      !hasColor || typeof color === "string" || color instanceof ManimColor || !isIterable(color);
+    const uniformOpacity = !hasOpacity || typeof opacity === "number";
+    if (uniformColor && uniformOpacity && this.sheen_factor === 0) {
+      const currData = singleRgbaData(curr_rgbas);
+      if (currData !== null) {
+        const currR = currData[0] ?? 0;
+        const currG = currData[1] ?? 0;
+        const currB = currData[2] ?? 0;
+        const currA = currData[3] ?? 0;
+        let r = currR;
+        let g = currG;
+        let b = currB;
+        let a = currA;
+        if (hasColor) {
+          const c = color instanceof ManimColor ? color : new ManimColor(color as ParsableManimColor);
+          const raw = c.to_rgba_with_alpha(hasOpacity ? Number(opacity) : 0).toArray() as number[];
+          r = raw[0] ?? 0;
+          g = raw[1] ?? 0;
+          b = raw[2] ?? 0;
+          if (hasOpacity) a = raw[3] ?? 0;
+        } else if (hasOpacity) {
+          a = Number(opacity);
+        }
+        if (r === currR && g === currG && b === currB && a === currA) return this;
+        record[array_name] = array([[r, g, b, a]]) as NDArray;
+        return this;
+      }
+    }
+
+    let rgbas = this.generate_rgbas_array(color, opacity as number & Iterable<number>);
+    if (curr_rgbas === undefined) {
       record[array_name] = rgbas;
       return this;
     }
     // Match up current rgbas array with the newly calculated one. 99% of
     // the time they'll be the same.
-    let curr_rgbas = record[array_name] as NDArray;
     const curr_len = curr_rgbas.shape[0] ?? 0;
     const new_len = rgbas.shape[0] ?? 0;
     if (curr_len < new_len) {
@@ -618,6 +719,12 @@ export class VMobject extends Mobject {
   }
 
   init_colors(propagate_colors = true): this {
+    // Fast path: the rgba arrays already encode the stored colors/opacities
+    // (nothing to propagate and no sheen to bake in), so re-running the
+    // setters would be a pure no-op. This is the case for essentially every
+    // freshly constructed VMobject, where `init_colors` otherwise rebuilt the
+    // three arrays from scratch.
+    if (propagate_colors && this.colors_are_current()) return this;
     // Faithful port of Python VMobject.init_colors: re-apply the current
     // style through the setters (which own the rgba arrays). The fill/stroke
     // colors are read back from the arrays (live properties), so the arrays
@@ -641,6 +748,27 @@ export class VMobject extends Mobject {
       for (const submob of this.submobjects) (submob as VMobject).init_colors(false);
     }
     return this;
+  }
+
+  /** True when every style array already matches the corresponding
+   * color/opacity fields, there is nothing to propagate to submobjects and
+   * no sheen to bake in — i.e. `init_colors()` would be a no-op. Only
+   * single-row (uniform) arrays qualify; gradients must still be collapsed by
+   * the full path, matching Python. */
+  private colors_are_current(): boolean {
+    if (this.submobjects.length !== 0) return false;
+    if (this.sheen_factor !== 0) return false;
+    const fill = singleRgbaData(this.fill_rgbas);
+    const stroke = singleRgbaData(this.stroke_rgbas);
+    const background = singleRgbaData(this.background_stroke_rgbas);
+    if (fill === null || stroke === null || background === null) return false;
+    if (fill[3] !== this.fill_opacity) return false;
+    if (stroke[3] !== this.stroke_opacity) return false;
+    if (background[3] !== this.background_stroke_opacity) return false;
+    const background_color = this.background_stroke_color;
+    if (background_color === null || background_color === undefined) return false;
+    const rgb = background_color.to_rgb().toArray() as number[];
+    return background[0] === (rgb[0] ?? 0) && background[1] === (rgb[1] ?? 0) && background[2] === (rgb[2] ?? 0);
   }
 
   set_fill(
