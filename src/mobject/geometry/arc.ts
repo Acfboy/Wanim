@@ -52,6 +52,65 @@ export function set_default_tip_shape(ctor: TipConstructor): void {
   default_tip_shape = ctor;
 }
 
+/** Cache of pristine (unpositioned) tip templates, keyed by everything that
+ * affects the constructed geometry/style. Building a tip runs the whole
+ * RegularPolygon -> Polygram -> numpy pipeline; for a vector field that is
+ * one construction per grid point even though only a handful of distinct
+ * (shape, length, width, color) combinations occur. Returning a shallow
+ * object copy of a cached template is ~10x cheaper and leaves the template
+ * unpositioned for the next caller. */
+// Keyed by constructor identity first (a WeakMap, so a shape that is never
+// used again can be collected) rather than by `shape.name`: transpiled /
+// bundled class names are not guaranteed to be distinct, and a name collision
+// would silently hand an arrow the wrong tip geometry.
+const TIP_TEMPLATE_CACHE = new WeakMap<TipConstructor, Map<string, ArrowTip>>();
+const TIP_TEMPLATE_CACHE_LIMIT = 512;
+
+function tipStyleKey(
+  resolved_length: number,
+  style: Record<string, unknown>,
+): string {
+  let key = String(resolved_length);
+  // `style` is built from a fixed, small set of option names (width,
+  // fill_color, stroke_color, plus any user tip_style); sort for a stable
+  // key. ManimColor stringifies to a hex string, so distinct colors do not
+  // collide.
+  const keys = Object.keys(style).sort();
+  for (const name of keys) key += `|${name}=${String(style[name])}`;
+  return key;
+}
+
+/** Geometry of a pristine (unpositioned) tip, cached alongside its template.
+ * These are constant for a given template, so reads that would otherwise run
+ * `point_from_proportion` (notably `tip.base` and `tip.tip_angle`) become
+ * array lookups. */
+interface TipGeometryMeta {
+  rows: number[][];
+  center: number[];
+  tipPoint: number[];
+  base: number[];
+  tipAngle: number;
+}
+
+const TIP_GEOMETRY_META = new WeakMap<ArrowTip, TipGeometryMeta>();
+/** Base point of an already-positioned tip (set by `position_tip`), so
+ * `reset_endpoints_based_on_tip` can avoid a second `point_from_proportion`. */
+const TIP_POSITIONED_BASE = new WeakMap<ArrowTip, number[]>();
+
+function computeTipGeometryMeta(tip: ArrowTip): TipGeometryMeta {
+  const rows = pointRows(tip.points, tip.dim).map((row) => [...row]);
+  const center = [...tip.get_center()];
+  const tipPoint = rows[0] !== undefined ? [...rows[0]] : [0, 0, 0];
+  const base = pointRows(tip.base, tip.dim)[0] ?? [0, 0, 0];
+  const vect = tipPoint.map((value, index) => value - (base[index] ?? 0));
+  return { rows, center, tipPoint, base, tipAngle: angle_of_vector(vect) as number };
+}
+
+function attachTipMeta(source: ArrowTip, target: ArrowTip): void {
+  const meta = TIP_GEOMETRY_META.get(source);
+  if (meta !== undefined) TIP_GEOMETRY_META.set(target, meta);
+}
+
 /** Minimal structural type for the Line class used for gap-filling in
  * ArcPolygonFromArcs (avoids a module cycle: line.js imports Arc from this
  * module, mirroring the set_default_tip_shape registry above). */
@@ -160,11 +219,32 @@ export class TipableVMobject extends VMobject {
     const TipCtor = shape as unknown as new (
       options?: Record<string, unknown>,
     ) => ArrowTip;
+    let ctorCache = TIP_TEMPLATE_CACHE.get(shape);
+    if (ctorCache === undefined) {
+      ctorCache = new Map<string, ArrowTip>();
+      TIP_TEMPLATE_CACHE.set(shape, ctorCache);
+    }
+    const key = tipStyleKey(resolved_length, style);
+    const cached = ctorCache.get(key);
+    if (cached !== undefined) {
+      // Return a copy so positioning this tip does not mutate the template.
+      const copy = cached.copy() as ArrowTip;
+      attachTipMeta(cached, copy);
+      return copy;
+    }
     const tip = new TipCtor({
       length: resolved_length,
       ...style,
     });
-    return tip;
+    if (ctorCache.size >= TIP_TEMPLATE_CACHE_LIMIT) {
+      const oldest = ctorCache.keys().next().value;
+      if (oldest !== undefined) ctorCache.delete(oldest);
+    }
+    ctorCache.set(key, tip);
+    TIP_GEOMETRY_META.set(tip, computeTipGeometryMeta(tip));
+    const copy = tip.copy() as ArrowTip;
+    attachTipMeta(tip, copy);
+    return copy;
   }
 
   position_tip(tip: ArrowTip, at_start = false): ArrowTip {
@@ -179,6 +259,45 @@ export class TipableVMobject extends VMobject {
       anchor = this.get_end();
     }
     const angles = cartesian_to_spherical(subtractPoints(handle, anchor, this.dim));
+    const meta = TIP_GEOMETRY_META.get(tip);
+    // 2D fast path: for points in the plane (elevation angle == PI/2) the
+    // vertical rotation `rotate(-(PI/2) + PI/2, axis)` is the identity, so the
+    // whole placement reduces to an in-plane rotation about the tip's center
+    // plus a translation. Doing it with scalar math avoids two numpy rotations
+    // and both `point_from_proportion` reads (`tip.tip_angle`, `tip.base`).
+    if (meta !== undefined && angles[2] === PI / 2) {
+      const theta = (angles[1] ?? 0) - PI - meta.tipAngle;
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      const cx = meta.center[0] ?? 0;
+      const cy = meta.center[1] ?? 0;
+      const p0x = meta.tipPoint[0] ?? 0;
+      const p0y = meta.tipPoint[1] ?? 0;
+      const dx0 = p0x - cx;
+      const dy0 = p0y - cy;
+      // First point of the rotated tip, used to translate it onto `anchor`.
+      const shiftX = (anchor[0] ?? 0) - (cx + cos * dx0 - sin * dy0);
+      const shiftY = (anchor[1] ?? 0) - (cy + sin * dx0 + cos * dy0);
+      const shiftZ = (anchor[2] ?? 0) - (meta.tipPoint[2] ?? 0);
+      const positioned = meta.rows.map((row) => {
+        const dx = (row[0] ?? 0) - cx;
+        const dy = (row[1] ?? 0) - cy;
+        return [
+          cx + cos * dx - sin * dy + shiftX,
+          cy + sin * dx + cos * dy + shiftY,
+          (row[2] ?? 0) + shiftZ,
+        ];
+      });
+      tip.points = array(positioned) as NDArray;
+      const bx = (meta.base[0] ?? 0) - cx;
+      const by = (meta.base[1] ?? 0) - cy;
+      TIP_POSITIONED_BASE.set(tip, [
+        cx + cos * bx - sin * by + shiftX,
+        cy + sin * bx + cos * by + shiftY,
+        (meta.base[2] ?? 0) + shiftZ,
+      ]);
+      return tip;
+    }
     // Rotates the tip along the azimuthal
     tip.rotate((angles[1] ?? 0) - PI - tip.tip_angle);
     if (!("_init_positioning_axis" in this) || this._init_positioning_axis === undefined) {
@@ -202,10 +321,12 @@ export class TipableVMobject extends VMobject {
       // Zero length, put_start_and_end_on wouldn't work
       return this;
     }
+    const positionedBase = TIP_POSITIONED_BASE.get(tip);
+    const base = positionedBase ?? (pointRows(tip.base, this.dim)[0] ?? [0, 0, 0]);
     if (at_start) {
-      this.put_start_and_end_on(pointRows(tip.base, this.dim)[0] ?? [0, 0, 0], this.get_end());
+      this.put_start_and_end_on(base, this.get_end());
     } else {
-      this.put_start_and_end_on(this.get_start(), pointRows(tip.base, this.dim)[0] ?? [0, 0, 0]);
+      this.put_start_and_end_on(this.get_start(), base);
     }
     return this;
   }

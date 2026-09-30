@@ -115,10 +115,16 @@ export class Line extends TipableVMobject {
       const arc = new ArcBetweenPoints(this.start, this.end, this.path_arc);
       this.set_points(arc.points);
     } else {
-      this.set_points_as_corners([
-        pointRows(this.start, this.dim)[0] ?? new Array(this.dim).fill(0),
-        pointRows(this.end, this.dim)[0] ?? new Array(this.dim).fill(0),
-      ]);
+      // A straight line is a single cubic segment; build its four control
+      // points directly instead of round-tripping through
+      // `set_points_as_corners` -> numpy `interpolate`.
+      const startRow = pointRows(this.start, this.dim)[0] ?? new Array(this.dim).fill(0);
+      const endRow = pointRows(this.end, this.dim)[0] ?? new Array(this.dim).fill(0);
+      this.points = array(
+        this._bezier_t_values.map((t) =>
+          startRow.map((value, index) => value + t * ((endRow[index] ?? 0) - value)),
+        ),
+      ) as NDArray;
     }
     this._account_for_buff(buff);
     return this;
@@ -178,6 +184,30 @@ export class Line extends TipableVMobject {
       this.start = array([...pointRows(start, this.dim)[0] ?? [0, 0, 0]]) as NDArray;
       this.end = array([...pointRows(end, this.dim)[0] ?? [0, 0, 0]]) as NDArray;
       this.generate_points();
+      return super.put_start_and_end_on(start, end);
+    }
+    // Straight single-segment line: re-span it directly. Mobject's
+    // scale+rotate+shift only maps the existing collinear control points onto
+    // the target segment, which is exactly this interpolation, so this is
+    // behaviour-equivalent and avoids three numpy transforms (the hot path
+    // when an arrow resets its endpoints to the tip base). Only valid when no
+    // attached tip makes `get_start`/`get_end` diverge from the point span
+    // (e.g. the second tip of a DoubleArrow), otherwise Mobject's scale
+    // factor would use the tipped endpoints.
+    if (
+      this.path_arc === 0
+      && !this.has_tip()
+      && !this.has_start_tip()
+      && this.points.shape[0] === this.n_points_per_cubic_curve
+    ) {
+      const startRow = pointRows(start, this.dim)[0] ?? [0, 0, 0];
+      const endRow = pointRows(end, this.dim)[0] ?? [0, 0, 0];
+      this.points = array(
+        this._bezier_t_values.map((t) =>
+          startRow.map((value, index) => value + t * ((endRow[index] ?? 0) - value)),
+        ),
+      ) as NDArray;
+      return this;
     }
     return super.put_start_and_end_on(start, end);
   }
