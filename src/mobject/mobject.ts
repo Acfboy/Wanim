@@ -6,7 +6,7 @@ import { angle_between_vectors, cross, normalize, rotation_matrix } from "../uti
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
-import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString } from "../utils/arrays.js";
+import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString, _cContiguousRows } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
 import { config } from "../_config/utils.js";
 
@@ -109,14 +109,30 @@ function cloneValue(value: unknown, seen = new Map<object, unknown>()): unknown 
   if (value === null || value === undefined || typeof value !== "object") return value;
   if (isNDArray(value)) return value.copy();
   if (value instanceof ManimColor) return new ManimColor(value);
-  if (Array.isArray(value)) return value.map((item) => cloneValue(item, seen));
-  if (value instanceof Set) return new Set([...value].map((item) => cloneValue(item, seen)));
-  if (value instanceof Map) return new Map([...value].map(([key, item]) => [key, cloneValue(item, seen)]));
+  if (Array.isArray(value)) {
+    const result = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) result[index] = cloneValue(value[index], seen);
+    return result;
+  }
+  if (value instanceof Set) {
+    const result = new Set<unknown>();
+    for (const item of value) result.add(cloneValue(item, seen));
+    return result;
+  }
+  if (value instanceof Map) {
+    const result = new Map<unknown, unknown>();
+    for (const [key, item] of value) result.set(key, cloneValue(item, seen));
+    return result;
+  }
   if (value instanceof Mobject) return value.copy_with_seen(seen);
   const object = value as Record<string, unknown>;
   const result: Record<string, unknown> = {};
   seen.set(value, result);
-  for (const [key, item] of Object.entries(object)) result[key] = cloneValue(item, seen);
+  const keys = Object.keys(object);
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index] as string;
+    result[key] = cloneValue(object[key], seen);
+  }
   return result;
 }
 
@@ -285,26 +301,43 @@ export function init_alignments(alignments: string | null | undefined, num: numb
   });
 }
 
+// Protocol / introspection probes that test runners, JS engines and
+// `JSON.stringify` make on arbitrary values. Reading an unknown Mobject
+// attribute raises a Python-like AttributeError; these must instead resolve
+// to a safe value so that pretty-printing and serialization do not fall into
+// unbounded attribute enumeration (which previously OOM'd vitest's
+// pretty-printer).  Hoisted to module scope: a fresh Set per Mobject creation
+// dominated `copy()`/constructor profiles.
+const PROTOCOL_PROPS = new Set([
+  "then",
+  "asymmetricMatch",
+  "nodeType",
+  "tagName",
+  "$$typeof",
+  "toJSON",
+  "@@iterator",
+  "@@toStringTag",
+  "size",
+]);
+
+/**
+ * Escape hatch from the Mobject Proxy.  Reading it returns the raw (un-proxied)
+ * target object so internal hot paths (notably `copy_with_seen`) can enumerate
+ * own properties without paying the `get` trap once per property.  Not a public
+ * API and not enumerable (it only resolves through the trap).
+ */
+const RAW_MOBJECT_TARGET = Symbol("wanim.raw_mobject_target");
+
+/** Raw/un-proxied target for a Mobject, or the value itself if it is not proxied. */
+function rawMobjectTarget(value: Mobject): Mobject {
+  const raw = (value as unknown as { [RAW_MOBJECT_TARGET]?: Mobject })[RAW_MOBJECT_TARGET];
+  return raw ?? value;
+}
+
 function createMobjectProxy(target: Mobject): Mobject {
-  // Protocol / introspection probes that test runners, JS engines and
-  // `JSON.stringify` make on arbitrary values. Reading an unknown Mobject
-  // attribute raises a Python-like AttributeError; these must instead
-  // resolve to a safe value so that pretty-printing and serialization do not
-  // fall into unbounded attribute enumeration (which previously OOM'd
-  // vitest's pretty-printer).
-  const PROTOCOL_PROPS = new Set([
-    "then",
-    "asymmetricMatch",
-    "nodeType",
-    "tagName",
-    "$$typeof",
-    "toJSON",
-    "@@iterator",
-    "@@toStringTag",
-    "size",
-  ]);
   return new Proxy(target, {
     get: (object, property, receiver) => {
+      if (property === RAW_MOBJECT_TARGET) return object;
       if (property in object || typeof property === "symbol") return Reflect.get(object, property, receiver);
       if (property === "toJSON") {
         const typed = object as unknown as {
@@ -733,9 +766,24 @@ export class Mobject {
     const raw = Object.create(Object.getPrototypeOf(this)) as this;
     const result = createMobjectProxy(raw);
     seen.set(this, result);
-    for (const [key, value] of Object.entries(this)) {
-      if (key === "target" && value instanceof Mobject) (raw as unknown as Record<string, unknown>).target = value.copy_with_seen(seen);
-      else (raw as unknown as Record<string, unknown>)[key] = cloneValue(value, seen);
+    // Enumerate the raw target: `this` is the Proxy, and `Object.entries(this)`
+    // would invoke the get trap once per property (dozens of times per mobject,
+    // for every mobject in a copy family).
+    const source = rawMobjectTarget(this) as unknown as Record<string, unknown>;
+    const rawTarget = raw as unknown as Record<string, unknown>;
+    const keys = Object.keys(source);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index] as string;
+      const value = source[key];
+      // Primitives (the majority of fields) need no clone: `cloneValue` returns
+      // them unchanged but the call itself is not free.
+      if (value === null || value === undefined || typeof value !== "object") {
+        rawTarget[key] = value;
+      } else if (key === "target" && value instanceof Mobject) {
+        rawTarget[key] = value.copy_with_seen(seen);
+      } else {
+        rawTarget[key] = cloneValue(value, seen);
+      }
     }
     raw.original_id = String(Math.random());
     return result as this;
@@ -746,8 +794,14 @@ export class Mobject {
     const raw = Object.create(Object.getPrototypeOf(this)) as this;
     const result = createMobjectProxy(raw);
     clone_from_id.set(this, result);
-    for (const [key, value] of Object.entries(this)) {
-      (raw as unknown as Record<string, unknown>)[key] = cloneValue(value, clone_from_id);
+    const source = rawMobjectTarget(this) as unknown as Record<string, unknown>;
+    const rawTarget = raw as unknown as Record<string, unknown>;
+    const keys = Object.keys(source);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index] as string;
+      const value = source[key];
+      if (value === null || value === undefined || typeof value !== "object") rawTarget[key] = value;
+      else rawTarget[key] = cloneValue(value, clone_from_id);
     }
     raw.original_id = String(Math.random());
     return result as this;
@@ -810,11 +864,10 @@ export class Mobject {
 
   get_critical_point(direction: readonly number[] | NDArray): number[] {
     const result = Array.from({ length: this.dim }, () => 0);
-    const allPoints = pointRows(this.get_points_defining_boundary(), this.dim);
-    if (allPoints.length === 0) return result;
-    const directionValues = pointFrom(direction, this.dim).toArray() as number[];
+    const boundary = this.get_points_defining_boundary();
+    const directionValues = pointRows(direction, this.dim)[0] ?? [];
     for (let dim = 0; dim < this.dim; dim += 1) {
-      result[dim] = this.get_extremum_along_dim(allPoints, dim, Number(directionValues[dim] ?? 0));
+      result[dim] = this.get_extremum_along_dim(boundary, dim, Number(directionValues[dim] ?? 0));
     }
     return result;
   }
@@ -830,7 +883,7 @@ export class Mobject {
   get_center_point(): number[] { return this.get_center(); }
 
   get_coord(dim: number, direction: readonly number[] | NDArray = ORIGIN): number {
-    const directionValues = pointFrom(direction, this.dim).toArray() as number[];
+    const directionValues = pointRows(direction, this.dim)[0] ?? [];
     return this.get_extremum_along_dim(null, dim, Number(directionValues[dim] ?? 0));
   }
 
@@ -839,14 +892,52 @@ export class Mobject {
   get_z(direction: readonly number[] | NDArray = ORIGIN): number { return this.get_coord(2, direction); }
 
   get_extremum_along_dim(points: unknown | null = null, dim = 0, key = 0): number {
-    const rows = points === null || points === undefined
-      ? pointRows(this.get_points_defining_boundary(), this.dim)
-      : pointRows(points, this.dim);
-    if (rows.length === 0) return 0;
-    const values = rows.map((point) => point[dim] ?? 0);
-    if (key < 0) return Math.min(...values);
-    if (key === 0) return (Math.min(...values) + Math.max(...values)) / 2;
-    return Math.max(...values);
+    const source = points === null || points === undefined
+      ? this.get_points_defining_boundary()
+      : points;
+    let min = Infinity;
+    let max = -Infinity;
+    let count = 0;
+    // Fast path: read the requested column straight out of a C-contiguous
+    // NDArray instead of materialising every row via `pointRows`.
+    const flat = _cContiguousRows(source);
+    if (flat !== null) {
+      const { data, rowDim, rowCount } = flat;
+      count = rowCount;
+      if (dim < rowDim) {
+        for (let row = 0; row < rowCount; row += 1) {
+          const value = Number(data[row * rowDim + dim]);
+          if (value !== value) {
+            min = NaN;
+            max = NaN;
+          } else {
+            if (value < min) min = value;
+            if (value > max) max = value;
+          }
+        }
+      } else {
+        // Column missing: `pointRows` pads short rows with zeros.
+        min = rowCount > 0 ? 0 : Infinity;
+        max = rowCount > 0 ? 0 : -Infinity;
+      }
+    } else {
+      const rows = pointRows(source, this.dim);
+      count = rows.length;
+      for (let row = 0; row < count; row += 1) {
+        const value = (rows[row] as number[])[dim] ?? 0;
+        if (value !== value) {
+          min = NaN;
+          max = NaN;
+        } else {
+          if (value < min) min = value;
+          if (value > max) max = value;
+        }
+      }
+    }
+    if (count === 0) return 0;
+    if (key < 0) return min;
+    if (key === 0) return (min + max) / 2;
+    return max;
   }
 
   get width(): number { return this.length_over_dim(0); }
