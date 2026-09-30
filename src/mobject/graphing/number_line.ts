@@ -1,6 +1,6 @@
 import { array, type NDArray } from "numpy-ts";
 import { config } from "../../_config/utils.js";
-import { DEFAULT_ARROW_TIP_LENGTH, DOWN, LEFT, MED_SMALL_BUFF, OUT, UP } from "../../constants.js";
+import { DEFAULT_ARROW_TIP_LENGTH, DOWN, LEFT, MED_SMALL_BUFF, OUT } from "../../constants.js";
 import { isNDArray, norm, numeric, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { interpolate } from "../../utils/bezier.js";
 import { merge_dicts_recursively } from "../../utils/config_ops.js";
@@ -415,7 +415,17 @@ export class NumberLine extends VGroup {
     const elongated_tick_offsets = this.numbers_with_elongated_ticks.map(
       (value) => value - this.x_min,
     );
-    for (const x of (this.get_tick_range().toArray() as unknown[]).map(Number)) {
+    // Precompute the per-line constants once for the whole batch: the flat
+    // tick values, the (unchanged) baseline angle, and the fully resolved
+    // style that every tick inherits via `match_style`. `get_tick` rebuilds
+    // these for standalone calls, but `add_ticks` must not pay for them 15+
+    // times.
+    const tickValues = (this.get_tick_range().toArray() as unknown[]).map(Number);
+    const angle = this._baseline_angle();
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const style = this._tick_style_snapshot();
+    for (const x of tickValues) {
       let size = this.tick_size;
       // NOTE: mirrors np.any(np.isclose(x - self.x_min,
       // elongated_tick_offsets)) with numpy's default tolerances.
@@ -426,23 +436,117 @@ export class NumberLine extends VGroup {
       if (matches) {
         size = elongated_tick_size;
       }
-      ticks.add(this.get_tick(x, size));
+      ticks.add(this._make_tick(x, size, cos, sin, style));
     }
     this.add(ticks);
     this.ticks = ticks;
     return this;
   }
 
+  /** Baseline angle computed straight from the cached flat endpoints (avoids
+   * the two `slice` allocations in `get_start_and_end` + `subtractPoints`
+   * round-trip). Numerically identical to {@link get_angle}. */
+  private _baseline_angle(): number {
+    const flat = this._ensure_endpoints_flat();
+    const dim = flat.length / 2;
+    return Math.atan2(
+      (flat[dim + 1] ?? 0) - (flat[1] ?? 0),
+      (flat[dim] ?? 0) - (flat[0] ?? 0),
+    );
+  }
+
+  /** Live style handles shared by every tick produced in one batch. The
+   * rgba arrays are treated as immutable/copy-on-write throughout the
+   * codebase (every `update_rgbas_array`/`apply_over_attr_arrays` assignment
+   * replaces the array instead of mutating it in place), so handing the same
+   * reference to all ticks is value-identical to `match_style` and avoids the
+   * expensive `get_style` + `set_style` round-trip (which dominated
+   * `add_ticks`). */
+  private _tick_style_snapshot(): {
+    fill_rgbas: NDArray;
+    stroke_rgbas: NDArray;
+    background_stroke_rgbas: NDArray;
+    fill_opacity: number;
+    stroke_opacity: number;
+    stroke_width: number;
+    background_stroke_color: VMobject["background_stroke_color"];
+    background_stroke_opacity: number;
+    background_stroke_width: number;
+    sheen_factor: number;
+    sheen_direction: number[];
+    background_image: string | null;
+  } {
+    return {
+      fill_rgbas: this.fill_rgbas,
+      stroke_rgbas: this.stroke_rgbas,
+      background_stroke_rgbas: this.background_stroke_rgbas,
+      fill_opacity: this.fill_opacity,
+      stroke_opacity: this.stroke_opacity,
+      stroke_width: this.stroke_width,
+      background_stroke_color: this.background_stroke_color,
+      background_stroke_opacity: this.background_stroke_opacity,
+      background_stroke_width: this.background_stroke_width,
+      sheen_factor: this.sheen_factor,
+      sheen_direction: this.sheen_direction,
+      background_image: this.background_image,
+    };
+  }
+
+  /** Apply a {@link _tick_style_snapshot} directly to a tick. Equivalent to
+   * `tick.set_style({ ...this.get_style(), family: false })` (what
+   * `match_style` does) without re-parsing colors or rebuilding the arrays. */
+  private _apply_tick_style(
+    tick: Line,
+    style: ReturnType<NumberLine["_tick_style_snapshot"]>,
+  ): void {
+    tick.fill_rgbas = style.fill_rgbas;
+    tick.stroke_rgbas = style.stroke_rgbas;
+    tick.background_stroke_rgbas = style.background_stroke_rgbas;
+    tick.fill_opacity = style.fill_opacity;
+    tick.stroke_opacity = style.stroke_opacity;
+    tick.stroke_width = style.stroke_width;
+    tick.background_stroke_color = style.background_stroke_color;
+    tick.background_stroke_opacity = style.background_stroke_opacity;
+    tick.background_stroke_width = style.background_stroke_width;
+    tick.sheen_factor = style.sheen_factor;
+    tick.sheen_direction = [...style.sheen_direction];
+    tick.background_image = style.background_image;
+  }
+
+  /** Build a tick `Line` directly at its final position, applying the
+   * precomputed style. Mathematically (and, for the default axes, bit-for-bit)
+   * equal to the Python `Line(DOWN*size, UP*size).rotate(angle).move_to(p)`
+   * followed by `match_style(self)`, without constructing the line at the
+   * origin, rotating it, translating it and re-deriving the whole style. */
+  private _make_tick(
+    x: number,
+    size: number,
+    cos: number,
+    sin: number,
+    style: ReturnType<NumberLine["_tick_style_snapshot"]>,
+  ): Line {
+    const center = this.number_to_point_flat(x);
+    const cx = center[0] ?? 0;
+    const cy = center[1] ?? 0;
+    const cz = center[2] ?? 0;
+    const result = new Line(
+      [cx + sin * size, cy - cos * size, cz],
+      [cx - sin * size, cy + cos * size, cz],
+    );
+    this._apply_tick_style(result, style);
+    return result;
+  }
+
   get_tick(x: number, size: number | null = null): Line {
     const resolved = size ?? this.tick_size;
-    const result = new Line(
-      scalePoint(DOWN, resolved, this.dim),
-      scalePoint(UP, resolved, this.dim),
+    const angle = this._baseline_angle();
+    return this._make_tick(
+      x,
+      resolved,
+      Math.cos(angle),
+      Math.sin(angle),
+      this._tick_style_snapshot(),
     );
-    result.rotate(this.get_angle());
-    result.move_to(this.number_to_point(x));
-    result.match_style(this);
-    return result;
   }
 
   get_angle(): number {
