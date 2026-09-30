@@ -39,6 +39,24 @@ const singleStringMathTexFactory: DecimalNumberMobFactory = (text, kwargs = {}) 
 
 export const string_to_mob_map = new Map<string, VMobject>();
 
+// Glyph prototypes are cached per (factory, font size, string). The factory
+// must be part of the key: distinct `mob_class` factories (e.g. a plain
+// VMobject stub vs. MathTex) produce different glyph geometry, and sharing one
+// cache entry across them yields wrong-sized characters. A WeakMap gives each
+// factory a stable id without keeping it alive.
+const _factory_ids = new WeakMap<object, number>();
+let _next_factory_id = 1;
+
+function factory_id(factory: DecimalNumberMobFactory): number {
+  let id = _factory_ids.get(factory);
+  if (id === undefined) {
+    id = _next_factory_id;
+    _next_factory_id += 1;
+    _factory_ids.set(factory, id);
+  }
+  return id;
+}
+
 /** Geometry of a cached glyph prototype.
  *
  * The `minX/maxX/minY/maxY` fields are the extents of the *anchors* (the set
@@ -101,20 +119,22 @@ function measure_glyph(mob: VMobject): GlyphInfo {
 
 /** Build (or fetch) a glyph prototype already sized to `font_size`.
  *
- * Keying on the font size (not just the string, as before) means the prototype
- * is scaled once and every caller gets a correctly-sized copy with no
- * `font_size =` rescale. The factory is intentionally *not* part of the key:
- * `NumberLine.get_number_mobject` builds a fresh wrapper closure per call, so
- * including it would defeat the cache (and the original cache was string-only
- * anyway). The cached prototype is never mutated afterwards; callers copy it
- * and apply their own colour/position. */
+ * The key covers the factory, the font size and the string: the font size so
+ * the prototype is scaled once and every caller gets a correctly-sized copy
+ * with no `font_size =` rescale, and the factory so that different `mob_class`
+ * renderers (a MathTex glyph vs. a plain VMobject stub) never share entries.
+ * `NumberLine.get_number_mobject` builds a wrapper closure per call; that
+ * closure is memoized on its underlying constructor (see `toMobFactory`) so
+ * its factory id stays stable and the cache still applies. The cached
+ * prototype is never mutated afterwards; callers copy it and apply their own
+ * colour/position. */
 function glyph_proto(
   stringValue: string,
   factory: DecimalNumberMobFactory,
   font_size: number,
   kwargs: Record<string, unknown>,
 ): VMobject {
-  const key = `${font_size}|${stringValue}`;
+  const key = `${factory_id(factory)}|${font_size}|${stringValue}`;
   let proto = string_to_mob_map.get(key);
   if (proto === undefined) {
     proto = factory(stringValue, kwargs);
