@@ -740,10 +740,24 @@ export class Mobject {
   }
 
   get_family(_recurse = true): Mobject[] {
-    const subFamilies = this.submobjects.map((child) => child.get_family());
-    const all: Mobject[] = [this];
-    for (const family of subFamilies) all.push(...family);
-    return remove_list_redundancies(all);
+    // Single pre-order traversal with an identity set. The previous
+    // implementation recursed per child and ran O(n^2) `remove_list_redundancies`
+    // at every level; this is called several times per transform, so the
+    // quadratic dedup dominated group transforms.
+    const result: Mobject[] = [];
+    const seen = new Set<Mobject>();
+    const stack: Mobject[] = [this];
+    while (stack.length > 0) {
+      const node = stack.pop() as Mobject;
+      if (seen.has(node)) continue;
+      seen.add(node);
+      result.push(node);
+      const children = node.submobjects;
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        stack.push(children[index] as Mobject);
+      }
+    }
+    return result;
   }
 
   getFamily(_recurse = true): Mobject[] {
