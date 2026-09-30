@@ -8,7 +8,7 @@ import { UpdateFromAlphaFunc } from "../animation/updaters/update.js";
 import { Create, ShowPartial, type ShowPartialOptions } from "../animation/creation.js";
 import { BLUE_E, GREEN, ManimColor, RED, YELLOW, color_gradient, color_to_rgb, interpolate_color, rgb_to_color, type ParsableManimColor } from "../utils/color/core.js";
 import { inverse_interpolate } from "../utils/bezier.js";
-import { addPoints, arange, isNDArray, linspace, norm, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
+import { addPoints, arange, isNDArray, linspace, norm, numeric, pointAt, pointRows, pointsFrom, scalePoint, subtractPoints } from "../utils/arrays.js";
 import { clip as _clip } from "../utils/simple_functions.js";
 import { sigmoid } from "../utils/simple_functions.js";
 import { Vector, type VectorOptions } from "./geometry/line.js";
@@ -20,7 +20,17 @@ export type VectorFunction = (point: number[] | NDArray) => number[] | NDArray;
 export type ColorScheme = (vector: number[] | NDArray) => number;
 
 function vectorOf(value: number[] | NDArray): number[] {
-  return pointRows(value, 3)[0] ?? [0, 0, 0];
+  // Hot path: grid arrows / stream-line steps call this once per vector. Read
+  // a single row directly instead of materialising every row via pointRows.
+  if (isNDArray(value)) return pointAt(value as NDArray, 0, 3);
+  const raw = value as readonly unknown[];
+  const first = raw[0];
+  if (Array.isArray(first) || isNDArray(first)) return pointRows(value, 3)[0] ?? [0, 0, 0];
+  return [
+    raw[0] === undefined ? 0 : numeric(raw[0]),
+    raw[1] === undefined ? 0 : numeric(raw[1]),
+    raw[2] === undefined ? 0 : numeric(raw[2]),
+  ];
 }
 
 function interpolateRgb(first: number[], second: number[], alpha: number): number[] {
@@ -70,9 +80,12 @@ export class VectorField extends VGroup {
       const pos_to_rgb = (position: number[] | NDArray): number[] => {
         // NOTE: Python passes the raw vector (an ndarray) to the user
         // color_scheme, which may call numpy routines such as
-        // `np.linalg.norm(vec)`. Hand it an NDArray; the default scheme uses
-        // `norm(vectorOf(vec))`, and vectorOf accepts either form.
-        const value = this.color_scheme(array(vectorOf(this.func(position))));
+        // `np.linalg.norm(vec)`. Forward an NDArray result untouched and only
+        // wrap other shapes; the previous `array(vectorOf(...))` rebuilt the
+        // array (and walked every element) on each grid arrow.
+        const raw = this.func(position);
+        const vec: number[] | NDArray = isNDArray(raw) ? (raw as NDArray) : (array(vectorOf(raw)) as NDArray);
+        const value = this.color_scheme(vec);
         const clipped = _clip(value, this.min_color_scheme_value, this.max_color_scheme_value);
         let alpha = (clipped - this.min_color_scheme_value) / (this.max_color_scheme_value - this.min_color_scheme_value);
         alpha *= this.rgbs.length - 1;
@@ -285,23 +298,28 @@ export class ArrowVectorField extends VectorField {
     const xs = arange(this.x_range[0], this.x_range[1], this.x_range[2]);
     const ys = arange(this.y_range[0], this.y_range[1], this.y_range[2]);
     const zs = arange(this.z_range[0], this.z_range[1], this.z_range[2]);
+    // NOTE: mirrors Python `self.add(*[...])`: build all arrows first, then add
+    // them in one call (adding one at a time re-scans the submobject list).
+    const vectors: Vector[] = [];
     for (const x of xs) {
       for (const y of ys) {
         for (const z of zs) {
           // NOTE: mirrors Python `x * RIGHT + y * UP + z * OUT`.
-          this.add(this.get_vector([x ?? 0, y ?? 0, z ?? 0]));
+          vectors.push(this.get_vector([x ?? 0, y ?? 0, z ?? 0]));
         }
       }
     }
+    this.add(...vectors);
     this.set_opacity(this.opacity);
   }
 
   get_vector(point: number[] | NDArray): Vector {
     const output = vectorOf(this.func(point));
-    const vectorNorm = norm(output);
+    const vectorNorm = Math.hypot(output[0]!, output[1]!, output[2]!);
     let direction = [...output];
     if (vectorNorm !== 0) {
-      direction = output.map((component) => component * (this.length_func(vectorNorm) / vectorNorm));
+      const scale = this.length_func(vectorNorm) / vectorNorm;
+      direction = output.map((component) => component * scale);
     }
     const vect = new Vector(direction, { ...this.vector_config } as VectorOptions);
     vect.shift(vectorOf(point));
@@ -418,7 +436,13 @@ export class StreamLines extends VectorField {
       const points: number[][] = [start];
       for (let step = 0; step < maxSteps; step += 1) {
         const last = points[points.length - 1];
-        const next = addPoints(last, scalePoint(vectorOf(this.func(last)), dt, 3), 3);
+        if (last === undefined) break;
+        const field = vectorOf(this.func(last));
+        const next = [
+          numeric(last[0]) + numeric(field[0]) * dt,
+          numeric(last[1]) + numeric(field[1]) * dt,
+          numeric(last[2]) + numeric(field[2]) * dt,
+        ];
         if (this.outside_box(next)) break;
         points.push(next);
       }
