@@ -93,9 +93,21 @@ export class SingleStringMathTex extends SVGMobject {
     this.move_into_position();
 
     this.init_colors();
-    this.scale(TEX_MOB_SCALE_FACTOR);
-    this.initial_height = this.height;
-    if (height === null) this.font_size = this._font_size;
+    // NOTE: the fixed `TEX_MOB_SCALE_FACTOR` rescale and the `font_size`
+    // rescale are both uniform scalings about the centred origin, so in the
+    // common case they compose into a single traversal. `initial_height` is
+    // the height *before* the font-size part, which the `font_size` getter
+    // divides by. The zero-height / non-positive font-size edge cases keep the
+    // original two-step path (and its ValueError).
+    if (height === null && this._font_size > 0 && this.height > 0) {
+      const fontScale = this._font_size * SCALE_FACTOR_PER_FONT_POINT;
+      this.scale(TEX_MOB_SCALE_FACTOR * fontScale);
+      this.initial_height = this.height / fontScale;
+    } else {
+      this.scale(TEX_MOB_SCALE_FACTOR);
+      this.initial_height = this.height;
+      if (height === null) this.font_size = this._font_size;
+    }
     if (this.organize_left_to_right) this._organize_submobjects_left_to_right();
   }
 
