@@ -97,6 +97,28 @@ export function pointRows(value: unknown, dim = 3): number[][] {
   });
 }
 
+/**
+ * Flat view of a C-contiguous 2-dimensional NDArray, or `null` when the value
+ * is not one.  Element `(row, col)` lives at `data[row * rowDim + col]`.
+ *
+ * This lets hot coordinate paths (critical points, extrema) read a column
+ * without materialising every row through `pointRows` (which allocates one JS
+ * array per point).  Only the exact backing-size case is accepted so sliced
+ * views (whose `data` is larger than the logical array) fall back safely.
+ */
+export function _cContiguousRows(value: unknown): { data: ArrayLike<number>; rowDim: number; rowCount: number } | null {
+  if (!isNDArray(value)) return null;
+  const array = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
+  const shape = array.shape;
+  const data = array.data;
+  const contiguous = array.flags === undefined || array.flags.C_CONTIGUOUS !== false;
+  if (data === undefined || !contiguous || shape.length !== 2) return null;
+  const rowDim = shape[1] ?? 0;
+  const rowCount = shape[0] ?? 0;
+  if (data.length !== rowCount * rowDim) return null;
+  return { data, rowDim, rowCount };
+}
+
 export function pointFrom(value: unknown, dim = 3): Point3D {
   const rows = pointRows(value, dim);
   if (rows.length === 0) return array([0, 0, 0].slice(0, dim)) as Point3D;
