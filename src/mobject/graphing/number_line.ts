@@ -49,11 +49,19 @@ function arange(start: number, stop: number, step: number): number[] {
 // pieces (scaling, ticks, n2p/p2n) are included here as well.
 
 /** Normalize a `label_constructor` (a class like MathTex, or an already-built
- * factory) into DecimalNumber's `mob_class` factory. */
+ * factory) into DecimalNumber's `mob_class` factory.
+ *
+ * The wrapper is memoized on the underlying constructor: DecimalNumber keys
+ * its glyph cache on the factory's identity, so handing out a fresh closure
+ * per call would miss the cache and re-render every digit. */
+const _mob_factory_cache = new WeakMap<object, DecimalNumberMobFactory>();
+
 function toMobFactory(ctor: unknown): DecimalNumberMobFactory | undefined {
   if (typeof ctor !== "function") return undefined;
   const fn = ctor as (...args: unknown[]) => VMobject;
-  return (text: string, kwargs: Record<string, unknown> = {}) => {
+  const cached = _mob_factory_cache.get(fn);
+  if (cached !== undefined) return cached;
+  const factory: DecimalNumberMobFactory = (text, kwargs = {}) => {
     try {
       return new (fn as unknown as new (t: string, k?: Record<string, unknown>) => VMobject)(
         text,
@@ -63,6 +71,8 @@ function toMobFactory(ctor: unknown): DecimalNumberMobFactory | undefined {
       return fn(text, kwargs);
     }
   };
+  _mob_factory_cache.set(fn, factory);
+  return factory;
 }
 function isSinglePoint(point: unknown): boolean {
   if (isNDArray(point)) {
