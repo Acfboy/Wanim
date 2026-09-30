@@ -35,6 +35,7 @@ class FakeHost implements InteractiveHost {
   readonly live = true;
   handlers: PointerHandlers | null = null;
   buttons = new Map<string, () => void>();
+  buttonsEnabled = true;
   editor: TextEditOptions | null = null;
   nextPoint: number[] = [0, 0, 0];
   private resolvers: Array<() => void> = [];
@@ -52,7 +53,12 @@ class FakeHost implements InteractiveHost {
 
   addButton(label: string, onClick: () => void): () => void {
     this.buttons.set(label, onClick);
-    return () => this.buttons.delete(label);
+    // Buttons stay resident; only the handler is detached.
+    return () => {};
+  }
+
+  setButtonsEnabled(enabled: boolean): void {
+    this.buttonsEnabled = enabled;
   }
 
   beginTextEdit(_mobject: unknown, _camera: unknown, options: TextEditOptions): void {
@@ -225,11 +231,12 @@ describe("InteractiveScene", () => {
     await host.advance(1);
     expect(scene.widths.length).toBe(before);
 
-    // Finish the last phase.
+    // Finish the last phase: buttons stay resident but are greyed out.
     host.click("进入下一步");
     await host.advance(1);
     await done;
-    expect(host.buttons.size).toBe(0);
+    expect(host.buttons.size).toBe(2);
+    expect(host.buttonsEnabled).toBe(false);
   });
 
   test("restart rebuilds the whole story from the first blueprint", async () => {
