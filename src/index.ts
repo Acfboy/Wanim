@@ -1,3 +1,8 @@
+// NOTE: side-effect import must stay first: it sizes the numpy-ts WASM heap
+// before any wanim module performs an array operation (numpy-ts only accepts
+// configureWasm() before the heap is initialised).
+import "./utils/numpy_config.js";
+export { configure_numpy_wasm_heap } from "./utils/numpy_config.js";
 export * from "./constants.js";
 export * from "./data_structures.js";
 export * from "./utils/arrays.js";
