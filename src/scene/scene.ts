@@ -1274,7 +1274,7 @@ export class Scene {
     return this.finalize_render(preview);
   }
 
-  private handle_render_error(error: unknown, preview: boolean): boolean {
+  protected handle_render_error(error: unknown, preview: boolean): boolean {
     if (error instanceof EndSceneEarlyException) {
       // pass
     } else if (error instanceof RerunSceneException) {
@@ -1299,7 +1299,7 @@ export class Scene {
     return this.finalize_render(preview);
   }
 
-  private finalize_render(preview: boolean): boolean {
+  protected finalize_render(preview: boolean): boolean {
     this.tear_down();
     // We have to reset these settings in case of multiple renders.
     this.renderer.scene_finished(this);

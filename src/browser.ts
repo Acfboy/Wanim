@@ -23,6 +23,8 @@ import {
   default_camera_class,
   type SceneConstructor,
 } from "./renderer/scene_runner.js";
+import { InteractiveScene } from "./scene/interactive_scene.js";
+import { DomInteractiveHost } from "./interactive/dom_host.js";
 import {
   create_frame_scheduler,
   get_render_scheduler,
@@ -125,6 +127,14 @@ export async function render_scene_to_canvas(
     onFrame: options.onProgress,
   });
   const scene = construct_scene(sceneClass, renderer as never);
+  // Interactive scenes need a DOM host to receive pointer events and to place
+  // the restart/next buttons.  Without a DOM (Node) the scene falls back to its
+  // headless host and runs a single pass.
+  let interactiveHost: DomInteractiveHost | null = null;
+  if (scene instanceof InteractiveScene && typeof document !== "undefined") {
+    interactiveHost = new DomInteractiveHost(canvas);
+    scene.interactive_host = interactiveHost;
+  }
 
   const realtime = options.realtime ?? true;
   const previousScheduler = get_render_scheduler();
@@ -140,6 +150,7 @@ export async function render_scene_to_canvas(
   } finally {
     options.signal?.removeEventListener("abort", onAbort);
     if (scheduler !== null) set_render_scheduler(previousScheduler);
+    interactiveHost?.dispose();
   }
   return {
     stats: renderer.stats,

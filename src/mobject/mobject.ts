@@ -431,6 +431,12 @@ export class Mobject {
   point_hash: string | null = null;
   submobjects: Mobject[] = [];
   updaters: MobjectUpdater[] = [];
+  /**
+   * Interaction callbacks (see `InteractiveScene`). Unlike updaters — which run
+   * every frame — reactions are only applied while the scene is in its
+   * interactive "blueprint" phase, so they can react to a control's value.
+   */
+  reactions: Array<(mobject: Mobject) => void> = [];
   updating_suspended = false;
   /** Backing store for the ``color`` accessor.
    *
@@ -1818,6 +1824,39 @@ export class Mobject {
 
   addUpdater(update_function: MobjectUpdater, index: number | null = null, call_updater = false): this {
     return this.add_updater(update_function, index, call_updater);
+  }
+
+  /**
+   * Register an interaction reaction (same call shape as {@link add_updater}).
+   * Reactions are only invoked by an `InteractiveScene` while it is in its
+   * blueprint phase; see the class comment on `reactions`.
+   */
+  add_reaction(reaction: (mobject: Mobject) => void): this {
+    this.reactions.push(reaction);
+    return this;
+  }
+
+  addReaction(reaction: (mobject: Mobject) => void): this {
+    return this.add_reaction(reaction);
+  }
+
+  remove_reaction(reaction: (mobject: Mobject) => void): this {
+    this.reactions = this.reactions.filter((candidate) => candidate !== reaction);
+    return this;
+  }
+
+  removeReaction(reaction: (mobject: Mobject) => void): this {
+    return this.remove_reaction(reaction);
+  }
+
+  clear_reactions(recursive = true): this {
+    this.reactions = [];
+    if (recursive) for (const submob of this.submobjects) submob.clear_reactions();
+    return this;
+  }
+
+  clearReactions(recursive = true): this {
+    return this.clear_reactions(recursive);
   }
 
   remove_updater(updateFunction: MobjectUpdater): this {

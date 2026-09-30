@@ -214,6 +214,48 @@ class ThreeDCameraRotation(ThreeDScene):
         self.move_camera(phi=75 * DEGREES, theta=30 * DEGREES)
         self.wait()
 `,
+  interactive: `from manim import *
+
+class InteractiveDemo(InteractiveScene):
+    def blueprint(self):
+        axes = Axes(
+            x_range=[0, 4, 1],
+            y_range=[0, 2, 1],
+            x_length=6,
+            y_length=3,
+            axis_config={"include_numbers": True},
+        )
+        axes.to_edge(LEFT)
+        slider = Slider(
+            start=axes.c2p(0, 0),
+            end=axes.c2p(4, 0),
+            value_range=(0.5, 3),
+            init_value=1,
+            color=YELLOW,
+            stroke_width=6,
+        )
+        circle = Circle(radius=1, color=BLUE)
+        circle.add_reaction(lambda m: m.set_width(slider.get_value()))
+        self.slider = slider
+        self.circle = circle
+        self.add(axes, slider, circle)
+
+        num = InputDecimalNumber(2, num_decimal_places=1, color=YELLOW)
+        num.to_corner(UL)
+        square = Square(side_length=2, color=YELLOW)
+        square.add_reaction(lambda m: m.set_width(num.get_value()))
+        toggler = Switch(True)
+        toggler.to_corner(UR).shift(DOWN * 0.5)
+
+        def tint(m):
+            m.set_color(GREEN if toggler.get_value() else RED)
+
+        square.add_reaction(tint)
+        self.add(num, toggler, square)
+
+    def construct(self):
+        self.play(FadeOut(self.circle))
+`,
 };
 
 const codeEl = document.getElementById("code");
@@ -238,7 +280,10 @@ function setOutput(text, isError) {
 }
 
 function setBusy(busy) {
-  runBtn.disabled = busy;
+  // Interactive scenes never resolve on their own (they run until the user
+  // finishes the story or starts another run), so the Run button stays
+  // clickable: pressing it again aborts the current run and starts over.
+  runBtn.textContent = busy ? "运行中… / Running" : "运行 / Run";
 }
 
 // --- syntax highlighting ---------------------------------------------------
