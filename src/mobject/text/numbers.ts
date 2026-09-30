@@ -10,15 +10,12 @@
 import type { NDArray } from "numpy-ts";
 import {
   DEFAULT_FONT_SIZE,
-  DOWN,
   LEFT,
-  ORIGIN,
   RendererType,
   RIGHT,
-  UP,
 } from "../../constants.js";
 import { config } from "../../_config/utils.js";
-import { scalePoint, type ComplexPoint } from "../../utils/arrays.js";
+import { type ComplexPoint } from "../../utils/arrays.js";
 import { Mobject } from "../mobject.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { ValueTracker } from "../value_tracker.js";
@@ -41,6 +38,144 @@ const singleStringMathTexFactory: DecimalNumberMobFactory = (text, kwargs = {}) 
   new SingleStringMathTex(text, kwargs as never);
 
 export const string_to_mob_map = new Map<string, VMobject>();
+
+/** Geometry of a cached glyph prototype.
+ *
+ * The `minX/maxX/minY/maxY` fields are the extents of the *anchors* (the set
+ * `get_critical_point`/`get_center` read), while the `fullMin.../fullMax...`
+ * fields cover every stored point (the set `width`/`height` read). The two
+ * differ because a cubic bezier's control handles can stick out past its
+ * anchors. */
+interface GlyphInfo {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  fullMinX: number;
+  fullMaxX: number;
+  fullMinY: number;
+  fullMaxY: number;
+}
+
+const glyph_info_map = new WeakMap<VMobject, GlyphInfo>();
+
+/** Measure a glyph prototype once; the hot path then works from these numbers
+ * instead of re-scanning the (many) SVG points through the ndarray helpers. */
+function measure_glyph(mob: VMobject): GlyphInfo {
+  const left = mob.get_critical_point([-1, 0, 0]);
+  const right = mob.get_critical_point([1, 0, 0]);
+  const down = mob.get_critical_point([0, -1, 0]);
+  const up = mob.get_critical_point([0, 1, 0]);
+  let fullMinX = Infinity;
+  let fullMaxX = -Infinity;
+  let fullMinY = Infinity;
+  let fullMaxY = -Infinity;
+  for (const member of mob.family_members_with_points()) {
+    const rows = (member.points.toArray() as unknown) as number[][];
+    for (const point of rows) {
+      const x = point[0] ?? 0;
+      const y = point[1] ?? 0;
+      if (x < fullMinX) fullMinX = x;
+      if (x > fullMaxX) fullMaxX = x;
+      if (y < fullMinY) fullMinY = y;
+      if (y > fullMaxY) fullMaxY = y;
+    }
+  }
+  if (!Number.isFinite(fullMinX)) {
+    fullMinX = 0;
+    fullMaxX = 0;
+    fullMinY = 0;
+    fullMaxY = 0;
+  }
+  return {
+    minX: left[0] ?? 0,
+    maxX: right[0] ?? 0,
+    minY: down[1] ?? 0,
+    maxY: up[1] ?? 0,
+    fullMinX,
+    fullMaxX,
+    fullMinY,
+    fullMaxY,
+  };
+}
+
+/** Build (or fetch) a glyph prototype already sized to `font_size`.
+ *
+ * Keying on the font size (not just the string, as before) means the prototype
+ * is scaled once and every caller gets a correctly-sized copy with no
+ * `font_size =` rescale. The factory is intentionally *not* part of the key:
+ * `NumberLine.get_number_mobject` builds a fresh wrapper closure per call, so
+ * including it would defeat the cache (and the original cache was string-only
+ * anyway). The cached prototype is never mutated afterwards; callers copy it
+ * and apply their own colour/position. */
+function glyph_proto(
+  stringValue: string,
+  factory: DecimalNumberMobFactory,
+  font_size: number,
+  kwargs: Record<string, unknown>,
+): VMobject {
+  const key = `${font_size}|${stringValue}`;
+  let proto = string_to_mob_map.get(key);
+  if (proto === undefined) {
+    proto = factory(stringValue, kwargs);
+    // NOTE: read via `in` first: the Mobject proxy throws AttributeError for
+    // unknown properties, and plain VMobject factories (e.g. the test
+    // dummyFactory) have no `font_size` at all.
+    if ("font_size" in (proto as object)) {
+      const current = (proto as unknown as { font_size: number }).font_size;
+      if (current !== font_size) {
+        (proto as unknown as { font_size: number }).font_size = font_size;
+      }
+    }
+    string_to_mob_map.set(key, proto);
+    glyph_info_map.set(proto, measure_glyph(proto));
+  }
+  return proto;
+}
+
+interface ContiguousPointStore {
+  data?: { [index: number]: number; length: number };
+  shape?: readonly number[];
+  flags?: { C_CONTIGUOUS?: boolean };
+}
+
+/** Translate one mobject's points in place when the backing store is a plain
+ * contiguous typed array, avoiding the `pointRows`/`pointArray` round trip
+ * (and its ndarray allocations) that `shift()` performs. Falls back to
+ * `shift()` for views / non-contiguous / exotic storages. */
+function translate_points_in_place(mob: Mobject, delta: readonly number[]): void {
+  const store = (mob as unknown as { points?: ContiguousPointStore }).points;
+  const data = store?.data;
+  const shape = store?.shape;
+  if (
+    data !== undefined &&
+    data !== null &&
+    shape !== undefined &&
+    shape.length === 2 &&
+    (store?.flags === undefined || store.flags.C_CONTIGUOUS !== false) &&
+    data.length === (shape[0] ?? 0) * (shape[1] ?? 0)
+  ) {
+    const columns = shape[1] ?? mob.dim;
+    for (let index = 0; index < data.length; index += 1) {
+      data[index] += delta[index % columns] ?? 0;
+    }
+    return;
+  }
+  mob.shift(delta);
+}
+
+function translate_mob_in_place(mob: Mobject, delta: readonly number[]): void {
+  for (const member of mob.family_members_with_points()) {
+    translate_points_in_place(member, delta);
+  }
+}
+
+interface NumberPart {
+  mob: VMobject;
+  info: GlyphInfo;
+  tx: number;
+  ty: number;
+}
 
 /** Round-half-to-even (banker's), mirroring np.round for scalars. */
 function roundHalfEven(value: number): number {
@@ -263,77 +398,126 @@ export class DecimalNumber extends VMobject {
     this.submobjects = [];
 
     const num_string = this._get_num_string(numberValue);
-    for (const ch of num_string) {
-      this.add(this._string_to_mob(ch));
-    }
+    const font_size = this._font_size;
+    const buff = this.digit_buff_per_font_unit * font_size;
+
+    // NOTE: the layout below reproduces the exact sequence of
+    // next_to/center/move_to/align_to/shift calls from Python, but computes
+    // the translations arithmetically from cached glyph extents and applies
+    // them with a single in-place point translation per glyph. The original
+    // per-step calls each re-scan every SVG point through the ndarray helpers
+    // (get_critical_point -> get_points_defining_boundary), which dominated
+    // DecimalNumber construction. Verified to match to ~1e-16.
+    const parts: NumberPart[] = [];
+    const addGlyph = (
+      stringValue: string,
+      factory: DecimalNumberMobFactory,
+      kwargs: Record<string, unknown> = {},
+    ): NumberPart => {
+      const proto = glyph_proto(stringValue, factory, font_size, kwargs);
+      const info = glyph_info_map.get(proto) as GlyphInfo;
+      const mob = proto.copy() as VMobject;
+      this.add(mob);
+      const part: NumberPart = { mob, info, tx: 0, ty: 0 };
+      parts.push(part);
+      return part;
+    };
+    const bounds = (): { minX: number; maxX: number; minY: number; maxY: number } => {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const part of parts) {
+        minX = Math.min(minX, part.info.minX + part.tx);
+        maxX = Math.max(maxX, part.info.maxX + part.tx);
+        minY = Math.min(minY, part.info.minY + part.ty);
+        maxY = Math.max(maxY, part.info.maxY + part.ty);
+      }
+      return { minX, maxX, minY, maxY };
+    };
+
+    for (const ch of num_string) addGlyph(ch, this.mob_class);
 
     // Add non-numerical bits
     if (this.show_ellipsis) {
-      this.add(
-        this._string_to_mob("\\dots", singleStringMathTexFactory, {
-          color: this.color,
-        }),
-      );
+      addGlyph("\\dots", singleStringMathTexFactory, { color: this.color });
     }
 
-    // NOTE: mirrors `self.arrange(buff=..., aligned_edge=DOWN)`; the TS
-    // Mobject.arrange() drops kwargs, so the loop is inlined with the
-    // aligned edge passed to next_to explicitly.
-    const buff = this.digit_buff_per_font_unit * this._font_size;
-    for (let index = 0; index < this.submobjects.length - 1; index += 1) {
-      (this.submobjects[index + 1] as Mobject).next_to(
-        this.submobjects[index] as Mobject,
-        RIGHT,
-        buff,
-        DOWN,
-      );
+    // NOTE: mirrors `self.arrange(buff=..., aligned_edge=DOWN)`, i.e.
+    // `next_to(prev, RIGHT, buff, DOWN)` per glyph.
+    for (let index = 1; index < parts.length; index += 1) {
+      const prev = parts[index - 1] as NumberPart;
+      const cur = parts[index] as NumberPart;
+      cur.tx += prev.info.maxX + prev.tx - (cur.info.minX + cur.tx) + buff;
+      cur.ty += prev.info.minY + prev.ty - (cur.info.minY + cur.ty);
     }
-    this.center();
+    this._shift_parts(parts, bounds()); // this.center()
 
     if (this.unit !== null && this.unit !== undefined) {
-      this.unit_sign = this._string_to_mob(
-        this.unit,
-        singleStringMathTexFactory,
-      );
-      this.add(
-        (this.unit_sign as VMobject).next_to(
-          this,
-          RIGHT,
-          (this.unit_buff_per_font_unit + this.digit_buff_per_font_unit) *
-            this._font_size,
-          DOWN,
-        ),
-      );
+      const groupBounds = bounds();
+      const unitPart = addGlyph(this.unit, singleStringMathTexFactory);
+      unitPart.tx =
+        groupBounds.maxX -
+        unitPart.info.minX +
+        (this.unit_buff_per_font_unit + this.digit_buff_per_font_unit) * font_size;
+      unitPart.ty = groupBounds.minY - unitPart.info.minY;
+      this.unit_sign = unitPart.mob;
     }
 
-    this.move_to(ORIGIN);
+    this._shift_parts(parts, bounds()); // this.move_to(ORIGIN)
 
     // Handle alignment of parts that should be aligned to the bottom
     for (let i = 0; i < num_string.length; i += 1) {
       const c = num_string[i] ?? "";
       if (c === "-" && num_string.length > i + 1) {
-        (this.__getitem__(i) as Mobject).align_to(
-          this.__getitem__(i + 1) as Mobject,
-          UP,
-        );
-        (this.__getitem__(i) as Mobject).shift(
-          scalePoint(DOWN, ((this.__getitem__(i + 1) as Mobject).height ?? 0) / 2, this.dim),
-        );
+        const cur = parts[i] as NumberPart;
+        const next = parts[i + 1] as NumberPart;
+        // align_to(next, UP): match anchor tops.
+        cur.ty += next.info.maxY + next.ty - (cur.info.maxY + cur.ty);
+        // shift(DOWN * next.height / 2): height reads *all* points.
+        cur.ty += -(next.info.fullMaxY - next.info.fullMinY) / 2;
       } else if (c === ",") {
-        (this.__getitem__(i) as Mobject).shift(
-          scalePoint(DOWN, ((this.__getitem__(i) as Mobject).height ?? 0) / 2, this.dim),
-        );
+        const cur = parts[i] as NumberPart;
+        cur.ty += -(cur.info.fullMaxY - cur.info.fullMinY) / 2;
       }
     }
     if (this.unit && this.unit.startsWith("^")) {
-      (this.unit_sign as VMobject).align_to(this, UP);
+      const unitPart = parts[parts.length - 1] as NumberPart;
+      unitPart.ty += bounds().maxY - (unitPart.info.maxY + unitPart.ty);
     }
 
-    // Track the initial height to enable scaling via font_size
-    this.initial_height = this.height;
+    for (const part of parts) {
+      if (part.tx !== 0 || part.ty !== 0) {
+        translate_mob_in_place(part.mob, [part.tx, part.ty, 0]);
+      }
+    }
+
+    // Track the initial height to enable scaling via font_size. `height`
+    // (length_over_dim) reads every point, not just the anchors.
+    let fullMinY = Infinity;
+    let fullMaxY = -Infinity;
+    for (const part of parts) {
+      fullMinY = Math.min(fullMinY, part.info.fullMinY + part.ty);
+      fullMaxY = Math.max(fullMaxY, part.info.fullMaxY + part.ty);
+    }
+    this.initial_height = fullMaxY - fullMinY;
 
     if (this.include_background_rectangle) {
       this.add_background_rectangle();
+    }
+  }
+
+  /** Apply the cumulative translation of a `center()`/`move_to()` step to
+   * every part (mirrors `Mobject.shift` over the whole group). */
+  private _shift_parts(
+    parts: NumberPart[],
+    target: { minX: number; maxX: number; minY: number; maxY: number },
+  ): void {
+    const dx = (target.minX + target.maxX) / 2;
+    const dy = (target.minY + target.maxY) / 2;
+    for (const part of parts) {
+      part.tx -= dx;
+      part.ty -= dy;
     }
   }
 
@@ -371,17 +555,9 @@ export class DecimalNumber extends VMobject {
     kwargs: Record<string, unknown> = {},
   ): VMobject {
     const factory = mob_class ?? this.mob_class;
-    let cached = string_to_mob_map.get(stringValue);
-    if (cached === undefined) {
-      cached = factory(stringValue, kwargs);
-      string_to_mob_map.set(stringValue, cached);
-    }
-    const mob = cached.copy() as VMobject;
-    // NOTE: the tex classes carry a font_size property (used by
-    // NumberLine.add_labels); plain VMobjects don't, so assign through a
-    // structural type instead of the class interface.
-    (mob as unknown as { font_size: number }).font_size = this._font_size;
-    return mob;
+    // The cached prototype is already sized to `_font_size`, so the copy is
+    // ready to use without the previous (always-run) `font_size =` rescale.
+    return glyph_proto(stringValue, factory, this._font_size, kwargs).copy() as VMobject;
   }
 
   _get_formatter(
