@@ -20,6 +20,7 @@
 //   WANIM_MINIFY       "0" to disable minification (default: minify)
 //   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -30,6 +31,11 @@ const shim = (name) => resolve(here, "shims", name);
 const outfile = resolve(process.env.WANIM_BROWSER_OUT ?? resolve(root, "dist", "wanim.browser.js"));
 const minify = process.env.WANIM_MINIFY !== "0";
 const sourcemap = process.env.WANIM_SOURCEMAP === "1";
+
+// numpy-ts is kept external, but referenced by a *relative* URL rather than a
+// bare specifier: the bundle then resolves it against its own location, so it
+// works even when the page's import map is missing or was applied too late.
+const NUMPY_RELATIVE = "./numpy-ts.browser.js";
 
 await build({
   entryPoints: [resolve(root, "dist", "index.js")],
@@ -55,7 +61,17 @@ await build({
   // Keep numpy-ts external so the page loads it from a single URL and can
   // `configureWasm()` *before* wanim's first array operation (a heap sized at
   // import time cannot be resized afterwards).
-  external: ["numpy-ts"],
+  plugins: [
+    {
+      name: "numpy-relative",
+      setup(build) {
+        build.onResolve({ filter: /^numpy-ts$/ }, () => ({
+          path: NUMPY_RELATIVE,
+          external: true,
+        }));
+      },
+    },
+  ],
   alias: {
     "node:fs/promises": shim("node-fs-promises.js"),
     "node:fs": shim("node-fs.js"),
@@ -70,5 +86,17 @@ await build({
     "process.env.NODE_ENV": '"production"',
   },
 });
+
+// Ship numpy-ts next to the bundle so the relative import resolves for the
+// demo, other consumers alike (all of which serve `dist/`).
+const numpySource = resolve(root, "node_modules", "numpy-ts", "dist", "numpy-ts.browser.js");
+if (existsSync(numpySource)) {
+  const numpyOut = resolve(dirname(outfile), "numpy-ts.browser.js");
+  mkdirSync(dirname(numpyOut), { recursive: true });
+  copyFileSync(numpySource, numpyOut);
+  console.log(`wanim: wrote ${numpyOut}`);
+} else {
+  console.warn(`wanim: numpy-ts browser build not found at ${numpySource}`);
+}
 
 console.log(`wanim: wrote ${outfile}`);

@@ -6,8 +6,10 @@
 // runs it against the wanim Canvas2D backend using the runtime shims in
 // `py2js/src/browser.ts`.
 //
-// `wanim` and `numpy-ts` are kept external so the page's import map resolves
-// the single shared instances loaded by the wanim browser bundle.
+// `wanim` and `numpy-ts` stay external but are referenced by *relative* URLs
+// (the bundles all live in `dist/`), so the bridge works even when the page's
+// import map is missing or was applied too late.  All three files resolve the
+// same URLs, which keeps the numpy-ts instance (and its WASM heap) shared.
 //
 // Env overrides:
 //   PY2JS_BROWSER_OUT  output file (default dist/py2js.browser.js)
@@ -39,15 +41,16 @@ await build({
   sourcemap: process.env.WANIM_SOURCEMAP === "1",
   minify: process.env.WANIM_MINIFY !== "0",
   logLevel: "info",
-  // Keep the shared singletons external; the page import map points them at the
-  // same URLs the wanim bundle uses.
-  external: ["numpy-ts"],
   plugins: [
     {
-      name: "wanim-shared",
+      name: "shared-relative",
       setup(build) {
+        build.onResolve({ filter: /^numpy-ts$/ }, () => ({
+          path: "./numpy-ts.browser.js",
+          external: true,
+        }));
         build.onResolve({ filter: /dist\/index\.js$/ }, () => ({
-          path: "wanim",
+          path: "./wanim.browser.js",
           external: true,
         }));
       },
