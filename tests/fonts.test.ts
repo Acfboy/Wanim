@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   configure_fonts,
+  fontCache,
   getDefaultFontPaths,
   getDefaultPangoRenderer,
   getTextPaths,
+  loadFontSync,
+  preload_fonts,
+  preloadFonts,
   renderMarkupToSVGString,
 } from "../src/mobject/text/pango/index.js";
 import { Text } from "../src/mobject/text/index.js";
@@ -45,5 +49,31 @@ describe("configure_fonts", () => {
     configure_fonts(null);
     expect(getDefaultFontPaths()).toHaveLength(1);
     expect(getDefaultPangoRenderer().fonts).toHaveLength(1);
+  });
+});
+
+describe("preloadFonts", () => {
+  afterEach(() => {
+    configure_fonts(null);
+    fontCache.clear();
+  });
+
+  it("parses the chain and seeds the shared cache", async () => {
+    fontCache.delete(LATIN);
+    const fonts = await preloadFonts([LATIN]);
+    expect(fonts).toHaveLength(1);
+    expect(fontCache.get(LATIN)).toBe(fonts[0]);
+    // A later synchronous load must hit the warmed cache, not the filesystem.
+    expect(loadFontSync(LATIN)).toBe(fonts[0]);
+  });
+
+  it("preload_fonts follows configure_fonts", async () => {
+    configure_fonts([LATIN, CJK]);
+    const fonts = await preload_fonts();
+    expect(fonts.map((font) => font.unitsPerEm)).toEqual([2048, 256]);
+  });
+
+  it("rejects when nothing can be loaded in Node", async () => {
+    await expect(preloadFonts([LATIN, "/nonexistent/font.ttf"])).rejects.toThrow();
   });
 });
