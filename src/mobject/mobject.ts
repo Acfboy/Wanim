@@ -2483,6 +2483,25 @@ export class Mobject {
   valueOf(): string { return this.toString(); }
 }
 
+// Explicit Python parameter names for `arrange_in_grid`, surviving bundling.
+// py2js maps Python kwargs onto positional slots via `Function.toString`
+// param names, but esbuild renames colliding locals when bundling (here
+// `rows` became `rows2`), which mis-routed `rows=...` into `row_alignments`
+// and crashed in `init_alignments` ("alignments is not iterable").
+// `runtime_core` prefers this metadata over parsed names (see also the
+// `__argnames__` propagation in `wrapPrototypeMethods`).
+(Mobject.prototype.arrange_in_grid as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "rows",
+  "cols",
+  "buff",
+  "cell_alignment",
+  "row_alignments",
+  "col_alignments",
+  "row_heights",
+  "col_widths",
+  "flow_order",
+];
+
 export class Group extends Mobject {
   constructor(...args: Array<Mobject | Iterable<Mobject> | MobjectOptions>) {
     // Mirrors Python `Group.__init__(self, *mobjects, **kwargs)`: a trailing

@@ -191,6 +191,13 @@ function extractParamList(src: string, open: number): (string | null)[] | null {
 }
 
 function parseParamNames(fn: (...a: Any[]) => Any): (string | null)[] | null {
+  // Explicit `__argnames__` (set in wanim source) survives bundling, while
+  // `Function.prototype.toString` parameter names do not: esbuild renames
+  // colliding locals when hoisting modules into one bundle (e.g.
+  // `arrange_in_grid(rows=...)` became `rows2`), silently breaking the
+  // Python kwargs -> positional mapping. Prefer the explicit metadata.
+  const explicit = (fn as Any).__argnames__;
+  if (Array.isArray(explicit)) return [...explicit];
   const src = stripJsComments(Function.prototype.toString.call(fn));
   return extractParamList(src, src.indexOf("("));
 }
@@ -751,6 +758,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   /** Parameter names of a native class constructor (walking up the chain). */
   function parseConstructorParams(Ctor: new (...a: Any[]) => Any): (string | null)[] | null {
     if (constructorParamsCache.has(Ctor)) return constructorParamsCache.get(Ctor) ?? null;
+    const explicitCtor = (Ctor as Any).__argnames__;
+    if (Array.isArray(explicitCtor)) {
+      constructorParamsCache.set(Ctor, [...explicitCtor]);
+      return [...explicitCtor];
+    }
     let cur: Any = Ctor;
     let result: (string | null)[] | null = null;
     while (typeof cur === "function") {
@@ -811,6 +823,12 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       };
       (wrapped as Any).__wanim_kwargs_wrapped__ = true;
       (wrapped as Any).__wanim_original__ = original;
+      // Propagate explicit `__argnames__` so rapydscript's own
+      // `ρσ_interpolate_kwargs` (which reads `f.__argnames__` before calling)
+      // maps kwargs correctly even when the bundle renamed the parameters.
+      if (Array.isArray((original as Any).__argnames__)) {
+        (wrapped as Any).__argnames__ = [...(original as Any).__argnames__];
+      }
       Object.defineProperty(Ctor.prototype, name, {
         configurable: descriptor.configurable,
         enumerable: descriptor.enumerable,
