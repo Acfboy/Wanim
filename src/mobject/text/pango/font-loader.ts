@@ -45,16 +45,18 @@ export const DEFAULT_FONT_FILES = ["TimesNewRoman.ttf", "FZShuSong-Z01S.ttf"];
  * Browser default chain, served from free public CDNs (jsDelivr) and pinned to
  * immutable upstream commits:
  *
- * - Tinos (Apache-2.0) is metric-compatible with Times New Roman.
- * - Noto Serif SC (OFL) is a Song/Ming face (Source Han Serif) for Simplified
- *   Chinese.
+ * - Tinos (Apache-2.0, 0.5 MB) is metric-compatible with Times New Roman.
+ * - Noto Serif SC (OFL, Source Han Serif) from Fontsource: the
+ *   `chinese-simplified` subset has ~8.1k glyphs (common simplified and
+ *   traditional characters) in 2.3 MB. It is WOFF1, which opentype.js reads.
+ *   The full Noto Serif SC OTF is 11.6 MB if more coverage is needed.
  *
  * Embedders can replace the chain with `configure_fonts([...])`; see
  * `getDefaultPangoRenderer` in ./svg-renderer.js.
  */
 export const DEFAULT_FONT_URLS = [
   "https://cdn.jsdelivr.net/gh/google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/tinos/Tinos-Regular.ttf",
-  "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf",
+  "https://cdn.jsdelivr.net/npm/@fontsource/noto-serif-sc@4.5.12/files/noto-serif-sc-chinese-simplified-400-normal.woff",
 ];
 
 /** Legacy single-font name, kept as a last-resort browser fallback. */
