@@ -127,10 +127,10 @@ index 341df63..6bda020 100644
              else:
                  output.print('[')
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..1cf483b 100644
+index a16673a..9b33d9f 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
-@@ -12,8 +12,26 @@ from output.loops import unpack_tuple
+@@ -12,8 +12,33 @@ from output.loops import unpack_tuple
  
  
  def print_getattr(self, output, skip_expression):  # AST_Dot
@@ -140,7 +140,14 @@ index a16673a..1cf483b 100644
 +    # target has to stay an lvalue (`square.x = ...`), so only plain reads are
 +    # routed through the runtime helper.
 +    is_callee = is_node_type(p, AST_BaseCall) and p.expression is self
-+    is_lvalue = is_node_type(p, AST_Assign) and p.left is self
++    # `output._in_lvalue` covers targets printed via `output.assign` (tuple
++    # unpacking `r, self.x = ...`, loop targets), where the direct parent is
++    # not the `AST_Assign` itself, plus dots nested inside a larger target
++    # (`self.y` in `self.y[0] = ...`).
++    is_lvalue = (
++        (is_node_type(p, AST_Assign) and p.left is self)
++        or output._in_lvalue > 0
++    )
 +    if (output.options.operator_overloading and not skip_expression
 +            and not is_callee and not is_lvalue):
 +        # Route value/reference reads through ρσ_getdot so a bound Mobject
@@ -158,12 +165,15 @@ index a16673a..1cf483b 100644
          expr.print(output)
      if is_node_type(expr, AST_Number) and expr.value >= 0:
          if not /[xa-f.]/i.test(output.last()):
-@@ -26,6 +44,18 @@ def print_getattr(self, output, skip_expression):  # AST_Dot
+@@ -26,6 +51,21 @@ def print_getattr(self, output, skip_expression):  # AST_Dot
  def print_getitem(self, output):  # AST_Sub
      expr = self.expression
      prop = self.property
 +    p = output.parent()
-+    is_lvalue = is_node_type(p, AST_Assign) and p.left is self
++    is_lvalue = (
++        (is_node_type(p, AST_Assign) and p.left is self)
++        or output._in_lvalue > 0
++    )
 +    if output.options.operator_overloading and not is_lvalue:
 +        # Route every read subscript through the runtime helper so Python
 +        # `__getitem__` works (Mobject/VGroup indexing) in addition to plain
@@ -177,7 +187,7 @@ index a16673a..1cf483b 100644
      if (
          is_node_type(prop, AST_Number) or is_node_type(prop, AST_String)
          or (is_node_type(prop, AST_SymbolRef) and prop.name
-@@ -38,6 +68,15 @@ def print_getitem(self, output):  # AST_Sub
+@@ -38,6 +78,15 @@ def print_getitem(self, output):  # AST_Sub
          is_node_type(prop, AST_Unary) and prop.operator is '-'
          and is_node_type(prop.expression, AST_Number)
      )
@@ -193,7 +203,7 @@ index a16673a..1cf483b 100644
      is_repeatable = is_node_type(expr, AST_SymbolRef)
      if is_repeatable:
          expr.print(output)
-@@ -46,8 +85,11 @@ def print_getitem(self, output):  # AST_Sub
+@@ -46,8 +95,11 @@ def print_getitem(self, output):  # AST_Sub
          expr = {'print': def (): output.print('ρσ_expr_temp');}
  
      if is_negative_number:
@@ -206,7 +216,7 @@ index a16673a..1cf483b 100644
          output.print(']')
          return
      is_repeatable = is_node_type(prop, AST_SymbolRef)
-@@ -115,6 +157,12 @@ def print_unary_prefix(self, output):
+@@ -115,6 +167,12 @@ def print_unary_prefix(self, output):
      op = self.operator
      if op is 'delete':
          return print_delete(self.expression, output)
@@ -219,7 +229,7 @@ index a16673a..1cf483b 100644
      output.print(op)
      if /^[a-z]/i.test(op):
          output.space()
-@@ -211,9 +259,37 @@ function_ops = {
+@@ -211,9 +269,37 @@ function_ops = {
      'nin': '!ρσ_in',
  }
  
@@ -258,7 +268,7 @@ index a16673a..1cf483b 100644
          output.print(function_ops[self.operator])
          output.with_parens(def ():
              self.left.print(output)
-@@ -363,6 +439,20 @@ def print_existential(self, output):
+@@ -363,6 +449,20 @@ def print_existential(self, output):
  
  
  def print_assignment(self, output):
@@ -279,8 +289,22 @@ index a16673a..1cf483b 100644
      flattened = False
      left = self.left
      if is_node_type(left, AST_Seq):
+@@ -372,7 +472,13 @@ def print_assignment(self, output):
+         flattened = flat.length > left.elements.length
+         output.print('ρσ_unpack')
+     else:
++        # Plain `self.y[0] = ...` nests a dot inside the subscript target; the
++        # direct parent check in print_getattr cannot see the `AST_Assign`, so
++        # mark the whole target position as an lvalue (tuple elements are
++        # covered separately via output.assign in unpack_tuple).
++        output._in_lvalue += 1
+         left.print(output)
++        output._in_lvalue -= 1
+     output.space()
+     output.print(self.operator)
+     output.space()
 diff --git a/src/output/stream.pyj b/src/output/stream.pyj
-index fe87930..ea40d02 100644
+index fe87930..4e7575e 100644
 --- a/src/output/stream.pyj
 +++ b/src/output/stream.pyj
 @@ -79,6 +79,15 @@ output_stream_defaults = {
@@ -299,6 +323,31 @@ index fe87930..ea40d02 100644
  }
  
  
+@@ -97,6 +106,10 @@ class OutputStream:
+         self.index_counter = 0
+         self.with_counter = 0
+         self.try_else_counter = 0
++        # Nesting depth inside an assignment-target position (see assign()).
++        # While > 0, `AST_Dot`/`AST_Sub` nodes print as plain lvalues instead
++        # of being routed through the operator-overloading read helpers.
++        self._in_lvalue = 0
+         self._source_map_segments = v'[]' if self.options.source_map else None
+         # Indentation string cache: avoids repeat_string() on every
+         # indent() call
+@@ -301,7 +314,13 @@ class OutputStream:
+         if jstype(name) is 'string':
+             self.print(name)
+         else:
++            # Mark lvalue position: tuple-unpacked (`r, self.x = ...`) and
++            # loop (`for self.x in ...`) targets are printed through here, and
++            # the `ρσ_getdot`/`ρσ_getitem` read helpers are not assignable, so
++            # nested dots/subs must stay plain lvalues while this prints.
++            self._in_lvalue += 1
+             name.print(self)
++            self._in_lvalue -= 1
+         self.space()
+         self.print('=')
+         self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
 index 5533155..29568a7 100644
 --- a/src/parse.pyj
