@@ -9,9 +9,13 @@ Free CDN fonts, pinned to immutable upstream commits (`DEFAULT_FONT_URLS` in
 [`../font-loader.ts`](../font-loader.ts)):
 
 1. [Tinos](https://cdn.jsdelivr.net/gh/google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/tinos/Tinos-Regular.ttf)
-   (Apache-2.0) — metric-compatible with Times New Roman, for Latin/ASCII.
-2. [Noto Serif SC](https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf)
-   (OFL, Source Han Serif) — Song/Ming face for Simplified Chinese.
+   (Apache-2.0, 0.5 MB) — metric-compatible with Times New Roman, for Latin/ASCII.
+2. [Noto Serif SC, `chinese-simplified`
+   subset](https://cdn.jsdelivr.net/npm/@fontsource/noto-serif-sc@4.5.12/files/noto-serif-sc-chinese-simplified-400-normal.woff)
+   (OFL, Source Han Serif, 2.3 MB WOFF1) — Song/Ming face; ~8.1k glyphs,
+   covering common simplified and traditional characters. The full
+   [Noto Serif SC OTF](https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf)
+   (11.6 MB) has broader coverage (CJK Extension B, more symbols) if needed.
 
 Embedders override the chain at startup, before creating any text mobject:
 
