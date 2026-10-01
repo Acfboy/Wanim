@@ -324,7 +324,7 @@ export class SVGMobject extends VMobject {
     this._vgroup_stack = [];
     this._root_vgroup = new VGroup();
     const allMobjects: VMobject[] = [];
-    this._walk_svg_node(root, {}, IDENTITY_AFFINE, allMobjects, 0);
+    this._walk_svg_node(root, {}, IDENTITY_AFFINE, allMobjects, 0, true);
 
     // Python always keeps a "root" vgroup holding every leaf (used as a
     // fallback by MathTex._break_up_by_substrings).
@@ -351,11 +351,12 @@ export class SVGMobject extends VMobject {
     parentTransform: AffineMatrix,
     allMobjects: VMobject[],
     idDepth: number,
+    isRootSvg = false,
   ): void {
     const tag = node.tag;
     if (tag === "#document") {
       for (const child of node.children) {
-        this._walk_svg_node(child, inheritedAttrs, parentTransform, allMobjects, idDepth);
+        this._walk_svg_node(child, inheritedAttrs, parentTransform, allMobjects, idDepth, true);
       }
       return;
     }
@@ -363,22 +364,30 @@ export class SVGMobject extends VMobject {
 
     const attrs = effective_svg_attrs(node, inheritedAttrs);
     const localTransform = parse_svg_transform(attrs["transform"]);
-    const totalTransform = multiply_affine(parentTransform, localTransform);
+    let totalTransform = multiply_affine(parentTransform, localTransform);
     const id = attrs["id"];
 
     if (tag === "g" || tag === "svg") {
+      // NOTE: a nested <svg> establishes its own viewport: `viewBox` maps the
+      // content into the x/y/width/height rectangle. MathJax splits stretched
+      // delimiters (tall matrix brackets, big parens, ...) into top/bottom
+      // glyphs plus an extender inside a nested <svg>; ignoring the viewport
+      // transform misplaced the extender and left visible gaps in brackets.
+      if (tag === "svg" && !isRootSvg) {
+        totalTransform = multiply_affine(totalTransform, svg_viewport_transform(attrs));
+      }
       if (tag === "g" && id !== undefined && id !== "") {
         const vg = new VGroup();
         this._vgroup_stack.push(vg);
         for (const child of node.children) {
-          this._walk_svg_node(child, attrs, totalTransform, allMobjects, idDepth + 1);
+          this._walk_svg_node(child, attrs, totalTransform, allMobjects, idDepth + 1, false);
         }
         this._vgroup_stack.pop();
         this._id_to_vgroup.set(id, vg);
         if (idDepth === 0 && !id.endsWith("substring")) this._all_vgroups.push(vg);
       } else {
         for (const child of node.children) {
-          this._walk_svg_node(child, attrs, totalTransform, allMobjects, idDepth);
+          this._walk_svg_node(child, attrs, totalTransform, allMobjects, idDepth, false);
         }
       }
       return;
@@ -1220,6 +1229,67 @@ export function multiply_affine(first: AffineMatrix, second: AffineMatrix): Affi
     d: first.b * second.c + first.d * second.d,
     e: first.a * second.e + first.c * second.f + first.e,
     f: first.b * second.e + first.d * second.f + first.f,
+  };
+}
+
+/** ViewBox attribute of an SVG element (`min-x min-y width height`). */
+export interface SvgViewBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export function parse_svg_viewbox(value: string | undefined): SvgViewBox | null {
+  if (value === undefined) return null;
+  const parts = value.trim().split(/[\s,]+/).map((part) => parseFloat(part));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) return null;
+  return { x: parts[0]!, y: parts[1]!, width: parts[2]!, height: parts[3]! };
+}
+
+/**
+ * Viewport transform of a nested `<svg>` element: maps its `viewBox`
+ * coordinate system into the `x`/`y`/`width`/`height` viewport, mirroring the
+ * SVG `preserveAspectRatio` semantics (default `xMidYMid meet`).
+ */
+export function svg_viewport_transform(attrs: Record<string, string>): AffineMatrix {
+  const viewBox = parse_svg_viewbox(attrs["viewbox"]);
+  if (viewBox === null || viewBox.width === 0 || viewBox.height === 0) {
+    return { ...IDENTITY_AFFINE };
+  }
+  const viewportWidth = parse_svg_float(attrs["width"], viewBox.width);
+  const viewportHeight = parse_svg_float(attrs["height"], viewBox.height);
+  if (!(viewportWidth > 0) || !(viewportHeight > 0)) return { ...IDENTITY_AFFINE };
+  const originX = parse_svg_float(attrs["x"], 0);
+  const originY = parse_svg_float(attrs["y"], 0);
+  const scaleX = viewportWidth / viewBox.width;
+  const scaleY = viewportHeight / viewBox.height;
+
+  const preserve = (attrs["preserveaspectratio"] ?? "xMidYMid meet").trim().split(/\s+/);
+  const alignIndex = preserve[0] === "defer" ? 1 : 0;
+  const align = preserve[alignIndex] ?? "xMidYMid";
+  const meetOrSlice = preserve[preserve.length - 1] === "slice" ? "slice" : "meet";
+
+  if (align === "none") {
+    return {
+      a: scaleX,
+      b: 0,
+      c: 0,
+      d: scaleY,
+      e: originX - viewBox.x * scaleX,
+      f: originY - viewBox.y * scaleY,
+    };
+  }
+  const scale = meetOrSlice === "slice" ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
+  const alignX = align.startsWith("xMax") ? 1 : align.startsWith("xMid") ? 0.5 : 0;
+  const alignY = align.endsWith("YMax") ? 1 : align.endsWith("YMid") ? 0.5 : 0;
+  return {
+    a: scale,
+    b: 0,
+    c: 0,
+    d: scale,
+    e: originX + (viewportWidth - viewBox.width * scale) * alignX - viewBox.x * scale,
+    f: originY + (viewportHeight - viewBox.height * scale) * alignY - viewBox.y * scale,
   };
 }
 
