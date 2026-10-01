@@ -285,6 +285,229 @@ export function installPythonShims(sandbox: Record<string, Any>): void {
   });
 }
 
+// --- Python `%` string formatting -----------------------------------------
+//
+// rapydscript lowers `%` to `ρσ_op_mod`, so a string left operand ("%s" % x)
+// would otherwise fall through to numeric/numpy modulo.  These helpers
+// implement CPython's printf-style formatting for the common conversion
+// specifiers, flags, width, precision and the `%(name)s` mapping form.
+
+interface PercentSpec {
+  minus: boolean;
+  plus: boolean;
+  space: boolean;
+  hash: boolean;
+  zero: boolean;
+  width: number | null;
+  precision: number | null;
+}
+
+function pyStr(value: Any): string {
+  if (value === null || value === undefined) return "None";
+  if (value === true) return "True";
+  if (value === false) return "False";
+  if (Array.isArray(value)) return `[${value.map(pyStr).join(", ")}]`;
+  return String(value);
+}
+
+function padNumeric(sign: string, digits: string, spec: PercentSpec): string {
+  const body = sign + digits;
+  if (spec.width === null || body.length >= spec.width) return body;
+  const pad = spec.width - body.length;
+  if (spec.minus) return sign + digits + " ".repeat(pad);
+  if (spec.zero) return sign + "0".repeat(pad) + digits;
+  return " ".repeat(pad) + body;
+}
+
+function padText(text: string, spec: PercentSpec): string {
+  if (spec.width === null || text.length >= spec.width) return text;
+  const pad = " ".repeat(spec.width - text.length);
+  return spec.minus ? text + pad : pad + text;
+}
+
+function normalizeExponent(text: string, upper: boolean): string {
+  const match = /^([0-9.]+)[eE]([+-])(\d+)$/.exec(text);
+  if (match === null) return text;
+  return `${match[1]}${upper ? "E" : "e"}${match[2]}${match[3]!.padStart(2, "0")}`;
+}
+
+function stripTrailingZeros(text: string): string {
+  return text.indexOf(".") < 0 ? text : text.replace(/\.?0+$/, "");
+}
+
+function formatGeneral(abs: number, precision: number, alt: boolean, upper: boolean): string {
+  if (abs === 0) return alt && precision > 1 ? `0.${"0".repeat(precision - 1)}` : "0";
+  const p = precision === 0 ? 1 : precision;
+  const exponent = Math.floor(Math.log10(abs));
+  if (exponent < -4 || exponent >= p) {
+    let mantissa = abs.toExponential(p - 1);
+    if (!alt) {
+      const [head, tail] = mantissa.split("e");
+      mantissa = `${stripTrailingZeros(head!)}e${tail}`;
+    }
+    return normalizeExponent(mantissa, upper);
+  }
+  const text = abs.toFixed(Math.max(0, p - 1 - exponent));
+  return alt ? text : stripTrailingZeros(text);
+}
+
+function formatPercentValue(value: Any, conversion: string, spec: PercentSpec): string {
+  switch (conversion) {
+    case "s":
+    case "a": {
+      let text = pyStr(value);
+      if (spec.precision !== null) text = text.slice(0, spec.precision);
+      return padText(text, spec);
+    }
+    case "r": {
+      let text = typeof value === "string" ? `'${value}'` : pyStr(value);
+      if (spec.precision !== null) text = text.slice(0, spec.precision);
+      return padText(text, spec);
+    }
+    case "c": {
+      const text = typeof value === "number" ? String.fromCharCode(value) : pyStr(value).charAt(0);
+      return padText(text, spec);
+    }
+    case "d":
+    case "i":
+    case "u": {
+      const n = Math.trunc(Number(value)) || 0;
+      const sign = n < 0 ? "-" : spec.plus ? "+" : spec.space ? " " : "";
+      let digits = Math.abs(n).toString(10);
+      if (spec.precision !== null && spec.precision > digits.length) {
+        digits = "0".repeat(spec.precision - digits.length) + digits;
+      }
+      return padNumeric(sign, digits, spec);
+    }
+    case "o":
+    case "x":
+    case "X": {
+      const n = Math.trunc(Number(value)) || 0;
+      const sign = n < 0 ? "-" : spec.plus ? "+" : spec.space ? " " : "";
+      let digits = Math.abs(n).toString(conversion === "o" ? 8 : 16);
+      if (conversion === "X") digits = digits.toUpperCase();
+      if (spec.hash) digits = conversion === "o" ? `0o${digits}` : `${conversion === "X" ? "0X" : "0x"}${digits}`;
+      if (spec.precision !== null && spec.precision > digits.length) {
+        digits = "0".repeat(spec.precision - digits.length) + digits;
+      }
+      return padNumeric(sign, digits, spec);
+    }
+    case "f":
+    case "F":
+    case "e":
+    case "E":
+    case "g":
+    case "G": {
+      const num = Number(value);
+      const negative = num < 0 || Object.is(num, -0);
+      const abs = Math.abs(num);
+      const precision = spec.precision ?? 6;
+      let digits: string;
+      if (conversion === "f" || conversion === "F") digits = abs.toFixed(precision);
+      else if (conversion === "e" || conversion === "E") {
+        digits = normalizeExponent(abs.toExponential(precision), conversion === "E");
+      } else {
+        digits = formatGeneral(abs, precision, spec.hash, conversion === "G");
+      }
+      const sign = negative ? "-" : spec.plus ? "+" : spec.space ? " " : "";
+      return padNumeric(sign, digits, spec);
+    }
+    default:
+      throw new Error(`unsupported format character '${conversion}'`);
+  }
+}
+
+function hasPercentMappingKey(format: string): boolean {
+  for (let i = 0; i < format.length; i += 1) {
+    if (format[i] !== "%") continue;
+    i += 1;
+    if (format[i] !== "%" && format[i] === "(") return true;
+  }
+  return false;
+}
+
+export function pythonPercentFormat(format: string, values: Any): string {
+  const isSequence = Array.isArray(values);
+  const args: Any[] = isSequence ? values : [values];
+  const mapping: Record<string, Any> | null =
+    !isSequence && values !== null && typeof values === "object" && hasPercentMappingKey(format)
+      ? values
+      : null;
+  let argIndex = 0;
+  const nextArg = (): Any => {
+    if (argIndex >= args.length) throw new Error("not enough arguments for format string");
+    return args[argIndex++];
+  };
+  let out = "";
+  let i = 0;
+  while (i < format.length) {
+    if (format[i] !== "%") {
+      out += format[i];
+      i += 1;
+      continue;
+    }
+    i += 1;
+    if (i >= format.length) throw new Error("incomplete format");
+    if (format[i] === "%") {
+      out += "%";
+      i += 1;
+      continue;
+    }
+    let key: string | null = null;
+    if (format[i] === "(") {
+      const close = format.indexOf(")", i);
+      if (close < 0) throw new Error("incomplete format key");
+      key = format.slice(i + 1, close);
+      i = close + 1;
+    }
+    const spec: PercentSpec = {
+      minus: false, plus: false, space: false, hash: false, zero: false, width: null, precision: null,
+    };
+    for (;;) {
+      const flag = format[i];
+      if (flag === "-") spec.minus = true;
+      else if (flag === "+") spec.plus = true;
+      else if (flag === " ") spec.space = true;
+      else if (flag === "#") spec.hash = true;
+      else if (flag === "0") spec.zero = true;
+      else break;
+      i += 1;
+    }
+    if (format[i] === "*") {
+      spec.width = Number(nextArg());
+      i += 1;
+    } else {
+      const start = i;
+      while (i < format.length && format[i]! >= "0" && format[i]! <= "9") i += 1;
+      if (i > start) spec.width = Number(format.slice(start, i));
+    }
+    if (format[i] === ".") {
+      i += 1;
+      if (format[i] === "*") {
+        spec.precision = Number(nextArg());
+        i += 1;
+      } else {
+        const start = i;
+        while (i < format.length && format[i]! >= "0" && format[i]! <= "9") i += 1;
+        spec.precision = i > start ? Number(format.slice(start, i)) : 0;
+      }
+    }
+    const conversion = format[i] ?? "";
+    i += 1;
+    let value: Any;
+    if (key !== null && mapping !== null) {
+      value = mapping[key];
+    } else if (mapping !== null) {
+      // A mapping operand must be addressed with `%(name)s` on every specifier.
+      throw new Error("not enough arguments for format string");
+    } else {
+      value = nextArg();
+    }
+    out += formatPercentValue(value, conversion, spec);
+  }
+  return out;
+}
+
 /** Build the runtime helpers bound to a specific wanim/numpy pair. */
 export function createRuntimeCore(deps: RuntimeDeps) {
   const { wanim, np, NDArray } = deps;
@@ -376,6 +599,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
 
   function pythonMod(a: Any, b: Any): Any {
     if (a !== null && a !== undefined && typeof a.__mod__ === "function") return a.__mod__(b);
+    // `"..." % x` is Python's printf-style string formatting, not modulo.
+    if (typeof a === "string") return pythonPercentFormat(a, b);
     if (typeof a === "number" && typeof b === "number") {
       const r = a % b;
       return r !== 0 && r < 0 !== b < 0 ? r + b : r;
@@ -409,6 +634,62 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (isArrayLike(a)) return a.map((v) => -v);
     if (isNdArray(a)) return scalarize(np.negative(a));
     return -a;
+  }
+
+  /**
+   * Round a JS number the way CPython's `round(x, n)` does.
+   *
+   * Scaling by `10 ** n` is not enough: `2.675 * 100` is exactly `267.5` in
+   * binary floating point, which would round the wrong way.  CPython instead
+   * rounds the *exact decimal expansion* of the double, half to even.  We get
+   * that expansion from `toFixed(100)` and do the rounding in `BigInt`, so the
+   * result matches Python even for the classic `round(2.675, 2) == 2.67`.
+   */
+  function pythonRoundNumber(value: number, n: number): number {
+    if (!Number.isFinite(value)) return value;
+    if (value === 0) return value;
+    const negative = value < 0;
+    const abs = Math.abs(value);
+    if (Math.abs(value) >= 1e21) {
+      // Fixed notation (and therefore `toFixed`) stops at 1e21; fall back to a
+      // scaled `Math.round` for these (rare) magnitudes.
+      const factor = 10 ** n;
+      return Math.round(value * factor) / factor;
+    }
+    if (n > 100) return value; // rounding below the exact digits cannot change it
+    if (n < -323) return value * 0; // `10 ** n` underflows; everything rounds to zero
+    const fixed = abs.toFixed(100);
+    const dot = fixed.indexOf(".");
+    const digits = fixed.slice(0, dot) + fixed.slice(dot + 1); // exact abs * 10^100
+    const x = BigInt(digits);
+    const d = 100 - n; // we need round(x / 10^d)
+    let q: bigint;
+    if (d <= 0) {
+      q = x * 10n ** BigInt(-d);
+    } else {
+      const denom = 10n ** BigInt(d);
+      q = x / denom;
+      const remainder = x % denom;
+      const twice = remainder * 2n;
+      if (twice > denom) q += 1n;
+      else if (twice === denom && q % 2n !== 0n) q += 1n; // exact half -> even
+    }
+    const result = Number(q) / 10 ** n;
+    return negative ? -result : result;
+  }
+
+  /**
+   * Python `round()`.  JavaScript's `Math.round` is *not* equivalent: CPython
+   * rounds halves to the nearest even digit (`round(2.5) == 2`) and accepts a
+   * second `ndigits` argument (`round(3.14159, 2)`).  numpy arrays are handed
+   * to `np.round` (also half-to-even).
+   */
+  function pythonRound(value: Any, ndigits?: Any): Any {
+    const n = ndigits === undefined || ndigits === null ? 0 : Math.trunc(Number(ndigits));
+    if (Array.isArray(value)) return value.map((v) => pythonRound(v, ndigits));
+    if (isNdArray(value)) return scalarize(np.round(value, n));
+    if (typeof value !== "number") return Math.round(value as number);
+    return pythonRoundNumber(value, n);
   }
 
   /**
@@ -633,6 +914,14 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       facade[name] = (x: Any, ...rest: Any[]) =>
         typeof x === "number" && rest.length === 0 ? fast(x) : wrapped(x, ...rest);
     }
+    // numpy-ts' `round`/`around` never coerce their input, so they throw on
+    // Python scalars (and plain lists): `np.round(x, 6)` on a float fails with
+    // "undefined is not iterable".  Route both names through Python `round`,
+    // which accepts numbers, nested lists and NDArrays and rounds half to even
+    // exactly like numpy.
+    const numpyRound = (a: Any, decimals: Any = 0): Any => pythonRound(a, decimals);
+    facade.round = numpyRound;
+    facade.around = numpyRound;
     // numpy-ts requires an array shape; Python accepts an int (`np.zeros(3)`).
     for (const name of ["zeros", "ones", "empty"]) {
       const fn = (np as Any)[name];
@@ -666,6 +955,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_op_pow = pythonPow;
     globals.ρσ_op_neg = pythonNeg;
     globals.ρσ_getdot = getDot;
+    // Python builtins rapydscript's baselib does not provide.  `abs`, `min`,
+    // `max` and `sum` come from baselib; `round` has no JS equivalent that
+    // matches CPython's banker's rounding / `ndigits` argument.
+    globals.round = pythonRound;
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -682,6 +975,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonMod,
     pythonPow,
     pythonNeg,
+    pythonRound,
     getDot,
   };
 }
