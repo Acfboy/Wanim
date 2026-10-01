@@ -17,6 +17,12 @@ try {
 
 const py2js = await import("py2js");
 
+// Configure the text font chain before any scene is built. `DEFAULT_FONT_URLS`
+// is the free CDN pair (Tinos for Latin, Noto Serif SC for Chinese); embedders
+// pass their own URLs/paths here instead, e.g. configure_fonts(["/fonts/a.ttf"]).
+const wanim = await import("wanim");
+wanim.configure_fonts(wanim.DEFAULT_FONT_URLS);
+
 // Target logical frame rate for live playback.  Yields to requestAnimationFrame
 // until at least 1000/TARGET_FPS ms have passed before computing the next frame.
 const TARGET_FPS = 30;

@@ -33,12 +33,29 @@ const IS_BROWSER = typeof window !== "undefined" || typeof (globalThis as { impo
 export const DEFAULT_FONT_PATH = new URL("./fonts/DejaVuSans.ttf", import.meta.url).pathname;
 
 /**
- * Font files shipped with wanim, in fallback order: the first font that has a
- * glyph for a character wins.  Times New Roman covers Latin/ASCII, FZShuSong
- * (方正书宋) covers CJK; together they mirror the usual Chinese textbook
- * convention of Times for Western text and a Song face for Chinese.
+ * Font files bundled in the repository (Node default), in fallback order:
+ * the first font that has a glyph for a character wins.  Times New Roman
+ * covers Latin/ASCII, FZShuSong (方正书宋) covers CJK; together they mirror
+ * the usual Chinese textbook convention of Times for Western text and a Song
+ * face for Chinese.
  */
 export const DEFAULT_FONT_FILES = ["TimesNewRoman.ttf", "FZShuSong-Z01S.ttf"];
+
+/**
+ * Browser default chain, served from free public CDNs (jsDelivr) and pinned to
+ * immutable upstream commits:
+ *
+ * - Tinos (Apache-2.0) is metric-compatible with Times New Roman.
+ * - Noto Serif SC (OFL) is a Song/Ming face (Source Han Serif) for Simplified
+ *   Chinese.
+ *
+ * Embedders can replace the chain with `configure_fonts([...])`; see
+ * `getDefaultPangoRenderer` in ./svg-renderer.js.
+ */
+export const DEFAULT_FONT_URLS = [
+  "https://cdn.jsdelivr.net/gh/google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/tinos/Tinos-Regular.ttf",
+  "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf",
+];
 
 /** Legacy single-font name, kept as a last-resort browser fallback. */
 export const LEGACY_FONT_FILE = "DejaVuSans.ttf";
@@ -77,18 +94,18 @@ export function resolveDefaultFontPath(): string {
 /**
  * Resolve the shipped default font chain.
  *
- * `WANIM_FONT` overrides the whole chain with a single file (used by the demo
- * scripts and the differential tests, which pin DejaVu Sans).  Otherwise the
- * browser fetches the shipped fonts next to the bundle while Node reads them
- * from `assets/fonts/`, falling back to the host's default English font when
- * that directory is absent (e.g. an installed package without assets).
+ * `WANIM_FONT` overrides the whole chain with a single file (used by the
+ * differential tests, which pin DejaVu Sans).  `configure_fonts([...])` from
+ * the package root is the embedder-facing equivalent and takes precedence over
+ * everything here.  Otherwise the browser uses {@link DEFAULT_FONT_URLS} while
+ * Node reads the repository fonts from `assets/fonts/`, falling back to the
+ * host's default English font when that directory is absent (e.g. an installed
+ * package without assets).
  */
 export function resolveDefaultFontPaths(): string[] {
   const envOverride = typeof process !== "undefined" ? process.env?.WANIM_FONT : undefined;
   if (envOverride) return [envOverride];
-  if (IS_BROWSER) {
-    return DEFAULT_FONT_FILES.map((file) => new URL(`./fonts/${file}`, import.meta.url).pathname);
-  }
+  if (IS_BROWSER) return [...DEFAULT_FONT_URLS];
   const bundled = DEFAULT_FONT_FILES.map((file) => repoFontPath(file)).filter((file) => existsSync(file));
   if (bundled.length > 0) return bundled;
   return [resolveDefaultFontPath()];
@@ -166,7 +183,16 @@ export function loadFontsFallbackSync(fontPaths: string[]): Font[] {
       if (!IS_BROWSER) throw error;
     }
   }
-  if (fonts.length === 0) fonts.push(loadFontSync(resolveLegacyFontPath()));
+  if (fonts.length === 0) {
+    try {
+      fonts.push(loadFontSync(resolveLegacyFontPath()));
+    } catch {
+      throw new Error(
+        `wanim: could not load any font from ${JSON.stringify(fontPaths)}; ` +
+          "call configure_fonts([...]) with reachable TTF/OTF URLs.",
+      );
+    }
+  }
   return fonts;
 }
 

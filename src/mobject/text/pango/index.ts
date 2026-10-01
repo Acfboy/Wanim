@@ -20,6 +20,7 @@ export {
   resolveLegacyFontPath,
   DEFAULT_FONT_PATH,
   DEFAULT_FONT_FILES,
+  DEFAULT_FONT_URLS,
   LEGACY_FONT_FILE,
   getFontMetrics,
   getGlyphPath,
@@ -34,6 +35,8 @@ export { generateDecorations, type Decoration } from "./decorator.js";
 export {
   PangoRenderer,
   getDefaultPangoRenderer,
+  getDefaultFontPaths,
+  configure_fonts,
   renderMarkupToSVGString,
   renderMarkupToSVG,
   type PangoRendererOptions,
