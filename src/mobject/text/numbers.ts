@@ -643,11 +643,17 @@ export class DecimalNumber extends VMobject {
       this.font_size = old_font_size;
     }
     this.move_to(move_to_point, this.edge_to_fix);
-    const count = Math.min(this.submobjects.length, old_submobjects.length);
-    for (let index = 0; index < count; index += 1) {
-      (this.submobjects[index] as VMobject).match_style(
-        old_submobjects[index] as VMobject,
-      );
+    // Style every new glyph from the previous generation (the last old glyph's
+    // style covers any extra glyphs), which makes the trailing `init_colors`
+    // propagation redundant.
+    if (old_submobjects.length > 0) {
+      const fallback = old_submobjects[old_submobjects.length - 1] as VMobject;
+      for (let index = 0; index < this.submobjects.length; index += 1) {
+        const source = (old_submobjects[index] ?? fallback) as VMobject;
+        (this.submobjects[index] as VMobject).match_style(source);
+      }
+    } else {
+      this.init_colors();
     }
 
     if (config.renderer === RendererType.CAIRO) {
@@ -658,8 +664,6 @@ export class DecimalNumber extends VMobject {
         mob.points.fill(0);
       }
     }
-
-    this.init_colors();
     return this;
   }
 
