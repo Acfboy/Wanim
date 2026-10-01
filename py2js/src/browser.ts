@@ -25,6 +25,7 @@ import {
   preprocessImports,
   unsupportedImportError,
 } from "./preprocess.js";
+import { formatCompileError } from "./compile_error.js";
 
 type Any = any;
 
@@ -76,13 +77,18 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   const pre = preprocessImports(source);
   const importError = unsupportedImportError(pre);
   if (importError !== null) throw importError;
-  const js = await getRapydScript().compile(pre.code, "scene.py", {
-    operator_overloading: true,
-    await_scene_methods: true,
-    bare: true,
-    beautify: true,
-  });
-  return { js, numpyNames: pre.numpyNames };
+  try {
+    const js = await getRapydScript().compile(pre.code, "scene.py", {
+      operator_overloading: true,
+      await_scene_methods: true,
+      bare: true,
+      beautify: true,
+    });
+    return { js, numpyNames: pre.numpyNames };
+  } catch (error) {
+    // Syntax errors carry a line/column; render the source line and a caret.
+    throw formatCompileError(error, pre.code);
+  }
 }
 
 // --- execution sandbox -----------------------------------------------------
