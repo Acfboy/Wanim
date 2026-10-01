@@ -13,6 +13,7 @@ import {
   getTextPaths,
   loadFontSync,
   loadFontsSync,
+  preloadFonts,
   resolveDefaultFontPath,
   resolveDefaultFontPaths,
   parseFontFromBuffer,
@@ -211,6 +212,19 @@ export function configure_fonts(fontPaths: readonly string[] | null): void {
 /** The active font chain: `configure_fonts` override or the environment default. */
 export function getDefaultFontPaths(): string[] {
   return configuredFontPaths ?? resolveDefaultFontPaths();
+}
+
+/**
+ * Download and parse the active font chain ahead of the first `Text`.
+ *
+ * Companion to {@link configure_fonts}: start it at app startup, after the
+ * runtime libraries have loaded, and let the returned promise settle in the
+ * background.  Paths are the same as the renderer will use, so a later text
+ * mobject finds the parsed fonts in the loader's cache and does no I/O.  See
+ * `preloadFonts` in font-loader.ts for the error semantics.
+ */
+export async function preload_fonts(fontPaths?: readonly string[]): Promise<Font[]> {
+  return preloadFonts(fontPaths === undefined ? getDefaultFontPaths() : [...fontPaths]);
 }
 
 /** Shared renderer using the configured/default font chain. */

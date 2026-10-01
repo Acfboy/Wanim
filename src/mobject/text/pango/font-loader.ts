@@ -203,6 +203,55 @@ export function loadFontsSync(fontPaths: string[] = resolveDefaultFontPaths()): 
   return loadFontsFallbackSync(fontPaths);
 }
 
+/** Async binary read (browser `fetch`, Node `fs` read). */
+async function readBinaryFileAsync(filePath: string): Promise<ArrayBuffer> {
+  if (IS_BROWSER) {
+    const response = await fetch(filePath);
+    if (!response.ok) throw new Error(`Failed to load font ${filePath}: HTTP ${response.status}`);
+    return response.arrayBuffer();
+  }
+  return readBinaryFile(filePath);
+}
+
+/**
+ * Warm the in-memory font cache before the first text mobject is built.
+ *
+ * The renderer's load path is synchronous — `loadFontSync` blocks the main
+ * thread on an XHR in the browser — so call this during app startup to
+ * download and parse the chain in the background; a later `Text` then finds
+ * the parsed fonts in {@link fontCache} and performs no I/O at all.
+ *
+ * Browser failures of individual fonts are skipped (the synchronous fallback
+ * chain still runs later), but a chain where nothing loads rejects so the
+ * caller can `configure_fonts` a fallback chain.  Node rejects like
+ * `loadFontSync`.
+ */
+export async function preloadFonts(fontPaths: string[] = resolveDefaultFontPaths()): Promise<Font[]> {
+  const fonts: Font[] = [];
+  const errors: unknown[] = [];
+  for (const fontPath of fontPaths) {
+    const cached = FONT_CACHE.get(fontPath);
+    if (cached !== undefined) {
+      fonts.push(cached);
+      continue;
+    }
+    try {
+      const parsed = parseFontFromBuffer(await readBinaryFileAsync(fontPath));
+      FONT_CACHE.set(fontPath, parsed);
+      fonts.push(parsed);
+    } catch (error) {
+      if (!IS_BROWSER) throw error;
+      errors.push(error);
+    }
+  }
+  if (fonts.length === 0) {
+    throw new Error(`wanim: could not preload any font from ${JSON.stringify(fontPaths)}`, {
+      cause: errors[0],
+    });
+  }
+  return fonts;
+}
+
 /** Parse a font from an ArrayBuffer (mirrors `opentype.parse`). */
 export function parseFontFromBuffer(buffer: ArrayBuffer): Font {
   return opentype.parse(buffer);
