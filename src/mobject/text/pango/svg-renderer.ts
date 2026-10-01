@@ -8,7 +8,17 @@
 
 import type { Font } from "opentype.js";
 import { parseMarkup, buildStyledRuns, type StyledRun } from "./markup-parser.js";
-import { getFontMetrics, getTextPaths, loadFontSync, resolveDefaultFontPath, parseFontFromBuffer, pathToSvgData, type FontMetrics } from "./font-loader.js";
+import {
+  getFontMetrics,
+  getTextPaths,
+  loadFontSync,
+  loadFontsSync,
+  resolveDefaultFontPath,
+  resolveDefaultFontPaths,
+  parseFontFromBuffer,
+  pathToSvgData,
+  type FontMetrics,
+} from "./font-loader.js";
 import { generateDecorations, type Decoration } from "./decorator.js";
 
 const DEFAULT_FONT_SIZE = 48;
@@ -19,6 +29,8 @@ export interface PangoRendererOptions {
   fontUrl?: string;
   /** Path to a local `.ttf`/`.otf` file (Node replacement for `fontUrl`). */
   fontPath?: string;
+  /** Fallback chain of `.ttf`/`.otf` files; takes precedence over `fontPath`. */
+  fontPaths?: string[];
   color?: string;
   fontFamily?: string;
 }
@@ -31,41 +43,64 @@ export interface RenderOptions {
 }
 
 export class PangoRenderer {
-  font: Font | null = null;
+  fonts: Font[] = [];
   metrics: FontMetrics | null = null;
   fontSize: number;
   fontUrl: string;
   fontPath: string | null;
+  fontPaths: string[] | null;
   defaultColor: string;
   defaultFontFamily: string;
 
   constructor(options: PangoRendererOptions = {}) {
     this.fontSize = options.fontSize ?? DEFAULT_FONT_SIZE;
     this.fontPath = options.fontPath ?? null;
+    this.fontPaths = options.fontPaths ?? null;
     this.fontUrl = options.fontUrl ?? this.fontPath ?? "";
     this.defaultColor = options.color ?? "#000000";
-    this.defaultFontFamily = options.fontFamily ?? "DejaVu Sans, sans-serif";
+    this.defaultFontFamily = options.fontFamily ?? "Times New Roman, FZShuSong, sans-serif";
   }
 
-  /** Load the font from a local file path (Node) or the bundled default. */
+  /** Primary (first) font of the chain. */
+  get font(): Font | null {
+    return this.fonts[0] ?? null;
+  }
+
+  /** Load a single font from a local file path (Node) or the default. */
   async loadFont(fontPath: string = this.fontPath ?? resolveDefaultFontPath()): Promise<Font> {
-    this.font = loadFontSync(fontPath);
+    this.fonts = [loadFontSync(fontPath)];
     this.fontPath = fontPath;
-    this.metrics = getFontMetrics(this.font);
-    return this.font;
+    this.fontPaths = null;
+    this.metrics = getFontMetrics(this.fonts[0] as Font);
+    return this.fonts[0] as Font;
   }
 
-  /** Synchronous font load from a file path / the bundled default. */
+  /** Synchronous single-font load. */
   loadFontSync(fontPath: string = this.fontPath ?? resolveDefaultFontPath()): Font {
-    this.font = loadFontSync(fontPath);
+    this.fonts = [loadFontSync(fontPath)];
     this.fontPath = fontPath;
-    this.metrics = getFontMetrics(this.font);
-    return this.font;
+    this.fontPaths = null;
+    this.metrics = getFontMetrics(this.fonts[0] as Font);
+    return this.fonts[0] as Font;
+  }
+
+  /** Synchronous fallback-chain load (defaults to the shipped fonts). */
+  loadFontsSync(fontPaths: string[] = this.fontPaths ?? resolveDefaultFontPaths()): Font[] {
+    this.fonts = loadFontsSync(fontPaths);
+    this.fontPaths = fontPaths;
+    this.metrics = getFontMetrics(this.fonts[0] as Font);
+    return this.fonts;
+  }
+
+  /** Async fallback-chain load (defaults to the shipped fonts). */
+  async loadFonts(fontPaths: string[] = this.fontPaths ?? resolveDefaultFontPaths()): Promise<Font[]> {
+    return this.loadFontsSync(fontPaths);
   }
 
   /** Set the font from an already-parsed opentype Font. */
   setFont(font: Font): void {
-    this.font = font;
+    this.fonts = [font];
+    this.fontPaths = null;
     this.metrics = getFontMetrics(font);
   }
 
@@ -80,12 +115,12 @@ export class PangoRenderer {
     const color = options.color ?? this.defaultColor;
     const lineSpacing = options.lineSpacing ?? 0;
 
-    if (!this.font) {
-      // Auto-load the bundled font so callers do not have to.
-      this.loadFontSync();
+    if (this.fonts.length === 0) {
+      // Auto-load the default font chain so callers do not have to.
+      this.loadFontsSync();
     }
-    const font = this.font as Font;
-    const metrics = this.metrics ?? getFontMetrics(font);
+    const fonts = this.fonts;
+    const metrics = this.metrics ?? getFontMetrics(fonts[0] as Font);
 
     const { text, attributes } = parseMarkup(markup);
     const runs = buildStyledRuns(text, attributes);
@@ -97,7 +132,7 @@ export class PangoRenderer {
       if (!styles.font_size) styles.font_size = fontSize;
     }
 
-    const glyphPositions = getTextPaths(font, text, 0, 0, fontSize, { runs, lineSpacing });
+    const glyphPositions = getTextPaths(fonts, text, 0, 0, fontSize, { runs, lineSpacing });
 
     const padding = fontSize * 0.2;
 
@@ -139,7 +174,8 @@ export class PangoRenderer {
       }
 
       let pathData = glyph.path;
-      const glyphObj = font.glyphs.get(glyph.glyphIndex);
+      const glyphFont = fonts[glyph.fontIndex] ?? fonts[0];
+      const glyphObj = glyphFont ? glyphFont.glyphs.get(glyph.glyphIndex) : undefined;
       if (glyphObj) pathData = pathToSvgData(glyphObj.getPath(0, 0, fontSize));
 
       svgContent += `  <path d="${pathData}" fill="${currentColor}" transform="translate(${pathX.toFixed(2)}, ${yOffset.toFixed(2)})" />\n`;
@@ -152,11 +188,11 @@ export class PangoRenderer {
 
 let defaultRenderer: PangoRenderer | null = null;
 
-/** Shared renderer using the bundled DejaVu Sans font. */
+/** Shared renderer using the shipped default font chain. */
 export function getDefaultPangoRenderer(): PangoRenderer {
   if (defaultRenderer === null) {
     defaultRenderer = new PangoRenderer();
-    defaultRenderer.loadFontSync(resolveDefaultFontPath());
+    defaultRenderer.loadFontsSync(resolveDefaultFontPaths());
   }
   return defaultRenderer;
 }
@@ -170,7 +206,7 @@ export function renderMarkupToSVGString(markup: string, options: RenderOptions =
 /** Async convenience wrapper (mirrors PangoJS' `renderMarkupToSVG`). */
 export async function renderMarkupToSVG(markup: string, options: RenderOptions = {}): Promise<string> {
   const renderer = new PangoRenderer(options);
-  await renderer.loadFont();
+  await renderer.loadFonts();
   return renderer.renderToSVGString(markup, options);
 }
 

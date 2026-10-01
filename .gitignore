@@ -9,8 +9,8 @@ media/
 # py2js build output (preprocess unit test)
 py2js/dist/
 
-# Fonts are never committed: Node uses the host's system font and the demo
-# server serves the host's default English font (scripts/font-resolver.mjs).
+# The shipped default fonts live in assets/fonts; this convenience dir stays
+# ignored so a locally dropped system font does not get committed.
 src/mobject/text/pango/fonts/*.ttf
 src/mobject/text/pango/fonts/*.otf
 
