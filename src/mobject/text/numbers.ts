@@ -341,6 +341,9 @@ export class DecimalNumber extends VMobject {
   initial_config: Record<string, unknown>;
   initial_height = 0;
   unit_sign: VMobject | null = null;
+  /** Formatted string of the last build; lets `set_value` skip no-op updates
+   * (e.g. a slider jitter that rounds to the same digits). */
+  private _last_num_string: string | null = null;
 
   constructor(numberValue: DecimalNumberValue = 0, options: DecimalNumberOptions = {}) {
     const {
@@ -418,6 +421,7 @@ export class DecimalNumber extends VMobject {
     this.submobjects = [];
 
     const num_string = this._get_num_string(numberValue);
+    this._last_num_string = num_string;
     const font_size = this._font_size;
     const buff = this.digit_buff_per_font_unit * font_size;
 
@@ -614,6 +618,15 @@ export class DecimalNumber extends VMobject {
     // matches the properties (color, font_size, etc.) of the previous
     // mobject to the new one.
 
+    // A value that formats to the same string (jitter within the displayed
+    // precision) leaves the mobject identical; rebuilding it would only burn
+    // glyph copies on every frame of a drag.
+    const nextString = this._get_num_string(numberValue);
+    if (nextString === this._last_num_string) {
+      this.number = numberValue;
+      return this;
+    }
+
     // old_family needed with cairo
     const old_family = this.get_family();
 
@@ -622,7 +635,13 @@ export class DecimalNumber extends VMobject {
     const old_submobjects = [...this.submobjects];
 
     this._set_submobjects_from_number(numberValue);
-    this.font_size = old_font_size;
+    // The glyph prototypes are cached at `_font_size`, so an unscaled number
+    // is already the right size and the round-trip through the `font_size`
+    // setter (height scan + full point rescale) is a no-op.  Only rescale when
+    // the number was actually scaled away from its base size.
+    if (Math.abs(old_font_size - this._font_size) > 1e-9) {
+      this.font_size = old_font_size;
+    }
     this.move_to(move_to_point, this.edge_to_fix);
     const count = Math.min(this.submobjects.length, old_submobjects.length);
     for (let index = 0; index < count; index += 1) {
