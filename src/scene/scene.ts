@@ -23,6 +23,34 @@ import {
 import { DefaultSectionType } from "./section.js";
 
 /**
+ * Mirrors `Mobject.add`'s leniency in this port: `Scene.add(list_of_mobjects)`
+ * flattens one level of iterables (py2js turns Python lists into JS arrays, so
+ * `self.add(self.cells)` arrives as a single array argument). Upstream manim
+ * rejects this (`AttributeError` from `get_family` on a `list`); wanim accepts
+ * it instead, consistent with `Mobject.add`/`add_to_back` in this port.
+ * Strings are never treated as iterables.
+ */
+function isSceneMobjectIterable(value: unknown): value is Iterable<Mobject> {
+  return (
+    value !== null &&
+    value !== undefined &&
+    !(value instanceof Mobject) &&
+    typeof value !== "string" &&
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function"
+  );
+}
+
+function flattenSceneMobjects(mobjects: Array<Mobject | Iterable<Mobject>>): Mobject[] {
+  const values: Mobject[] = [];
+  for (const item of mobjects) {
+    if (item instanceof Mobject) values.push(item);
+    else if (isSceneMobjectIterable(item)) values.push(...(item as Iterable<Mobject>));
+    else values.push(item as Mobject);
+  }
+  return values;
+}
+
+/**
  * Mirrors `manim.utils.file_ops.open_media_file`: opens the files produced
  * by `file_writer` (last-frame image and/or movie) in a viewer or file
  * browser, driven by `config.preview` / `config.show_in_file_browser`.
@@ -389,19 +417,20 @@ export class Scene {
     return raw;
   }
 
-  add(...mobjects: Mobject[]): this {
+  add(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
     // NOTE: mirrors Python Scene.add. The OpenGL branch splits Object3D
     // meshes from mobjects; the OpenGL renderer (and Object3D) is not
     // ported, so every argument is treated as a mobject there (same
     // limitation as remove() below documents).
+    const flat = flattenSceneMobjects(mobjects);
     if (config.renderer === RendererType.OPENGL) {
-      const new_mobjects = [...mobjects];
+      const new_mobjects = [...flat];
       this.remove(...new_mobjects);
       this.mobjects.push(...new_mobjects);
       return this;
     }
     const new_and_foreground_mobjects: Mobject[] = [
-      ...mobjects,
+      ...flat,
       ...this.foreground_mobjects,
     ];
     this.restructure_mobjects(new_and_foreground_mobjects);
@@ -430,7 +459,8 @@ export class Scene {
     }
   }
 
-  remove(...mobjects: Mobject[]): this {
+  remove(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
+    const flat = flattenSceneMobjects(mobjects);
     if (config.renderer === RendererType.OPENGL) {
       const mobjects_to_remove: Mobject[] = [];
       const meshes_to_remove = new Set<Mobject>();
@@ -438,7 +468,7 @@ export class Scene {
       // renderer (and Object3D) is not ported yet, so every argument is
       // treated as a mesh for the meshes list, mirroring the previous
       // behavior of this port.
-      for (const mobject_or_mesh of mobjects) {
+      for (const mobject_or_mesh of flat) {
         mobjects_to_remove.push(mobject_or_mesh);
         meshes_to_remove.add(mobject_or_mesh);
       }
@@ -451,7 +481,7 @@ export class Scene {
       return this;
     } else {
       for (const list_name of ["mobjects", "foreground_mobjects"] as const) {
-        this.restructure_mobjects(mobjects, list_name, false);
+        this.restructure_mobjects(flat, list_name, false);
       }
       return this;
     }
@@ -464,9 +494,10 @@ export class Scene {
   }
 
   // TODO, remove this, and calls to this
-  add_foreground_mobjects(...mobjects: Mobject[]): this {
-    this.foreground_mobjects = list_update(this.foreground_mobjects, mobjects);
-    this.add(...mobjects);
+  add_foreground_mobjects(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
+    const flat = flattenSceneMobjects(mobjects);
+    this.foreground_mobjects = list_update(this.foreground_mobjects, flat);
+    this.add(...flat);
     return this;
   }
 
@@ -474,8 +505,8 @@ export class Scene {
     return this.add_foreground_mobjects(mobject);
   }
 
-  remove_foreground_mobjects(...to_remove: Mobject[]): this {
-    this.restructure_mobjects(to_remove, "foreground_mobjects");
+  remove_foreground_mobjects(...to_remove: Array<Mobject | Iterable<Mobject>>): this {
+    this.restructure_mobjects(flattenSceneMobjects(to_remove), "foreground_mobjects");
     return this;
   }
 
@@ -483,14 +514,15 @@ export class Scene {
     return this.remove_foreground_mobjects(mobject);
   }
 
-  bring_to_front(...mobjects: Mobject[]): this {
-    this.add(...mobjects);
+  bring_to_front(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
+    this.add(...flattenSceneMobjects(mobjects));
     return this;
   }
 
-  bring_to_back(...mobjects: Mobject[]): this {
-    this.remove(...mobjects);
-    this.mobjects = [...mobjects, ...this.mobjects];
+  bring_to_back(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
+    const flat = flattenSceneMobjects(mobjects);
+    this.remove(...flat);
+    this.mobjects = [...flat, ...this.mobjects];
     return this;
   }
 
