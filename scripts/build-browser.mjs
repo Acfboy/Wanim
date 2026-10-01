@@ -11,17 +11,15 @@
 // `"wanim"`.  `dist/` is gitignored: the demo page references it, so run
 // `pnpm build:demo` before `pnpm demo`.
 //
-// Fonts are shipped in `assets/fonts` and copied next to the bundle
-// (`<bundle dir>/fonts/`), because the text pipeline resolves its default font
-// chain relative to `import.meta.url`.  The chain is Times New Roman (Latin)
-// plus FZShuSong (CJK), with per-glyph fallback.
+// The browser text pipeline defaults to free CDN fonts (Tinos + Noto Serif
+// SC, see `DEFAULT_FONT_URLS`); embedders can point it elsewhere with
+// `configure_fonts([...])`.  Only the bundle itself is written here.
 //
 // Env overrides:
 //   WANIM_BROWSER_OUT  output file (default dist/wanim.browser.js)
 //   WANIM_MINIFY       "0" to disable minification (default: minify)
 //   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
-import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -72,17 +70,5 @@ await build({
     "process.env.NODE_ENV": '"production"',
   },
 });
-
-const fontSource = resolve(root, "assets", "fonts");
-if (!existsSync(fontSource)) {
-  throw new Error(`wanim: shipped fonts are missing at ${fontSource}`);
-}
-const fontDest = resolve(dirname(outfile), "fonts");
-mkdirSync(fontDest, { recursive: true });
-for (const name of readdirSync(fontSource)) {
-  if (!/\.(ttf|otf)$/i.test(name)) continue;
-  cpSync(resolve(fontSource, name), resolve(fontDest, name));
-  console.log(`wanim: copied ${name} -> ${resolve(fontDest, name)}`);
-}
 
 console.log(`wanim: wrote ${outfile}`);

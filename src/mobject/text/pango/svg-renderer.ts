@@ -187,12 +187,37 @@ export class PangoRenderer {
 }
 
 let defaultRenderer: PangoRenderer | null = null;
+let configuredFontPaths: string[] | null = null;
 
-/** Shared renderer using the shipped default font chain. */
+/**
+ * Set the font chain used by every subsequently created `Text` / `MarkupText`
+ * / `Paragraph` (and the number mobjects built from them).
+ *
+ * This is the embedder-facing configuration: call it once at startup, before
+ * the first text mobject is created.  Paths are URLs in the browser (must be
+ * CORS-enabled, e.g. jsDelivr) and file paths in Node; the first font that has
+ * a glyph for a character wins, so pass e.g. `[latinFont, cjkFont]`.
+ *
+ * `configure_fonts(null)` restores the environment default
+ * (`resolveDefaultFontPaths()`).  Already-created text mobjects keep the
+ * outlines they were built with.
+ */
+export function configure_fonts(fontPaths: readonly string[] | null): void {
+  configuredFontPaths = fontPaths !== null && fontPaths.length > 0 ? [...fontPaths] : null;
+  // Drop the shared renderer so the next text mobject loads the new chain.
+  defaultRenderer = null;
+}
+
+/** The active font chain: `configure_fonts` override or the environment default. */
+export function getDefaultFontPaths(): string[] {
+  return configuredFontPaths ?? resolveDefaultFontPaths();
+}
+
+/** Shared renderer using the configured/default font chain. */
 export function getDefaultPangoRenderer(): PangoRenderer {
   if (defaultRenderer === null) {
     defaultRenderer = new PangoRenderer();
-    defaultRenderer.loadFontsSync(resolveDefaultFontPaths());
+    defaultRenderer.loadFontsSync(getDefaultFontPaths());
   }
   return defaultRenderer;
 }
