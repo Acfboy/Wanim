@@ -5,6 +5,13 @@ import { Circle } from "../src/mobject/geometry/arc.js";
 import { InputDecimalNumber, Slider, Switch } from "../src/interactive/controls.js";
 import type { InteractiveHost, PointerHandlers, TextEditOptions } from "../src/interactive/host.js";
 import { InteractiveScene } from "../src/scene/interactive_scene.js";
+import { Scene } from "../src/scene/scene.js";
+import { Wait } from "../src/animation/animation.js";
+import {
+  create_frame_scheduler,
+  set_render_scheduler,
+  type RenderScheduler,
+} from "../src/utils/scheduler.js";
 
 function mockContext(): CanvasRenderingContext2D {
   const noop = (): void => {};
@@ -345,5 +352,63 @@ describe("InteractiveScene", () => {
     await host.advance(1);
     await done;
     expect(order).toEqual(["blueprint0", "construct0", "blueprint1", "construct1"]);
+  });
+
+  test("an aborted run stops even after a newer scheduler is installed", async () => {
+    const host = new FakeHost();
+    const scene = new DemoScene({ renderer: makeRenderer(), host });
+    const schedulerA = create_frame_scheduler({ wait_for_frame: (cb) => setTimeout(cb, 0) });
+    set_render_scheduler(schedulerA);
+    try {
+      const done = scene.render();
+      await host.advance(1);
+      // A newer run replaces the global scheduler before the old one notices
+      // the abort. The old run must still stop: it belongs to scheduler A.
+      const schedulerB = create_frame_scheduler({ wait_for_frame: (cb) => setTimeout(cb, 0) });
+      set_render_scheduler(schedulerB);
+      schedulerA.cancel();
+      await host.advance(1);
+      await done;
+      expect(scene.run_aborted()).toBe(true);
+    } finally {
+      set_render_scheduler(null);
+    }
+  });
+
+  test("play after an abort does not start a new animation", async () => {
+    const renderer = makeRenderer();
+    const scene = new Scene({ renderer });
+    const scheduler = create_frame_scheduler({ wait_for_frame: (cb) => setTimeout(cb, 0) });
+    set_render_scheduler(scheduler);
+    try {
+      const rendered = scene.render();
+      if (rendered instanceof Promise) await rendered;
+      scheduler.cancel();
+      let plays = 0;
+      const original = renderer.play.bind(renderer);
+      renderer.play = ((...args: unknown[]) => {
+        plays += 1;
+        return original(...(args as never[]));
+      }) as typeof renderer.play;
+      const result = scene.play(new Wait({ run_time: 0.1 }));
+      expect(plays).toBe(0);
+      expect(result).toBe(scene);
+    } finally {
+      set_render_scheduler(null);
+    }
+  });
+
+  test("an aborted renderer refuses to draw", () => {
+    const controller = new AbortController();
+    const renderer = new CanvasSceneRenderer("", {
+      ctx: mockContext(),
+      drawFrames: true,
+      abortSignal: controller.signal,
+    });
+    const scene = new DemoScene({ renderer });
+    controller.abort();
+    renderer.update_frame(scene);
+    expect(renderer.stats.drawMs).toBe(0);
+    expect(renderer.stats.frames).toBe(0);
   });
 });

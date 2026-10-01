@@ -15,7 +15,6 @@ import { EndSceneEarlyException, RerunSceneException } from "../utils/exceptions
 import { is_gif_format, open_file } from "../utils/file_ops.js";
 import {
   get_render_scheduler,
-  is_async_rendering,
   is_thenable,
   type Awaitable,
   type RenderScheduler,
@@ -335,6 +334,29 @@ export class Scene {
   widgets: Array<Record<string, unknown>> = [];
   dearpygui_imported = false;
   subcaptions: Subtitle[] = [];
+
+  /**
+   * Scheduler of the render run this scene belongs to, captured when `render()`
+   * begins.  A run's abort must be judged against *its own* scheduler: a newer
+   * run may have replaced the global one, and consulting the global would make
+   * an aborted scene believe it is still live (zombie frame loops).
+   */
+  private _run_scheduler: RenderScheduler | null = null;
+
+  /** The scheduler governing this scene's current run. */
+  protected active_scheduler(): RenderScheduler | null {
+    return this._run_scheduler ?? get_render_scheduler();
+  }
+
+  /** Capture the currently installed scheduler; called when a render starts. */
+  protected capture_run_scheduler(): void {
+    this._run_scheduler = get_render_scheduler();
+  }
+
+  /** True when this scene's run has been aborted at the scheduler level. */
+  run_aborted(): boolean {
+    return this.active_scheduler()?.cancelled === true;
+  }
 
   constructor(
     renderer?: SceneConstructorOptions | any,
@@ -873,6 +895,10 @@ export class Scene {
       ..._rendererKwargs
     } = options;
     void _rendererKwargs;
+    // Once this run is aborted, later `play`/`wait` calls from the rest of the
+    // (still unwinding) construct must not start new animations: an aborted
+    // run that kept playing would draw over a newer run on the same canvas.
+    if (this.run_aborted()) return this;
     // If we are in interactive embedded mode, make sure this is running on
     // the main thread (required for OpenGL). The TS runtime is single
     // threaded, so only the interactive-mode + OpenGL part is mirrored.
@@ -983,8 +1009,11 @@ export class Scene {
   }
 
   play_internal(skip_rendering = false): void | Promise<void> {
-    if (is_async_rendering()) {
-      return this.play_internal_async(skip_rendering, get_render_scheduler()!);
+    // Use this run's captured scheduler (not the possibly-newer global one) so
+    // an aborted run's frame loop sees its own cancellation.
+    const scheduler = this.active_scheduler();
+    if (scheduler !== null && scheduler.async) {
+      return this.play_internal_async(skip_rendering, scheduler);
     }
     this.duration = this.get_run_time(this.animations);
     this.time_progression = this._get_animation_time_progression(
@@ -1017,6 +1046,7 @@ export class Scene {
     skip_rendering: boolean,
     scheduler: RenderScheduler,
   ): Promise<void> {
+    if (scheduler.cancelled) return;
     this.duration = this.get_run_time(this.animations);
     this.time_progression = this._get_animation_time_progression(
       this.animations,
@@ -1288,6 +1318,7 @@ export class Scene {
   updaters: Array<(dt: number) => void> = [];
 
   render(preview = false): boolean | Promise<boolean> {
+    this.capture_run_scheduler();
     this.setup();
     let construct_result: Awaitable<unknown>;
     try {

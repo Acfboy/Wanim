@@ -23,7 +23,7 @@ import { Mobject } from "../mobject/mobject.js";
 import { Scene, type SceneConstructorOptions } from "./scene.js";
 import { isInteractiveControl, type InteractiveControl } from "../interactive/controls.js";
 import { NullInteractiveHost, type InteractiveHost } from "../interactive/host.js";
-import { get_render_scheduler, is_thenable } from "../utils/scheduler.js";
+import { is_thenable } from "../utils/scheduler.js";
 
 /** A callable story step; `null` means "skip this half". */
 export type InteractiveStepFn = (() => unknown) | unknown;
@@ -101,6 +101,7 @@ export class InteractiveScene extends Scene {
   }
 
   override render(preview = false): boolean | Promise<boolean> {
+    this.capture_run_scheduler();
     this.setup();
     const host = this.interactive_host ?? new NullInteractiveHost();
     const run = this.run_interactive(host);
@@ -165,6 +166,7 @@ export class InteractiveScene extends Scene {
   }
 
   private async run_phase(phase: Phase, host: InteractiveHost): Promise<"next" | "restart" | "abort" | "finish"> {
+    if (this.is_aborted()) return "abort";
     this._phaseKind = phase.kind;
     // Buttons are unavailable while a phase function (typically a `play`
     // animation) runs; they light up again once the scene is idle and the user
@@ -172,6 +174,9 @@ export class InteractiveScene extends Scene {
     host.setButtonsEnabled(false);
     const result = phase.run.call(this);
     if (is_thenable(result)) await result;
+    // The run may have been aborted while the phase ran (e.g. the user pressed
+    // 运行 again); do not enter the interaction loop of a dead run.
+    if (this.is_aborted()) return "abort";
     if (!host.live) {
       // Headless: draw one frame for the phase and move on, so Node runs and
       // tests terminate naturally.
@@ -300,7 +305,9 @@ export class InteractiveScene extends Scene {
   }
 
   private is_aborted(): boolean {
-    return get_render_scheduler()?.cancelled === true;
+    // Judge against this run's own scheduler: a newer run installs a different
+    // global scheduler, and consulting that would keep a dead run alive.
+    return this.run_aborted();
   }
 
   private point_from_event(host: InteractiveHost, event: PointerEvent): number[] {

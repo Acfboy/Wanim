@@ -124,6 +124,7 @@ export async function render_scene_to_canvas(
     ctx,
     drawFrames: options.drawFrames ?? true,
     recordFrames: options.recordFrames ?? false,
+    abortSignal: options.signal,
     onFrame: options.onProgress,
   });
   const scene = construct_scene(sceneClass, renderer as never);

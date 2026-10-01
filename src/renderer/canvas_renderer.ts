@@ -39,6 +39,12 @@ export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
   drawFrames?: boolean;
   /** Serialize every frame into `frames` for later playback (default false). */
   recordFrames?: boolean;
+  /**
+   * Abort signal of the owning run.  Once aborted, this renderer stops drawing
+   * even if an unwinding `construct` still produces frames, so a dead run can
+   * never paint over the newer run sharing the same canvas.
+   */
+  abortSignal?: AbortSignal;
   /** Called after each recorded/rendered frame, for progress UI. */
   onFrame?: (info: CanvasRenderProgress) => void;
 }
@@ -90,6 +96,8 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     totalMs: 0,
   };
   onFrame: ((info: CanvasRenderProgress) => void) | null;
+  /** Abort signal of the owning run (see {@link CanvasSceneRendererOptions}). */
+  abortSignal: AbortSignal | null;
   private _pendingRecord: MJSONFrame | null = null;
   private _startedAt = 0;
   private _started = false;
@@ -100,6 +108,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this.ctx = options.ctx;
     this.drawFrames = options.drawFrames ?? true;
     this.recordFrames = options.recordFrames ?? false;
+    this.abortSignal = options.abortSignal ?? null;
     this.onFrame = options.onFrame ?? null;
     // Count scene construction (Tex/MathJax, mobject setup) as part of the
     // run; the renderer is created immediately before the Scene.
@@ -131,6 +140,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     ignoreSkipping = true,
     ...kwargs: unknown[]
   ): void {
+    if (this.abortSignal?.aborted === true) return;
     if (this.skip_animations && !ignoreSkipping) return;
     const camera = this.camera as unknown as MutableCamera;
     const t0 = performance.now();
@@ -184,6 +194,10 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     // A scene that only `add`s mobjects (or adds none) never enters the frame
     // loop, so nothing would be drawn and the preview would stay blank.  Draw
     // the final display list once so a static scene shows its result.
+    if (this.abortSignal?.aborted === true) {
+      this.stats.totalMs = performance.now() - this._startedAt;
+      return;
+    }
     if (this.num_plays === 0 && this.stats.frames === 0) {
       this.update_frame(scene);
       this.add_frame(null);
