@@ -220,6 +220,19 @@ export function isPlainOptionsObject(value: unknown): value is Record<string, un
   return proto === Object.prototype || proto === null;
 }
 
+/** True for a mobject that carries no points and whose children are all
+ *  childless leaves (Text / simple VGroups). `become` can pair their children
+ *  one-to-one and skip structure alignment entirely. */
+function isFlatLeafGroup(mob: Mobject): boolean {
+  if (!mob.has_no_points()) return false;
+  const submobjects = mob.submobjects;
+  if (submobjects.length === 0) return false;
+  for (const sub of submobjects) {
+    if (sub.submobjects.length !== 0) return false;
+  }
+  return true;
+}
+
 /**
  * Split a positional-argument list into positional values and a merged
  * options bag. A plain object whose keys intersect `optionKeys` is treated as
@@ -1013,9 +1026,53 @@ export class Mobject {
   set depth(value: number) { this.scale_to_fit_depth(value); }
 
   length_over_dim(dim: number): number {
-    const points = this.family_members_with_points().flatMap((mobject) => pointRows(mobject.points, this.dim));
-    if (points.length === 0) return 0;
-    return Math.max(...points.map((point) => point[dim] ?? 0)) - Math.min(...points.map((point) => point[dim] ?? 0));
+    // Same extrema as `Math.max(...points.map(p => p[dim])) - Math.min(...)`,
+    // but scanned straight from the C-contiguous backing stores: the old
+    // version materialised every point row and spread them into `Math.max`,
+    // which dominated `height`/`width`/`font_size` (and therefore every
+    // `DecimalNumber.set_value`).  A NaN in the column poisons the result
+    // exactly like `Math.max`/`Math.min` do.
+    let min = Infinity;
+    let max = -Infinity;
+    let count = 0;
+    let sawNaN = false;
+    const dimIndex = dim;
+    for (const mobject of this.family_members_with_points()) {
+      const points = (mobject as { points?: unknown }).points;
+      const flat = _cContiguousRows(points);
+      if (flat !== null) {
+        const { data, rowDim, rowCount } = flat;
+        count += rowCount;
+        if (dimIndex < rowDim) {
+          for (let row = 0; row < rowCount; row += 1) {
+            const value = Number(data[row * rowDim + dimIndex]);
+            if (value !== value) sawNaN = true;
+            else {
+              if (value < min) min = value;
+              if (value > max) max = value;
+            }
+          }
+        } else {
+          // `pointRows` pads short rows with zeros.
+          if (min > 0) min = 0;
+          if (max < 0) max = 0;
+        }
+      } else {
+        const rows = pointRows(points as never, this.dim);
+        count += rows.length;
+        for (const point of rows) {
+          const value = point[dimIndex] ?? 0;
+          if (value !== value) sawNaN = true;
+          else {
+            if (value < min) min = value;
+            if (value > max) max = value;
+          }
+        }
+      }
+    }
+    if (count === 0) return 0;
+    if (sawNaN) return NaN;
+    return max - min;
   }
 
   scale_to_fit_width(value: number): this { return this.rescale_to_fit(value, 0); }
@@ -2171,6 +2228,32 @@ export class Mobject {
         if (match_depth) mobject.match_depth(this);
       }
       if (match_center) mobject.move_to(this.get_center());
+    }
+    // Fast path for group-like mobjects whose children are all leaves
+    // (the common `Text.become(Text)` / `VGroup.become(VGroup)` case, e.g. a
+    // live readout rebuilt every frame).  Every child's data is overwritten
+    // below, so the faithful path's `align_data` only burns bezier
+    // subdivision aligning shapes that are thrown away.  The child list is
+    // trimmed/extended to match, then children are paired and copied.
+    if (isFlatLeafGroup(this) && isFlatLeafGroup(mobject)) {
+      const target = mobject.submobjects;
+      if (this.submobjects.length > target.length) {
+        this.submobjects = this.submobjects.slice(0, target.length);
+      } else if (this.submobjects.length < target.length) {
+        const additions = target.slice(this.submobjects.length).map((child) => child.copy());
+        this.submobjects = [...this.submobjects, ...additions];
+      }
+      const selfFamily = this.get_family();
+      const otherFamily = mobject.get_family();
+      for (let index = 0; index < selfFamily.length; index += 1) {
+        const sm1 = selfFamily[index]!;
+        const sm2 = otherFamily[index]!;
+        const alignRgbas = (sm1 as { align_rgbas?: (other: unknown) => unknown }).align_rgbas;
+        if (typeof alignRgbas === "function") alignRgbas.call(sm1, sm2);
+        sm1.points = pointsFrom(sm2.points, sm1.dim);
+        sm1.interpolate_color(sm1, sm2, 1);
+      }
+      return this;
     }
     this.align_data(mobject, true);
     const selfFamily = this.get_family();

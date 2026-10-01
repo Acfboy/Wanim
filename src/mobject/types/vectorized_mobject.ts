@@ -1,7 +1,7 @@
 import { allclose, array, NDArray } from "numpy-ts";
 import { Mobject, assertFinitePoints, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
-import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace } from "../../utils/arrays.js";
+import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows } from "../../utils/arrays.js";
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector, rotation_matrix } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
@@ -1789,9 +1789,49 @@ export class VMobject extends Mobject {
 
   get_points_defining_boundary(): NDArray {
     // Probably returns all anchors, but this is weird regarding the name of the method.
-    const all: number[][] = [];
-    for (const mobject of this.get_family()) all.push(...(mobject as VMobject).get_anchors());
-    return array(all.length > 0 ? all : []).reshape(all.length, this.dim) as NDArray;
+    // Fast path: read the start/end anchors straight out of each family
+    // member's C-contiguous point store into one flat buffer, instead of
+    // building a nested array through `pointAt` per anchor (this is called by
+    // every `get_critical_point`, e.g. many times per `set_value`).
+    const nppcc = this.n_points_per_cubic_curve;
+    const dim = this.dim;
+    const flat: number[] = [];
+    for (const mobject of this.get_family()) {
+      const vmob = mobject as VMobject;
+      const store = vmob.points as
+        | { data?: ArrayLike<number>; shape?: readonly number[]; flags?: { C_CONTIGUOUS?: boolean } }
+        | undefined;
+      const data = store?.data;
+      const shape = store?.shape;
+      const rowDim = shape !== undefined && shape.length === 2 ? (shape[1] ?? dim) : null;
+      if (
+        data !== undefined &&
+        rowDim !== null &&
+        (store?.flags === undefined || store.flags.C_CONTIGUOUS !== false)
+      ) {
+        const rowCount = shape?.[0] ?? 0;
+        if (rowCount === 1) {
+          for (let column = 0; column < dim; column += 1) flat.push(numeric(data[column] ?? 0));
+          continue;
+        }
+        for (let row = 0; row + nppcc <= rowCount; row += nppcc) {
+          const startBase = row * rowDim;
+          for (let column = 0; column < dim; column += 1) {
+            flat.push(numeric(data[startBase + column] ?? 0));
+          }
+          const endBase = (row + nppcc - 1) * rowDim;
+          for (let column = 0; column < dim; column += 1) {
+            flat.push(numeric(data[endBase + column] ?? 0));
+          }
+        }
+        continue;
+      }
+      for (const anchor of vmob.get_anchors()) {
+        for (let column = 0; column < dim; column += 1) flat.push(numeric(anchor[column] ?? 0));
+      }
+    }
+    if (flat.length === 0) return array([]).reshape(0, dim) as NDArray;
+    return array(flat).reshape(flat.length / dim, dim) as NDArray;
   }
 
   getPointsDefiningBoundary(): NDArray {

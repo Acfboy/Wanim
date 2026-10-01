@@ -212,3 +212,119 @@ export async function runPythonOnCanvas(
     sandbox.frame.remove();
   }
 }
+
+// --- interactive performance benchmark -------------------------------------
+
+export interface InteractiveBenchOptions {
+  /** manim quality flag controlling resolution / frame rate (default `-qm`). */
+  quality?: string;
+  /** Measured frames (default 120). */
+  frames?: number;
+  /** Unmeasured warm-up frames (default 5). */
+  warmup?: number;
+  /** Optional scene name; defaults to the first InteractiveScene found. */
+  sceneName?: string;
+  /**
+   * Called immediately before each measured frame, with the scene instance and
+   * the frame index.  Scenes expose a `bench_step(index, total)` method to
+   * simulate a control change; the harness forwards to it.
+   */
+  step?: (scene: Any, index: number, total: number) => void;
+}
+
+export interface InteractiveBenchResult {
+  sceneName: string;
+  /** Milliseconds spent in `interactive_frame()` for each measured frame. */
+  frameTimes: number[];
+  /** Renderer counters accumulated during the measured frames. */
+  stats: { frames: number; extractMs: number; drawMs: number };
+}
+
+/**
+ * Benchmark the per-frame work of an `InteractiveScene` blueprint.
+ *
+ * The scene is built once (`enter_blueprint`), then each frame calls
+ * `interactive_frame()` — exactly the reactions + draw a live host performs
+ * while a control is dragged.  No `requestAnimationFrame` pacing is involved:
+ * the returned times are pure per-frame CPU cost.
+ */
+export async function benchInteractiveScene(
+  source: string,
+  canvas: HTMLCanvasElement,
+  options: InteractiveBenchOptions = {},
+): Promise<InteractiveBenchResult> {
+  const { js, numpyNames } = await compilePython(source);
+  const runtime = buildRuntime();
+  for (const name of numpyNames) {
+    if (name === "*") Object.assign(runtime.globals, runtime.np);
+    else if (name in runtime.np) runtime.globals[name] = runtime.np[name];
+  }
+  const sandbox = createSandbox(runtime);
+  try {
+    sandbox.win.eval(js);
+    const scenes = discoverScenes(sandbox.win, sandbox.injected);
+    const candidates = Object.entries(scenes).filter(([, ctor]) =>
+      isInteractiveSceneClass(ctor),
+    );
+    if (candidates.length === 0) {
+      throw new Error("No InteractiveScene subclass found in the code.");
+    }
+    const sceneName = options.sceneName ?? candidates[0]![0];
+    const entry = candidates.find(([name]) => name === sceneName);
+    if (entry === undefined) {
+      throw new Error(
+        `InteractiveScene '${sceneName}' not found. Available: ${candidates.map(([name]) => name).join(", ")}`,
+      );
+    }
+    const sceneClass = entry[1] as new (...args: Any[]) => Any;
+
+    (wanim as Any).apply_quality(options.quality ?? "-qm");
+    const cameraClass = (wanim as Any).default_camera_class(sceneClass);
+    const camera = new cameraClass();
+    canvas.width = camera.pixel_width;
+    canvas.height = camera.pixel_height;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) throw new Error("2d canvas context unavailable");
+    const renderer = new (wanim as Any).CanvasSceneRenderer("", {
+      camera_class: cameraClass,
+      ctx,
+      drawFrames: true,
+      recordFrames: false,
+    });
+    const scene = (wanim as Any).construct_scene(sceneClass, renderer);
+    scene.enter_blueprint();
+
+    const warmup = options.warmup ?? 5;
+    for (let index = 0; index < warmup; index += 1) scene.interactive_frame();
+
+    const startFrames = renderer.stats.frames;
+    const startExtract = renderer.stats.extractMs;
+    const startDraw = renderer.stats.drawMs;
+    const total = options.frames ?? 120;
+    const frameTimes: number[] = [];
+    for (let index = 0; index < total; index += 1) {
+      options.step?.(scene, index, total);
+      const startedAt = performance.now();
+      scene.interactive_frame();
+      frameTimes.push(performance.now() - startedAt);
+    }
+    return {
+      sceneName,
+      frameTimes,
+      stats: {
+        frames: renderer.stats.frames - startFrames,
+        extractMs: renderer.stats.extractMs - startExtract,
+        drawMs: renderer.stats.drawMs - startDraw,
+      },
+    };
+  } finally {
+    sandbox.frame.remove();
+  }
+}
+
+function isInteractiveSceneClass(value: unknown): boolean {
+  if (typeof value !== "function") return false;
+  const proto = (value as { prototype?: unknown }).prototype;
+  if (proto === undefined || proto === null || typeof proto !== "object") return false;
+  return proto instanceof (wanim as Any).InteractiveScene;
+}

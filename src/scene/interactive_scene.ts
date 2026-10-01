@@ -219,6 +219,29 @@ export class InteractiveScene extends Scene {
     }
   }
 
+  /**
+   * Build the blueprint without entering the host-driven render loop.
+   *
+   * For embedders that own their event loop (performance benchmarks, custom
+   * hosts): call `enter_blueprint()`, then `interactive_frame()` once per
+   * frame.  A normal `render()` must not follow (it would run `setup()` and
+   * the blueprint again).
+   */
+  enter_blueprint(): void {
+    this.setup();
+    this._phaseKind = "blueprint";
+    this.blueprint();
+  }
+
+  /**
+   * Run exactly one blueprint frame: re-apply every reaction, run self
+   * updaters and draw.  This is the per-frame work a live host performs while
+   * the user drags a control, exposed for benchmarks and custom hosts.
+   */
+  interactive_frame(): void {
+    this.tick();
+  }
+
   private apply_reactions(): void {
     for (const mobject of this.interactive_family()) {
       for (const reaction of mobject.reactions) reaction(mobject);

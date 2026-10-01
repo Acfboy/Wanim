@@ -13,6 +13,12 @@ import { Polygon, Rectangle, RoundedRectangle } from "../geometry/polygram.js";
 
 export const SVG_HASH_TO_MOB_MAP: Map<number, SVGMobject> = new Map();
 
+/** Parsed SVG-path geometry cache, keyed by config flags + the raw `d`
+ * string (see `path_to_mobject`).  Bounded: glyph geometry repeats heavily
+ * inside text, so a modest map covers a whole corpus. */
+const PATH_GEOMETRY_CACHE = new Map<string, VMobjectFromSVGPath>();
+const PATH_GEOMETRY_CACHE_LIMIT = 4096;
+
 export function _convert_point_to_3d(x: number, y: number): NDArray {
   return array([x, y, 0.0]) as NDArray;
 }
@@ -46,6 +52,8 @@ export interface SVGElementData {
   kind: string;
   id?: unknown;
   children?: SVGElementData[];
+  /** Path element: the raw `d` attribute (cache key for parsed geometry). */
+  path_d?: string;
   /** Path element: pre-parsed segments (arcs already approximated). */
   segments?: SVGPathSegment[];
   /** Line element endpoints. */
@@ -422,6 +430,7 @@ export class SVGMobject extends VMobject {
     };
     if (tag === "path") {
       const d = attrs["d"] ?? "";
+      shape.path_d = d;
       shape.segments = parse_svg_path_data(d);
       if (shape.segments.length === 0) return null;
     } else if (tag === "line") {
@@ -577,6 +586,22 @@ export class SVGMobject extends VMobject {
   }
 
   path_to_mobject(path: SVGElementData): VMobjectFromSVGPath {
+    const config = this.path_string_config as VMobjectFromSVGPathOptions;
+    // Cache the parsed geometry per raw `d` string.  A text glyph's `d` is
+    // identical wherever the same character/size/style appears, so repeated
+    // characters (all digits, punctuation, ...) skip the SVG path → bezier
+    // conversion entirely; the caller only pays for a clone and its transform.
+    const d = path.path_d;
+    if (d !== undefined && d.length > 0) {
+      const key = `${config.long_lines ? 1 : 0}${config.should_subdivide_sharp_curves ? 1 : 0}${config.should_remove_null_curves ? 1 : 0}|${d}`;
+      let proto = PATH_GEOMETRY_CACHE.get(key);
+      if (proto === undefined) {
+        proto = new VMobjectFromSVGPath(path.segments ?? [], { ...config });
+        if (PATH_GEOMETRY_CACHE.size >= PATH_GEOMETRY_CACHE_LIMIT) PATH_GEOMETRY_CACHE.clear();
+        PATH_GEOMETRY_CACHE.set(key, proto);
+      }
+      return proto.copy() as VMobjectFromSVGPath;
+    }
     return new VMobjectFromSVGPath(
       path.segments ?? [],
       { ...(this.path_string_config as VMobjectFromSVGPathOptions) },
