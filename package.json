@@ -20,7 +20,7 @@
     "demo": "node scripts/demo-server.mjs",
     "smoke:editor": "node scripts/editor_smoke.mjs",
     "test": "vitest run",
-    "test:py2js": "tsc py2js/src/preprocess.ts --outDir py2js/dist --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck --strict && node py2js/tests/preprocess.node-test.mjs",
+    "test:py2js": "tsc py2js/src/preprocess.ts py2js/src/compile_error.ts --outDir py2js/dist --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck --strict && node py2js/tests/preprocess.node-test.mjs && node py2js/tests/compile_error.node-test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
