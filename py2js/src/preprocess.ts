@@ -37,6 +37,101 @@ export interface PreprocessResult {
   unsupported: UnsupportedImport[];
 }
 
+// JavaScript reserves a number of words that are perfectly good Python
+// identifiers (`new`, `this`, `default`, `function`, `let`, ...).  rapydscript
+// passes them straight through, so `new = Text(...)` either fails with a
+// confusing parse error (operator-words such as `new`) or with "X is a reserved
+// word".  We rewrite such identifiers to `<name>_modified` *before* compilation,
+// so the translated JS stays valid.  Python keywords (`class`, `for`, `in`,
+// `and`, ...) are left alone -- they are not valid variable names in Python
+// anyway -- and `super` is kept because wanim's rapydscript patch gives it
+// special meaning (`super().__init__(...)`).
+const JS_RESERVED_RENAMES: Record<string, string> = (() => {
+  const words = [
+    "arguments", "case", "catch", "const", "debugger", "default", "delete",
+    "do", "enum", "eval", "export", "extends", "false", "function",
+    "implements", "instanceof", "interface", "let", "new", "null", "package",
+    "private", "protected", "public", "static", "switch", "this", "throw",
+    "true", "typeof", "var", "void",
+  ];
+  const map: Record<string, string> = {};
+  for (const word of words) map[word] = `${word}_modified`;
+  return map;
+})();
+
+const IDENT_START = /[A-Za-z_]/;
+const IDENT_PART = /[A-Za-z0-9_]/;
+
+/** Consume a Python string literal starting at `start` (which is a quote). */
+function readString(source: string, start: number): number {
+  const quote = source[start];
+  const triple = source.startsWith(quote.repeat(3), start);
+  const delimiter = triple ? quote.repeat(3) : quote;
+  let i = start + delimiter.length;
+  while (i < source.length) {
+    if (source[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (source.startsWith(delimiter, i)) return i + delimiter.length;
+    // Unterminated single-quoted strings end at the newline; triple-quoted
+    // strings may span lines.
+    if (!triple && (source[i] === "\n" || source[i] === "\r")) return i;
+    i += 1;
+  }
+  return i;
+}
+
+/**
+ * Rename identifiers that collide with JavaScript reserved words.
+ *
+ * The scan skips comments and string literals and never touches an attribute
+ * name (`obj.new` stays `obj.new`).  This is a deliberately simple, source-level
+ * heuristic: it does not look inside f-string `{...}` interpolations, and it
+ * cannot tell a keyword argument name (`f(new=1)`) from a variable, so both are
+ * renamed together (which stays consistent as long as the callee is compiled
+ * from the same source).
+ */
+export function renameJsReservedWords(source: string): string {
+  let out = "";
+  let i = 0;
+  let previous: string | null = null; // last non-space character emitted
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const end = source.indexOf("\n", i);
+      const stop = end === -1 ? source.length : end;
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      previous = '"';
+      continue;
+    }
+    if (IDENT_START.test(ch)) {
+      let j = i + 1;
+      while (j < source.length && IDENT_PART.test(source[j]!)) j += 1;
+      const word = source.slice(i, j);
+      const renamed: string =
+        previous !== "." && Object.prototype.hasOwnProperty.call(JS_RESERVED_RENAMES, word)
+          ? JS_RESERVED_RENAMES[word]!
+          : word;
+      out += renamed;
+      previous = renamed[renamed.length - 1]!;
+      i = j;
+      continue;
+    }
+    out += ch;
+    if (!/\s/.test(ch)) previous = ch;
+    i += 1;
+  }
+  return out;
+}
+
 const MANIM_FROM = /^\s*from\s+manim(\.[\w.]+)?\s+import\s+(.+?)\s*(?:#.*)?$/;
 const MANIM_IMPORT = /^\s*import\s+manim(\.[\w.]+)?(\s+as\s+\w+)?\s*(?:#.*)?$/;
 const NUMPY_FROM = /^\s*from\s+numpy(\.[\w.]+)?\s+import\s+(.+?)\s*(?:#.*)?$/;

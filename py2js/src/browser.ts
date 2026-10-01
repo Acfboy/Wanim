@@ -23,6 +23,7 @@ import {
 import {
   formatUnsupportedImportError,
   preprocessImports,
+  renameJsReservedWords,
   unsupportedImportError,
 } from "./preprocess.js";
 import { formatCompileError } from "./compile_error.js";
@@ -40,6 +41,7 @@ export {
   formatUnsupportedImportError,
   installPythonShims,
   preprocessImports,
+  renameJsReservedWords,
   unsupportedImportError,
 };
 export type { PythonRuntime };
@@ -74,7 +76,7 @@ export interface CompiledScene {
  * error, because the Python standard library is not available in the runtime.
  */
 export async function compilePython(source: string): Promise<CompiledScene> {
-  const pre = preprocessImports(source);
+  const pre = preprocessImports(renameJsReservedWords(source));
   const importError = unsupportedImportError(pre);
   if (importError !== null) throw importError;
   try {

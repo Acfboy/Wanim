@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   formatUnsupportedImportError,
   preprocessImports,
+  renameJsReservedWords,
   unsupportedImportError,
 } from "../dist/preprocess.js";
 
@@ -106,6 +107,36 @@ check("formatUnsupportedImportError mentions module, line and text", () => {
   assert.ok(msg.includes("import os"));
   assert.ok(msg.includes("from manim import *"));
   assert.ok(msg.includes("import numpy as np"));
+});
+
+check("renameJsReservedWords renames `new` consistently", () => {
+  const out = renameJsReservedWords("new = Text('x')\nnew.scale(2)\n");
+  assert.equal(out, "new_modified = Text('x')\nnew_modified.scale(2)\n");
+});
+
+check("renameJsReservedWords renames other JS keywords", () => {
+  const out = renameJsReservedWords("default = 1\nlet = this\n");
+  assert.equal(out, "default_modified = 1\nlet_modified = this_modified\n");
+});
+
+check("renameJsReservedWords leaves attribute names alone", () => {
+  const out = renameJsReservedWords("obj.new\nself.default\nfoo.new()\n");
+  assert.equal(out, "obj.new\nself.default\nfoo.new()\n");
+});
+
+check("renameJsReservedWords leaves strings and comments alone", () => {
+  const out = renameJsReservedWords('# new\nx = "new"\ny = \'default\'\n');
+  assert.equal(out, '# new\nx = "new"\ny = \'default\'\n');
+});
+
+check("renameJsReservedWords skips triple-quoted strings", () => {
+  const out = renameJsReservedWords('s = """new\ndefault"""\nnew = 1\n');
+  assert.equal(out, 's = """new\ndefault"""\nnew_modified = 1\n');
+});
+
+check("renameJsReservedWords leaves Python keywords and super alone", () => {
+  const out = renameJsReservedWords("for i in xs:\n    super().__init__()\n");
+  assert.equal(out, "for i in xs:\n    super().__init__()\n");
 });
 
 console.log(`\n${passed} tests passed`);
