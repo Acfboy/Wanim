@@ -38,13 +38,14 @@ function pointRows(value: unknown): number[][] {
 
 /**
  * Whether a key press should be swallowed by the numeric inline editor:
- * single printable characters other than a digit, `-` or `.` (letters, ...).
- * Navigation/editing keys and modifier shortcuts are left alone.
+ * single printable characters other than a digit, `-` or (when allowed) `.`
+ * (letters, ...). Navigation/editing keys and modifier shortcuts are left
+ * alone.
  */
-function isBlockedNumberKey(event: KeyboardEvent): boolean {
+function isBlockedNumberKey(event: KeyboardEvent, allowDecimalPoint: boolean): boolean {
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
-  return !/[0-9.\-]/.test(event.key);
+  return allowDecimalPoint ? !/[0-9.\-]/.test(event.key) : !/[0-9\-]/.test(event.key);
 }
 
 /** One control bar per canvas, so re-runs reuse (never duplicate) the buttons. */
@@ -319,10 +320,11 @@ export class DomInteractiveHost implements InteractiveHost {
     this.marker = marker;
     this.positionEditor();
 
+    const allowDecimalPoint = options.allow_decimal_point !== false;
     textarea.addEventListener("input", () => {
       // Keep the editor numeric-only (letters/non-numeric pastes are dropped),
-      // with at most one leading minus sign.
-      const raw = textarea.value.replace(/[^0-9.\-]/g, "");
+      // with at most one leading minus sign. Integer editors also drop `.`.
+      const raw = textarea.value.replace(allowDecimalPoint ? /[^0-9.\-]/g : /[^0-9\-]/g, "");
       const negative = raw.includes("-");
       let cleaned = raw.replace(/-/g, "");
       if (negative) cleaned = "-" + cleaned;
@@ -340,7 +342,7 @@ export class DomInteractiveHost implements InteractiveHost {
         event.preventDefault();
         options.onCancel?.();
         this.endTextEdit();
-      } else if (isBlockedNumberKey(event)) {
+      } else if (isBlockedNumberKey(event, allowDecimalPoint)) {
         // Single printable non-digit keys are ignored so the editor text never
         // drifts away from the rendered number.
         event.preventDefault();

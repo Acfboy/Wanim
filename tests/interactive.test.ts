@@ -1,8 +1,19 @@
 import { describe, expect, test } from "vitest";
 import { CanvasSceneRenderer } from "../src/renderer/canvas_renderer.js";
 import { Camera } from "../src/camera/camera.js";
-import { Circle } from "../src/mobject/geometry/arc.js";
-import { InputDecimalNumber, Slider, Switch } from "../src/interactive/controls.js";
+import { Arc, Circle } from "../src/mobject/geometry/arc.js";
+import { Line } from "../src/mobject/geometry/line.js";
+import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
+import {
+  InputDecimalMatrix,
+  InputDecimalNumber,
+  InputDecimalTable,
+  InputInteger,
+  PathSlider,
+  Slider,
+  Switch,
+  isInteractiveControl,
+} from "../src/interactive/controls.js";
 import type { InteractiveHost, PointerHandlers, TextEditOptions } from "../src/interactive/host.js";
 import { InteractiveScene } from "../src/scene/interactive_scene.js";
 import { Scene } from "../src/scene/scene.js";
@@ -410,5 +421,288 @@ describe("InteractiveScene", () => {
     renderer.update_frame(scene);
     expect(renderer.stats.drawMs).toBe(0);
     expect(renderer.stats.frames).toBe(0);
+  });
+});
+
+function controlContext(host: FakeHost): { host: FakeHost; camera: Camera } {
+  return { host, camera: new Camera() };
+}
+
+describe("PathSlider", () => {
+  test("a straight path behaves like Slider (press/drag/set_value/attach)", () => {
+    const path = new Line({ start: [-2, 0, 0], end: [2, 0, 0] });
+    const slider = new PathSlider(path, { value_range: [0, 10] });
+    expect(slider.get_value()).toBe(0);
+
+    slider.set_value(7.5);
+    expect(slider.get_value()).toBe(7.5);
+    expect(slider.knob.get_center()[0]).toBeCloseTo(-2 + 0.75 * 4, 12);
+
+    const context = controlContext(new FakeHost());
+    slider.on_press([0, 1, 0], context);
+    expect(slider.get_value()).toBeCloseTo(5, 12);
+    // Incremental drag: the pointer motion is projected onto the tangent.
+    slider.on_drag([0.4, 1, 0], context);
+    expect(slider.get_value()).toBeCloseTo(6, 12);
+    slider.on_release();
+
+    const marker = new Circle(0.1);
+    marker.move_to(slider.knob.get_center());
+    slider.attach(marker);
+    expect(slider.knob.get_fill_opacity()).toBe(0);
+    expect(slider.attached).toContain(marker);
+    slider.set_value(10);
+    expect(marker.get_center()[0]).toBeCloseTo(2, 12);
+    slider.unattach();
+    expect(slider.knob.get_fill_opacity()).toBe(1);
+  });
+
+  test("open paths clamp at both ends", () => {
+    const arc = new Arc({ radius: 1, start_angle: 0, angle: Math.PI / 2 });
+    const slider = new PathSlider(arc, { value_range: [0, 10] });
+    const context = controlContext(new FakeHost());
+
+    slider.on_press([2, 0, 0], context);
+    expect(slider.get_value()).toBeCloseTo(0, 9);
+    slider.on_press([0, 2, 0], context);
+    expect(slider.get_value()).toBeCloseTo(10, 9);
+    slider.set_value(-5);
+    expect(slider.get_value()).toBe(0);
+    slider.set_value(15);
+    expect(slider.get_value()).toBe(10);
+  });
+
+  test("closed paths map by proportion and wrap past the seam", () => {
+    const circle = new Circle({ radius: 1 });
+    const slider = new PathSlider(circle, { value_range: [0, 10], is_closed: true });
+    expect(slider.is_closed).toBe(true);
+    expect(slider.is_hit([1, 0.1, 0])).toBe(true);
+    expect(slider.is_hit([0, 0, 0])).toBe(false);
+
+    // 0.25 of the arc length is the top of the circle.
+    slider.set_value(2.5);
+    expect(slider.knob.get_center()[0]).toBeCloseTo(0, 6);
+    expect(slider.knob.get_center()[1]).toBeCloseTo(1, 6);
+
+    // Out-of-range values wrap modulo the range for a closed path.
+    slider.set_value(12);
+    expect(slider.get_value()).toBeCloseTo(2, 9);
+    slider.set_value(-1);
+    expect(slider.get_value()).toBeCloseTo(9, 9);
+
+    // Dragging along the tangent from near the seam wraps to near the low end.
+    const context = controlContext(new FakeHost());
+    slider.set_value(9.5);
+    const start = circle.point_from_proportion(0.95);
+    const before = circle.point_from_proportion(0.949);
+    const after = circle.point_from_proportion(0.951);
+    const tangent: number[] = [
+      (after[0] as number) - (before[0] as number),
+      (after[1] as number) - (before[1] as number),
+    ];
+    const tangentLength = Math.hypot(tangent[0]!, tangent[1]!);
+    tangent[0] = tangent[0]! / tangentLength;
+    tangent[1] = tangent[1]! / tangentLength;
+    const total = circle.get_arc_length();
+    const pressPoint = [start[0] as number, start[1] as number, 0];
+    const dragPoint = [
+      pressPoint[0]! + tangent[0]! * 0.1 * total,
+      pressPoint[1]! + tangent[1]! * 0.1 * total,
+      0,
+    ];
+    slider.on_press(pressPoint, context);
+    slider.on_drag(dragPoint, context);
+    expect(slider.get_value()).toBeGreaterThan(0);
+    expect(slider.get_value()).toBeLessThan(1);
+    slider.on_release();
+  });
+
+  test("dragging perpendicular to the tangent leaves the value unchanged", () => {
+    const circle = new Circle({ radius: 1 });
+    const slider = new PathSlider(circle, { value_range: [0, 10], is_closed: true });
+    const context = controlContext(new FakeHost());
+    slider.set_value(2.5);
+    const center = slider.knob.get_center();
+    slider.on_press(center, context);
+    slider.on_drag([center[0] ?? 0, (center[1] ?? 0) + 0.3, 0], context);
+    expect(slider.get_value()).toBeCloseTo(2.5, 9);
+  });
+
+  test("supports a VGroup path by summing the family's arc lengths", () => {
+    const path = new VGroup(
+      new Line({ start: [-2, 0, 0], end: [0, 0, 0] }),
+      new Line({ start: [0, 0, 0], end: [0, 2, 0] }),
+    );
+    const slider = new PathSlider(path, { value_range: [0, 2] });
+    slider.set_value(1);
+    expect(slider.knob.get_center()[0]).toBeCloseTo(0, 6);
+    expect(slider.knob.get_center()[1]).toBeCloseTo(0, 6);
+    slider.set_value(2);
+    expect(slider.knob.get_center()[1]).toBeCloseTo(2, 6);
+  });
+
+  test("Slider is a PathSlider whose track is a Line", () => {
+    const slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0] });
+    expect(slider instanceof PathSlider).toBe(true);
+    expect(slider.track).toBeInstanceOf(Line);
+    expect(slider.start_point).toEqual([-2, 0, 0]);
+    expect(slider.end_point).toEqual([2, 0, 0]);
+  });
+});
+
+describe("InputInteger", () => {
+  test("truncates like Integer and blocks the decimal point in the editor", () => {
+    const host = new FakeHost();
+    const number = new InputInteger(0);
+    number.on_press([0, 0, 0], controlContext(host));
+    expect(host.editor).not.toBeNull();
+    expect(host.editor?.allow_decimal_point).toBe(false);
+
+    host.editor?.onInput("7");
+    expect(number.get_value()).toBe(7);
+    // Even if the host text does contain a decimal point, Integer semantics
+    // round then truncate.
+    host.editor?.onInput("2.9");
+    expect(number.get_value()).toBe(3);
+    host.editor?.onCommit("-4.6");
+    expect(number.get_value()).toBe(-5);
+    expect(number.num_decimal_places).toBe(0);
+  });
+});
+
+describe("InputDecimalNumber on_change", () => {
+  test("fires after every successful edit (and not on unparsable text)", () => {
+    const host = new FakeHost();
+    const number = new InputDecimalNumber(0);
+    let changes = 0;
+    number.on_change = () => {
+      changes += 1;
+    };
+    number.on_press([0, 0, 0], controlContext(host));
+    host.editor?.onInput("2.5");
+    expect(changes).toBe(1);
+    host.editor?.onInput("not a number");
+    expect(changes).toBe(1);
+    host.editor?.onCommit("3");
+    expect(changes).toBe(2);
+  });
+});
+
+describe("InputDecimalMatrix", () => {
+  test("every cell is interactive and editing relayouts without moving the center", () => {
+    const host = new FakeHost();
+    const matrix = new InputDecimalMatrix([
+      [1, 2],
+      [3, 4],
+    ]);
+    for (const row of matrix.mob_matrix) {
+      for (const cell of row) {
+        expect(isInteractiveControl(cell)).toBe(true);
+      }
+    }
+
+    const centerBefore = matrix.get_center();
+    const left = matrix.mob_matrix[0]![0]!;
+    const right = matrix.mob_matrix[0]![1]!;
+    const gapBefore = (right.get_center()[0] ?? 0) - (left.get_center()[0] ?? 0);
+
+    left.on_press(left.get_center(), controlContext(host));
+    expect(host.editor).not.toBeNull();
+    host.editor?.onInput("123456");
+
+    const gapAfter = (right.get_center()[0] ?? 0) - (left.get_center()[0] ?? 0);
+    expect(gapAfter).toBeGreaterThan(gapBefore);
+    expect(matrix.get_center()[0]).toBeCloseTo(centerBefore[0] ?? 0, 6);
+    expect(matrix.get_center()[1]).toBeCloseTo(centerBefore[1] ?? 0, 6);
+
+    // The wider column must not overlap its neighbour, and rows stay apart.
+    for (let j = 0; j + 1 < matrix.mob_matrix[0]!.length; j += 1) {
+      expect(matrix.mob_matrix[0]![j]!.get_right()[0] ?? 0).toBeLessThanOrEqual(
+        (matrix.mob_matrix[0]![j + 1]!.get_left()[0] ?? 0) + 1e-9,
+      );
+    }
+    for (let i = 0; i + 1 < matrix.mob_matrix.length; i += 1) {
+      expect(matrix.mob_matrix[i]![0]!.get_bottom()[1] ?? 0).toBeGreaterThanOrEqual(
+        (matrix.mob_matrix[i + 1]![0]!.get_top()[1] ?? 0) - 1e-9,
+      );
+    }
+  });
+
+  test("InteractiveScene routes a pointer press to a matrix cell", async () => {
+    class MatrixScene extends InteractiveScene {
+      matrix!: InputDecimalMatrix;
+      blueprint(): void {
+        this.matrix = new InputDecimalMatrix([
+          [1, 2],
+          [3, 4],
+        ]);
+        this.add(this.matrix);
+      }
+    }
+    const host = new FakeHost();
+    const scene = new MatrixScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+
+    const cell = scene.matrix.mob_matrix[1]![0]!;
+    host.press(cell.get_center());
+    await host.advance(1);
+    expect(host.editor).not.toBeNull();
+    host.editor?.onInput("42");
+    expect(cell.get_value()).toBe(42);
+
+    host.click("进入下一步");
+    await host.advance(1);
+    host.click("进入下一步");
+    await host.advance(1);
+    await done;
+  });
+});
+
+describe("InputDecimalTable", () => {
+  test("editing relayouts and rebuilds the lines around the new layout", () => {
+    const host = new FakeHost();
+    const table = new InputDecimalTable([
+      [1, 2],
+      [3, 4],
+    ]);
+    for (const row of table.mob_table) {
+      for (const cell of row) {
+        expect(isInteractiveControl(cell)).toBe(true);
+      }
+    }
+
+    const centerBefore = table.get_center();
+    const oldHorizontal = table.horizontal_lines;
+    const oldVertical = table.vertical_lines;
+    const cell = table.mob_table[0]![0]!;
+    cell.on_press(cell.get_center(), controlContext(host));
+    host.editor?.onInput("12345");
+
+    expect(table.get_center()[0]).toBeCloseTo(centerBefore[0] ?? 0, 6);
+    expect(table.get_center()[1]).toBeCloseTo(centerBefore[1] ?? 0, 6);
+    expect(table.horizontal_lines).not.toBe(oldHorizontal);
+    expect(table.vertical_lines).not.toBe(oldVertical);
+
+    // Two rows / two columns -> one inner line each, attached to the table.
+    expect(table.horizontal_lines.submobjects.length).toBe(1);
+    expect(table.vertical_lines.submobjects.length).toBe(1);
+    const horizontal = table.horizontal_lines.__getitem__(0) as Line;
+    const vertical = table.vertical_lines.__getitem__(0) as Line;
+    expect(table.get_family()).toContain(horizontal);
+    expect(table.get_family()).toContain(vertical);
+
+    // The lines sit in the (new) gaps between rows/columns.
+    const row0 = table.mob_table[0]![0]!;
+    const row1 = table.mob_table[1]![0]!;
+    const horizontalY = horizontal.get_center()[1] ?? 0;
+    expect(horizontalY).toBeLessThan(row0.get_bottom()[1] ?? 0);
+    expect(horizontalY).toBeGreaterThan(row1.get_top()[1] ?? 0);
+
+    const col0 = table.mob_table[0]![0]!;
+    const col1 = table.mob_table[0]![1]!;
+    const verticalX = vertical.get_center()[0] ?? 0;
+    expect(verticalX).toBeGreaterThan(col0.get_right()[0] ?? 0);
+    expect(verticalX).toBeLessThan(col1.get_left()[0] ?? 0);
   });
 });

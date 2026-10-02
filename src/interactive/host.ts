@@ -32,6 +32,11 @@ export interface PointerHandlers {
 export interface TextEditOptions {
   /** Initial text shown in the editor. */
   initial: string;
+  /**
+   * Whether the numeric editor accepts a decimal point. Defaults to `true`;
+   * integer inputs pass `false` so `.` is stripped/blocked.
+   */
+  allow_decimal_point?: boolean;
   /** Called on every keystroke with the current editor text. */
   onInput: (text: string) => void;
   /** Called when the editor is committed (Enter/blur). */
