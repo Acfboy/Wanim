@@ -951,6 +951,46 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         },
       });
     }
+    // Python allows unbound calls `Base.method(self, ...)` (e.g.
+    // `LinearTransformationScene.setup(self)`). rapydscript compiles them to
+    // `Base.method(self, ...)` verbatim, but native instance methods live on
+    // `prototype`, so `Base.method` is undefined. Expose every prototype
+    // method as a static taking `self` as its first argument. The lookup runs
+    // against `Ctor.prototype` at call time, so overrides resolve to this
+    // class's implementation (matching CPython's unbound-method semantics),
+    // and kwargs bags flow through to the wrapped prototype method untouched.
+    // Names already present on the wrapper (including Function/Object members
+    // such as `call`/`toString`) are left alone to avoid breaking the function.
+    const seenUnbound = new Set<string>();
+    let unboundProto: Any = Ctor.prototype;
+    while (unboundProto !== null && unboundProto !== undefined && unboundProto !== Object.prototype) {
+      for (const key of Object.getOwnPropertyNames(unboundProto)) {
+        if (key === "constructor" || key === "__proto__" || seenUnbound.has(key)) continue;
+        seenUnbound.add(key);
+        const descriptor = Object.getOwnPropertyDescriptor(unboundProto, key);
+        if (descriptor === undefined || typeof descriptor.value !== "function") continue;
+        if (key in (Wrapper as Any)) continue;
+        const methodName = key;
+        try {
+          Object.defineProperty(Wrapper, methodName, {
+            configurable: true,
+            writable: true,
+            value: function (...args: Any[]) {
+              const self = args[0];
+              const rest = args.slice(1);
+              const fn = (Ctor.prototype as Any)[methodName];
+              if (typeof fn !== "function") {
+                throw new TypeError(`${(Ctor as Any).name ?? "Class"}.${methodName} is not a function`);
+              }
+              return fn.apply(self, rest);
+            },
+          });
+        } catch {
+          /* ignore read-only statics */
+        }
+      }
+      unboundProto = Object.getPrototypeOf(unboundProto);
+    }
     return Wrapper;
   }
 

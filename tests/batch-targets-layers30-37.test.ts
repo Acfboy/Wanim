@@ -179,17 +179,17 @@ describe("text/tex pipeline (ported)", () => {
     expect(nl._create_label_tex(vm)).toBe(vm);
   });
 
-  it("VectorScene.write_vector_coordinates/vector_to_coords build Matrix labels", () => {
+  it("VectorScene.write_vector_coordinates/vector_to_coords build Matrix labels", async () => {
     const vs = new VectorScene();
     expect(
-      vs.write_vector_coordinates(new Vector([1, 2])).get_entries().submobjects.length,
+      (await vs.write_vector_coordinates(new Vector([1, 2]))).get_entries().submobjects.length,
     ).toBe(2);
     expect(vs.vector_to_coords(new Vector([1, 2, 0])).length).toBe(3);
   });
 
-  it("LinearTransformationScene.write_vector_coordinates delegates via super", () => {
+  it("LinearTransformationScene.write_vector_coordinates delegates via super", async () => {
     const scene = new LinearTransformationScene();
-    const coords = scene.write_vector_coordinates(new Vector([1, 2]));
+    const coords = await scene.write_vector_coordinates(new Vector([1, 2]));
     expect(coords.get_entries().submobjects.length).toBe(2);
   });
 
