@@ -563,6 +563,39 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return out;
   }
 
+  /**
+   * Concatenate one level of nesting: `[[a, b], [c]]` -> `[a, b, c]`.
+   *
+   * Target of the multi-`for` comprehension desugar in `preprocess.ts` (which
+   * emits `__wan_flatten1(...)` calls because rapydscript-ng only parses a
+   * single `for` clause per comprehension). rapydscript lists are plain JS
+   * arrays, so this is a verbatim `concat`; a non-array inner value is kept
+   * as-is defensively (the desugar only ever passes lists of lists).
+   */
+  function wanFlatten1(nested: Any): Any[] {
+    const out: Any[] = [];
+    if (nested === null || nested === undefined) return out;
+    const outer = nested as Any;
+    if (typeof outer.length !== "number") {
+      out.push(nested);
+      return out;
+    }
+    for (let i = 0; i < outer.length; i += 1) {
+      const inner = outer[i];
+      if (
+        inner !== null &&
+        inner !== undefined &&
+        typeof inner !== "string" &&
+        typeof (inner as Any).length === "number"
+      ) {
+        for (let j = 0; j < (inner as Any).length; j += 1) out.push((inner as Any)[j]);
+      } else {
+        out.push(inner);
+      }
+    }
+    return out;
+  }
+
   function pythonAdd(a: Any, b: Any): Any {
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
     if (b !== null && b !== undefined && typeof b.__radd__ === "function") return b.__radd__(a);
@@ -1029,6 +1062,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // `max` and `sum` come from baselib; `round` has no JS equivalent that
     // matches CPython's banker's rounding / `ndigits` argument.
     globals.round = pythonRound;
+    // One-level flatten for the multi-`for` comprehension desugar (see
+    // `desugarMultiForComprehensions` in `preprocess.ts`). The name is
+    // reserved: the desugar refuses to run when user code already uses it.
+    globals.__wan_flatten1 = wanFlatten1;
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -1046,6 +1083,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonPow,
     pythonNeg,
     pythonRound,
+    wanFlatten1,
     getDot,
   };
 }

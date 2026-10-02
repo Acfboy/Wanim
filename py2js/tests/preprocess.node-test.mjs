@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 
 import {
+  desugarMultiForComprehensions,
   formatUnsupportedImportError,
   preprocessImports,
   renameJsReservedWords,
@@ -137,6 +138,90 @@ check("renameJsReservedWords skips triple-quoted strings", () => {
 check("renameJsReservedWords leaves Python keywords and super alone", () => {
   const out = renameJsReservedWords("for i in xs:\n    super().__init__()\n");
   assert.equal(out, "for i in xs:\n    super().__init__()\n");
+});
+
+check("desugar leaves single-for comprehensions alone", () => {
+  const src = "x = [i + 1 for i in xs]\ny = [i for i in xs if i]\n";
+  assert.equal(desugarMultiForComprehensions(src), src);
+});
+
+check("desugar rewrites double-for list comprehension, order preserved", () => {
+  const out = desugarMultiForComprehensions(
+    "x = [f(i, j) for j in [1, 0, -1] for i in [-1, 0, 1]]\n",
+  );
+  assert.equal(
+    out,
+    "x = __wan_flatten1([[f(i, j) for i in [-1, 0, 1]] for j in [1, 0, -1]])\n",
+  );
+});
+
+check("desugar handles the la1_7 grid case", () => {
+  const src =
+    'grid = VGroup(*[\n    MathTex("(%d,%d)" % (i, j), font_size=26)\n    for j in [1, 0, -1] for i in [-1, 0, 1]\n])\n';
+  const out = desugarMultiForComprehensions(src);
+  assert.ok(out.includes("__wan_flatten1([[MathTex("));
+  assert.ok(out.includes("for i in [-1, 0, 1]] for j in [1, 0, -1]])"));
+  assert.ok(out.startsWith("grid = VGroup(*__wan_flatten1("));
+});
+
+check("desugar nests triple-for outside-in", () => {
+  const out = desugarMultiForComprehensions("x = [e for a in A for b in B for c in C]\n");
+  assert.equal(
+    out,
+    "x = __wan_flatten1([__wan_flatten1([[e for c in C] for b in B]) for a in A])\n",
+  );
+});
+
+check("desugar combines multiple ifs with and", () => {
+  const out = desugarMultiForComprehensions(
+    "x = [e for a in A if p if q for b in B if r]\n",
+  );
+  assert.equal(
+    out,
+    "x = __wan_flatten1([[e for b in B if ((r))] for a in A if ((p) and (q))])\n",
+  );
+});
+
+check("desugar handles set/dict/generator forms", () => {
+  assert.equal(
+    desugarMultiForComprehensions("x = {e for a in A for b in B}\n"),
+    "x = {__wan_y for __wan_y in __wan_flatten1([[e for b in B] for a in A])}\n",
+  );
+  assert.equal(
+    desugarMultiForComprehensions("x = (e for a in A for b in B)\n"),
+    "x = (__wan_g for __wan_g in __wan_flatten1([[e for b in B] for a in A]))\n",
+  );
+  assert.equal(
+    desugarMultiForComprehensions("x = {k: v for a in A for b in B}\n"),
+    "x = {__wan_kv[0]: __wan_kv[1] for __wan_kv in __wan_flatten1([[[k, v] for b in B] for a in A])}\n",
+  );
+});
+
+check("desugar ignores for/if inside strings, comments and identifiers", () => {
+  const src =
+    '# for i in xs\nx = ["for", "if"]\ny = [format(m) for m in ms]\n';
+  assert.equal(desugarMultiForComprehensions(src), src);
+});
+
+check("desugar leaves indexing, calls and tuples alone", () => {
+  const src = "a[0]\na[1:2]\nf(x, y)\n(x, y)\n(x for x in xs)\n";
+  assert.equal(desugarMultiForComprehensions(src), src);
+});
+
+check("desugar keeps ternary elements and nested multi-for", () => {
+  assert.equal(
+    desugarMultiForComprehensions("x = [a if c else b for a in A for b in B]\n"),
+    "x = __wan_flatten1([[a if c else b for b in B] for a in A])\n",
+  );
+  assert.equal(
+    desugarMultiForComprehensions("x = [[e for a in A for b in B] for c in C]\n"),
+    "x = [__wan_flatten1([[e for b in B] for a in A]) for c in C]\n",
+  );
+});
+
+check("desugar leaves async-for alone", () => {
+  const src = "x = [e async for a in A for b in B]\n";
+  assert.equal(desugarMultiForComprehensions(src), src);
 });
 
 console.log(`\n${passed} tests passed`);

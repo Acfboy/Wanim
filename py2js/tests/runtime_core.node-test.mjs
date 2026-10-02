@@ -88,4 +88,16 @@ check("% formatting exponent and percent", () => {
   assert.equal(core.pythonMod("%s", null), "None");
 });
 
+check("wanFlatten1 concatenates one level", () => {
+  assert.deepEqual(core.wanFlatten1([[1, 2], [3], []]), [1, 2, 3]);
+  assert.deepEqual(core.wanFlatten1([]), []);
+  assert.deepEqual(core.wanFlatten1([["a"], ["b", "c"]]), ["a", "b", "c"]);
+});
+
+check("wanFlatten1 is exposed to compiled scenes as a global", () => {
+  const runtime = core.buildRuntime();
+  assert.equal(typeof runtime.globals.__wan_flatten1, "function");
+  assert.deepEqual(runtime.globals.__wan_flatten1([[1], [2, 3]]), [1, 2, 3]);
+});
+
 console.log(`\n${passed} tests passed`);
