@@ -154,6 +154,20 @@ export class InteractiveScene extends Scene {
       const construct = this.to_thunk(step.construct);
       if (construct !== null) phases.push({ kind: "construct", run: construct });
     }
+    // A storyboard with no blueprint half (e.g. `[(None, construct0), ...]`)
+    // still expects the shared `blueprint()` method to have built `self.*`
+    // state first. Without this, `construct` phases see `self.cells` etc. as
+    // `undefined` (`undefined is not iterable`). Prepend the default blueprint
+    // once when the subclass overrides it; a base no-op blueprint adds no
+    // value and would only cost an extra "next" click.
+    if (
+      this._storyboard !== null &&
+      phases.length > 0 &&
+      phases.every((phase) => phase.kind !== "blueprint") &&
+      (this.blueprint as unknown) !== (InteractiveScene.prototype.blueprint as unknown)
+    ) {
+      phases.unshift({ kind: "blueprint", run: () => this.blueprint() });
+    }
     return phases;
   }
 
