@@ -279,16 +279,20 @@ export class TipableVMobject extends VMobject {
       const shiftX = (anchor[0] ?? 0) - (cx + cos * dx0 - sin * dy0);
       const shiftY = (anchor[1] ?? 0) - (cy + sin * dx0 + cos * dy0);
       const shiftZ = (anchor[2] ?? 0) - (meta.tipPoint[2] ?? 0);
-      const positioned = meta.rows.map((row) => {
+      // Flat output: the previous nested `map` allocated one array per point
+      // for every tip on every reposition (live arrows re-tip each frame).
+      const rows = meta.rows;
+      const count = rows.length;
+      const positioned = new Array<number>(count * 3);
+      for (let index = 0; index < count; index += 1) {
+        const row = rows[index] as number[];
         const dx = (row[0] ?? 0) - cx;
         const dy = (row[1] ?? 0) - cy;
-        return [
-          cx + cos * dx - sin * dy + shiftX,
-          cy + sin * dx + cos * dy + shiftY,
-          (row[2] ?? 0) + shiftZ,
-        ];
-      });
-      tip.points = array(positioned) as NDArray;
+        positioned[index * 3] = cx + cos * dx - sin * dy + shiftX;
+        positioned[index * 3 + 1] = cy + sin * dx + cos * dy + shiftY;
+        positioned[index * 3 + 2] = (row[2] ?? 0) + shiftZ;
+      }
+      tip.points = array(positioned).reshape(count, 3) as NDArray;
       const bx = (meta.base[0] ?? 0) - cx;
       const by = (meta.base[1] ?? 0) - cy;
       TIP_POSITIONED_BASE.set(tip, [
@@ -407,8 +411,12 @@ export class TipableVMobject extends VMobject {
   }
 
   get_last_handle(): number[] {
-    const all = pointRows(this.points, this.dim);
-    return [...(all[all.length - 2] ?? [0, 0, 0])];
+    // `pointAt` reads the single row straight from the backing store;
+    // `pointRows` materialised every control point (called per tip
+    // reposition, i.e. for every live arrow every frame).
+    const count = this.get_num_points();
+    if (count < 2) return [0, 0, 0];
+    return pointAt(this.points, count - 2, this.dim);
   }
 
   override get_end(): number[] {

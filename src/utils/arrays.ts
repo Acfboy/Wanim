@@ -83,6 +83,42 @@ export function nestedRows(value: unknown): unknown[][] {
 }
 
 export function pointRows(value: unknown, dim = 3): number[][] {
+  // Fast path: a C-contiguous 2-D NDArray is read straight from its backing
+  // store.  The generic path below calls `toArray()` (materialising a nested
+  // JS array for every point) and then slices/maps/converts each row; this
+  // path allocates only the `dim`-number rows the caller wants and dominated
+  // the interactive per-frame profiles (Text copies, boundary scans, ...).
+  const flat = _cContiguousRows(value);
+  if (flat !== null) {
+    const { data, rowDim, rowCount } = flat;
+    const rows = new Array<number[]>(rowCount);
+    const copyDims = rowDim < dim ? rowDim : dim;
+    for (let row = 0; row < rowCount; row += 1) {
+      const point = new Array<number>(dim);
+      const base = row * rowDim;
+      for (let c = 0; c < copyDims; c += 1) point[c] = numeric(data[base + c]);
+      for (let c = copyDims; c < dim; c += 1) point[c] = 0;
+      rows[row] = point;
+    }
+    return rows;
+  }
+  // Fast path: a plain (or typed-array) row list whose rows are already flat
+  // scalars.  `nestedRows` would copy every row through `toArray()`/`map`.
+  if (Array.isArray(value)) {
+    const first = value[0];
+    if (value.length > 0 && (Array.isArray(first) || ArrayBuffer.isView(first)) && !isNDArray(value)) {
+      const rows = new Array<number[]>(value.length);
+      for (let row = 0; row < value.length; row += 1) {
+        const source = value[row] as ArrayLike<unknown>;
+        const point = new Array<number>(dim);
+        const copyDims = source.length < dim ? source.length : dim;
+        for (let c = 0; c < copyDims; c += 1) point[c] = numeric(source[c as number]);
+        for (let c = copyDims; c < dim; c += 1) point[c] = 0;
+        rows[row] = point;
+      }
+      return rows;
+    }
+  }
   const rows = nestedRows(value);
   return rows.map((row) => {
     const record = row as unknown;
@@ -126,6 +162,25 @@ export function pointFrom(value: unknown, dim = 3): Point3D {
 }
 
 export function pointsFrom(value: unknown, dim = 3): Point3D {
+  // Fast path: a C-contiguous NDArray already holding `dim` columns is a
+  // plain typed-array copy (this runs for every family member on
+  // `copy`/`become`, where the row-wise rebuild dominated).
+  const flat = _cContiguousRows(value);
+  if (flat !== null) {
+    const { data, rowDim, rowCount } = flat;
+    if (rowDim === dim) {
+      return (value as NDArray).copy() as Point3D;
+    }
+    const out = new Array<number>(rowCount * dim);
+    const copyDims = rowDim < dim ? rowDim : dim;
+    for (let row = 0; row < rowCount; row += 1) {
+      const base = row * rowDim;
+      const outBase = row * dim;
+      for (let c = 0; c < copyDims; c += 1) out[outBase + c] = numeric(data[base + c]);
+      for (let c = copyDims; c < dim; c += 1) out[outBase + c] = 0;
+    }
+    return (rowCount > 0 ? array(out).reshape(rowCount, dim) : array([]).reshape(0, dim)) as Point3D;
+  }
   const rows = pointRows(value, dim);
   return array(rows.length > 0 ? rows : []).reshape(rows.length, dim) as Point3D;
 }

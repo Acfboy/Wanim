@@ -17,7 +17,6 @@ import {
   resolveDefaultFontPath,
   resolveDefaultFontPaths,
   parseFontFromBuffer,
-  pathToSvgData,
   type FontMetrics,
 } from "./font-loader.js";
 import { generateDecorations, type Decoration } from "./decorator.js";
@@ -174,12 +173,9 @@ export class PangoRenderer {
         yOffset += (style.baseline_shift as number) * fontSize;
       }
 
-      let pathData = glyph.path;
-      const glyphFont = fonts[glyph.fontIndex] ?? fonts[0];
-      const glyphObj = glyphFont ? glyphFont.glyphs.get(glyph.glyphIndex) : undefined;
-      if (glyphObj) pathData = pathToSvgData(glyphObj.getPath(0, 0, fontSize));
-
-      svgContent += `  <path d="${pathData}" fill="${currentColor}" transform="translate(${pathX.toFixed(2)}, ${yOffset.toFixed(2)})" />\n`;
+      // `glyph.path` is the outline at the origin; the translate below places
+      // it (regenerating the path here defeated the glyph-path cache).
+      svgContent += `  <path d="${glyph.path}" fill="${currentColor}" transform="translate(${pathX.toFixed(2)}, ${yOffset.toFixed(2)})" />\n`;
     }
 
     svgContent += "</svg>";

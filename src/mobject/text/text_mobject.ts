@@ -6,9 +6,9 @@
 import { array, type NDArray } from "numpy-ts";
 import { DEFAULT_FONT_SIZE, NORMAL } from "../../constants.js";
 import { ManimColor, WHITE, color_gradient, type ParsableManimColor } from "../../utils/color/core.js";
-import { pointRows } from "../../utils/arrays.js";
+
 import { VMobject, VGroup, type VMobjectOptions } from "../types/vectorized_mobject.js";
-import { SVGMobject, type SVGMobjectOptions } from "../svg/svg_mobject.js";
+import { SVGMobject, close_path_contours, type SVGMobjectOptions } from "../svg/svg_mobject.js";
 import { Dot } from "../geometry/arc.js";
 import { renderMarkupToSVGString } from "./pango/svg-renderer.js";
 
@@ -43,6 +43,13 @@ export const PANGO_SLANT_MAP: Record<string, string> = {
   ITALIC: "italic",
   OBLIQUE: "oblique",
 };
+
+/** Shared `_close_glyph_contours` implementation for Text / MarkupText: the
+ * per-path closing lives in `close_path_contours` (svg_mobject), which the
+ * `close_path_contours` option applies once per cached glyph outline. */
+function closeGlyphContours(mob: VMobject): void {
+  for (const each of mob) close_path_contours(each as VMobject);
+}
 
 function get_pango_attrs_markup(font: string | null, weight: string | null, slant: string | null): string[] {
   const attrs: string[] = [];
@@ -185,6 +192,7 @@ export class Text extends SVGMobject {
     super({
       ...(kwargs as SVGMobjectOptions),
       svg_string: null,
+      close_path_contours: true,
       fill_opacity,
       stroke_width,
       height: height ?? null,
@@ -257,7 +265,9 @@ export class Text extends SVGMobject {
     this.chars = new VGroup(...(this.submobjects as VMobject[]));
     this.text = text_without_tabs.replace(/ /g, "").replace(/\n/g, "");
 
-    this._close_glyph_contours();
+    // Glyph contours are already closed by `path_to_mobject` (and cached per
+    // `d`); only fall back to closing here for unusual subclasses.
+    if (!this._close_path_contours) this._close_glyph_contours();
 
     if (height === null && width === null) {
       this.scale(TEXT_MOB_SCALE_FACTOR);
@@ -266,47 +276,7 @@ export class Text extends SVGMobject {
   }
 
   _close_glyph_contours(): void {
-    const nppc = this.n_points_per_curve;
-    for (const each of this) {
-      const points = pointRows((each as VMobject).points, this.dim);
-      if (points.length === 0) continue;
-      let curve_start = points[0] as number[];
-      const closed_curve_points: number[][] = [];
-      const add_line_to = (end: number[]): void => {
-        const start = closed_curve_points[closed_curve_points.length - 1] as number[];
-        if (nppc === 3) {
-          closed_curve_points.push(
-            start,
-            start.map((value, index) => (value + (end[index] ?? 0)) / 2),
-            end,
-          );
-        } else {
-          closed_curve_points.push(
-            start,
-            start.map((value, index) => (value + value + (end[index] ?? 0)) / 3),
-            start.map((value, index) => (value + (end[index] ?? 0) + (end[index] ?? 0)) / 3),
-            end,
-          );
-        }
-      };
-      for (let index = 0; index < points.length; index += 1) {
-        const point = points[index] as number[];
-        closed_curve_points.push(point);
-        if (
-          index !== points.length - 1 &&
-          (index + 1) % nppc === 0 &&
-          point.some((value, i) => value !== ((points[index + 1] as number[])[i] ?? 0))
-        ) {
-          add_line_to(curve_start);
-          curve_start = points[index + 1] as number[];
-        }
-      }
-      add_line_to(curve_start);
-      (each as VMobject).points = array(closed_curve_points.length > 0 ? closed_curve_points : []).reshape(
-        closed_curve_points.length,
-        this.dim,
-      ) as NDArray;
-    }
+    closeGlyphContours(this);
   }
 
   __repr__(): string {
@@ -598,6 +568,7 @@ export class MarkupText extends SVGMobject {
     super({
       ...(kwargs as SVGMobjectOptions),
       svg_string: null,
+      close_path_contours: true,
       fill_opacity,
       stroke_width,
       height: height ?? null,
@@ -656,7 +627,7 @@ export class MarkupText extends SVGMobject {
     this.chars = new VGroup(...(this.submobjects as VMobject[]));
     this.text = text_without_tabs.replace(/ /g, "").replace(/\n/g, "");
 
-    this._close_glyph_contours();
+    if (!this._close_path_contours) this._close_glyph_contours();
 
     if (this.gradient) this.set_color_by_gradient(...this.gradient);
     for (const col of colormap) {
@@ -679,43 +650,7 @@ export class MarkupText extends SVGMobject {
   }
 
   _close_glyph_contours(): void {
-    const nppc = this.n_points_per_curve;
-    for (const each of this) {
-      const points = pointRows((each as VMobject).points, this.dim);
-      if (points.length === 0) continue;
-      let curve_start = points[0] as number[];
-      const closed_curve_points: number[][] = [];
-      const add_line_to = (end: number[]): void => {
-        const start = closed_curve_points[closed_curve_points.length - 1] as number[];
-        if (nppc === 3) {
-          closed_curve_points.push(start, start.map((value, index) => (value + (end[index] ?? 0)) / 2), end);
-        } else {
-          closed_curve_points.push(
-            start,
-            start.map((value, index) => (value + value + (end[index] ?? 0)) / 3),
-            start.map((value, index) => (value + (end[index] ?? 0) + (end[index] ?? 0)) / 3),
-            end,
-          );
-        }
-      };
-      for (let index = 0; index < points.length; index += 1) {
-        const point = points[index] as number[];
-        closed_curve_points.push(point);
-        if (
-          index !== points.length - 1 &&
-          (index + 1) % nppc === 0 &&
-          point.some((value, i) => value !== ((points[index + 1] as number[])[i] ?? 0))
-        ) {
-          add_line_to(curve_start);
-          curve_start = points[index + 1] as number[];
-        }
-      }
-      add_line_to(curve_start);
-      (each as VMobject).points = array(closed_curve_points.length > 0 ? closed_curve_points : []).reshape(
-        closed_curve_points.length,
-        this.dim,
-      ) as NDArray;
-    }
+    closeGlyphContours(this);
   }
 
   get font_size(): number {

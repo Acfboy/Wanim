@@ -15,7 +15,7 @@ import {
   RIGHT,
 } from "../../constants.js";
 import { config } from "../../_config/utils.js";
-import { type ComplexPoint } from "../../utils/arrays.js";
+import { pointRows, type ComplexPoint } from "../../utils/arrays.js";
 import { Mobject } from "../mobject.js";
 import { VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { ValueTracker } from "../value_tracker.js";
@@ -193,8 +193,47 @@ function translate_mob_in_place(mob: Mobject, delta: readonly number[]): void {
 interface NumberPart {
   mob: VMobject;
   info: GlyphInfo;
+  /** Layout translation (updated on every rebuild). */
   tx: number;
   ty: number;
+  /** Translation currently baked into `mob`'s points (layout + whatever
+   *  external offsets the glyph accumulated since it was created). */
+  effX: number;
+  effY: number;
+  /** Cache key of the glyph (character / "\\dots" / unit string), used to
+   *  reuse the same mobject across `set_value` rebuilds. */
+  key: string;
+  /** Untranslated first point of the glyph (`null` for an empty glyph). */
+  baseX: number | null;
+  baseY: number | null;
+  /** First point of `mob` after the last build, used to detect external
+   *  transforms (`null` for an empty glyph). */
+  anchorX: number | null;
+  anchorY: number | null;
+}
+
+/** First point of the first family member that has points, or `null` when the
+ * family has none.  Used as an O(1)-ish fingerprint of a glyph's current
+ * transform state: group glyphs (MathTex) carry their geometry in leaf
+ * children, not on their own `points`. */
+function firstPointXY(mob: VMobject): [number, number] | null {
+  const stack: VMobject[] = [mob];
+  while (stack.length > 0) {
+    const member = stack.pop() as VMobject;
+    const store = (member as unknown as { points?: { data?: ArrayLike<number> } }).points;
+    const data = store?.data;
+    if (data !== undefined && data.length >= 2) {
+      return [Number(data[0]), Number(data[1])];
+    }
+    if (data === undefined) {
+      const rows = pointRows(store, 2);
+      const first = rows[0];
+      if (first !== undefined) return [Number(first[0] ?? 0), Number(first[1] ?? 0)];
+    }
+    const children = member.submobjects;
+    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index] as VMobject);
+  }
+  return null;
 }
 
 /** Round-half-to-even (banker's), mirroring np.round for scalars. */
@@ -344,6 +383,18 @@ export class DecimalNumber extends VMobject {
   /** Formatted string of the last build; lets `set_value` skip no-op updates
    * (e.g. a slider jitter that rounds to the same digits). */
   private _last_num_string: string | null = null;
+  /** Glyphs of the last build (see `_set_submobjects_from_number`). */
+  private _parts: NumberPart[] | null = null;
+  /** Detached glyph mobjects keyed by character, recycled across rebuilds so a
+   * changing digit does not pay a fresh `proto.copy()` every frame. */
+  private _glyphPool: Map<string, Array<{
+    mob: VMobject;
+    baseX: number | null;
+    baseY: number | null;
+  }>> | null = null;
+  /** Mobjects currently sitting in {@link _glyphPool}, so `set_value`'s
+   *  cairo "blank the old family" hack does not wipe recyclable geometry. */
+  private _pooledMobs = new Set<VMobject>();
 
   constructor(numberValue: DecimalNumberValue = 0, options: DecimalNumberOptions = {}) {
     const {
@@ -416,9 +467,8 @@ export class DecimalNumber extends VMobject {
     }
   }
 
-  _set_submobjects_from_number(numberValue: DecimalNumberValue): void {
+  _set_submobjects_from_number(numberValue: DecimalNumberValue, allowReuse = true): void {
     this.number = numberValue;
-    this.submobjects = [];
 
     const num_string = this._get_num_string(numberValue);
     this._last_num_string = num_string;
@@ -432,17 +482,96 @@ export class DecimalNumber extends VMobject {
     // per-step calls each re-scan every SVG point through the ndarray helpers
     // (get_critical_point -> get_points_defining_boundary), which dominated
     // DecimalNumber construction. Verified to match to ~1e-16.
+    //
+    // Glyphs whose key is unchanged from the previous build (the same
+    // character at the same display position) keep their mobject; only the
+    // layout delta is applied. A live readout usually changes one or two
+    // digits per frame, so this avoids copying and re-styling every glyph.
+    const previous = this._parts ?? [];
     const parts: NumberPart[] = [];
+    // `allowReuse` is false while rebuilding a scaled number (the glyphs are
+    // already scaled, and `set_value` rescales the fresh prototypes itself).
+    // A glyph whose anchor no longer matches was transformed externally
+    // (scale/rotate/move): layout units no longer apply, so every later glyph
+    // is rebuilt too.  A mere character change only rebuilds that glyph.
+    let reuseBroken = !allowReuse;
+    const pool = this._glyphPool ?? (this._glyphPool = new Map());
     const addGlyph = (
+      key: string,
       stringValue: string,
       factory: DecimalNumberMobFactory,
       kwargs: Record<string, unknown> = {},
     ): NumberPart => {
+      const old = previous[parts.length];
+      if (!reuseBroken && old !== undefined && old.key === key) {
+        const anchor = firstPointXY(old.mob);
+        const matches =
+          (anchor === null && old.anchorX === null) ||
+          (anchor !== null && old.anchorX === anchor[0] && old.anchorY === anchor[1]);
+        if (matches) {
+          // `eff` is the glyph's real translation from its untranslated
+          // coordinates; the layout loop replaces it with the new absolute
+          // layout offset, so any accumulated group offset is re-applied
+          // later by the group's own `move_to`.
+          const effX = old.baseX === null || anchor === null ? 0 : anchor[0] - old.baseX;
+          const effY = old.baseY === null || anchor === null ? 0 : anchor[1] - old.baseY;
+          const reused: NumberPart = {
+            mob: old.mob,
+            info: old.info,
+            tx: effX,
+            ty: effY,
+            effX,
+            effY,
+            key,
+            baseX: old.baseX,
+            baseY: old.baseY,
+            anchorX: old.anchorX,
+            anchorY: old.anchorY,
+          };
+          parts.push(reused);
+          return reused;
+        }
+        // Anchor mismatch: external transform, the pooled glyphs (and the
+        // remaining old ones) are no longer valid in layout units.
+        reuseBroken = true;
+        this._glyphPool = null;
+        this._pooledMobs.clear();
+      }
+      const activePool = reuseBroken ? null : pool;
+      if (old !== undefined && old.key !== key && activePool !== null) {
+        // Recycle the glyph leaving this display position.  Bound the pool so
+        // an exotic unit/format cannot grow it without limit.
+        let list = activePool.get(old.key);
+        if (list === undefined) {
+          if (activePool.size >= 64) {
+            activePool.clear();
+            this._pooledMobs.clear();
+          }
+          list = [];
+          activePool.set(old.key, list);
+        }
+        list.push({ mob: old.mob, baseX: old.baseX, baseY: old.baseY });
+        this._pooledMobs.add(old.mob);
+      }
+      const pooled = activePool?.get(key)?.pop();
+      if (pooled !== undefined) this._pooledMobs.delete(pooled.mob);
       const proto = glyph_proto(stringValue, factory, font_size, kwargs);
       const info = glyph_info_map.get(proto) as GlyphInfo;
-      const mob = proto.copy() as VMobject;
-      this.add(mob);
-      const part: NumberPart = { mob, info, tx: 0, ty: 0 };
+      const mob = pooled?.mob ?? (proto.copy() as VMobject);
+      // Read the glyph's *current* first point (a pooled glyph keeps whatever
+      // external offsets the group accumulated): the layout delta normalises
+      // it back into layout space.
+      const first = firstPointXY(mob);
+      const baseX = pooled?.baseX ?? first?.[0] ?? null;
+      const baseY = pooled?.baseY ?? first?.[1] ?? null;
+      const anchorX = first?.[0] ?? baseX;
+      const anchorY = first?.[1] ?? baseY;
+      const effX = baseX === null || anchorX === null ? 0 : anchorX - baseX;
+      const effY = baseY === null || anchorY === null ? 0 : anchorY - baseY;
+      const part: NumberPart = {
+        mob, info, tx: effX, ty: effY, effX, effY, key,
+        baseX, baseY, anchorX, anchorY,
+      };
       parts.push(part);
       return part;
     };
@@ -460,11 +589,11 @@ export class DecimalNumber extends VMobject {
       return { minX, maxX, minY, maxY };
     };
 
-    for (const ch of num_string) addGlyph(ch, this.mob_class);
+    for (const ch of num_string) addGlyph(ch, ch, this.mob_class);
 
     // Add non-numerical bits
     if (this.show_ellipsis) {
-      addGlyph("\\dots", singleStringMathTexFactory, { color: this.color });
+      addGlyph("ellipsis", "\\dots", singleStringMathTexFactory, { color: this.color });
     }
 
     // NOTE: mirrors `self.arrange(buff=..., aligned_edge=DOWN)`, i.e.
@@ -479,7 +608,7 @@ export class DecimalNumber extends VMobject {
 
     if (this.unit !== null && this.unit !== undefined) {
       const groupBounds = bounds();
-      const unitPart = addGlyph(this.unit, singleStringMathTexFactory);
+      const unitPart = addGlyph(`unit:${this.unit}`, this.unit, singleStringMathTexFactory);
       unitPart.tx =
         groupBounds.maxX -
         unitPart.info.minX +
@@ -511,10 +640,24 @@ export class DecimalNumber extends VMobject {
     }
 
     for (const part of parts) {
-      if (part.tx !== 0 || part.ty !== 0) {
-        translate_mob_in_place(part.mob, [part.tx, part.ty, 0]);
+      // Reused/pooled glyphs already carry a translation (possibly including
+      // an external group offset); apply only the delta to the new layout
+      // position.  The group-level `move_to` afterwards re-applies the
+      // external offset uniformly.
+      const dx = part.tx - part.effX;
+      const dy = part.ty - part.effY;
+      if (dx !== 0 || dy !== 0) {
+        translate_mob_in_place(part.mob, [dx, dy, 0]);
+        part.effX = part.tx;
+        part.effY = part.ty;
       }
     }
+    this._parts = parts;
+    this.submobjects = parts.map((part) => part.mob);
+    // Record where each glyph actually landed: `set_value` repositions the
+    // group afterwards and syncs again, but a directly-built number (the
+    // constructor) is complete here.
+    this._sync_part_anchors();
 
     // Track the initial height to enable scaling via font_size. `height`
     // (length_over_dim) reads every point, not just the anchors.
@@ -528,6 +671,18 @@ export class DecimalNumber extends VMobject {
 
     if (this.include_background_rectangle) {
       this.add_background_rectangle();
+    }
+  }
+
+  /** Re-record every glyph's first point after the number was repositioned,
+   * so the next `set_value` can tell "untouched glyph" from "externally
+   * transformed glyph" with one comparison. */
+  private _sync_part_anchors(): void {
+    if (this._parts === null) return;
+    for (const part of this._parts) {
+      const anchor = firstPointXY(part.mob);
+      part.anchorX = anchor === null ? null : anchor[0];
+      part.anchorY = anchor === null ? null : anchor[1];
     }
   }
 
@@ -634,34 +789,50 @@ export class DecimalNumber extends VMobject {
     const move_to_point = this.get_edge_center(this.edge_to_fix);
     const old_submobjects = [...this.submobjects];
 
-    this._set_submobjects_from_number(numberValue);
+    const isScaled = Math.abs(old_font_size - this._font_size) > 1e-9;
+    this._set_submobjects_from_number(numberValue, !isScaled);
     // The glyph prototypes are cached at `_font_size`, so an unscaled number
     // is already the right size and the round-trip through the `font_size`
     // setter (height scan + full point rescale) is a no-op.  Only rescale when
     // the number was actually scaled away from its base size.
-    if (Math.abs(old_font_size - this._font_size) > 1e-9) {
+    if (isScaled) {
       this.font_size = old_font_size;
     }
     this.move_to(move_to_point, this.edge_to_fix);
+    this._sync_part_anchors();
     // Style every new glyph from the previous generation (the last old glyph's
     // style covers any extra glyphs), which makes the trailing `init_colors`
     // propagation redundant.
     if (old_submobjects.length > 0) {
       const fallback = old_submobjects[old_submobjects.length - 1] as VMobject;
       for (let index = 0; index < this.submobjects.length; index += 1) {
-        const source = (old_submobjects[index] ?? fallback) as VMobject;
-        (this.submobjects[index] as VMobject).match_style(source);
+        const target = this.submobjects[index] as VMobject;
+        // Reused glyphs keep their style; only freshly built ones inherit it.
+        if (target === old_submobjects[index]) continue;
+        target.match_style((old_submobjects[index] ?? fallback) as VMobject);
       }
     } else {
       this.init_colors();
     }
 
     if (config.renderer === RendererType.CAIRO) {
+      // Dumb hack...due to how scene handles families of animated
+      // mobjects; for compatibility with updaters to not leave the first
+      // number in place while updating (not needed with opengl renderer).
+      // Reused glyphs are shared with the new generation: skipping them keeps
+      // their live geometry, only discarded glyphs are blanked.
+      const protectedMobs = new Set<Mobject>(this.get_family());
+      // Pooled glyphs are whole subtrees: protect every descendant too, or the
+      // leaves (which carry the geometry) get blanked and the recycled glyph
+      // comes back as a collapsed point.
+      for (const pooled of this._pooledMobs) {
+        for (const member of pooled.get_family()) protectedMobs.add(member);
+      }
       for (const mob of old_family) {
-        // Dumb hack...due to how scene handles families of animated
-        // mobjects; for compatibility with updaters to not leave the first
-        // number in place while updating (not needed with opengl renderer).
-        mob.points.fill(0);
+        const points = (mob as unknown as { points?: { fill?: (value: number) => void } }).points;
+        if (points?.fill === undefined) continue;
+        if (protectedMobs.has(mob)) continue;
+        points.fill(0);
       }
     }
     return this;

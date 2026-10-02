@@ -376,6 +376,30 @@ export function pathToSvgData(path: { commands: PathCommandLike[] }, decimalPlac
   return d;
 }
 
+/** Glyph outline `d` strings at the origin, keyed per font by
+ * `glyphIndex|fontSize`.  The same character/size recurs across every Text
+ * rebuilt during a drag (and across digit glyphs in DecimalNumber), so the
+ * opentype `getPath` + coordinate formatting is done once. */
+const GLYPH_PATH_DATA_CACHE = new WeakMap<Font, Map<string, string>>();
+const GLYPH_PATH_DATA_LIMIT = 8192;
+
+function glyphPathData(font: Font, glyphIndex: number, fontSize: number): string {
+  let perFont = GLYPH_PATH_DATA_CACHE.get(font);
+  if (perFont === undefined) {
+    perFont = new Map<string, string>();
+    GLYPH_PATH_DATA_CACHE.set(font, perFont);
+  }
+  const key = `${glyphIndex}|${fontSize}`;
+  let data = perFont.get(key);
+  if (data === undefined) {
+    const glyph = font.glyphs.get(glyphIndex);
+    data = glyph ? pathToSvgData(glyph.getPath(0, 0, fontSize)) : "";
+    if (perFont.size >= GLYPH_PATH_DATA_LIMIT) perFont.clear();
+    perFont.set(key, data);
+  }
+  return data;
+}
+
 /** Get the SVG path data for a single glyph (mirrors `getGlyphPath`). */
 export function getGlyphPath(
   font: Font,
@@ -479,13 +503,14 @@ export function getTextPaths(
     const glyphY = y + lineIndex * lineSpacing;
 
     if (glyph) {
-      const glyphPath = glyph.getPath(currentX, glyphY, fontSize);
+      // NOTE: the outline is emitted at the origin (and cached); the caller
+      // places it with `x`/`y` (the SVG renderer emits the translate).
       paths.push({
         char,
         charIndex,
         glyphIndex,
         fontIndex,
-        path: pathToSvgData(glyphPath),
+        path: glyphPathData(font, glyphIndex, fontSize),
         x: currentX,
         y: glyphY,
         advanceWidth: (glyph.advanceWidth ?? 0) * scale,
@@ -497,13 +522,12 @@ export function getTextPaths(
     } else {
       const notdefGlyph = font.glyphs.get(0);
       if (notdefGlyph) {
-        const glyphPath = notdefGlyph.getPath(currentX, glyphY, fontSize);
         paths.push({
           char,
           charIndex,
           glyphIndex: 0,
           fontIndex,
-          path: pathToSvgData(glyphPath),
+          path: glyphPathData(font, 0, fontSize),
           x: currentX,
           y: glyphY,
           advanceWidth: (notdefGlyph.advanceWidth ?? 0) * scale,

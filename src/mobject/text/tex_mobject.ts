@@ -241,12 +241,49 @@ export class MathTexPart extends VMobject {
   }
 }
 
+/** Construction cache for repeated `MathTex` expressions (live labels are
+ * rebuilt every frame from an unchanging small string set).  Keyed by the
+ * expression and simple scalar options; object options disable caching. */
+const MATH_TEX_CACHE = new Map<string, MathTex>();
+const MATH_TEX_CACHE_LIMIT = 256;
+
+function mathTexCacheKey(texStrings: string[], options: MathTexOptions): string | null {
+  const parts: unknown[] = ["MathTex"];
+  const simpleKeys = [
+    "arg_separator", "tex_environment", "font_size", "color", "stroke_width",
+    "should_center", "height", "width", "organize_left_to_right",
+    "disable_ligatures", "warn_missing_font",
+  ] as const;
+  for (const key of simpleKeys) {
+    const value = (options as Record<string, unknown>)[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+      parts.push(key, value);
+    } else {
+      return null;
+    }
+  }
+  const substrings = (options as Record<string, unknown>).substrings_to_isolate;
+  if (substrings !== undefined && substrings !== null) return null;
+  const colorMap = (options as Record<string, unknown>).tex_to_color_map;
+  if (colorMap !== undefined && colorMap !== null) {
+    if (typeof colorMap !== "object") return null;
+    try {
+      parts.push("tex_to_color_map", JSON.stringify(colorMap));
+    } catch {
+      return null;
+    }
+  }
+  parts.push(...texStrings);
+  return JSON.stringify(parts);
+}
+
 export class MathTex extends SingleStringMathTex {
-  arg_separator: string;
-  substrings_to_isolate: string[];
-  tex_to_color_map: Record<string, ParsableManimColor>;
+  arg_separator!: string;
+  substrings_to_isolate!: string[];
+  tex_to_color_map!: Record<string, ParsableManimColor>;
   brace_notation_split_occurred = false;
-  tex_strings: string[];
+  tex_strings!: string[];
   matched_strings_and_ids: Array<[string, string]> = [];
 
   constructor(...args: Array<string | MathTexOptions>) {
@@ -257,6 +294,13 @@ export class MathTex extends SingleStringMathTex {
       texStrings = args.slice(0, -1) as string[];
     } else {
       texStrings = args as string[];
+    }
+    const cacheKey = (new.target as unknown) === MathTex ? mathTexCacheKey(texStrings, options) : null;
+    if (cacheKey !== null) {
+      const cached = MATH_TEX_CACHE.get(cacheKey);
+      if (cached !== undefined) {
+        return cached.copy() as MathTex;
+      }
     }
     const {
       arg_separator = " ",
@@ -293,6 +337,9 @@ export class MathTex extends SingleStringMathTex {
     this._break_up_by_substrings();
     this.set_color_by_tex_to_color_map(this.tex_to_color_map);
     if (this.organize_left_to_right) this._organize_submobjects_left_to_right();
+    if (cacheKey !== null && MATH_TEX_CACHE.size < MATH_TEX_CACHE_LIMIT) {
+      MATH_TEX_CACHE.set(cacheKey, this.copy() as MathTex);
+    }
   }
 
   static _prepare_tex_strings(texStrings: Iterable<string>, braceSplit: { occurred: boolean }): string[] {

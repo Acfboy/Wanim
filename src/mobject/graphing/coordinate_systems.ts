@@ -1001,23 +1001,41 @@ export class CoordinateSystem extends VGroup {
     // single array-of-points argument via Array.isArray checks, so raw
     // NDArray vertices would be misread as one point.
     const toRow = (point: unknown): number[] => pointRows(point, 3)[0] ?? [0, 0, 0];
-    const inRange = (point: number[]): boolean => {
-      const x = this.point_to_coords(point)[0] ?? 0;
-      return a <= x && x <= b;
+    // Batch-filter the graph points: `point_to_coords` has a list-of-points
+    // branch, so one call converts every point (the per-point loop rebuilt the
+    // axis interpolation objects for all ~200 samples on every frame).
+    const filterInRange = (rows: number[][]): number[][] => {
+      if (rows.length === 0) return rows;
+      try {
+        const coords = this.point_to_coords(rows as unknown as number[]);
+        if (Array.isArray(coords) && coords.length === rows.length && Array.isArray(coords[0])) {
+          const coordRows = coords as unknown as number[][];
+          return rows.filter((_, index) => {
+            const x = coordRows[index]?.[0] ?? 0;
+            return a <= x && x <= b;
+          });
+        }
+      } catch {
+        /* fall through to the per-point path */
+      }
+      return rows.filter((point) => {
+        const x = this.point_to_coords(point)[0] ?? 0;
+        return a <= x && x <= b;
+      });
     };
     let points: number[][];
     if (bounded_graph === null || bounded_graph === undefined) {
       points = [
         toRow(this.c2p(a)),
         toRow(graph.function(a)),
-        ...pointRows(graph.points, 3).filter(inRange),
+        ...filterInRange(pointRows(graph.points, 3)),
         toRow(graph.function(b)),
         toRow(this.c2p(b)),
       ];
     } else {
       const collect = (g: ParametricFunction): number[][] => [
         toRow(g.function(a)),
-        ...pointRows(g.points, 3).filter(inRange),
+        ...filterInRange(pointRows(g.points, 3)),
         toRow(g.function(b)),
       ];
       points = [...collect(graph), ...collect(bounded_graph).reverse()];

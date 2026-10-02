@@ -3,7 +3,7 @@ import { RIGHT, RendererType } from "../../constants.js";
 import { get_quadratic_approximation_of_cubic } from "../../utils/bezier.js";
 import { hash_obj } from "../../utils/iterables.js";
 import { get_full_vector_image_path } from "../../utils/images.js";
-import { pointRows } from "../../utils/arrays.js";
+import { pointRows, _cContiguousRows } from "../../utils/arrays.js";
 import type { ParsableManimColor } from "../../utils/color/core.js";
 import { ManimColor } from "../../utils/color/core.js";
 import { VMobject, VGroup, type VMobjectOptions } from "../types/vectorized_mobject.js";
@@ -18,6 +18,96 @@ export const SVG_HASH_TO_MOB_MAP: Map<number, SVGMobject> = new Map();
  * inside text, so a modest map covers a whole corpus. */
 const PATH_GEOMETRY_CACHE = new Map<string, VMobjectFromSVGPath>();
 const PATH_GEOMETRY_CACHE_LIMIT = 4096;
+
+/**
+ * Close the open subpaths of a path mobject in place, mirroring
+ * `Text._close_glyph_contours` for a single glyph.  The fast path writes the
+ * result into one flat number list straight from the C-contiguous backing
+ * store; the fallback materialises rows through `pointRows`.
+ */
+export function close_path_contours(vm: VMobject): void {
+  const nppc = vm.n_points_per_curve;
+  const dim = vm.dim;
+  const flat = _cContiguousRows(vm.points);
+  if (flat !== null) {
+    const { data, rowDim, rowCount } = flat;
+    if (rowCount === 0) return;
+    const out: number[] = [];
+    const addLineTo = (endBase: number): void => {
+      const start = out.length - dim;
+      if (nppc === 3) {
+        for (let c = 0; c < dim; c += 1) out.push(out[start + c] ?? 0);
+        for (let c = 0; c < dim; c += 1) out.push(((out[start + c] ?? 0) + Number(data[endBase + c] ?? 0)) / 2);
+        for (let c = 0; c < dim; c += 1) out.push(Number(data[endBase + c] ?? 0));
+      } else {
+        for (let c = 0; c < dim; c += 1) out.push(out[start + c] ?? 0);
+        for (let c = 0; c < dim; c += 1) {
+          out.push(((out[start + c] ?? 0) + (out[start + c] ?? 0) + Number(data[endBase + c] ?? 0)) / 3);
+        }
+        for (let c = 0; c < dim; c += 1) {
+          out.push(((out[start + c] ?? 0) + Number(data[endBase + c] ?? 0) + Number(data[endBase + c] ?? 0)) / 3);
+        }
+        for (let c = 0; c < dim; c += 1) out.push(Number(data[endBase + c] ?? 0));
+      }
+    };
+    let curveStartBase = 0;
+    for (let index = 0; index < rowCount; index += 1) {
+      const base = index * rowDim;
+      for (let c = 0; c < dim; c += 1) out.push(Number(data[base + c] ?? 0));
+      if (index !== rowCount - 1 && (index + 1) % nppc === 0) {
+        const nextBase = (index + 1) * rowDim;
+        let differs = false;
+        for (let c = 0; c < dim; c += 1) {
+          if (Number(data[base + c] ?? 0) !== Number(data[nextBase + c] ?? 0)) {
+            differs = true;
+            break;
+          }
+        }
+        if (differs) {
+          addLineTo(curveStartBase);
+          curveStartBase = nextBase;
+        }
+      }
+    }
+    addLineTo(curveStartBase);
+    vm.points = array(out).reshape(out.length / dim, dim) as NDArray;
+    return;
+  }
+  const points = pointRows(vm.points, dim);
+  if (points.length === 0) return;
+  let curve_start = points[0] as number[];
+  const closed_curve_points: number[][] = [];
+  const add_line_to = (end: number[]): void => {
+    const start = closed_curve_points[closed_curve_points.length - 1] as number[];
+    if (nppc === 3) {
+      closed_curve_points.push(start, start.map((value, index) => (value + (end[index] ?? 0)) / 2), end);
+    } else {
+      closed_curve_points.push(
+        start,
+        start.map((value, index) => (value + value + (end[index] ?? 0)) / 3),
+        start.map((value, index) => (value + (end[index] ?? 0) + (end[index] ?? 0)) / 3),
+        end,
+      );
+    }
+  };
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index] as number[];
+    closed_curve_points.push(point);
+    if (
+      index !== points.length - 1 &&
+      (index + 1) % nppc === 0 &&
+      point.some((value, i) => value !== ((points[index + 1] as number[])[i] ?? 0))
+    ) {
+      add_line_to(curve_start);
+      curve_start = points[index + 1] as number[];
+    }
+  }
+  add_line_to(curve_start);
+  vm.points = array(closed_curve_points.length > 0 ? closed_curve_points : []).reshape(
+    closed_curve_points.length,
+    dim,
+  ) as NDArray;
+}
 
 export function _convert_point_to_3d(x: number, y: number): NDArray {
   return array([x, y, 0.0]) as NDArray;
@@ -37,6 +127,10 @@ export interface SVGMobjectOptions extends VMobjectOptions {
   svg_string?: string | null;
   /** Split the parsed SVG by `<g id="...">` groups (used by MathTex). */
   split_by_id?: boolean;
+  /** Close every path's open subpaths as it is parsed (used by Text /
+   *  MarkupText, whose glyph contours are closed before scaling).  The closed
+   *  geometry is cached per `d`, so a live readout rebuild does not redo it. */
+  close_path_contours?: boolean;
 }
 
 /**
@@ -132,6 +226,7 @@ export class SVGMobject extends VMobject {
   id_to_vgroup_dict: Map<string, VGroup> = new Map();
   _svg_string: string | null;
   _split_by_id: boolean;
+  _close_path_contours: boolean;
   _id_to_vgroup: Map<string, VGroup> = new Map();
   _all_vgroups: VGroup[] = [];
   _vgroup_stack: VGroup[] = [];
@@ -167,6 +262,7 @@ export class SVGMobject extends VMobject {
     this.svg_width = options.width === undefined ? null : options.width;
     this._svg_string = options.svg_string ?? null;
     this._split_by_id = options.split_by_id ?? false;
+    this._close_path_contours = options.close_path_contours ?? false;
     this.svg_default =
       options.svg_default ??
       ({
@@ -431,8 +527,10 @@ export class SVGMobject extends VMobject {
     if (tag === "path") {
       const d = attrs["d"] ?? "";
       shape.path_d = d;
-      shape.segments = parse_svg_path_data(d);
-      if (shape.segments.length === 0) return null;
+      // NOTE: segments are parsed lazily in `path_to_mobject`, which caches
+      // the parsed geometry by `d`.  Parsing here defeated that cache (every
+      // repeated Text glyph re-tokenised its path string on each rebuild).
+      if (d.length === 0) return null;
     } else if (tag === "line") {
       shape.x1 = parse_svg_float(attrs["x1"], 0);
       shape.y1 = parse_svg_float(attrs["y1"], 0);
@@ -530,7 +628,10 @@ export class SVGMobject extends VMobject {
   get_mob_from_shape_element(shape: SVGElementData): VMobject | null {
     let mob: VMobject | null;
     if (shape.kind === "path") {
-      mob = this.path_to_mobject(shape);
+      // Paths are baked with their SVG style into the cached prototype, so a
+      // repeated Text glyph skips `apply_style_to_mobject` entirely (see
+      // `path_to_mobject`).
+      mob = this.path_to_mobject(shape, true);
     } else if (shape.kind === "line") {
       mob = SVGMobject.line_to_mobject(shape);
     } else if (shape.kind === "rect") {
@@ -550,7 +651,9 @@ export class SVGMobject extends VMobject {
     if (mob === null || !mob.has_points()) {
       return null;
     }
-    SVGMobject.apply_style_to_mobject(mob, shape);
+    if (shape.kind !== "path") {
+      SVGMobject.apply_style_to_mobject(mob, shape);
+    }
     // NOTE: every svgelements shape is Transformable; `.apply` defaults to
     // true, so a present transform is applied unless explicitly disabled.
     if (
@@ -564,13 +667,35 @@ export class SVGMobject extends VMobject {
   }
 
   static handle_transform(mob: VMobject, matrix: SVGMatrixData): VMobject {
-    const mat = [
-      [matrix.a, matrix.c],
-      [matrix.b, matrix.d],
-    ];
-    const vec = [matrix.e, matrix.f, 0.0];
-    mob.apply_matrix(mat);
-    mob.shift(vec);
+    const { a, b, c, d, e, f } = matrix;
+    if (a === 1 && b === 0 && c === 0 && d === 1 && e === 0 && f === 0) return mob;
+    // Fast path: one flat pass over the C-contiguous points applies the
+    // affine map and the translation together (previously `apply_matrix` and
+    // `shift` each copied every glyph's points).
+    for (const member of mob.family_members_with_points()) {
+      const flat = _cContiguousRows((member as VMobject).points);
+      if (flat !== null && flat.rowDim === 3) {
+        const { data, rowCount } = flat;
+        const out = (member as VMobject).points.copy() as NDArray;
+        const outData = (out as NDArray & { data: Float64Array }).data;
+        for (let row = 0; row < rowCount; row += 1) {
+          const base = row * 3;
+          const x = Number(data[base] ?? 0);
+          const y = Number(data[base + 1] ?? 0);
+          outData[base] = a * x + c * y + e;
+          outData[base + 1] = b * x + d * y + f;
+          outData[base + 2] = Number(data[base + 2] ?? 0);
+        }
+        (member as VMobject).points = out;
+        continue;
+      }
+      const mat = [
+        [a, c],
+        [b, d],
+      ];
+      member.apply_matrix(mat);
+      member.shift([e, f, 0.0]);
+    }
     return mob;
   }
 
@@ -585,18 +710,26 @@ export class SVGMobject extends VMobject {
     return mob;
   }
 
-  path_to_mobject(path: SVGElementData): VMobjectFromSVGPath {
+  path_to_mobject(path: SVGElementData, bakeStyle = false): VMobjectFromSVGPath {
     const config = this.path_string_config as VMobjectFromSVGPathOptions;
     // Cache the parsed geometry per raw `d` string.  A text glyph's `d` is
     // identical wherever the same character/size/style appears, so repeated
     // characters (all digits, punctuation, ...) skip the SVG path → bezier
     // conversion entirely; the caller only pays for a clone and its transform.
+    // With `bakeStyle` (internal, used for generated text SVGs) the shape's
+    // style is part of the key and applied to the prototype, so the per-glyph
+    // `apply_style_to_mobject` call disappears too.
     const d = path.path_d;
     if (d !== undefined && d.length > 0) {
-      const key = `${config.long_lines ? 1 : 0}${config.should_subdivide_sharp_curves ? 1 : 0}${config.should_remove_null_curves ? 1 : 0}|${d}`;
+      const styleKey = bakeStyle
+        ? `|${String(path.stroke_width ?? "")},${String(path.stroke_color ?? "")},${String(path.stroke_opacity ?? "")},${String(path.fill_color ?? "")},${String(path.fill_opacity ?? "")}`
+        : "";
+      const key = `${this._close_path_contours ? 1 : 0}${config.long_lines ? 1 : 0}${config.should_subdivide_sharp_curves ? 1 : 0}${config.should_remove_null_curves ? 1 : 0}${styleKey}|${d}`;
       let proto = PATH_GEOMETRY_CACHE.get(key);
       if (proto === undefined) {
-        proto = new VMobjectFromSVGPath(path.segments ?? [], { ...config });
+        proto = new VMobjectFromSVGPath(path.segments ?? parse_svg_path_data(d), { ...config });
+        if (this._close_path_contours) close_path_contours(proto);
+        if (bakeStyle) SVGMobject.apply_style_to_mobject(proto, path);
         if (PATH_GEOMETRY_CACHE.size >= PATH_GEOMETRY_CACHE_LIMIT) PATH_GEOMETRY_CACHE.clear();
         PATH_GEOMETRY_CACHE.set(key, proto);
       }
