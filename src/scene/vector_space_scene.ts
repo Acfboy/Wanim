@@ -7,6 +7,7 @@ import { Dot } from "../mobject/geometry/arc.js";
 import { BLACK } from "../utils/color/core.js";
 import { rush_from, rush_into } from "../utils/rate_functions.js";
 import { Scene } from "./scene.js";
+import { is_thenable } from "../utils/scheduler.js";
 import { isNDArray, matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
 import { update_dict_recursively } from "../utils/config_ops.js";
 import { config } from "../_config/utils.js";
@@ -192,7 +193,7 @@ export class VectorScene extends Scene {
     color: ParsableManimColor | Iterable<ParsableManimColor> | Record<string, unknown> = new ManimColor("PURE_YELLOW"),
     animate: boolean | Record<string, unknown> = true,
     kwargs: Record<string, unknown> = {},
-  ): Arrow {
+  ): Arrow | Promise<Arrow> {
     // NOTE: mirrors Python `VectorScene.add_vector`: a pre-made Arrow is
     // used as-is, anything else is converted with np.asarray semantics. A
     // plain bag in the color/animate slot carries the Python kwargs
@@ -220,17 +221,30 @@ export class VectorScene extends Scene {
         ...(merged as VectorOptions),
       });
     }
-    if (resolvedAnimate) {
-      this.play(new GrowArrow(arrow));
+    // NOTE: `play` blocks in Python but returns a promise under the
+    // real-time renderer; chain the add/return behind it so `await
+    // self.add_vector(...)` (emitted by py2js) serializes like Python.
+    // With no async scheduler `play` runs inline and this stays synchronous.
+    if (!resolvedAnimate) {
+      this.add(arrow);
+      return arrow;
     }
-    this.add(arrow);
+    const played = this.play(new GrowArrow(arrow));
+    const done = (): Arrow => {
+      this.add(arrow);
+      return arrow;
+    };
+    if (is_thenable(played)) return (played as Promise<unknown>).then(done);
+    done();
     return arrow;
   }
 
-  write_vector_coordinates(vector: Vector, kwargs: Record<string, unknown> = {}): Matrix {
+  write_vector_coordinates(vector: Vector, kwargs: Record<string, unknown> = {}): Matrix | Promise<Matrix> {
     // NOTE: mirrors Python `coords = vector.coordinate_label(**kwargs)` then
     // `self.play(Write(coords))`. The coordinate_label keyword args are split
-    // out of the bag so Matrix receives only its own options.
+    // out of the bag so Matrix receives only its own options. The returned
+    // union keeps sync callers synchronous while letting py2js `await` the
+    // real-time play (see add_vector above).
     const { integer_labels, n_dim, color, ...matrixOptions } = kwargs;
     const coords = vector.coordinate_label(
       integer_labels as boolean | undefined,
@@ -238,7 +252,8 @@ export class VectorScene extends Scene {
       color as ParsableManimColor | null | undefined,
       matrixOptions,
     ) as Matrix;
-    this.play(new Write(coords));
+    const played = this.play(new Write(coords));
+    if (is_thenable(played)) return (played as Promise<unknown>).then(() => coords);
     return coords;
   }
 
@@ -327,7 +342,7 @@ export class VectorScene extends Scene {
     label: string | Mobject,
     animate = true,
     kwargs: Record<string, unknown> = {},
-  ): VMobject {
+  ): VMobject | Promise<VMobject> {
     // NOTE: mirrors Python `label_vector`, which forwards every label kwarg
     // to get_vector_label and optionally plays a Write.
     const at_tip = (kwargs["at_tip"] as boolean | undefined) ?? false;
@@ -344,10 +359,19 @@ export class VectorScene extends Scene {
       color,
       label_scale_factor,
     );
-    if (animate) {
-      this.play(new Write(mathtex_label, { run_time: 1 }));
+    // NOTE: union return keeps sync callers synchronous while the
+    // real-time `play` promise can be awaited (see add_vector above).
+    if (!animate) {
+      this.add(mathtex_label);
+      return mathtex_label;
     }
-    this.add(mathtex_label);
+    const played = this.play(new Write(mathtex_label, { run_time: 1 }));
+    const done = (): VMobject => {
+      this.add(mathtex_label);
+      return mathtex_label;
+    };
+    if (is_thenable(played)) return (played as Promise<unknown>).then(done);
+    done();
     return mathtex_label;
   }
 
@@ -775,7 +799,7 @@ export class LinearTransformationScene extends VectorScene {
     return square;
   }
 
-  add_unit_square(animate = false, kwargs: Record<string, unknown> = {}): this {
+  add_unit_square(animate = false, kwargs: Record<string, unknown> = {}): this | Promise<this> {
     const { color, opacity, stroke_width, ...rest } = kwargs as {
       color?: ParsableManimColor | Iterable<ParsableManimColor>;
       opacity?: number;
@@ -787,15 +811,24 @@ export class LinearTransformationScene extends VectorScene {
       opacity ?? 0.3,
       stroke_width ?? 3,
     );
+    // NOTE: union return keeps sync callers synchronous while the real-time
+    // `play` promise can be awaited (see VectorScene.add_vector).
+    const done = (): this => {
+      this.add_transformable_mobject(square);
+      this.bring_to_front(...this.moving_vectors);
+      this.square = square;
+      return this;
+    };
     if (animate) {
-      this.play(
+      const played = this.play(
         new DrawBorderThenFill(square),
         new Animation(new Group(...this.moving_vectors)),
       );
+      if (is_thenable(played)) return (played as Promise<unknown>).then(done);
+      done();
+      return this;
     }
-    this.add_transformable_mobject(square);
-    this.bring_to_front(...this.moving_vectors);
-    this.square = square;
+    done();
     return this;
   }
 
@@ -805,17 +838,31 @@ export class LinearTransformationScene extends VectorScene {
     animate: boolean | Record<string, unknown> = false,
     kwargs: Record<string, unknown> = {},
   ): any {
-    const result = super.add_vector(vector, color, animate, kwargs);
-    this.moving_vectors.push(result);
+    // NOTE: super may return a promise under the real-time renderer; register
+    // the resolved arrow so `moving_vectors` never holds a promise.
+    const result = super.add_vector(vector, color, animate, kwargs) as Arrow | Promise<Arrow>;
+    if (is_thenable(result)) {
+      return (result as Promise<Arrow>).then((arrow) => {
+        this.moving_vectors.push(arrow as unknown as Mobject);
+        return arrow;
+      });
+    }
+    this.moving_vectors.push(result as unknown as Mobject);
     return result;
   }
 
-  override write_vector_coordinates(vector: Vector, kwargs: Record<string, unknown> = {}): Matrix {
+  override write_vector_coordinates(vector: Vector, kwargs: Record<string, unknown> = {}): Matrix | Promise<Matrix> {
     // NOTE: mirrors Python: the base method builds and writes the Matrix
     // label, then the coords join the foreground list.
-    const coords = super.write_vector_coordinates(vector, kwargs);
-    this.add_foreground_mobject(coords);
-    return coords;
+    const result = super.write_vector_coordinates(vector, kwargs);
+    if (is_thenable(result)) {
+      return (result as Promise<Matrix>).then((coords) => {
+        this.add_foreground_mobject(coords);
+        return coords;
+      });
+    }
+    this.add_foreground_mobject(result);
+    return result;
   }
 
   add_transformable_label(
@@ -826,25 +873,32 @@ export class LinearTransformationScene extends VectorScene {
     kwargs: Record<string, unknown> = {},
   ): any {
     const { animate: label_animate = true, ...label_kwargs } = kwargs;
-    const label_mob = this.label_vector(vector, label, label_animate as boolean, label_kwargs) as any;
-    if (new_label) {
-      label_mob.target_text = new_label;
-    } else {
-      label_mob.target_text = `${transformation_name}(${label_mob.get_tex_string()})`;
-    }
-    label_mob.vector = vector;
-    label_mob.kwargs = { ...kwargs };
-    if ("animate" in (label_mob.kwargs as Record<string, unknown>)) {
-      delete (label_mob.kwargs as Record<string, unknown>)["animate"];
-    }
-    this.transformable_labels.push(label_mob);
-    return label_mob;
+    // NOTE: label_vector may return a promise under the real-time renderer;
+    // finish the bookkeeping once it resolves (see VectorScene.add_vector).
+    const finish = (label_mob: any): any => {
+      if (new_label) {
+        label_mob.target_text = new_label;
+      } else {
+        label_mob.target_text = `${transformation_name}(${label_mob.get_tex_string()})`;
+      }
+      label_mob.vector = vector;
+      label_mob.kwargs = { ...kwargs };
+      if ("animate" in (label_mob.kwargs as Record<string, unknown>)) {
+        delete (label_mob.kwargs as Record<string, unknown>)["animate"];
+      }
+      this.transformable_labels.push(label_mob);
+      return label_mob;
+    };
+    const label_mob = this.label_vector(vector, label, label_animate as boolean, label_kwargs);
+    if (is_thenable(label_mob)) return (label_mob as Promise<VMobject>).then(finish);
+    return finish(label_mob as any);
   }
 
-  add_title(title: Mobject | string, scale_factor = 1.5, animate = false): this {
+  add_title(title: Mobject | string, scale_factor = 1.5, animate = false): this | Promise<this> {
     // NOTE: mirrors Python `add_title`: non-Mobject titles are built with
     // Tex and scaled; then it is moved to the top, backgrounded and (if
-    // requested) written in.
+    // requested) written in. Union return keeps sync callers synchronous
+    // while the real-time `play` promise can be awaited (see add_vector).
     let titleMob: VMobject;
     if (title instanceof Mobject) {
       titleMob = title as VMobject;
@@ -853,11 +907,18 @@ export class LinearTransformationScene extends VectorScene {
     }
     titleMob.to_edge(UP);
     titleMob.add_background_rectangle();
+    const done = (): this => {
+      this.add_foreground_mobject(titleMob);
+      this.title = titleMob;
+      return this;
+    };
     if (animate) {
-      this.play(new Write(titleMob));
+      const played = this.play(new Write(titleMob));
+      if (is_thenable(played)) return (played as Promise<unknown>).then(done);
+      done();
+      return this;
     }
-    this.add_foreground_mobject(titleMob);
-    this.title = titleMob;
+    done();
     return this;
   }
 
@@ -947,15 +1008,19 @@ export class LinearTransformationScene extends VectorScene {
     return this.get_piece_movement(this.transformable_labels);
   }
 
-  apply_matrix(matrix: unknown, kwargs: Record<string, unknown> = {}): void {
-    this.apply_transposed_matrix(transposeMatrix(matrixRows(matrix)), kwargs);
+  // NOTE: `play` blocks in Python but returns a promise under the real-time
+  // renderer. These helpers return its result so py2js (`await
+  // self.apply_matrix(...)`) serializes them like Python; with no async
+  // scheduler `play` runs inline and everything stays synchronous.
+  apply_matrix(matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
+    return this.apply_transposed_matrix(transposeMatrix(matrixRows(matrix)), kwargs);
   }
 
-  apply_inverse(matrix: unknown, kwargs: Record<string, unknown> = {}): void {
-    this.apply_matrix(inverseSquareMatrix(matrixRows(matrix)), kwargs);
+  apply_inverse(matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
+    return this.apply_matrix(inverseSquareMatrix(matrixRows(matrix)), kwargs);
   }
 
-  apply_transposed_matrix(transposed_matrix: unknown, kwargs: Record<string, unknown> = {}): void {
+  apply_transposed_matrix(transposed_matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
     const func = this.get_transposed_matrix_transformation(transposed_matrix);
     if (!("path_arc" in kwargs)) {
       const right = pointRows(func(pointFrom(RIGHT, 3)), 3)[0] ?? [1, 0, 0];
@@ -965,24 +1030,24 @@ export class LinearTransformationScene extends VectorScene {
       ) / 2;
       kwargs["path_arc"] = net_rotation;
     }
-    this.apply_function(func, [], kwargs);
+    return this.apply_function(func, [], kwargs);
   }
 
-  apply_inverse_transpose(t_matrix: unknown, kwargs: Record<string, unknown> = {}): void {
+  apply_inverse_transpose(t_matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
     const t_inv = transposeMatrix(inverseSquareMatrix(transposeMatrix(matrixRows(t_matrix))));
-    this.apply_transposed_matrix(t_inv, kwargs);
+    return this.apply_transposed_matrix(t_inv, kwargs);
   }
 
-  apply_nonlinear_transformation(func: MappingFunction, kwargs: Record<string, unknown> = {}): void {
+  apply_nonlinear_transformation(func: MappingFunction, kwargs: Record<string, unknown> = {}): this | Promise<this> {
     (this.plane as unknown as { prepare_for_nonlinear_transform: () => void }).prepare_for_nonlinear_transform();
-    this.apply_function(func, [], kwargs);
+    return this.apply_function(func, [], kwargs);
   }
 
   apply_function(
     func: MappingFunction,
     added_anims: Animation[] = [],
     kwargs: Record<string, unknown> = {},
-  ): void {
+  ): this | Promise<this> {
     if (!("run_time" in kwargs)) {
       kwargs["run_time"] = 3;
     }
@@ -1005,6 +1070,6 @@ export class LinearTransformationScene extends VectorScene {
         (anim as unknown as Record<string, unknown>)[key] = value;
       }
     }
-    this.play(...anims);
+    return this.play(...anims);
   }
 }
