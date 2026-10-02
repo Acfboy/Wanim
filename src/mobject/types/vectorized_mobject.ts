@@ -1838,6 +1838,87 @@ export class VMobject extends Mobject {
     return this.get_points_defining_boundary();
   }
 
+  /**
+   * Single-pass counterpart of `Mobject.get_critical_point` over this
+   * class's anchor boundary.  The base implementation builds the full anchor
+   * buffer first and scans it per axis; Text / DecimalNumber groups call
+   * `get_critical_point` (via `move_to`) many times per frame, so this scans
+   * min/max for all axes in one walk without materialising the boundary.
+   */
+  override get_critical_point(direction: readonly number[] | NDArray): number[] {
+    const dim = this.dim;
+    if (
+      !(
+        Array.isArray(direction)
+        && (direction.length === 0 || typeof (direction as readonly unknown[])[0] === "number")
+      )
+    ) {
+      return super.get_critical_point(direction);
+    }
+    const directionValues = direction as readonly number[];
+    const nppcc = this.n_points_per_cubic_curve;
+    let min0 = Infinity; let max0 = -Infinity; let nan0 = false;
+    let min1 = Infinity; let max1 = -Infinity; let nan1 = false;
+    let min2 = Infinity; let max2 = -Infinity; let nan2 = false;
+    let count = 0;
+    const consider = (x: number, y: number, z: number): void => {
+      count += 1;
+      if (x !== x) nan0 = true; else { if (x < min0) min0 = x; if (x > max0) max0 = x; }
+      if (y !== y) nan1 = true; else { if (y < min1) min1 = y; if (y > max1) max1 = y; }
+      if (z !== z) nan2 = true; else { if (z < min2) min2 = z; if (z > max2) max2 = z; }
+    };
+    for (const mobject of this.get_family()) {
+      const store = (mobject as { points?: unknown }).points as
+        | { data?: ArrayLike<number>; shape?: readonly number[]; flags?: { C_CONTIGUOUS?: boolean } }
+        | undefined;
+      const data = store?.data;
+      const shape = store?.shape;
+      const rowDim = shape !== undefined && shape.length === 2 ? (shape[1] ?? dim) : null;
+      if (
+        data !== undefined
+        && rowDim !== null
+        && (store?.flags === undefined || store.flags.C_CONTIGUOUS !== false)
+      ) {
+        const rowCount = shape?.[0] ?? 0;
+        if (rowCount === 1) {
+          consider(
+            numeric(data[0] ?? 0),
+            numeric(data[1] ?? 0),
+            numeric(data[2] ?? 0),
+          );
+          continue;
+        }
+        for (let row = 0; row + nppcc <= rowCount; row += nppcc) {
+          const startBase = row * rowDim;
+          consider(
+            numeric(data[startBase] ?? 0),
+            numeric(data[startBase + 1] ?? 0),
+            numeric(data[startBase + 2] ?? 0),
+          );
+          const endBase = (row + nppcc - 1) * rowDim;
+          consider(
+            numeric(data[endBase] ?? 0),
+            numeric(data[endBase + 1] ?? 0),
+            numeric(data[endBase + 2] ?? 0),
+          );
+        }
+        continue;
+      }
+      for (const anchor of (mobject as VMobject).get_anchors()) {
+        consider(numeric(anchor[0] ?? 0), numeric(anchor[1] ?? 0), numeric(anchor[2] ?? 0));
+      }
+    }
+    if (count === 0) return Array.from({ length: dim }, () => 0);
+    const pick = (
+      min: number, max: number, nan: boolean, key: number,
+    ): number => (nan ? NaN : key < 0 ? min : key > 0 ? max : (min + max) / 2);
+    const result = new Array<number>(dim);
+    result[0] = pick(min0, max0, nan0, Number(directionValues[0] ?? 0));
+    result[1] = pick(min1, max1, nan1, Number(directionValues[1] ?? 0));
+    result[2] = pick(min2, max2, nan2, Number(directionValues[2] ?? 0));
+    return result;
+  }
+
   point_from_proportion(alpha: number): NDArray {
     if (alpha < 0 || alpha > 1) {
       const error = new Error(`Alpha ${alpha} not between 0 and 1.`);

@@ -402,6 +402,10 @@ export class Arrow extends Line {
   max_tip_length_to_length_ratio: number;
   max_stroke_width_to_length_ratio: number;
   initial_stroke_width: number;
+  /** Set while {@link put_start_and_end_on} repositions the tips, so the
+   *  `reset_endpoints_based_on_tip` callback from `add_tip` goes straight to
+   *  the body update instead of re-entering the tip handling. */
+  private _repositioning_tips = false;
 
   constructor(
     startOrOptions: LineEndpoint | ArrowOptions = [...LEFT],
@@ -462,6 +466,34 @@ export class Arrow extends Line {
 
   reset_normal_vector(): this {
     this.normal_vector = this.get_normal_vector();
+    return this;
+  }
+
+  override put_start_and_end_on(start: readonly number[] | NDArray, end: readonly number[] | NDArray): this {
+    // Fast path: move the straight body directly and reposition the existing
+    // tips, instead of Mobject's scale+rotate+shift round trip (which pops and
+    // re-creates/re-adds tips and re-applies stroke widths several times per
+    // call).  This is the per-frame hot path for live vector fields.
+    if (
+      this._repositioning_tips
+      || this.path_arc !== 0
+      || (!this.has_tip() && !this.has_start_tip())
+    ) {
+      return super.put_start_and_end_on(start, end);
+    }
+    const tip = this.has_tip() ? this.tip : undefined;
+    const startTip = this.has_start_tip() ? this.start_tip : undefined;
+    if (tip !== undefined) this.remove(tip);
+    if (startTip !== undefined) this.remove(startTip);
+    super.put_start_and_end_on(start, end);
+    this._set_stroke_width_from_length();
+    this._repositioning_tips = true;
+    try {
+      if (tip !== undefined) this.add_tip(tip, null, null, null, false);
+      if (startTip !== undefined) this.add_tip(startTip, null, null, null, true);
+    } finally {
+      this._repositioning_tips = false;
+    }
     return this;
   }
 

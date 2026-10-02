@@ -233,6 +233,24 @@ function isFlatLeafGroup(mob: Mobject): boolean {
   return true;
 }
 
+/** True when `become` can copy `b`'s data into `a` index-wise: both trees have
+ * the same shape (child counts and "has own points" at every node), so
+ * `align_data` only pads/aligns point representations that the copy below
+ * overwrites.  Skipping it avoids the subpath/bezier re-alignment on every
+ * frame of a live `MathTex`/graph readout; the copied geometry is the
+ * target's, so the visual result is unchanged (point counts follow the
+ * target rather than the subdivision — see ). */
+function canDirectBecome(a: Mobject, b: Mobject): boolean {
+  if (a.has_points() !== b.has_points()) return false;
+  const ca = a.submobjects;
+  const cb = b.submobjects;
+  if (ca.length !== cb.length) return false;
+  for (let index = 0; index < ca.length; index += 1) {
+    if (!canDirectBecome(ca[index] as Mobject, cb[index] as Mobject)) return false;
+  }
+  return true;
+}
+
 /**
  * Split a positional-argument list into positional values and a merged
  * options bag. A plain object whose keys intersect `optionKeys` is treated as
@@ -1330,6 +1348,10 @@ export class Mobject {
       total = addPoints(total, component, this.dim);
     }
     assertFinite(total);
+    // A zero shift is a no-op; skip the family walk (and the point-array
+    // copies) that live layouts trigger every frame by re-"moving" a group to
+    // the position it already occupies.
+    if (total.every((value) => value === 0)) return this;
     const dim = this.dim;
     for (const mobject of this.family_members_with_points()) {
       // Fast path: C-contiguous (n, dim) points get a single flat typed-array
@@ -1474,15 +1496,40 @@ export class Mobject {
   }
 
   stretch(factor: number, dim: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
-    const func = (points: NDArray): NDArray => {
-      const rows = pointRows(points, this.dim).map((point) => {
-        const scaled = [...point];
-        scaled[dim] = (scaled[dim] ?? 0) * factor;
-        return scaled;
-      });
-      return pointArray(rows);
-    };
-    this.apply_points_function_about_point(func, about_point ?? undefined, about_edge ?? undefined);
+    const center = about_point !== undefined && about_point !== null
+      ? vector(about_point, this.dim)
+      : this.get_critical_point(about_edge ?? ORIGIN);
+    // Fast path: one flat pass per member (`(p[dim] - c) * f + c`), matching
+    // `apply_points_function_about_point`'s op order without the per-row
+    // numpy round trip.  `stretch_to_fit_*` runs per live bar/rectangle in
+    // several benchmarks.
+    const centerValue = center[dim] ?? 0;
+    for (const mobject of this.family_members_with_points()) {
+      const flat = _cContiguousRows(mobject.points);
+      if (flat !== null && dim < flat.rowDim) {
+        const { data, rowDim, rowCount } = flat;
+        const out = mobject.points.copy() as NDArray;
+        const outData = (out as NDArray & { data: Float64Array }).data;
+        for (let row = 0; row < rowCount; row += 1) {
+          const base = row * rowDim;
+          outData[base + dim] = (Number(data[base + dim] ?? 0) - centerValue) * factor + centerValue;
+        }
+        mobject.points = out;
+      } else {
+        const func = (points: NDArray): NDArray => {
+          const rows = pointRows(points, this.dim).map((point) => {
+            const scaled = [...point];
+            scaled[dim] = (scaled[dim] ?? 0) * factor;
+            return scaled;
+          });
+          return pointArray(rows);
+        };
+        const points = mobject.points as unknown as NDArray;
+        const centered = subtract(points, array(center)) as NDArray;
+        const result = func(centered);
+        mobject.points = add(isNDArray(result) ? result : (array(result) as NDArray), array(center)) as NDArray;
+      }
+    }
     return this;
   }
 
@@ -2248,8 +2295,27 @@ export class Mobject {
       for (let index = 0; index < selfFamily.length; index += 1) {
         const sm1 = selfFamily[index]!;
         const sm2 = otherFamily[index]!;
-        const alignRgbas = (sm1 as { align_rgbas?: (other: unknown) => unknown }).align_rgbas;
-        if (typeof alignRgbas === "function") alignRgbas.call(sm1, sm2);
+        if ("align_rgbas" in (sm1 as object)) {
+          const alignRgbas = (sm1 as unknown as { align_rgbas: (other: unknown) => unknown }).align_rgbas;
+          if (typeof alignRgbas === "function") alignRgbas.call(sm1, sm2);
+        }
+        sm1.points = pointsFrom(sm2.points, sm1.dim);
+        sm1.interpolate_color(sm1, sm2, 1);
+      }
+      return this;
+    }
+    // The target's curves need no subdivision for this pair: `align_data`'s
+    // results are overwritten below anyway, so skip it.
+    if (canDirectBecome(this, mobject)) {
+      const selfFamily = this.get_family();
+      const otherFamily = mobject.get_family();
+      for (let index = 0; index < selfFamily.length; index += 1) {
+        const sm1 = selfFamily[index]!;
+        const sm2 = otherFamily[index]!;
+        if ("align_rgbas" in (sm1 as object)) {
+          const alignRgbas = (sm1 as unknown as { align_rgbas: (other: unknown) => unknown }).align_rgbas;
+          if (typeof alignRgbas === "function") alignRgbas.call(sm1, sm2);
+        }
         sm1.points = pointsFrom(sm2.points, sm1.dim);
         sm1.interpolate_color(sm1, sm2, 1);
       }
@@ -2458,11 +2524,45 @@ export class Mobject {
   }
 
   get_merged_array(array_attr: string): NDArray {
-    let result = (this as unknown as Record<string, NDArray>)[array_attr];
-    for (const submob of this.submobjects) {
-      result = concatenate([result, submob.get_merged_array(array_attr)], 0) as NDArray;
+    // Fast path: collect every family member's C-contiguous array in the same
+    // pre-order the old recursive `concatenate` produced and write one flat
+    // buffer.  Concatenating once per submobject copied the growing result at
+    // every level (O(n^2) for large families such as Text glyph groups) and
+    // ran on every `get_critical_point`/boundary scan.
+    const views: Array<{ data: ArrayLike<number>; rowDim: number; rowCount: number }> = [];
+    let rowDim = -1;
+    let rowCount = 0;
+    let consistent = true;
+    const visit = (mob: Mobject): void => {
+      const value = (mob as unknown as Record<string, unknown>)[array_attr];
+      if (value !== undefined && value !== null) {
+        const flat = _cContiguousRows(value);
+        if (flat !== null && (rowDim === -1 || flat.rowDim === rowDim)) {
+          if (rowDim === -1) rowDim = flat.rowDim;
+          rowCount += flat.rowCount;
+          views.push(flat);
+        } else {
+          consistent = false;
+        }
+      }
+      for (const child of mob.submobjects) visit(child);
+    };
+    visit(this);
+    if (!consistent) {
+      let result = (this as unknown as Record<string, NDArray>)[array_attr];
+      for (const submob of this.submobjects) {
+        result = concatenate([result, submob.get_merged_array(array_attr)], 0) as NDArray;
+      }
+      return result;
     }
-    return result;
+    if (rowDim === -1) return array([]) as NDArray;
+    const out = new Array<number>(rowCount * rowDim);
+    let offset = 0;
+    for (const view of views) {
+      const length = view.rowCount * view.rowDim;
+      for (let index = 0; index < length; index += 1) out[offset++] = numeric(view.data[index]);
+    }
+    return rowCount > 0 ? (array(out).reshape(rowCount, rowDim) as NDArray) : (array([]).reshape(0, rowDim) as NDArray);
   }
 
   get_all_points(): NDArray {

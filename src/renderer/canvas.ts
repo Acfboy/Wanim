@@ -28,7 +28,7 @@ import { Camera } from "../camera/camera.js";
 import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { CapStyleType, LineJointType } from "../constants.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
-import { pointRows } from "../utils/arrays.js";
+import { _cContiguousRows, isNDArray, pointRows } from "../utils/arrays.js";
 
 /** One serialized VMobject record (see `renderer/json_renderer.ts`). */
 export interface MJSONMobject {
@@ -167,6 +167,23 @@ function capStyleName(value: number): string {
   }
 }
 
+/** Last style written to each context, so the fill/stroke hot paths do not
+ * re-assign (and re-parse) an unchanged CSS colour for every mobject. */
+interface CanvasStyleState {
+  fill: string | CanvasGradient | null;
+  stroke: string | CanvasGradient | null;
+}
+const CANVAS_STYLE_STATE = new WeakMap<CanvasRenderingContext2D, CanvasStyleState>();
+
+function styleState(ctx: CanvasRenderingContext2D): CanvasStyleState {
+  let state = CANVAS_STYLE_STATE.get(ctx);
+  if (state === undefined) {
+    state = { fill: null, stroke: null };
+    CANVAS_STYLE_STATE.set(ctx, state);
+  }
+  return state;
+}
+
 /** Fill the canvas with a colour (no pixel array involved). */
 export function clearCanvas(
   ctx: CanvasRenderingContext2D,
@@ -175,6 +192,7 @@ export function clearCanvas(
 ): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = backgroundCss;
+  styleState(ctx).fill = backgroundCss;
   ctx.fillRect(0, 0, camera.pixel_width, camera.pixel_height);
 }
 
@@ -262,12 +280,84 @@ function pointsToRows(value: NDArray): number[][] {
   return pointRows(value, 3);
 }
 
+/** Flat-range counterpart of {@link computeSubpathRanges}: walks the backing
+ * store directly so the draw path never materialises point rows. */
+function computeSubpathRangesFlat(
+  data: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+  nppcc: number,
+  tolerance: number,
+  nDims = 2,
+): number[][] {
+  if (rowCount < nppcc) return [];
+  const boundaries: number[] = [];
+  for (let index = nppcc; index < rowCount; index += nppcc) boundaries.push(index);
+  if (boundaries.length === 0) return [[0, rowCount]];
+  const rtol = 1.0e-5;
+  const atol = tolerance;
+  const splitPoints: number[] = [0];
+  for (const boundary of boundaries) {
+    const endBase = (boundary - 1) * rowDim;
+    const startBase = boundary * rowDim;
+    let split = false;
+    for (let dim = 0; dim < nDims; dim += 1) {
+      const e = data[endBase + dim] ?? NaN;
+      const s = data[startBase + dim] ?? NaN;
+      const diff = Math.abs((e as number) - (s as number));
+      const close = (diff <= atol + rtol * Math.abs(s as number) && Number.isFinite(diff)) || e === s;
+      if (!close) {
+        split = true;
+        break;
+      }
+    }
+    if (split) splitPoints.push(boundary);
+  }
+  splitPoints.push(rowCount);
+  const ranges: number[][] = [];
+  for (let index = 0; index < splitPoints.length - 1; index += 1) {
+    ranges.push([splitPoints[index] ?? 0, splitPoints[index + 1] ?? 0]);
+  }
+  return ranges;
+}
+
 /** Set `ctx`'s current path from a VMobject's points, mirroring `set_cairo_context_path`. */
 export function setCanvasPath(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
   const transformed = camera.transform_points_pre_display(vmobject, vmobject.points);
+  const nppcc = vmobject.n_points_per_cubic_curve;
+  const flat = _cContiguousRows(transformed);
+  if (flat !== null && flat.rowDim >= 2) {
+    const { data, rowDim, rowCount } = flat;
+    if (rowCount === 0) return;
+    const ranges = computeSubpathRangesFlat(data, rowDim, rowCount, nppcc, vmobject.tolerance_for_point_equality, 2);
+    if (ranges.length === 0) return;
+    ctx.beginPath();
+    for (const [start, end] of ranges) {
+      if (end - start < nppcc) continue;
+      ctx.moveTo(data[start * rowDim] ?? 0, data[start * rowDim + 1] ?? 0);
+      for (let i = start; i <= end - nppcc; i += nppcc) {
+        const h1 = (i + 1) * rowDim;
+        const h2 = (i + 2) * rowDim;
+        const anchor = (i + 3) * rowDim;
+        ctx.bezierCurveTo(
+          data[h1] ?? 0, data[h1 + 1] ?? 0,
+          data[h2] ?? 0, data[h2 + 1] ?? 0,
+          data[anchor] ?? 0, data[anchor + 1] ?? 0,
+        );
+      }
+      if (
+        vmobject.consider_points_equals_2d(
+          [data[start * rowDim] ?? 0, data[start * rowDim + 1] ?? 0],
+          [data[(end - 1) * rowDim] ?? 0, data[(end - 1) * rowDim + 1] ?? 0],
+        )
+      ) {
+        ctx.closePath();
+      }
+    }
+    return;
+  }
   const points = pointsToRows(transformed);
   if (points.length === 0) return;
-  const nppcc = vmobject.n_points_per_cubic_curve;
   const ranges = computeSubpathRanges(points, nppcc, vmobject.tolerance_for_point_equality, 2);
   if (ranges.length === 0) return;
   ctx.beginPath();
@@ -320,19 +410,81 @@ function allRowsEqual(rgbas: number[][]): boolean {
   return true;
 }
 
-/**
- * Resolve a colour array to a Canvas style, mirroring `set_cairo_context_color`.
- * A single (or uniform) colour yields a flat `rgba()` string; otherwise a
- * `CanvasGradient` is built from the VMobject's gradient endpoints.
- */
-export function colorStyle(
+/** Resolved `rgba()` strings, keyed by packed colour channel bytes.  Fill and
+ * stroke colours repeat heavily across mobjects and frames; building the same
+ * CSS string thousands of times per second was measurable.  Only 0/255 alpha
+ * values are cached (fractional alpha is rare and would need a float key). */
+const RGBA_CSS_CACHE = new Map<number, string>();
+const RGBA_CSS_CACHE_LIMIT = 512;
+
+function rgbaValuesToCss(r: number, g: number, b: number, a: number): string {
+  const ri = Math.round(clamp01(r) * 255);
+  const gi = Math.round(clamp01(g) * 255);
+  const bi = Math.round(clamp01(b) * 255);
+  if (a === 0 || a === 1) {
+    const key = ((ri << 24) | (gi << 16) | (bi << 8) | (a === 0 ? 0 : 1)) >>> 0;
+    let css = RGBA_CSS_CACHE.get(key);
+    if (css === undefined) {
+      css = `rgba(${ri}, ${gi}, ${bi}, ${a})`;
+      if (RGBA_CSS_CACHE.size >= RGBA_CSS_CACHE_LIMIT) RGBA_CSS_CACHE.clear();
+      RGBA_CSS_CACHE.set(key, css);
+    }
+    return css;
+  }
+  return `rgba(${ri}, ${gi}, ${bi}, ${clamp01(a)})`;
+}
+
+/** Uniform-colour fast path over a flat rgba store; `null` when the rows
+ * differ (a real gradient). */
+function uniformFlatColor(
+  data: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+): string | null {
+  if (rowCount === 0 || rowDim !== 4) return null;
+  const r = Number(data[0] ?? 0);
+  const g = Number(data[1] ?? 0);
+  const b = Number(data[2] ?? 0);
+  const a = Number(data[3] ?? 0);
+  const length = rowCount * rowDim;
+  for (let index = rowDim; index < length; index += rowDim) {
+    if (
+      Number(data[index]) !== r ||
+      Number(data[index + 1]) !== g ||
+      Number(data[index + 2]) !== b ||
+      Number(data[index + 3]) !== a
+    ) {
+      return null;
+    }
+  }
+  return rgbaValuesToCss(r, g, b, a);
+}
+
+function resolveColorStyle(
+  ctx: CanvasRenderingContext2D,
+  camera: CanvasCamera,
+  source: NDArray,
+  vmobject: VMobject,
+): string | CanvasGradient {
+  // Fast path: a C-contiguous rgba store is scanned in place.  `pointRows`
+  // materialised one JS array per point just to compare four channels (this
+  // ran for every fill and every stroke of every mobject, every frame).
+  const flat = _cContiguousRows(source);
+  if (flat !== null) {
+    const uniform = uniformFlatColor(flat.data, flat.rowDim, flat.rowCount);
+    if (uniform !== null) return uniform;
+    return gradientColorStyle(ctx, camera, pointRows(source, 4), vmobject);
+  }
+  return colorStyle(ctx, camera, pointRows(source, 4), vmobject);
+}
+
+function gradientColorStyle(
   ctx: CanvasRenderingContext2D,
   camera: CanvasCamera,
   rgbas: number[][],
   vmobject: VMobject,
 ): string | CanvasGradient {
   if (rgbas.length === 0) return "rgba(0, 0, 0, 0)";
-  if (allRowsEqual(rgbas)) return rgbaToCss(rgbas[0]!);
   const [startPoint, endPoint] = vmobject.get_gradient_start_and_end_points();
   const transformed = pointRows(
     camera.transform_points_pre_display(vmobject, array([startPoint, endPoint]) as NDArray),
@@ -349,13 +501,54 @@ export function colorStyle(
   return gradient;
 }
 
+/**
+ * Resolve a colour array to a Canvas style, mirroring `set_cairo_context_color`.
+ * A single (or uniform) colour yields a flat `rgba()` string; otherwise a
+ * `CanvasGradient` is built from the VMobject's gradient endpoints.
+ */
+export function colorStyle(
+  ctx: CanvasRenderingContext2D,
+  camera: CanvasCamera,
+  rgbas: number[][] | NDArray,
+  vmobject: VMobject,
+): string | CanvasGradient {
+  const flat = isNDArray(rgbas) ? _cContiguousRows(rgbas) : null;
+  if (flat !== null) {
+    const uniform = uniformFlatColor(flat.data, flat.rowDim, flat.rowCount);
+    if (uniform !== null) return uniform;
+  }
+  const rows = isNDArray(rgbas) ? pointRows(rgbas, 4) : rgbas;
+  if (rows.length === 0) return "rgba(0, 0, 0, 0)";
+  if (allRowsEqual(rows)) return rgbaToCss(rows[0]!);
+  return gradientColorStyle(ctx, camera, rows, vmobject);
+}
+
+/** True when every row of an rgba store has alpha 0 (nothing to fill). */
+function flatAlphaIsZero(source: NDArray): boolean {
+  const flat = _cContiguousRows(source);
+  if (flat === null || flat.rowDim !== 4 || flat.rowCount === 0) return false;
+  const { data } = flat;
+  const length = flat.rowCount * 4;
+  for (let index = 3; index < length; index += 4) {
+    if (Number(data[index]) !== 0) return false;
+  }
+  return true;
+}
+
 /** Fill the current path, mirroring `apply_fill`. */
 export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
   const source = camera.get_fill_rgbas !== undefined
     ? camera.get_fill_rgbas(vmobject)
     : vmobject.get_fill_rgbas();
-  const rgbas = pointRows(source, 4);
-  ctx.fillStyle = colorStyle(ctx, camera, rgbas, vmobject) as string | CanvasGradient;
+  // A fully transparent fill is a no-op for the rasterizer; skipping it avoids
+  // a style parse + path fill per stroke-only mobject (lines, arrows, ...).
+  if (flatAlphaIsZero(source)) return;
+  const style = resolveColorStyle(ctx, camera, source, vmobject) as string | CanvasGradient;
+  const state = styleState(ctx);
+  if (state.fill !== style) {
+    ctx.fillStyle = style;
+    state.fill = style;
+  }
   ctx.fill();
 }
 
@@ -371,8 +564,12 @@ export function applyCanvasStroke(
   const source = camera.get_stroke_rgbas !== undefined
     ? camera.get_stroke_rgbas(vmobject, background)
     : vmobject.get_stroke_rgbas(background);
-  const rgbas = pointRows(source, 4);
-  ctx.strokeStyle = colorStyle(ctx, camera, rgbas, vmobject) as string | CanvasGradient;
+  const style = resolveColorStyle(ctx, camera, source, vmobject) as string | CanvasGradient;
+  const state = styleState(ctx);
+  if (state.stroke !== style) {
+    ctx.strokeStyle = style;
+    state.stroke = style;
+  }
   ctx.lineWidth = width * camera.cairo_line_width_multiple;
   const joint = CANVAS_LINE_JOIN[vmobject.joint_type];
   if (joint !== undefined) ctx.lineJoin = joint;
@@ -384,6 +581,17 @@ export function applyCanvasStroke(
 /** Draw one VMobject: background stroke, fill, then foreground stroke. */
 export function drawVmobject(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
   if (vmobject.get_num_points() === 0) return;
+  // Fully invisible mobject (no strokes, transparent uniform fill): skip the
+  // whole path build.  Only for the plain 2D camera; a 3D camera computes the
+  // fill colours from shading.
+  if (
+    camera.get_fill_rgbas === undefined
+    && vmobject.get_stroke_width(true) === 0
+    && vmobject.get_stroke_width(false) === 0
+    && flatAlphaIsZero(vmobject.get_fill_rgbas())
+  ) {
+    return;
+  }
   setCanvasPath(ctx, camera, vmobject);
   applyCanvasStroke(ctx, camera, vmobject, true);
   applyCanvasFill(ctx, camera, vmobject);

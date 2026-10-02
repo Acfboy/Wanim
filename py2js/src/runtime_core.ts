@@ -58,6 +58,12 @@ function scalarize(value: Any): Any {
  */
 function detectKwargs(value: unknown): Record<string, Any> | null {
   if (value === null || typeof value !== "object") return null;
+  // rapydscript's kwargs bags are `Object.create(None)` with a private symbol
+  // tag.  Every other object a call site can trail (arrays, NDArrays, Mobjects,
+  // ManimColors, ...) has a prototype, so reject it here without enumerating
+  // its keys: this function is called for every wrapped method invocation, and
+  // `Object.keys()` on a 10k-point array allocated 10k strings for nothing.
+  if (Object.getPrototypeOf(value) !== null) return null;
   let tagged = false;
   for (const symbol of Object.getOwnPropertySymbols(value)) {
     if (String(symbol).includes("kwargs-object")) {
@@ -855,8 +861,17 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (descriptor === undefined || typeof descriptor.value !== "function") continue;
       const original = descriptor.value as (...a: Any[]) => Any;
       if ((original as Any).__wanim_kwargs_wrapped__) continue;
-      const wrapped = function (this: Any, ...args: Any[]) {
-        return callWithKwargs(original, this, args);
+      const wrapped = function (this: Any): Any {
+        // Fast path: the trailing argument is not a rapydscript kwargs bag
+        // (plain numbers/arrays/Mobjects/...).  `arguments` avoids the rest
+        // array every call site used to allocate; only tagged null-prototype
+        // bags take the mapping path.
+        const count = arguments.length;
+        const last: unknown = count > 0 ? arguments[count - 1] : undefined;
+        if (last === null || typeof last !== "object" || Object.getPrototypeOf(last) !== null) {
+          return original.apply(this, arguments as unknown as Any[]);
+        }
+        return callWithKwargs(original, this, Array.prototype.slice.call(arguments) as Any[]);
       };
       (wrapped as Any).__wanim_kwargs_wrapped__ = true;
       (wrapped as Any).__wanim_original__ = original;
