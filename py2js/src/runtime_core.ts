@@ -536,12 +536,36 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return out;
   }
 
+  /**
+   * True when `value` is a numeric coordinate vector (a non-empty JS array of
+   * numbers). Plain JS arrays double as both Python lists and manim vectors
+   * (`RIGHT = [1, 0, 0]`); only the all-numbers case is vector math — a list
+   * of Mobjects (or any non-number) follows Python list semantics.
+   */
+  function isNumericVector(value: unknown): value is readonly number[] {
+    return Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "number");
+  }
+
+  /** Python `list * int` repetition (shallow, like CPython). */
+  function repeatList(list: readonly Any[], times: number): Any[] {
+    const n = Math.trunc(times);
+    if (!Number.isFinite(n) || n <= 0) return [];
+    const out: Any[] = new Array(list.length * n);
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < list.length; j += 1) out[i * list.length + j] = list[j];
+    }
+    return out;
+  }
+
   function pythonAdd(a: Any, b: Any): Any {
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
     if (b !== null && b !== undefined && typeof b.__radd__ === "function") return b.__radd__(a);
     if (typeof a === "number" && typeof b === "number") return a + b;
     if (typeof a === "string" || typeof b === "string") return String(a) + String(b);
     if (isArrayLike(a) && isArrayLike(b)) {
+      // Python `list + list` concatenates; only all-number vectors add
+      // elementwise (e.g. `center + RIGHT * 2`).
+      if (!isNumericVector(a) || !isNumericVector(b)) return [...a, ...b];
       const r = elementwise(a, b, (x, y) => x + y);
       if (r !== undefined) return r;
       return scalarize(np.add(asNd(a), asNd(b)));
@@ -573,8 +597,21 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (typeof a === "number" && typeof b === "number") return a * b;
     if (typeof a === "string" && typeof b === "number") return a.repeat(b);
     if (typeof a === "number" && typeof b === "string") return b.repeat(a);
-    if (isArrayLike(a) && typeof b === "number") return a.map((v) => v * b);
-    if (typeof a === "number" && isArrayLike(b)) return b.map((v) => v * a);
+    if (isArrayLike(a) && typeof b === "number") {
+      // Python `list * int` repeats; numeric vectors scale.
+      if (!isNumericVector(a)) {
+        if (!Number.isInteger(b)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
+        return repeatList(a, b);
+      }
+      return a.map((v) => v * b);
+    }
+    if (typeof a === "number" && isArrayLike(b)) {
+      if (!isNumericVector(b)) {
+        if (!Number.isInteger(a)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
+        return repeatList(b, a);
+      }
+      return b.map((v) => v * a);
+    }
     if (isArrayLike(a) && isArrayLike(b)) {
       const r = elementwise(a, b, (x, y) => x * y);
       if (r !== undefined) return r;
