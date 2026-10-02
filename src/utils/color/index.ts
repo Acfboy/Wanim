@@ -67,6 +67,7 @@ export {
   GREEN_B,
   GREEN_C,
   GREEN_D,
+  GREEN_E,
   YELLOW_A,
   YELLOW_B,
   YELLOW_C,
