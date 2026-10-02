@@ -248,7 +248,7 @@ function roundHalfEven(value: number): number {
   return sign * (n % 2 === 0 ? n : n + 1);
 }
 
-function roundToDecimals(value: number, decimals: number): number {
+export function roundToDecimals(value: number, decimals: number): number {
   const factor = 10 ** decimals;
   return roundHalfEven(value * factor) / factor;
 }
