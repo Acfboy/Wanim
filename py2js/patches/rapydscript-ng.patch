@@ -1,3 +1,74 @@
+diff --git a/src/ast.pyj b/src/ast.pyj
+index 7c28645..d5e1f03 100644
+--- a/src/ast.pyj
++++ b/src/ast.pyj
+@@ -802,23 +802,35 @@ class AST_Seq(AST_Node):
+     }
+ 
+     def to_array(self):
++        # NOTE (wanim): tuples are None-terminated chains
++        # `Seq(a, Seq(b, None))`.  `car` may itself be a Seq (a nested
++        # tuple) and is kept as a single element; only the `cdr` chain is
++        # traversed.  A non-Seq `cdr` tail is the old collapsed form and is
++        # kept as a single trailing element for backward compatibility.
+         p = self
+         a = []
+         while p:
+-            a.push(p.car)
+-            if p.cdr and not (is_node_type(p.cdr, AST_Seq)):
+-                a.push(p.cdr)
++            if not is_node_type(p, AST_Seq):
++                a.push(p)
+                 break
++            a.push(p.car)
+             p = p.cdr
+         return a
+ 
+     def add(self, node):
+         p = self
+         while p:
+-            if not (is_node_type(p.cdr, AST_Seq)):
+-                cell = AST_Seq.cons(p.cdr, node)
+-                return p.cdr = cell
+-            p = p.cdr
++            if is_node_type(p, AST_Seq):
++                if p.cdr is None:
++                    cell = AST_Seq.cons(node, None)
++                    return p.cdr = cell
++                if not is_node_type(p.cdr, AST_Seq):
++                    tail = p.cdr
++                    p.cdr = AST_Seq.cons(tail, AST_Seq.cons(node, None))
++                    return p.cdr.cdr
++                p = p.cdr
++            else:
++                break
+ 
+     def _walk(self, visitor):
+         return visitor._visit(self, def ():
+@@ -836,6 +848,10 @@ class AST_Seq(AST_Node):
+ 
+     def from_array(self, array):
+         # Should be called as a classmethod: AST_Seq.from_array()
++        # NOTE (wanim): keep a None-terminated chain so a nested tuple in
++        # `cdr` position stays a single element instead of being flattened
++        # by to_array (which cannot tell a tuple element apart from a chain
++        # link in the old collapsed form).
+         if array.length is 0:
+             return None
+ 
+@@ -846,12 +862,6 @@ class AST_Seq(AST_Node):
+         for i in range(array.length - 1, -1, -1):
+             ans = AST_Seq.cons(array[i], ans)
+ 
+-        p = ans
+-        while p:
+-            if p.cdr and not p.cdr.cdr:
+-                p.cdr = p.cdr.car
+-                break
+-            p = p.cdr
+         return ans
+ 
+ 
 diff --git a/src/baselib-internal.pyj b/src/baselib-internal.pyj
 index e0ec495..4f5667d 100644
 --- a/src/baselib-internal.pyj
@@ -126,8 +197,28 @@ index 341df63..6bda020 100644
                  i += 1
              else:
                  output.print('[')
+diff --git a/src/output/loops.pyj b/src/output/loops.pyj
+index b38e56f..a9f7437 100644
+--- a/src/output/loops.pyj
++++ b/src/output/loops.pyj
+@@ -301,10 +301,14 @@ def print_list_comprehension(self, output):
+                 body_out.assign('ρσ_Result')
+                 body_out.print(result_obj)
+             # make sure to locally scope loop variables
++            # NOTE (wanim): declare the flattened targets (`x, y, z, w`,
++            # not `[[x, y], [z, w]]`): a bare `var [[..]]` without an
++            # initializer is a SyntaxError, while the unpack below uses
++            # ρσ_flatten so flat declarators match.
+             if is_node_type(self.init, AST_Array):
+                 body_out.comma()
+                 body_out.print('ρσ_unpack')
+-                for i in self.init.elements:
++                for i in self.init.flatten():
+                     body_out.comma()
+                     i.print(body_out)
+             else:
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..9b33d9f 100644
+index a16673a..24c8683 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
 @@ -12,8 +12,33 @@ from output.loops import unpack_tuple
@@ -303,6 +394,42 @@ index a16673a..9b33d9f 100644
      output.space()
      output.print(self.operator)
      output.space()
+@@ -460,14 +566,32 @@ def print_conditional(self, output, condition, consequent, alternative):
+ def print_seq(output):
+     self = this
+     p = output.parent()
++    print_elem = def (elem):
++        # A nested tuple in element position must keep its own brackets,
++        # otherwise `((1, 2), (3, 4))` flattens to `[1, 2, 3, 4]`.
++        # NOTE: use elem.print (not elem._do_print) so the inner Seq sees
++        # this Seq as its parent (no brackets of its own); the with_square
++        # here supplies its single bracket pair.
++        if is_node_type(elem, AST_Seq):
++            output.with_square(def ():
++                elem.print(output)
++            )
++        else:
++            elem.print(output)
+     print_seq = def ():
+-        self.car.print(output)
+-        if self.cdr:
++        print_elem(self.car)
++        cdr = self.cdr
++        while cdr:
+             output.comma()
+             if output.should_break():
+                 output.newline()
+                 output.indent()
+-            self.cdr.print(output)
++            if is_node_type(cdr, AST_Seq):
++                print_elem(cdr.car)
++                cdr = cdr.cdr
++            else:
++                print_elem(cdr)
++                break
+ 
+     # this will effectively convert tuples to arrays
+     if is_node_type(p, AST_Binary)
 diff --git a/src/output/stream.pyj b/src/output/stream.pyj
 index fe87930..4e7575e 100644
 --- a/src/output/stream.pyj
@@ -349,7 +476,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..29568a7 100644
+index 5533155..d69e5f6 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -392,7 +519,30 @@ index 5533155..29568a7 100644
              tmp_ = S.token.value
              next()
              if tmp_ is 'break':
-@@ -1418,6 +1430,7 @@ def create_parser_ctx(
+@@ -830,13 +842,16 @@ def create_parser_ctx(
+             init = await expression(True, True)
+             # standardize AST_Seq into array now for consistency
+             if is_node_type(init, AST_Seq):
+-                if is_node_type(
+-                    init.car,
++                # Optimization to prevent runtime call to ρσ_flatten
++                # when init is simply (a, b).  NOTE (wanim): tuples are
++                # None-terminated chains now, so check the flattened form
++                # instead of car/cdr directly.
++                init_arr = init.to_array()
++                if init_arr.length is 2 and is_node_type(
++                    init_arr[0],
+                     AST_SymbolRef
+-                ) and is_node_type(init.cdr, AST_SymbolRef):
+-                    # Optimization to prevent runtime call to ρσ_flatten
+-                    # when init is simply (a, b)
+-                    tmp = init.to_array()
++                ) and is_node_type(init_arr[1], AST_SymbolRef):
++                    tmp = init_arr
+                 else:
+                     tmp = [init]
+                 init = new AST_Array({
+@@ -1418,6 +1433,7 @@ def create_parser_ctx(
          ctor = AST_Method if in_class else AST_Function
          return_annotation = None
          is_generator = v'[]'
@@ -400,7 +550,7 @@ index 5533155..29568a7 100644
          docstrings = v'[]'
  
          fn_argnames = await (async def ():
-@@ -1584,7 +1597,11 @@ def create_parser_ctx(
+@@ -1584,7 +1600,11 @@ def create_parser_ctx(
              a = await block_(docstrings)
              S.in_function -= 1
              S.scoped_flags.pop()
@@ -413,7 +563,7 @@ index 5533155..29568a7 100644
              S.classes.pop()
              S.in_class.pop()
              S.in_loop = loop
-@@ -1604,7 +1621,7 @@ def create_parser_ctx(
+@@ -1604,7 +1624,7 @@ def create_parser_ctx(
          })
          definition.return_annotation = return_annotation
          definition.is_generator = is_generator[0]
@@ -422,7 +572,7 @@ index 5533155..29568a7 100644
          if is_node_type(definition, AST_Method):
              definition.static = staticmethod
              definition.is_getter = property_getter
-@@ -1652,6 +1669,97 @@ def create_parser_ctx(
+@@ -1652,6 +1672,97 @@ def create_parser_ctx(
          )
          return definition
  
@@ -520,7 +670,7 @@ index 5533155..29568a7 100644
      async def if_():
          cond = await expression(True)
          body = await statement()
-@@ -1975,6 +2083,57 @@ def create_parser_ctx(
+@@ -1975,6 +2086,57 @@ def create_parser_ctx(
              func.end = prev()
              return await subscripts(func, allow_calls)
  
@@ -578,7 +728,7 @@ index 5533155..29568a7 100644
          if is_('keyword', 'await'):
              next()
              if S.in_function is 0 or not S.functions[-1].is_async:
-@@ -2047,6 +2206,7 @@ def create_parser_ctx(
+@@ -2047,6 +2209,7 @@ def create_parser_ctx(
                  'args': a, 'kwargs': kwargs,
                  'kwarg_items': kwarg_items, 'starargs': starargs
              })
@@ -586,7 +736,7 @@ index 5533155..29568a7 100644
          single_comprehension = False
          while not is_('punc', ')') and not is_('eof'):
              if not first:
-@@ -2087,6 +2247,18 @@ def create_parser_ctx(
+@@ -2087,6 +2250,18 @@ def create_parser_ctx(
                          break
                      a.push(new AST_CallArg({'value': arg, 'is_array': False}))
              first = False
@@ -605,7 +755,7 @@ index 5533155..29568a7 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2381,6 +2553,18 @@ def create_parser_ctx(
+@@ -2381,6 +2556,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -624,7 +774,7 @@ index 5533155..29568a7 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2572,7 @@ def create_parser_ctx(
+@@ -2388,12 +2575,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -638,7 +788,7 @@ index 5533155..29568a7 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2497,12 +2676,24 @@ def create_parser_ctx(
+@@ -2497,12 +2679,24 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -665,7 +815,36 @@ index 5533155..29568a7 100644
              S.in_parenthesized_expr = prev_parens
              return ret
  
-@@ -2853,6 +3044,8 @@ def create_parser_ctx(
+@@ -2711,12 +2905,25 @@ def create_parser_ctx(
+             if a.length is 1:
+                 return a[0]
+ 
+-            return new AST_Seq({
++            # NOTE (wanim): build a None-terminated chain so nested tuples
++            # stay single elements (see AST_Seq.to_array).  The old code
++            # collapsed the tail (`Seq(a, b)` instead of
++            # `Seq(a, Seq(b, None))`), which made `((1, 2), (3, 4))`
++            # indistinguishable from `(1, 2, 3, 4)`.
++            ans = new AST_Seq({
+                 'start': start,
+-                'car': a.shift(),
+-                'cdr': build_seq(a),
++                'car': a[a.length - 1],
++                'cdr': None,
+                 'end': peek()
+             })
++            for v'var i = a.length - 2; i >= 0; i--':
++                ans = new AST_Seq({
++                    'start': start,
++                    'car': a[i],
++                    'cdr': ans,
++                    'end': peek()
++                })
++            return ans
+         if commas:
+             left = v'[ expr ]'
+             while is_(
+@@ -2853,6 +3060,8 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -674,7 +853,7 @@ index 5533155..29568a7 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3179,92 @@ def create_parser_ctx(
+@@ -2986,6 +3195,92 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -767,7 +946,7 @@ index 5533155..29568a7 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3278,16 @@ async def parse(text, options):
+@@ -2999,6 +3294,16 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -849,3 +1028,116 @@ index 61a2f5b..2e24367 100644
      };
      if (!out_ops.omit_baselib) out_ops.baselib_plain = data['baselib-plain-' + (out_ops.beautify ? 'pretty' : 'ugly') + '.js'];
      var out = new RapydScript.OutputStream(out_ops);
+diff --git a/tools/lint.mjs b/tools/lint.mjs
+index 9a5df63..fb6a813 100644
+--- a/tools/lint.mjs
++++ b/tools/lint.mjs
+@@ -285,6 +285,8 @@ function Linter(toplevel, filename, code, options) {
+         var node = this.current_node;
+ 
+         var handle_destructured = function(self, flat) {
++            // NOTE (wanim): Seq.to_array() is shallow (nested tuples stay
++            // single elements for VALUES), so recurse for TARGETS.
+             for (var i = 0; i < flat.length; i++) {
+                 var cnode = flat[i];
+                 if (cnode instanceof RapydScript.AST_SymbolRef) {
+@@ -292,6 +294,10 @@ function Linter(toplevel, filename, code, options) {
+                     cnode.lint_visited = true;
+                     self.add_binding(cnode.name);
+                     self.current_node = node;
++                } else if (cnode instanceof RapydScript.AST_Seq) {
++                    handle_destructured(self, cnode.to_array());
++                } else if (cnode instanceof RapydScript.AST_Array) {
++                    handle_destructured(self, cnode.flatten());
+                 }
+             }
+         };
+@@ -362,19 +368,33 @@ function Linter(toplevel, filename, code, options) {
+             node.init.lint_visited = true;
+         } else if (node.init instanceof RapydScript.AST_Array) {
+             // destructuring assignment: for a, b in []
++            // NOTE (wanim): to_array() is shallow; deep-flatten nested
++            // targets like `for x, (y, z) in ...`.
++            var bind_loop = function(elem) {
++                if (elem instanceof RapydScript.AST_SymbolRef) {
++                    this.current_node = elem;
++                    elem.lint_visited = true;
++                    this.add_binding(elem.name).is_loop = true;
++                    this.current_node = node;
++                } else if (elem instanceof RapydScript.AST_Seq) {
++                    var parts = elem.to_array();
++                    for (var k = 0; k < parts.length; k++) bind_loop.call(this, parts[k]);
++                } else if (elem instanceof RapydScript.AST_Array) {
++                    var flat = elem.flatten();
++                    for (var k = 0; k < flat.length; k++) bind_loop.call(this, flat[k]);
++                }
++            };
+             for (var i = 0; i < node.init.elements.length; i++) {
+                 var cnode = node.init.elements[i];
+-                if (cnode instanceof RapydScript.AST_Seq) cnode = cnode.to_array();
++                if (cnode instanceof RapydScript.AST_Seq) {
++                    var parts = cnode.to_array();
++                    for (var k = 0; k < parts.length; k++) bind_loop.call(this, parts[k]);
++                    continue;
++                }
+                 if (cnode instanceof RapydScript.AST_SymbolRef) cnode = [cnode];
+                 if (Array.isArray(cnode)) {
+                     for (var j = 0; j < cnode.length; j++) {
+-                        var elem = cnode[j];
+-                        if (elem instanceof RapydScript.AST_SymbolRef) {
+-                            this.current_node = elem;
+-                            elem.lint_visited = true;
+-                            this.add_binding(elem.name).is_loop = true;
+-                            this.current_node = node;
+-                        }
++                        bind_loop.call(this, cnode[j]);
+                     }
+                 }
+             }
+diff --git a/tools/lsp_symbols.mjs b/tools/lsp_symbols.mjs
+index 9ba4097..cd91f0b 100644
+--- a/tools/lsp_symbols.mjs
++++ b/tools/lsp_symbols.mjs
+@@ -178,9 +178,12 @@ Analyzer.prototype.handle_class = function (node) {
+ Analyzer.prototype.handle_assign = function (node) {
+     var self = this;
+     function destructured(flat) {
++        // NOTE (wanim): Seq.to_array() is shallow; recurse for nested targets.
+         for (var i = 0; i < flat.length; i++) {
+             var cnode = flat[i];
+             if (cnode instanceof RapydScript.AST_SymbolRef) { cnode._rs_is_binding = true; self.define(cnode.name, cnode, KIND.VARIABLE); }
++            else if (cnode instanceof RapydScript.AST_Seq) { destructured(cnode.to_array()); }
++            else if (cnode instanceof RapydScript.AST_Array) { destructured(cnode.flatten()); }
+         }
+     }
+     if (node.left instanceof RapydScript.AST_SymbolRef) {
+@@ -211,12 +214,27 @@ Analyzer.prototype.handle_for_in = function (node) {
+         node.init._rs_is_binding = true;
+         this.define(node.init.name, node.init, KIND.LOOPVAR);
+     } else if (node.init instanceof RapydScript.AST_Array) {
++        var bind_loop = function(elem) {
++            if (elem instanceof RapydScript.AST_SymbolRef) { elem._rs_is_binding = true; self.define(elem.name, elem, KIND.LOOPVAR); }
++            else if (elem instanceof RapydScript.AST_Seq) {
++                var parts = elem.to_array();
++                for (var k = 0; k < parts.length; k++) bind_loop(parts[k]);
++            }
++            else if (elem instanceof RapydScript.AST_Array) {
++                var flat = elem.flatten();
++                for (var k = 0; k < flat.length; k++) bind_loop(flat[k]);
++            }
++        };
+         for (var i = 0; i < node.init.elements.length; i++) {
+             var cnode = node.init.elements[i];
+-            if (cnode instanceof RapydScript.AST_Seq) cnode = cnode.to_array();
++            if (cnode instanceof RapydScript.AST_Seq) {
++                var parts = cnode.to_array();
++                for (var k = 0; k < parts.length; k++) bind_loop(parts[k]);
++                continue;
++            }
+             if (cnode instanceof RapydScript.AST_SymbolRef) cnode = [cnode];
+             if (Array.isArray(cnode)) cnode.forEach(function (elem) {
+-                if (elem instanceof RapydScript.AST_SymbolRef) { elem._rs_is_binding = true; self.define(elem.name, elem, KIND.LOOPVAR); }
++                bind_loop(elem);
+             });
+         }
+     }
