@@ -43,6 +43,7 @@ import {
   Angle,
   PI,
   DOWN,
+  LEFT,
 } from "../src/index.js";
 
 function norm(value: number, digits = 4): number {
@@ -363,6 +364,26 @@ describe("e2e geometry ground truth (2D)", () => {
     const brace = new Brace(new Square(), { direction: DOWN });
     expect(norm(brace.width)).toBe(2.0);
     expectArr(brace.get_direction(), [0, -1, 0]);
+  });
+
+  it("Brace accepts the direction and buff positionally like Python", () => {
+    const brace = new Brace(new Square(), LEFT, 0.15);
+    expect(norm(brace.height)).toBe(2.0);
+    expect(norm(brace.buff)).toBe(0.15);
+    expectArr(brace.get_direction(), [-1, 0, 0]);
+    expectArr(brace.get_center(), [-1.2865, 0, 0]);
+  });
+
+  it("Brace merges direction/buff from a trailing options bag", () => {
+    // py2js passes keyword-only calls as [mobject, undefined, undefined, {direction, buff}]
+    // when Python keyword args map onto later named parameters.
+    const brace = new Brace(new Square(), undefined, undefined, { direction: LEFT, buff: 0.15 });
+    expect(norm(brace.buff)).toBe(0.15);
+    expectArr(brace.get_direction(), [-1, 0, 0]);
+    expectArr(brace.get_center(), [-1.2865, 0, 0]);
+    const bag = new Brace(new Square(), { direction: LEFT, buff: 0.15 });
+    expect(norm(bag.buff)).toBe(0.15);
+    expectArr(bag.get_direction(), [-1, 0, 0]);
   });
 
   it("TangentLine length and endpoints", () => {
