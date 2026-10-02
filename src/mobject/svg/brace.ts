@@ -23,6 +23,7 @@ import { FadeIn } from "../../animation/fading.js";
 import { GrowFromCenter } from "../../animation/growing.js";
 import { Arc } from "../geometry/arc.js";
 import { Line } from "../geometry/line.js";
+import { isPlainOptionsBag } from "../geometry/polygram.js";
 import { MathTex, Tex, type MathTexOptions, type TexOptions } from "../text/tex_mobject.js";
 import { Text } from "../text/text_mobject.js";
 import {
@@ -44,17 +45,42 @@ export class Brace extends VMobjectFromSVGPath {
   buff: number;
   _tip_point_index = 0;
 
-  constructor(mobject: Mobject, options: BraceOptions = {}) {
+  constructor(
+    mobject: Mobject,
+    directionOrOptions?: readonly number[] | NDArray | BraceOptions,
+    buffOrOptions?: number | BraceOptions,
+    options: BraceOptions = {},
+  ) {
+    // NOTE: mirrors Python's positional signature
+    // `Brace(mobject, direction=DOWN, buff=0.2, sharpness=2, **kwargs)`.
+    // The TS options bag is still accepted as the second argument
+    // (`new Brace(obj, { direction: LEFT })`), and `buff` may be passed
+    // positionally as in Python (`Brace(obj, LEFT, 0.15)`).
+    const directionIsBag = isPlainOptionsBag(directionOrOptions);
+    const bag: BraceOptions = {
+      ...(directionIsBag ? (directionOrOptions as BraceOptions) : {}),
+      ...(buffOrOptions === undefined
+        ? {}
+        : typeof buffOrOptions === "number"
+          ? { buff: buffOrOptions }
+          : buffOrOptions),
+      ...options,
+    };
     const {
-      direction = [...DOWN],
       buff = 0.2,
       sharpness = 2,
       stroke_width = 0,
       fill_opacity = 1.0,
       background_stroke_width = 0,
       background_stroke_color = BLACK,
+      direction: directionOption,
       ...rest
-    } = options;
+    } = bag;
+    const direction = directionIsBag
+      ? (directionOption ?? [...DOWN])
+      : ((directionOrOptions as readonly number[] | NDArray | undefined)
+          ?? directionOption
+          ?? [...DOWN]);
     // NOTE: Python assigns self.buff before super().__init__(); TS requires
     // super() first, so it is assigned on the field declaration above and
     // refreshed here before the geometry below needs it.
