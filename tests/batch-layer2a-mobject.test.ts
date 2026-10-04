@@ -206,6 +206,39 @@ describe("Mobject iteration protocol", () => {
     expect(new Group(new Mobject(), new Mobject()).__len__()).toBe(2);
   });
 
+  it("__contains__ mirrors Python `in` via __iter__ (identity)", () => {
+    // Python: manim's Mobject defines no __contains__, so `x in g` scans
+    // __iter__ (self-with-points first, then submobjects).  Notably
+    // rapydscript's `ρσ_in` probes `typeof arr.__contains__`, which raised
+    // AttributeError through the Mobject proxy before this method existed
+    // (`m not in numbers` on a VGroup).
+    const a = square();
+    const b = square();
+    const g = new VGroup(a, b);
+    expect(g.__contains__(a)).toBe(true);
+    expect(g.__contains__(b)).toBe(true);
+    expect(g.__contains__(square())).toBe(false);
+    expect(new VGroup().__contains__(a)).toBe(false);
+    // A mobject with points contains itself via __iter__ order.
+    const s = square();
+    expect(s.__contains__(s)).toBe(true);
+    expect(s.__contains__(a)).toBe(false);
+    const h = new Group(new Mobject(), new Mobject());
+    for (const member of h.submobjects) expect(h.__contains__(member)).toBe(true);
+    expect(h.__contains__(new Mobject())).toBe(false);
+    // Complements split like the determinant-puzzle scene does:
+    // every part is either in `numbers` or in `non_numbers`, never both.
+    const parts = [square(), square(), square(), square()];
+    const det = new VGroup(...parts);
+    const numbers = new VGroup(parts[1]!, parts[3]!);
+    const nonNumbers = new VGroup(...parts.filter((m) => !numbers.__contains__(m)));
+    expect(nonNumbers.submobjects).toEqual([parts[0], parts[2]]);
+    for (const part of parts) {
+      expect(det.__contains__(part)).toBe(true);
+      expect(numbers.__contains__(part) !== nonNumbers.__contains__(part)).toBe(true);
+    }
+  });
+
   it("split returns [self] plus submobjects when there are points", () => {
     // Python: VGroup(sq, sq).split() == [sq, sq] (VGroup itself has no points)
     const a = square();
