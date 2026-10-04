@@ -69,6 +69,34 @@ const NUMBER_PLANE_OPTION_KEYS: ReadonlySet<string> = new Set([
   "make_smooth_after_applying_functions",
 ]);
 
+/** Fold misclassified kwargs bags back into `options`.
+ *
+ * `splitArgsAndOptions` only treats a plain object as the kwargs bag when one
+ * of its keys intersects the expected option keys, so a bag carrying only
+ * styling keys (e.g. `new NumberPlane({ color })`) is left in `positionals`
+ * and then misread as `x_range` — shifting every later positional and
+ * eventually feeding a config dict into a length slot (`scale(NaN)`).
+ * A genuine positional in one of the first `slotCount` slots (ranges are
+ * arrays, lengths/numbers/strings/booleans are primitives) can never be a
+ * plain object, so any plain object there must be such a bag. Slots holding
+ * config dicts are left untouched. */
+function reclaimKwargsBags(
+  positionals: unknown[],
+  options: Record<string, unknown>,
+  slotCount: number,
+): void {
+  const kept: unknown[] = [];
+  positionals.forEach((item, index) => {
+    if (index < slotCount && isPlainOptionsObject(item)) {
+      Object.assign(options, item);
+    } else {
+      kept.push(item);
+    }
+  });
+  positionals.length = 0;
+  positionals.push(...kept);
+}
+
 /** Options bag accepted by ThreeDAxes (mirrors its Python kwargs). */
 export interface ThreeDAxesOptions extends AxesOptions {
   z_range?: number[] | null;
@@ -1297,11 +1325,11 @@ export class Axes extends CoordinateSystem {
       Array.from(arguments),
       AXES_OPTION_KEYS,
     );
-    // An options bag at the first slot that carries only unknown keys (e.g.
-    // a bare `{}` from a wrapper) is still kwargs, not x_range.
-    if (positionals.length > 0 && isPlainOptionsObject(positionals[0])) {
-      Object.assign(options, positionals.shift());
-    }
+    // Options bags carrying only unknown keys (e.g. `{ color }`) are left in
+    // `positionals` by splitArgsAndOptions; ranges/lengths can never be plain
+    // objects, so fold such bags back into `options` (slots 4+ may hold real
+    // config dicts and are left alone).
+    reclaimKwargsBags(positionals, options, 4);
     const resolvedXRange = (options["x_range"] as number[] | null | undefined) ?? (positionals[0] as number[] | null | undefined) ?? null;
     const resolvedYRange = (options["y_range"] as number[] | null | undefined) ?? (positionals[1] as number[] | null | undefined) ?? null;
     const resolvedXLength = (options["x_length"] !== undefined ? options["x_length"] : positionals[2]) as number | null | undefined;
@@ -1753,6 +1781,9 @@ export class NumberPlane extends Axes {
       Array.from(arguments),
       NUMBER_PLANE_OPTION_KEYS,
     );
+    // As in Axes: a bag with only unknown keys (e.g. `{ color }`) would
+    // otherwise be misread as `x_range`. Slots 4+ may hold real style dicts.
+    reclaimKwargsBags(positionals, bag, 4);
     // The explicit 9th `options` parameter is always a kwargs bag.
     for (const [key, value] of Object.entries(options)) {
       if (!(key in bag)) bag[key] = value;
@@ -1962,6 +1993,9 @@ export class ThreeDAxes extends Axes {
       Array.from(arguments),
       THREE_D_AXES_OPTION_KEYS,
     );
+    // Slots 0-8 (ranges, lengths, light_source, shaded_axes, num_axis_pieces)
+    // can never be plain objects; slot 9+ may hold real config dicts.
+    reclaimKwargsBags(positionals, bag, 9);
     for (const [key, value] of Object.entries(options)) {
       if (!(key in bag)) bag[key] = value;
       else if (value !== undefined && value !== null) bag[key] = value;
@@ -2306,6 +2340,9 @@ export class PolarPlane extends Axes {
       Array.from(arguments),
       POLAR_PLANE_OPTION_KEYS,
     );
+    // Slots 0-9 (numbers/strings/booleans) can never be plain objects; slot
+    // 10+ may hold real config dicts.
+    reclaimKwargsBags(positionals, bag, 10);
     for (const [key, value] of Object.entries(options)) {
       if (!(key in bag)) bag[key] = value;
       else if (value !== undefined && value !== null) bag[key] = value;
