@@ -1,5 +1,5 @@
 import { allclose, array, NDArray } from "numpy-ts";
-import { Mobject, assertFinitePoints, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
+import { Mobject, assertFinitePoints, hasNonFinite, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows } from "../../utils/arrays.js";
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
@@ -1650,10 +1650,22 @@ export class VMobject extends Mobject {
         continue;
       }
       const [a1, h1, h2, a2] = vmob.get_anchors_and_handles();
+      // Python tolerates overflow through PhaseFlow/apply_function (it only
+      // emits RuntimeWarning and keeps inf/nan points; the Camera collapses
+      // them to the origin at draw time). Do the same here: when the current
+      // anchors/handles are already non-finite, skip the handle rescaling
+      // instead of throwing via set_anchors_and_handles. Direct user inputs
+      // with NaN/Infinity still fail fast in set_points/set_anchors_and_handles.
+      if (hasNonFinite([a1, h1, h2, a2])) {
+        continue;
+      }
       const a1ToH1 = h1.map((row, index) => subtractPoints(row, a1[index] ?? row, this.dim));
       const a2ToH2 = h2.map((row, index) => subtractPoints(row, a2[index] ?? row, this.dim));
       const newH1 = a1.map((row, index) => addPoints(row, scalePoint(a1ToH1[index] ?? new Array(this.dim).fill(0), factor, this.dim), this.dim));
       const newH2 = a2.map((row, index) => addPoints(row, scalePoint(a2ToH2[index] ?? new Array(this.dim).fill(0), factor, this.dim), this.dim));
+      if (hasNonFinite([newH1, newH2])) {
+        continue;
+      }
       vmob.set_anchors_and_handles(a1, newH1, newH2, a2);
     }
     return this;
