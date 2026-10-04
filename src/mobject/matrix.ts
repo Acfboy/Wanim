@@ -4,6 +4,7 @@
 // use MathTex/Tex. Text rendering is provided by the ported MathJax/MathTex
 // pipeline, so no LaTeX install is required.
 import { DOWN, DR, LEFT, MED_SMALL_BUFF, RIGHT } from "../constants.js";
+import { isNDArray, nestedRows } from "../utils/arrays.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 import { BackgroundRectangle } from "./geometry/shape_matchers.js";
 import { setMatrixFactory } from "./geometry/line.js";
@@ -54,15 +55,49 @@ function integerElement(item: unknown, config: Record<string, unknown> = {}): VM
   return new Integer(item as DecimalNumberValue, config as DecimalNumberOptions);
 }
 
+/** Normalize a Matrix input (plain nested lists and/or numpy-ts NDArrays,
+ * mirroring Python's acceptance of "a numpy 2d array or list of lists") into
+ * plain rows. A 1-D input becomes a single column, mirroring
+ * `matrix_to_tex_string`'s `ndim == 1` reshape. */
+function toEntryRows(matrix: unknown): unknown[][] {
+  if (matrix === undefined || matrix === null) return [];
+  if (isNDArray(matrix)) {
+    const raw = (matrix as { toArray(): unknown }).toArray() as unknown;
+    if (Array.isArray(raw)) {
+      if (raw.length === 0) return [];
+      if (Array.isArray(raw[0])) return raw as unknown[][];
+      return (raw as unknown[]).map((item) => [item]);
+    }
+    return [[raw]];
+  }
+  const rows = nestedRows(matrix);
+  if (rows.length === 1 && rows[0] !== undefined && !Array.isArray(matrix) && !isNDArray(matrix)) {
+    return rows as unknown[][];
+  }
+  // `nestedRows` wraps a flat list as a single row; a flat Matrix input
+  // means one column (same convention as `matrix_to_tex_string`).
+  if (
+    Array.isArray(matrix) &&
+    matrix.length > 0 &&
+    !Array.isArray((matrix as unknown[])[0]) &&
+    !isNDArray((matrix as unknown[])[0])
+  ) {
+    return (matrix as unknown[]).map((item) => [item]);
+  }
+  // Rows may still be NDArray instances (mixed `[ndarray, ...]`); unwrap them.
+  return rows.map((row) =>
+    isNDArray(row)
+      ? (((row as { toArray(): unknown }).toArray() as unknown[]).slice() as unknown[])
+      : Array.isArray(row)
+        ? (row as unknown[])
+        : [row],
+  ) as unknown[][];
+}
+
 export function matrix_to_tex_string(matrix: unknown): string {
   // NOTE: mirrors Python `np.array(matrix).astype("str")` plus the
   // `ndim == 1` reshape to a single column.
-  let rows: unknown[][];
-  if (Array.isArray(matrix) && matrix.length > 0 && !Array.isArray(matrix[0])) {
-    rows = (matrix as unknown[]).map((item) => [item]);
-  } else {
-    rows = (matrix ?? []) as unknown[][];
-  }
+  const rows: unknown[][] = toEntryRows(matrix);
   const stringRows = rows.map((row) => (row as unknown[]).map((item) => String(item)));
   const nCols = stringRows.length > 0 ? stringRows[0]!.length : 0;
   const prefix = `\\left[ \\begin{array}{${"c".repeat(nCols)}}`;
@@ -108,7 +143,7 @@ export class Matrix extends VMobject {
   mob_matrix!: VMobject[][];
   brackets!: VGroup;
 
-  constructor(matrix: unknown[][], options: MatrixOptions = {}) {
+  constructor(matrix: unknown, options: MatrixOptions = {}) {
     const {
       v_buff = 0.8,
       h_buff = 1.3,
@@ -153,8 +188,8 @@ export class Matrix extends VMobject {
     }
   }
 
-  _matrix_to_mob_matrix(matrix: unknown[][]): VMobject[][] {
-    return (matrix as unknown[][]).map((row) =>
+  _matrix_to_mob_matrix(matrix: unknown): VMobject[][] {
+    return toEntryRows(matrix).map((row) =>
       (row as unknown[]).map((item) =>
         this.element_to_mobject(item, this.element_to_mobject_config),
       ),
@@ -267,7 +302,7 @@ export class Matrix extends VMobject {
 export interface DecimalMatrixOptions extends MatrixOptions {}
 
 export class DecimalMatrix extends Matrix {
-  constructor(matrix: unknown[][], options: DecimalMatrixOptions = {}) {
+  constructor(matrix: unknown, options: DecimalMatrixOptions = {}) {
     const {
       element_to_mobject = decimalNumberElement,
       element_to_mobject_config = { num_decimal_places: 1 },
@@ -284,7 +319,7 @@ export class DecimalMatrix extends Matrix {
 export interface IntegerMatrixOptions extends MatrixOptions {}
 
 export class IntegerMatrix extends Matrix {
-  constructor(matrix: unknown[][], options: IntegerMatrixOptions = {}) {
+  constructor(matrix: unknown, options: IntegerMatrixOptions = {}) {
     const { element_to_mobject = integerElement, ...rest } = options;
     super(matrix, { element_to_mobject, ...rest });
   }
@@ -293,7 +328,7 @@ export class IntegerMatrix extends Matrix {
 export interface MobjectMatrixOptions extends MatrixOptions {}
 
 export class MobjectMatrix extends Matrix {
-  constructor(matrix: unknown[][], options: MobjectMatrixOptions = {}) {
+  constructor(matrix: unknown, options: MobjectMatrixOptions = {}) {
     const {
       element_to_mobject = ((m: unknown) => m) as MatrixElementFactory,
       ...rest
