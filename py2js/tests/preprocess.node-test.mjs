@@ -87,6 +87,63 @@ check("import a, b reports every module", () => {
   assert.equal(r.unsupported[0].text, "import a, b as bee");
 });
 
+check("import random is stripped and not flagged", () => {
+  const r = preprocessImports("from manim import *\nimport random\nrandom.seed(7)\n");
+  assert.equal(r.unsupported.length, 0);
+  assert.deepEqual(r.stripped, ["from manim import *", "import random"]);
+  assert.ok(r.code.includes("# [wanim] stripped: import random"));
+  assert.ok(r.code.includes("random.seed(7)"));
+});
+
+check("import random as rnd binds the alias", () => {
+  const r = preprocessImports("import random as rnd\nrnd.seed(7)\n");
+  assert.equal(r.unsupported.length, 0);
+  assert.ok(r.code.includes("__wan_random = random"));
+  assert.ok(r.code.includes("rnd = __wan_random"));
+  assert.ok(r.code.includes("rnd.seed(7)"));
+});
+
+check("from random import names rebind from the module global", () => {
+  const r = preprocessImports("from random import seed, random\nseed(7)\n");
+  assert.equal(r.unsupported.length, 0);
+  assert.ok(r.code.includes("seed = __wan_random.seed"));
+  assert.ok(r.code.includes("random = __wan_random.random"));
+});
+
+check("mixed random imports stay bound to the module, not the shadow", () => {
+  // `from random import random` rebinds `random` to the function (as in
+  // CPython); the alias import must still see the module.
+  const r = preprocessImports("from random import random\nimport random as rnd\nrnd.seed(7)\n");
+  assert.equal(r.unsupported.length, 0);
+  const aliasDef = r.code.indexOf("__wan_random = random");
+  const shadow = r.code.indexOf("random = __wan_random.random");
+  const use = r.code.indexOf("rnd = __wan_random");
+  assert.ok(aliasDef >= 0 && shadow > aliasDef && use > aliasDef);
+});
+
+check("from random import with alias and multiline parens", () => {
+  const r = preprocessImports("from random import randint as ri\nx = ri(1, 5)\n");
+  assert.equal(r.unsupported.length, 0);
+  assert.ok(r.code.includes("ri = __wan_random.randint"));
+  const multi = preprocessImports("from random import (\n    seed,\n    shuffle,\n)\n");
+  assert.equal(multi.unsupported.length, 0);
+  assert.ok(multi.code.includes("seed = __wan_random.seed"));
+  assert.ok(multi.code.includes("shuffle = __wan_random.shuffle"));
+});
+
+check("from random import * binds every public name", () => {
+  const r = preprocessImports("from random import *\nseed(7)\n");
+  assert.equal(r.unsupported.length, 0);
+  assert.ok(r.code.includes("seed = __wan_random.seed"));
+  assert.ok(r.code.includes("Random = __wan_random.Random"));
+});
+
+check("other stdlib imports are still rejected", () => {
+  const r = preprocessImports("import random\nimport os\n");
+  assert.equal(r.unsupported.length, 1);
+  assert.equal(r.unsupported[0].module, "os");
+});
+
 check("comments and strings that look like imports are not flagged", () => {
   const src = '# import os\nx = "import os"\ny = frommath\n';
   const r = preprocessImports(src);

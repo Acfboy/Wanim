@@ -18,6 +18,7 @@
  * (`runtime.ts`) and in the browser (`runtime_browser.ts`).
  */
 import type * as NumpyTS from "numpy-ts";
+import { buildPythonRandom } from "./python_random.js";
 
 type Any = any;
 
@@ -3128,6 +3129,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     const numpyFacade = buildNumpy();
     globals.np = numpyFacade;
     globals.numpy = numpyFacade;
+    // Python's `random` module (see `python_random.ts`): `import random` and
+    // `from random import ...` are stripped by `preprocess.ts`, and the
+    // module object is provided here as a global instead.
+    globals.random = buildPythonRandom();
     globals.ρσ_op_add = pythonAdd;
     globals.ρσ_op_sub = pythonSub;
     globals.ρσ_op_mul = pythonMul;
@@ -3167,6 +3172,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   return {
     isNdArray,
     buildNumpy,
+    buildPythonRandom,
     wrapWanimNamespace,
     buildRuntime,
     pythonAdd,

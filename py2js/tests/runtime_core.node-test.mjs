@@ -256,6 +256,97 @@ check("numpy facade exposes linalg.LinAlgError for except handlers", () => {
   assert.equal(error.name, "LinAlgError");
 });
 
+check("python random: seed(7) matches CPython exactly", () => {
+  const runtime = ndCore.buildRuntime();
+  const random = runtime.globals.random;
+  random.seed(7);
+  assert.deepEqual(
+    [random.random(), random.random(), random.random()],
+    [0.32383276483316237, 0.15084917392450192, 0.6509344730398537],
+  );
+  assert.equal(random.getrandbits(32), 311111475);
+});
+
+check("python random: int/str/float seeds match CPython", () => {
+  const runtime = ndCore.buildRuntime();
+  const random = runtime.globals.random;
+  random.seed(12345);
+  assert.deepEqual(
+    [random.random(), random.random()],
+    [0.41661987254534116, 0.010169169457068361],
+  );
+  random.seed(-7);
+  assert.equal(random.random(), 0.32383276483316237); // abs(-7) == 7
+  random.seed("hello");
+  assert.deepEqual(
+    [random.random(), random.random(), random.random()],
+    [0.3537754404730722, 0.6631985810268619, 0.5476053663383964],
+  );
+  random.seed(7.5);
+  assert.deepEqual(
+    [random.random(), random.random()],
+    [0.007428081502091954, 0.8037855946327452],
+  );
+});
+
+check("python random: detached from-imports keep working", () => {
+  const runtime = ndCore.buildRuntime();
+  const seed = runtime.globals.random.seed;
+  const rand = runtime.globals.random.random;
+  seed(7);
+  assert.equal(rand(), 0.32383276483316237);
+});
+
+check("python random: distributions match CPython (seed 7)", () => {
+  const runtime = ndCore.buildRuntime();
+  const random = runtime.globals.random;
+  random.seed(7);
+  assert.deepEqual(
+    [random.randint(1, 10), random.randint(1, 10), random.randint(1, 10)],
+    [6, 3, 7],
+  );
+  random.seed(7);
+  assert.deepEqual(
+    [random.uniform(1, 2), random.uniform(1, 2)],
+    [1.3238327648331625, 1.150849173924502],
+  );
+  random.seed(7);
+  assert.deepEqual(
+    [random.choice([10, 20, 30, 40, 50]), random.choice([10, 20, 30, 40, 50])],
+    [30, 20],
+  );
+  random.seed(7);
+  const list = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  random.shuffle(list);
+  assert.deepEqual(list, [8, 3, 1, 4, 7, 0, 9, 6, 2, 5]);
+  random.seed(7);
+  assert.deepEqual(
+    random.sample(Array.from({ length: 100 }, (_, i) => i), 5),
+    [41, 19, 50, 83, 6],
+  );
+  random.seed(7);
+  assert.deepEqual(
+    [random.gauss(0, 1), random.gauss(0, 1)],
+    [-0.2558802884476004, 0.511431512516514],
+  );
+});
+
+check("python random: Random instances and getstate round-trip", () => {
+  const runtime = ndCore.buildRuntime();
+  const Random = runtime.globals.random.Random;
+  const r = Random(42);
+  assert.deepEqual(
+    [r.random(), r.random(), r.random()],
+    [0.6394267984578837, 0.025010755222666936, 0.27502931836911926],
+  );
+  const random = runtime.globals.random;
+  random.seed(5);
+  const state = random.getstate();
+  const a = [random.random(), random.random()];
+  random.setstate(state);
+  assert.deepEqual([random.random(), random.random()], a);
+});
+
 check("numpy facade stacks plain Python lists (column_stack et al.)", () => {
   const np = ndCore.buildNumpy();
   const rows = (a) => Array.from(a, (r) => [...r]);

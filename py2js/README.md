@@ -33,9 +33,10 @@ from the pinned upstream commit by `../scripts/build-rapydscript-browser.mjs`):
 
 `src/runtime_core.ts` supplies the matching runtime: it wraps wanim's ES
 classes so rapydscript can instantiate them, implements the `ρσ_op_*` helpers,
-and builds a small numpy facade over `numpy-ts`. `src/preprocess.ts` strips the
-`manim`/`numpy` imports (their exports are injected as globals) and turns any
-other import into a friendly error, because the Python standard library is not
+and builds small numpy and `random` facades (`src/python_random.ts`, a
+CPython-compatible MT19937 port). `src/preprocess.ts` strips the
+`manim`/`numpy`/`random` imports (their exports are injected as globals) and turns any
+other import into a friendly error, because the rest of the Python standard library is not
 available.
 
 ## Tests
