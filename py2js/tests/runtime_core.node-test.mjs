@@ -154,6 +154,36 @@ check("NDArray.astype accepts Python types and string aliases", () => {
   assert.equal(npReal.arange(5).astype("float64").dtype, "float64");
 });
 
+check("wanMatmul multiplies matrices and matrix-vector (rot @ center)", () => {
+  const rot = npReal.asarray([[0, -1, 0], [1, 0, 0], [0, 0, 1]]);
+  const center = [3, 0, 0];
+  assert.deepEqual(ndCore.wanMatmul(rot, center).toArray(), [0, 3, 0]);
+  assert.deepEqual(
+    ndCore.wanMatmul(rot, rot).toArray(),
+    [[-1, 0, 0], [0, -1, 0], [0, 0, 1]],
+  );
+});
+
+check("wanMatmul accepts plain nested lists and inner products", () => {
+  assert.deepEqual(
+    ndCore.wanMatmul([[1, 2], [3, 4]], [[5, 6], [7, 8]]).toArray(),
+    [[19, 22], [43, 50]],
+  );
+  assert.equal(ndCore.wanMatmul([1, 2, 3], [4, 5, 6]), 32);
+});
+
+check("wanMatmul prefers __matmul__/__rmatmul__ dunders", () => {
+  const left = { __matmul__(other) { return ["left", other]; } };
+  assert.deepEqual(ndCore.wanMatmul(left, 7), ["left", 7]);
+  const right = { __rmatmul__(other) { return ["right", other]; } };
+  assert.deepEqual(ndCore.wanMatmul(7, right), ["right", 7]);
+});
+
+check("wanMatmul is exposed to compiled scenes as a global", () => {
+  const runtime = ndCore.buildRuntime();
+  assert.equal(typeof runtime.globals.__wan_matmul, "function");
+});
+
 check("NDArray numeric slice serves plain-JS copies (ρσ_eslice path)", () => {
   ndCore.buildRuntime();
   const arr = npReal.arange(5).astype("float64");
