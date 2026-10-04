@@ -2468,6 +2468,232 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* ignore */
     }
+    // --- np.random shuffle/permutation/choice on plain Python lists --------
+    //
+    // numpy-ts' random ops require NDArray storage: `Generator.shuffle` /
+    // `permutation` / `choice` on a plain JS array (which is how a Python list
+    // arrives, e.g. a list of ManimColors) throws
+    // `TypeError: Cannot read properties of undefined (reading 'copy')` (or
+    // returns `undefined` for `choice`).  CPython's `Generator` instead accepts
+    // any array-like, including lists of arbitrary objects, shuffling in place
+    // (`shuffle`) or via index sampling (`permutation` / `choice`).
+    //
+    // Route plain-array inputs through index delegation so the same RNG state
+    // drives the result deterministically: `permutation(n)` yields the shuffled
+    // index array (verified identical to `shuffle` on `arange(n)` for seed 2),
+    // and `choice(n, ...)` yields sampled indices.  Mapping those indices back
+    // onto the list preserves the seed's determinism without reimplementing
+    // the bit generator.  NDArray / integer inputs keep delegating to the
+    // original implementation untouched.
+    try {
+      const origRandom = (np as Any).random;
+      if (origRandom !== null && typeof origRandom === "object") {
+        const toNumberList = (value: Any): number[] => {
+          try {
+            if (value !== null && typeof value === "object" && typeof (value as Any).tolist === "function") {
+              const nested = (value as Any).tolist() as Any;
+              const out: number[] = [];
+              const walk = (node: Any): void => {
+                if (Array.isArray(node)) {
+                  for (const elt of node) walk(elt);
+                } else {
+                  out.push(Number(node));
+                }
+              };
+              walk(nested);
+              return out;
+            }
+          } catch {
+            /* fall through */
+          }
+          if (Array.isArray(value)) return (value as Any[]).map((elt) => Number(elt));
+          return [Number(value)];
+        };
+        const mapIndicesToElements = (nested: Any, elements: Any[]): Any => {
+          if (Array.isArray(nested)) return nested.map((elt) => mapIndicesToElements(elt, elements));
+          return elements[Number(nested) as number];
+        };
+        const applyPermutationInPlace = (list: Any[], permFn: (...a: Any[]) => Any): void => {
+          if (list.length <= 1) return;
+          const indices = toNumberList(permFn(list.length));
+          const copy = list.slice();
+          for (let i = 0; i < list.length; i += 1) {
+            list[i] = copy[indices[i] as number];
+          }
+        };
+        const permutedCopy = (list: Any[], permFn: (...a: Any[]) => Any): Any => {
+          if (list.length === 0) return [];
+          const indices = toNumberList(permFn(list.length));
+          const out = indices.map((k) => list[k as number]);
+          // All-number results come back as an NDArray like numpy would return;
+          // object lists (e.g. ManimColors, which NDArray cannot hold) stay a
+          // plain list so iteration keeps working.
+          if (out.length > 0 && out.every((elt) => typeof elt === "number")) {
+            try {
+              return (np as Any).asarray(out);
+            } catch {
+              return out;
+            }
+          }
+          return out;
+        };
+        const stripKwargs = (args: Any[]): { positional: Any[]; kwargs: Record<string, Any> | null } => {
+          if (args.length === 0) return { positional: args, kwargs: null };
+          const kwargs = detectKwargs(args[args.length - 1]);
+          return kwargs !== null
+            ? { positional: args.slice(0, -1), kwargs: kwargs as Record<string, Any> }
+            : { positional: args.slice(), kwargs: null };
+        };
+        const choiceFromPlainList = (
+          list: Any[],
+          rawArgs: Any[],
+          indexChoiceFn: (...a: Any[]) => Any,
+        ): Any => {
+          const { positional, kwargs } = stripKwargs(rawArgs);
+          // positional[0] is the list itself; the rest is (size, replace, p).
+          const rest = positional.slice(1);
+          let size: Any = rest.length > 0 ? rest[0] : undefined;
+          let replace: Any = rest.length > 1 ? rest[1] : undefined;
+          let p: Any = rest.length > 2 ? rest[2] : undefined;
+          if (kwargs !== null) {
+            if (size === undefined && "size" in kwargs) size = kwargs["size"];
+            if (replace === undefined && "replace" in kwargs) replace = kwargs["replace"];
+            if (p === undefined && "p" in kwargs) p = kwargs["p"];
+          }
+          if (size === null) size = undefined;
+          if (replace === undefined || replace === null) replace = true;
+          if (list.length === 0) {
+            throw new Error("a must be non-empty");
+          }
+          const indexArgs: Any[] = [list.length];
+          if (size !== undefined) indexArgs.push(size);
+          if (rest.length > 1 || (kwargs !== null && "replace" in kwargs)) indexArgs.push(replace);
+          if (rest.length > 2 || (kwargs !== null && "p" in kwargs)) {
+            while (indexArgs.length < 2) indexArgs.push(true);
+            indexArgs.push(p);
+          }
+          const sampled = indexChoiceFn(...indexArgs);
+          if (size === undefined) return list[Number(sampled) as number];
+          if (
+            sampled !== null &&
+            typeof sampled === "object" &&
+            typeof (sampled as Any).tolist === "function"
+          ) {
+            try {
+              return mapIndicesToElements((sampled as Any).tolist(), list);
+            } catch {
+              /* fall through to flat mapping */
+            }
+          }
+          if (Array.isArray(sampled)) return mapIndicesToElements(sampled, list);
+          return mapIndicesToElements(toNumberList(sampled), list);
+        };
+        const wrapGenerator = (gen: Any): Any => {
+          if (gen === null || typeof gen !== "object") return gen;
+          const origShuffle = gen.shuffle;
+          const origPerm = gen.permutation;
+          const origChoice = gen.choice;
+          if (
+            typeof origShuffle !== "function" ||
+            typeof origPerm !== "function" ||
+            typeof origChoice !== "function"
+          ) {
+            return gen;
+          }
+          const wrapped: Any = { ...gen };
+          const shuffleFn = function (...args: Any[]): Any {
+            const { positional } = stripKwargs(args);
+            const target = positional.length > 0 ? positional[0] : undefined;
+            if (Array.isArray(target)) {
+              applyPermutationInPlace(target, (...a: Any[]) => (origPerm as Any)(...a));
+              return undefined;
+            }
+            return (origShuffle as Any)(...positional);
+          };
+          (shuffleFn as Any).__argnames__ = ["x"];
+          wrapped.shuffle = shuffleFn;
+          const permFn = function (...args: Any[]): Any {
+            const { positional } = stripKwargs(args);
+            const target = positional.length > 0 ? positional[0] : undefined;
+            if (Array.isArray(target)) return permutedCopy(target, (...a: Any[]) => (origPerm as Any)(...a));
+            return (origPerm as Any)(...positional);
+          };
+          (permFn as Any).__argnames__ = ["x"];
+          wrapped.permutation = permFn;
+          const choiceFn = function (...args: Any[]): Any {
+            const { positional } = stripKwargs(args);
+            const target = positional.length > 0 ? positional[0] : undefined;
+            if (Array.isArray(target)) {
+              return choiceFromPlainList(target, args, (...a: Any[]) => (origChoice as Any)(...a));
+            }
+            return (origChoice as Any)(...args);
+          };
+          (choiceFn as Any).__argnames__ = ["a", "size", "replace", "p"];
+          wrapped.choice = choiceFn;
+          return wrapped;
+        };
+        const origDefaultRng = origRandom.default_rng;
+        if (typeof origDefaultRng === "function") {
+          const wrappedDefaultRng = function (...args: Any[]): Any {
+            return wrapGenerator((origDefaultRng as Any)(...args));
+          };
+          (wrappedDefaultRng as Any).__argnames__ = ["seed"];
+          const wrappedRandom: Record<string, Any> = { ...(origRandom as Record<string, Any>) };
+          wrappedRandom.default_rng = wrappedDefaultRng;
+          // Legacy `np.random.shuffle/permutation/choice` share the same plain
+          // list limitation; wrap them with the same index-delegation strategy
+          // driven by the global RNG so `np.random.seed(n)` determinism is kept.
+          try {
+            const legacyShuffle = origRandom.shuffle;
+            const legacyPerm = origRandom.permutation;
+            const legacyChoice = origRandom.choice;
+            if (typeof legacyShuffle === "function" && typeof legacyPerm === "function") {
+              const shuffleFn = function (...args: Any[]): Any {
+                const { positional } = stripKwargs(args);
+                const target = positional.length > 0 ? positional[0] : undefined;
+                if (Array.isArray(target)) {
+                  applyPermutationInPlace(target, (...a: Any[]) => (legacyPerm as Any)(...a));
+                  return undefined;
+                }
+                return (legacyShuffle as Any)(...positional);
+              };
+              (shuffleFn as Any).__argnames__ = ["x"];
+              wrappedRandom.shuffle = shuffleFn;
+            }
+            if (typeof legacyPerm === "function") {
+              const permFn = function (...args: Any[]): Any {
+                const { positional } = stripKwargs(args);
+                const target = positional.length > 0 ? positional[0] : undefined;
+                if (Array.isArray(target)) return permutedCopy(target, (...a: Any[]) => (legacyPerm as Any)(...a));
+                return (legacyPerm as Any)(...positional);
+              };
+              (permFn as Any).__argnames__ = ["x"];
+              wrappedRandom.permutation = permFn;
+            }
+            if (typeof legacyChoice === "function") {
+              const choiceFn = function (...args: Any[]): Any {
+                const { positional } = stripKwargs(args);
+                const target = positional.length > 0 ? positional[0] : undefined;
+                if (Array.isArray(target)) {
+                  return choiceFromPlainList(target, args, (...a: Any[]) => (legacyChoice as Any)(...a));
+                }
+                return (legacyChoice as Any)(...args);
+              };
+              (choiceFn as Any).__argnames__ = ["a", "size", "replace", "p"];
+              wrappedRandom.choice = choiceFn;
+            }
+          } catch {
+            /* keep default_rng-only wrapping */
+          }
+          facade.random = wrappedRandom;
+          if ((facade as Any).default_rng === origDefaultRng) {
+            (facade as Any).default_rng = wrappedDefaultRng;
+          }
+        }
+      }
+    } catch {
+      /* random wrapping is best-effort; numpy-ts paths stay usable */
+    }
     return facade;
   }
 
