@@ -18,6 +18,7 @@
  * (`runtime.ts`) and in the browser (`runtime_browser.ts`).
  */
 import type * as NumpyTS from "numpy-ts";
+import { buildPythonMath } from "./python_math.js";
 import { buildPythonRandom } from "./python_random.js";
 
 type Any = any;
@@ -3297,6 +3298,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // `from random import ...` are stripped by `preprocess.ts`, and the
     // module object is provided here as a global instead.
     globals.random = buildPythonRandom();
+    // Python's `math` module (see `python_math.ts`): `import math` and
+    // `from math import ...` are stripped by `preprocess.ts`, and the
+    // module object is provided here as a global instead.
+    globals.math = buildPythonMath();
     globals.ρσ_op_add = pythonAdd;
     globals.ρσ_op_sub = pythonSub;
     globals.ρσ_op_mul = pythonMul;
@@ -3337,6 +3342,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     isNdArray,
     buildNumpy,
     buildPythonRandom,
+    buildPythonMath,
     wrapWanimNamespace,
     buildRuntime,
     pythonAdd,

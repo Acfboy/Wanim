@@ -62,11 +62,29 @@ check("import matplotlib.pyplot as plt reports dotted module", () => {
   assert.equal(r.unsupported[0].line, 1);
 });
 
-check("from math import sin, cos reports module math", () => {
+check("from math import sin, cos is stripped and rebound", () => {
   const r = preprocessImports("from math import sin, cos\n");
-  assert.equal(r.unsupported.length, 1);
-  assert.equal(r.unsupported[0].module, "math");
-  assert.equal(r.unsupported[0].line, 1);
+  assert.equal(r.unsupported.length, 0);
+  assert.ok(r.code.includes("__wan_math = math"));
+  assert.ok(r.code.includes("sin = __wan_math.sin"));
+  assert.ok(r.code.includes("cos = __wan_math.cos"));
+});
+
+check("import math variants bind the module alias", () => {
+  const plain = preprocessImports("import math\nx = math.sqrt(4)\n");
+  assert.equal(plain.unsupported.length, 0);
+  assert.ok(plain.code.includes("__wan_math = math"));
+  assert.ok(plain.code.includes("x = math.sqrt(4)"));
+  const aliased = preprocessImports("import math as m\nx = m.pi\n");
+  assert.equal(aliased.unsupported.length, 0);
+  assert.ok(aliased.code.includes("m = __wan_math"));
+  const star = preprocessImports("from math import *\n");
+  assert.equal(star.unsupported.length, 0);
+  assert.ok(star.code.includes("comb = __wan_math.comb"));
+  assert.ok(star.code.includes("pi = __wan_math.pi"));
+  const names = preprocessImports("from math import comb as C\nx = C(3, 1)\n");
+  assert.equal(names.unsupported.length, 0);
+  assert.ok(names.code.includes("C = __wan_math.comb"));
 });
 
 check("multi-line from-import is reported on the `from` line", () => {

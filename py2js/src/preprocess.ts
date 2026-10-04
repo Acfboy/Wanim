@@ -1,22 +1,24 @@
 /**
  * Very small source pre-processor for the "native" modules `manim`,
- * `numpy` and `random`.
+ * `numpy`, `random` and `math`.
  *
  * rapydscript resolves imports to `.pyj` files, and it does not support star
  * imports at all.  Instead of shipping a huge generated stub for the wanim API
  * we simply drop these imports and expose every wanim export (plus a numpy
- * facade and a Python-compatible `random` module, see `python_random.ts`) as
+ * facade, a Python-compatible `random` module (see `python_random.ts`), and a
+ * Python-compatible `math` module (see `python_math.ts`)) as
  * globals of the execution context, so the user's Python source is
  * used *unmodified*.  Any symbol imported explicitly from numpy is recorded so
  * the runner can add the matching global alias; names imported from `random`
- * are rebound from the `random` global (`seed = random.seed`) because the
- * module's functions are detachment-safe closures.
+ * or `math` are rebound from the respective global (`seed = random.seed`,
+ * `sin = math.sin`) because the modules' functions are detachment-safe
+ * closures.
  *
- * Every OTHER import (`import os`, `from math import sin`, ...) cannot work in
- * the browser/JS runtime, because neither the Python standard library nor
- * third-party packages exist there.  Instead of passing those lines through to
- * rapydscript (which fails with a cryptic error) we collect them in
- * `unsupported` so the caller can show a friendly explanation.
+ * Every OTHER import (`import os`, `from collections import ...`, ...) cannot
+ * work in the browser/JS runtime, because neither the rest of the Python
+ * standard library nor third-party packages exist there.  Instead of passing
+ * those lines through to rapydscript (which fails with a cryptic error) we
+ * collect them in `unsupported` so the caller can show a friendly explanation.
  *
  * Detection is a deliberately simple, line-oriented heuristic: a statement is
  * only recognised when a line (ignoring leading whitespace) starts with
@@ -27,6 +29,7 @@
  * relies on them.
  */
 
+import { MATH_PUBLIC } from "./python_math.js";
 import { RANDOM_PUBLIC } from "./python_random.js";
 
 export interface UnsupportedImport {
@@ -144,6 +147,9 @@ const NUMPY_IMPORT = /^\s*import\s+numpy(\.[\w.]+)?(\s+as\s+\w+)?\s*(?:#.*)?$/;
 // `random` is provided as a runtime global (see `python_random.ts`).
 const RANDOM_FROM = /^\s*from\s+random\s+import\s+(.+?)\s*(?:#.*)?$/;
 const RANDOM_IMPORT = /^\s*import\s+random(\s+as\s+(\w+))?\s*(?:#.*)?$/;
+// `math` is provided as a runtime global (see `python_math.ts`).
+const MATH_FROM = /^\s*from\s+math\s+import\s+(.+?)\s*(?:#.*)?$/;
+const MATH_IMPORT = /^\s*import\s+math(\s+as\s+(\w+))?\s*(?:#.*)?$/;
 
 // Any `from X import (` statement (no matter the module) may span several
 // lines; join them so both the module name and the line number survive.
@@ -202,6 +208,15 @@ export function preprocessImports(source: string): PreprocessResult {
   let randomAlias = "__wan_random";
   while (source.includes(randomAlias)) randomAlias += "_";
   let randomAliasEmitted = false;
+  // Internal alias the emitted `math` bindings read the module through.
+  // `from math import pi` (or any other name) rebinds a user-visible name, and
+  // a later `import math as m` must still see the module, so emitted code
+  // reads `__wan_math` (suffixed when user code already uses it) which is
+  // bound once, before any shadowing can happen.  Same pattern as `random`
+  // above; `math` functions are detachment-safe closures too.
+  let mathAlias = "__wan_math";
+  while (source.includes(mathAlias)) mathAlias += "_";
+  let mathAliasEmitted = false;
 
   for (let i = 0; i < lines.length; i += 1) {
     let line = lines[i];
@@ -273,6 +288,41 @@ export function preprocessImports(source: string): PreprocessResult {
       continue;
     }
 
+    // `math` is provided as a runtime global (see `python_math.ts`):
+    // `import math` needs no rewrite, `import math as m` binds the
+    // alias, and `from math import ...` rebinds each name from the module.
+    // All emitted bindings read the module through the internal `mathAlias`,
+    // never the shadowable `math`.
+    const mathImport = line.match(MATH_IMPORT);
+    if (mathImport) {
+      stripped.push(line.trim());
+      out.push(`# [wanim] stripped: ${line.trim()}`);
+      if (!mathAliasEmitted) {
+        out.push(`${mathAlias} = math`);
+        mathAliasEmitted = true;
+      }
+      const alias = mathImport[2];
+      if (alias !== undefined && alias !== "math") out.push(`${alias} = ${mathAlias}`);
+      continue;
+    }
+    const mathFrom = line.match(MATH_FROM);
+    if (mathFrom) {
+      stripped.push(line.trim());
+      out.push(`# [wanim] stripped: ${line.trim()}`);
+      if (!mathAliasEmitted) {
+        out.push(`${mathAlias} = math`);
+        mathAliasEmitted = true;
+      }
+      for (const [name, alias] of parseFromNames(mathFrom[1])) {
+        if (name === "*") {
+          for (const pub of MATH_PUBLIC) out.push(`${pub} = ${mathAlias}.${pub}`);
+        } else {
+          out.push(`${alias} = ${mathAlias}.${name}`);
+        }
+      }
+      continue;
+    }
+
     const fromMatch = line.match(FROM_IMPORT);
     if (fromMatch) {
       unsupported.push({ module: fromMatch[1], line: startLine, text: normalize(line) });
@@ -299,10 +349,10 @@ export function preprocessImports(source: string): PreprocessResult {
 export function formatUnsupportedImportError(item: UnsupportedImport): string {
   return (
     `wanim: cannot use Python module '${item.module}' (line ${item.line}: ${item.text}).\n` +
-    "Only the manim API, numpy, and the Python 'random' module are available in the browser/JS " +
+    "Only the manim API, numpy, and the Python 'random' and 'math' modules are available in the browser/JS " +
     "runtime; the rest of the Python standard library and third-party packages cannot be imported.\n" +
     "Use 'from manim import *' and 'import numpy as np' instead (both are provided as globals; " +
-    "'import random' is supported too).\n" +
+    "'import random' and 'import math' are supported too).\n" +
     "Math functions such as sin/cos/exp are available as numpy functions, e.g. " +
     "'from numpy import sin, cos, exp' or 'np.sin(...)' (plain JS Math is not exposed)."
   );
