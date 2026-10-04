@@ -201,7 +201,20 @@ diff --git a/src/output/loops.pyj b/src/output/loops.pyj
 index b38e56f..a9f7437 100644
 --- a/src/output/loops.pyj
 +++ b/src/output/loops.pyj
-@@ -301,10 +301,14 @@ def print_list_comprehension(self, output):
+@@ -296,15 +296,26 @@ def print_list_comprehension(self, output):
+             body_out.indent()
+             body_out.assign('var ρσ_Iter')
+-            self.object.print(body_out)
++            # NOTE (wanim): a tuple iterable is an AST_Seq, which prints as a
++            # bare comma list outside bracketing parents (see print_seq), so
++            # `var ρσ_Iter = a, b, c` would be a SyntaxError.  Materialize it
++            # as an array literal, mirroring print_for_in's write_object.
++            if self.object.constructor is AST_Seq:
++                (new AST_Array({'elements': self.object.to_array()})).print(body_out)
++            else:
++                self.object.print(body_out)
+             if result_obj:
+                 body_out.comma()
                  body_out.assign('ρσ_Result')
                  body_out.print(result_obj)
              # make sure to locally scope loop variables
