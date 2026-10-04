@@ -878,6 +878,32 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* ignore */
     }
+    // rapydscript's `len()` (`ρσ_len`) only treats plain JS arrays / typed
+    // arrays as array-like; an NDArray falls through to
+    // `Object.keys(obj).length` (the Proxy's own keys: `_storage`, `_base`,
+    // `_raw` -> 3).  That breaks the extremely common `range(len(pts) - 1)`
+    // pattern (e.g. Koch snowflake subdivision): `len` returns 3 for a
+    // shape-`[2, 3]` array, so `pts[2]` throws
+    // `Index 2 is out of bounds for size 2`.  Provide `__len__`, which
+    // `ρσ_len` prefers, mirroring `numpy.ndarray.__len__` (`shape[0]`, and
+    // `TypeError` for 0-d arrays).
+    try {
+      if (typeof proto.__len__ !== "function") {
+        Object.defineProperty(proto, "__len__", {
+          configurable: true,
+          writable: true,
+          value: function (this: Any): number {
+            const shape = this?.shape;
+            if (!Array.isArray(shape) || shape.length === 0) {
+              throw new TypeError("len() of unsized object");
+            }
+            return shape[0] as number;
+          },
+        });
+      }
+    } catch {
+      /* ignore */
+    }
     // `ρσ_eslice` with a negative step calls `arr.slice().reverse()`; plain
     // arrays get that from `Array.prototype`, but NDArrays have no `reverse`.
     // Provide one over a plain-JS copy (non-mutating, unlike `Array.reverse`).
