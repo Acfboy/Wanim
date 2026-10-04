@@ -142,4 +142,33 @@ check("wanGetItem helpers are exposed to compiled scenes as globals", () => {
   assert.equal(runtime.globals.__wan_slice(null, null), ":");
 });
 
+check("NDArray.astype accepts Python types and string aliases", () => {
+  ndCore.buildRuntime(); // applies the NDArray prototype patch
+  function ρσ_float(v) { return v; }
+  function ρσ_int(v) { return v; }
+  const fromType = npReal.arange(5).astype(ρσ_float);
+  assert.equal(fromType.dtype, "float64");
+  assert.deepEqual(fromType.toArray(), [0, 1, 2, 3, 4]);
+  assert.equal(npReal.arange(5).astype(ρσ_int).dtype, "int64");
+  assert.equal(npReal.arange(5).astype("float").dtype, "float64");
+  assert.equal(npReal.arange(5).astype("float64").dtype, "float64");
+});
+
+check("NDArray numeric slice serves plain-JS copies (ρσ_eslice path)", () => {
+  ndCore.buildRuntime();
+  const arr = npReal.arange(5).astype("float64");
+  // `ρσ_eslice(arr, -1)` does `arr.slice().reverse()` then numeric
+  // `arr.slice(start, end).filter(...)`: every step must work on NDArrays.
+  assert.deepEqual([...arr.slice()].map(Number), [0, 1, 2, 3, 4]);
+  assert.deepEqual([...arr.slice().reverse()].map(Number), [4, 3, 2, 1, 0]);
+  assert.deepEqual([...arr.slice(1, 3)].map(Number), [1, 2]);
+  assert.deepEqual(
+    arr.slice().reverse().slice(0, 5).filter((_, i) => i % 1 === 0).map(Number),
+    [4, 3, 2, 1, 0],
+  );
+  // String specs still go through numpy slicing and stay NDArrays.
+  assert.deepEqual(arr.slice("1:3").toArray(), [1, 2]);
+  assert.deepEqual(arr.slice("::-1").toArray(), [4, 3, 2, 1, 0]);
+});
+
 console.log(`\n${passed} tests passed`);
