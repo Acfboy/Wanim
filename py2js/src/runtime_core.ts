@@ -1034,7 +1034,12 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     for (const name of scalarUfuncs) {
       const fn = (np as Any)[name];
       if (typeof fn !== "function") continue;
-      facade[name] = (x: Any, ...rest: Any[]) => scalarize(fn(asNd(x), ...rest));
+      facade[name] = (x: Any, ...rest: Any[]) => {
+        const clean = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
+          ? rest.slice(0, -1)
+          : rest;
+        return scalarize((fn as Any)(asNd(x), ...clean));
+      };
     }
     // Two-argument ufuncs need the same treatment: numpy-ts requires NDArray
     // inputs, so `np.arctan2(0, 1)` on plain Python scalars throws
@@ -1049,8 +1054,12 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     for (const name of binaryUfuncs) {
       const fn = (np as Any)[name];
       if (typeof fn !== "function") continue;
-      facade[name] = (a: Any, b: Any, ...rest: Any[]) =>
-        scalarize(fn(asNd(a), asNd(b), ...rest));
+      facade[name] = (a: Any, b: Any, ...rest: Any[]) => {
+        const clean = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
+          ? rest.slice(0, -1)
+          : rest;
+        return scalarize((fn as Any)(asNd(a), asNd(b), ...clean));
+      };
     }
     // Plain-number fast path: `np.cos(t)` on a scalar otherwise boxes the value
     // into an NDArray, dispatches through numpy-ts (WASM/alloc), then unwraps —
@@ -1121,19 +1130,126 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     const numpyRound = (a: Any, decimals: Any = 0): Any => pythonRound(a, decimals);
     facade.round = numpyRound;
     facade.around = numpyRound;
+    // Python `np.array(obj, dtype=float)` passes the *type* `float` (rapydscript's
+    // `ρσ_float` function) as `dtype`, and rapydscript delivers kwargs as a
+    // trailing null-prototype bag.  numpy-ts only accepts dtype *strings* (e.g.
+    // `"float64"`) as a positional argument, so a raw passthrough crashes with
+    // `TypeError: Cannot convert object to primitive value` (browser WASM build)
+    // or `Unknown dtype: [object Object]`.  Normalize both the kwargs bag and a
+    // positional Python-type dtype into a numpy-ts dtype string.
+    function normalizeNumpyDtype(dtype: Any): string | undefined {
+      if (dtype === null || dtype === undefined) return undefined;
+      if (typeof dtype === "string") {
+        const s = dtype.trim().toLowerCase();
+        const alias: Record<string, string> = {
+          float64: "float64", f8: "float64", double: "float64", d: "float64",
+          float: "float64",
+          float32: "float32", f4: "float32", single: "float32",
+          float16: "float16", f2: "float16", half: "float16",
+          complex128: "complex128", c16: "complex128", complex: "complex128",
+          cdouble: "complex128",
+          complex64: "complex64", c8: "complex64", csingle: "complex64",
+          int64: "int64", i8: "int64", int: "int64", long: "int64",
+          int32: "int32", i4: "int32",
+          int16: "int16", i2: "int16", short: "int16",
+          int8: "int8", i1: "int8", byte: "int8",
+          uint64: "uint64", u8: "uint64",
+          uint32: "uint32", u4: "uint32",
+          uint16: "uint16", u2: "uint16",
+          uint8: "uint8", u1: "uint8", ubyte: "uint8",
+          bool: "bool", "?": "bool",
+        };
+        const mapped = alias[s];
+        if (mapped !== undefined) return mapped;
+        // Accept an already-valid numpy-ts dtype verbatim (e.g. "bool").
+        const supported: Any = (np as Any).SUPPORTED_DTYPES;
+        if (Array.isArray(supported) && (supported as string[]).includes(s)) return s;
+        if (Array.isArray(supported) && (supported as string[]).includes(dtype.trim())) {
+          return dtype.trim();
+        }
+        // Unsupported (e.g. "object", "str"): let numpy-ts infer instead of throwing.
+        return undefined;
+      }
+      if (typeof dtype === "function") {
+        const rawName = String((dtype as Any).__name__ ?? dtype.name ?? "").toLowerCase();
+        const has = (sub: string): boolean => rawName.includes(sub);
+        // Sized variants first, then the generic Python builtins
+        // (`ρσ_float`/`ρσ_int`/`ρσ_bool` from rapydscript's baselib).
+        if (has("complex64") || has("csingle") || has("c8")) return "complex64";
+        if (has("complex")) return "complex128";
+        if (has("float16") || has("half") || has("f2")) return "float16";
+        if (has("float32") || has("single") || has("f4")) return "float32";
+        if (has("float")) return "float64";
+        if (has("int8") || has("i1") || has("byte")) return "int8";
+        if (has("int16") || has("i2") || has("short")) return "int16";
+        if (has("int32") || has("i4")) return "int32";
+        if (has("uint8") || has("u1")) return "uint8";
+        if (has("uint16") || has("u2")) return "uint16";
+        if (has("uint32") || has("u4")) return "uint32";
+        if (has("uint64") || has("u8")) return "uint64";
+        if (has("int") || has("long")) return "int64";
+        if (has("bool")) return "bool";
+        if (has("number")) return "float64";
+        if (has("boolean")) return "bool";
+        // Unknown callable dtype: infer instead of throwing.
+        return undefined;
+      }
+      return undefined;
+    }
+
+    function callNumpyWithDtype(fn: (...a: Any[]) => Any, dtypeIndex: number, args: Any[]): Any {
+      const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+      const positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+      const kwargsDtype = kwargs !== null ? (kwargs as Record<string, Any>)["dtype"] : undefined;
+      // Positional dtype (e.g. `np.array(x, float)`) also needs normalization.
+      const rawDtype = positional.length > dtypeIndex ? positional[dtypeIndex] : kwargsDtype;
+      const normalized = normalizeNumpyDtype(rawDtype);
+      if (normalized !== undefined) {
+        positional[dtypeIndex] = normalized;
+      } else {
+        // No (supportable) dtype: drop the dtype slot and any other kwargs
+        // (`copy`, `order`, ...) that numpy-ts does not accept.
+        if (positional.length > dtypeIndex) positional.length = dtypeIndex;
+      }
+      return fn(...positional);
+    }
+
+    function wrapNumpyCreation(name: string, dtypeIndex: number, shapeFirst = false): void {
+      const fn = (np as Any)[name];
+      if (typeof fn !== "function") return;
+      facade[name] = (...args: Any[]): Any => {
+        const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+        let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+        if (shapeFirst && positional.length > 0 && typeof positional[0] === "number") {
+          positional = [[positional[0]], ...positional.slice(1)];
+        }
+        return callNumpyWithDtype(fn, dtypeIndex, kwargs !== null
+          ? [...positional, kwargs]
+          : positional);
+      };
+    }
+
     // numpy-ts requires an array shape; Python accepts an int (`np.zeros(3)`).
+    // All of these also accept `dtype` (positionally or as `dtype=...`), which
+    // is normalized above (Python types -> numpy-ts strings).
     for (const name of ["zeros", "ones", "empty"]) {
+      wrapNumpyCreation(name, 1, true);
+    }
+    wrapNumpyCreation("full", 2, true);
+    for (const name of [
+      "array", "asarray", "asanyarray", "ascontiguousarray", "asfortranarray",
+      "zeros_like", "ones_like", "empty_like",
+    ]) {
+      wrapNumpyCreation(name, 1);
+    }
+    wrapNumpyCreation("full_like", 2);
+    for (const name of ["arange", "linspace", "eye", "identity", "logspace", "geomspace"]) {
       const fn = (np as Any)[name];
       if (typeof fn !== "function") continue;
-      facade[name] = (shape: Any, ...rest: Any[]) =>
-        fn(typeof shape === "number" ? [shape] : shape, ...rest);
-    }
-    {
-      const fn = (np as Any).full;
-      if (typeof fn === "function") {
-        facade.full = (shape: Any, fill: Any, ...rest: Any[]) =>
-          fn(typeof shape === "number" ? [shape] : shape, fill, ...rest);
-      }
+      // `arange`/`linspace`/`eye` take dtype last (index 3); `identity` takes it
+      // at index 1.  Derive from the underlying arity instead of hardcoding.
+      const dtypeIndex = name === "identity" ? 1 : 3;
+      wrapNumpyCreation(name, dtypeIndex);
     }
     return facade;
   }
