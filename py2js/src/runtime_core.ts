@@ -2216,6 +2216,61 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     const numpyRound = (a: Any, decimals: Any = 0): Any => pythonRound(a, decimals);
     facade.round = numpyRound;
     facade.around = numpyRound;
+    // numpy-ts' `clip` requires NDArray inputs, so `np.clip(t, 0.0, 1.0)` on a
+    // Python scalar (or a plain list) throws "undefined is not iterable".  This
+    // is hit e.g. by per-sample callbacks passed to `axes.plot` (see
+    // `ParametricFunction._points_flat`, which maps the user function over
+    // plain JS numbers).  Coerce scalar/list inputs before delegating and
+    // scalarize 0-d results back to Python numbers.  A plain-number fast path
+    // avoids a WASM round-trip per sample.
+    try {
+      const origClip = (np as Any).clip;
+      if (typeof origClip === "function") {
+        const coerceClipArg = (value: Any): Any => {
+          if (isNdArray(value)) return value;
+          if (typeof value === "number" || typeof value === "boolean") {
+            try {
+              return (np as Any).asarray(value);
+            } catch {
+              return value;
+            }
+          }
+          if (Array.isArray(value)) {
+            try {
+              return (np as Any).asarray(deepUnwrapNd(value));
+            } catch {
+              return value;
+            }
+          }
+          return value;
+        };
+        const wrappedClip = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(["a", "a_min", "a_max", "out"], positional, kwargs as Record<string, Any>);
+          }
+          const a = positional.length > 0 ? positional[0] : undefined;
+          const aMin = positional.length > 1 ? positional[1] : undefined;
+          const aMax = positional.length > 2 ? positional[2] : undefined;
+          if (typeof a === "number" && typeof aMin === "number" && typeof aMax === "number") {
+            let v = a;
+            if (!Number.isNaN(aMin)) v = Math.max(v, aMin);
+            if (!Number.isNaN(aMax)) v = Math.min(v, aMax);
+            return v;
+          }
+          const coerced = [a, aMin, aMax].map((v) =>
+            v === null || v === undefined ? v : coerceClipArg(v),
+          );
+          // numpy-ts `clip` takes only (a, a_min, a_max); drop `out`/kwargs.
+          return scalarize((origClip as Any)(coerced[0], coerced[1], coerced[2]));
+        };
+        (wrappedClip as Any).__argnames__ = ["a", "a_min", "a_max"];
+        facade.clip = wrappedClip;
+      }
+    } catch {
+      /* keep the raw numpy-ts clip on wrap failure */
+    }
     // `normalizeNumpyDtype` (hoisted to `createRuntimeCore` scope above) maps
     // a positional/`dtype=` Python-type dtype into a numpy-ts dtype string.
     function callNumpyWithDtype(fn: (...a: Any[]) => Any, dtypeIndex: number, args: Any[]): Any {
