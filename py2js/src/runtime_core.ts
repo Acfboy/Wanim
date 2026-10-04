@@ -2310,6 +2310,119 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           ? fast(a, b)
           : wrapped(a, b, ...rest);
     }
+    // `np.gcd`/`np.lcm` on Python scalars (or plain lists) throw
+    // "undefined is not iterable": numpy-ts requires integer NDArray inputs
+    // and additionally rejects float dtype, so even `np.gcd(4, 6)` fails.
+    // Implement both in plain JS with numpy integer semantics (non-negative
+    // results, `gcd(0, 0) == 0`, `lcm` as `abs(a * b) // gcd`), elementwise
+    // with scalar broadcasting for list/NDArray inputs.  Scalar inputs yield
+    // a plain Python number; array inputs are wrapped back as int32 NDArrays
+    // (like the ufunc wrappers above) so downstream numpy code keeps working.
+    const toGcdInt = (value: Any, name: string): number | bigint => {
+      if (typeof value === "bigint") return value;
+      if (typeof value === "boolean") return value ? 1 : 0;
+      if (typeof value === "number" && Number.isInteger(value)) return value;
+      throw new TypeError(
+        `ufunc '${name}' not supported for input '${String(value)}'. GCD/LCM are only defined for integers.`,
+      );
+    };
+    const scalarGcd = (a: number | bigint, b: number | bigint): number | bigint => {
+      if (typeof a === "bigint" || typeof b === "bigint") {
+        let x = typeof a === "bigint" ? a : BigInt(a as number);
+        let y = typeof b === "bigint" ? b : BigInt(b as number);
+        if (x < 0n) x = -x;
+        if (y < 0n) y = -y;
+        while (y !== 0n) {
+          const t = x % y;
+          x = y;
+          y = t;
+        }
+        return x <= BigInt(Number.MAX_SAFE_INTEGER) && x >= BigInt(Number.MIN_SAFE_INTEGER)
+          ? Number(x)
+          : x;
+      }
+      let x = Math.abs(a as number);
+      let y = Math.abs(b as number);
+      while (y !== 0) {
+        const t = x % y;
+        x = y;
+        y = t;
+      }
+      return x;
+    };
+    const scalarLcm = (a: number | bigint, b: number | bigint): number | bigint => {
+      const g = scalarGcd(a, b);
+      const num = (v: number | bigint): number => (typeof v === "bigint" ? Number(v) : v);
+      if (num(g) === 0) return 0;
+      if (typeof a === "bigint" || typeof b === "bigint" || typeof g === "bigint") {
+        const ba = typeof a === "bigint" ? a : BigInt(a as number);
+        const bb = typeof b === "bigint" ? b : BigInt(b as number);
+        const bg = typeof g === "bigint" ? g : BigInt(g as number);
+        const r = (ba < 0n ? -ba : ba) / bg * (bb < 0n ? -bb : bb);
+        return r <= BigInt(Number.MAX_SAFE_INTEGER) && r >= BigInt(Number.MIN_SAFE_INTEGER)
+          ? Number(r)
+          : r;
+      }
+      return Math.abs((a as number) * (b as number)) / (g as number);
+    };
+    const makeIntUfunc = (name: string, scalarOp: (a: number | bigint, b: number | bigint) => number | bigint) => {
+      const elementwise = (x: Any, y: Any): Any => {
+        if (Array.isArray(x) && Array.isArray(y)) {
+          if (x.length !== y.length) {
+            throw new Error(`operands could not be broadcast together for ufunc '${name}'`);
+          }
+          return x.map((xi, i) => elementwise(xi, y[i]));
+        }
+        if (Array.isArray(x)) return x.map((xi) => elementwise(xi, y));
+        if (Array.isArray(y)) return y.map((yi) => elementwise(x, yi));
+        return scalarOp(toGcdInt(x, name), toGcdInt(y, name));
+      };
+      const fn = (a: Any, b: Any, ...rest: Any[]): Any => {
+        const kwargs = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
+          ? rest[rest.length - 1] as Record<string, Any>
+          : null;
+        let positional = kwargs !== null ? [a, b, ...rest.slice(0, -1)] : [a, b, ...rest];
+        if (kwargs !== null) {
+          positional = placeKwargs(["x1", "x2"], positional, kwargs);
+        }
+        const x1 = positional.length > 0 ? positional[0] : undefined;
+        const x2 = positional.length > 1 ? positional[1] : undefined;
+        const left = deepUnwrapNd(x1);
+        const right = deepUnwrapNd(x2);
+        const out = elementwise(left, right);
+        if (!Array.isArray(left) && !Array.isArray(right)) return out;
+        // Array input: mirror the ufunc wrappers and hand back an NDArray.
+        const leaves: Any[] = [];
+        const collect = (node: Any): void => {
+          if (Array.isArray(node)) {
+            for (const elt of node) collect(elt);
+          } else {
+            leaves.push(node);
+          }
+        };
+        collect(out);
+        const fitsInt32 = leaves.every(
+          (v) => typeof v === "number" && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647,
+        );
+        try {
+          return (np as Any).asarray(out, fitsInt32 ? "int32" : "float64");
+        } catch {
+          return out;
+        }
+      };
+      (fn as Any).__argnames__ = ["x1", "x2"];
+      return fn;
+    };
+    try {
+      facade.gcd = makeIntUfunc("gcd", scalarGcd);
+    } catch {
+      /* keep the raw numpy-ts gcd on wrap failure */
+    }
+    try {
+      facade.lcm = makeIntUfunc("lcm", scalarLcm);
+    } catch {
+      /* keep the raw numpy-ts lcm on wrap failure */
+    }
     // numpy-ts' `round`/`around` never coerce their input, so they throw on
     // Python scalars (and plain lists): `np.round(x, 6)` on a float fails with
     // "undefined is not iterable".  Route both names through Python `round`,

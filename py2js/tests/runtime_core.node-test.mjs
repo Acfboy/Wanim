@@ -264,4 +264,17 @@ check("numpy facade stacks plain Python lists (column_stack et al.)", () => {
   assert.deepEqual([...np.hstack([[1, 2], [3, 4]])], [1, 2, 3, 4]);
 });
 
+check("numpy facade gcd/lcm accept Python scalars and lists", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(np.gcd(4, 6), 2);
+  assert.equal(np.gcd(2, 1), 1);
+  assert.equal(np.gcd(0, 0), 0);
+  assert.equal(np.gcd(-4, 6), 2);
+  assert.equal(np.lcm(4, 6), 12);
+  assert.equal(np.lcm(0, 5), 0);
+  assert.deepEqual(np.gcd([4, 6, 0], 2).toArray(), [2, 2, 2]);
+  assert.deepEqual(np.lcm([4, 6], [6, 8]).toArray(), [12, 24]);
+  assert.throws(() => np.gcd(4.5, 2), TypeError);
+});
+
 console.log(`\n${passed} tests passed`);
