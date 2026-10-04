@@ -448,4 +448,41 @@ check("numpy facade exposes legacy np.random.RandomState", () => {
   assert.equal(typeof n, "number");
 });
 
+check("numpy facade np.random distributions accept kwargs and array params", () => {
+  const np = ndCore.buildNumpy();
+  // rapydscript maps kwargs via __argnames__; without it the kwargs bag is
+  // passed as a single positional and numpy-ts throws
+  // "Cannot convert object to primitive value" (error 139).
+  assert.deepEqual(np.random.normal.__argnames__, ["loc", "scale", "size"]);
+  assert.deepEqual(np.random.uniform.__argnames__, ["low", "high", "size"]);
+  assert.deepEqual(np.random.standard_normal.__argnames__, ["size"]);
+  const place = (names, pos, kw) => {
+    const out = [...pos];
+    for (const k of Object.keys(kw)) {
+      const i = names.indexOf(k);
+      if (i >= 0) out[i] = kw[k];
+    }
+    return out;
+  };
+  // The error-139 call shape: NDArray loc/scale passed as kwargs.
+  np.random.seed(7);
+  const loc = np.array([0, 0, 0]);
+  const scale = np.multiply(0.6, np.ones([3]));
+  const a = np.random.normal(...place(np.random.normal.__argnames__, [], { loc, scale, size: [5, 3] }));
+  assert.deepEqual([...a.shape], [5, 3]);
+  // Same distribution as the scalar call: standard_normal(size)*scale + loc.
+  np.random.seed(7);
+  const b = np.random.normal(0, 0.6, [5, 3]);
+  for (const [x, y] of a.tolist().flat().map((v, i) => [v, b.tolist().flat()[i]])) {
+    assert.ok(Math.abs(x - y) < 1e-12);
+  }
+  assert.ok(a.tolist().flat().every(Number.isFinite));
+  // Generator methods share the wrappers.
+  const rng = np.random.default_rng(7);
+  assert.deepEqual(rng.normal.__argnames__, ["loc", "scale", "size"]);
+  const g = rng.normal(...place(rng.normal.__argnames__, [], { loc, scale, size: [2, 3] }));
+  assert.deepEqual([...g.shape], [2, 3]);
+  assert.ok(g.tolist().flat().every(Number.isFinite));
+});
+
 console.log(`\n${passed} tests passed`);

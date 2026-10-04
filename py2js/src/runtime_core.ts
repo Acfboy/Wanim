@@ -3014,6 +3014,110 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           if (Array.isArray(sampled)) return mapIndicesToElements(sampled, list);
           return mapIndicesToElements(toNumberList(sampled), list);
         };
+        // Legacy `np.random.normal(loc=..., scale=..., size=...)` (and every
+        // other legacy distribution, including `Generator` methods from
+        // `default_rng`) is a bare numpy-ts closure with no `__argnames__`,
+        // so rapydscript's `ρσ_interpolate_kwargs` hands it the kwargs bag as
+        // a single positional argument and numpy-ts throws
+        // `TypeError: Cannot convert object to primitive value` (error 139).
+        // Map kwargs onto positional slots like the other facade wrappers.
+        // Additionally numpy-ts returns NaNs/nulls (or throws) when a
+        // distribution parameter is an array, so `normal` with array
+        // `loc`/`scale` is routed through `standard_normal` with explicit
+        // broadcasting (`standard_normal(size) * scale + loc`), which is
+        // exactly what numpy computes.  Other distributions keep delegating
+        // (their array-parameter support stays an upstream limitation).
+        const RANDOM_DIST_ARGNAMES: Record<string, string[]> = {
+          random: ["size"], random_sample: ["size"], ranf: ["size"], sample: ["size"],
+          uniform: ["low", "high", "size"],
+          normal: ["loc", "scale", "size"],
+          standard_normal: ["size"],
+          exponential: ["scale", "size"],
+          standard_exponential: ["size"],
+          gamma: ["shape", "scale", "size"],
+          standard_gamma: ["shape", "size"],
+          beta: ["a", "b", "size"],
+          chisquare: ["df", "size"],
+          noncentral_chisquare: ["df", "nonc", "size"],
+          f: ["dfnum", "dfden", "size"],
+          noncentral_f: ["dfnum", "dfden", "nonc", "size"],
+          standard_cauchy: ["size"],
+          standard_t: ["df", "size"],
+          laplace: ["loc", "scale", "size"],
+          logistic: ["loc", "scale", "size"],
+          lognormal: ["mean", "sigma", "size"],
+          gumbel: ["loc", "scale", "size"],
+          pareto: ["a", "size"],
+          power: ["a", "size"],
+          rayleigh: ["scale", "size"],
+          triangular: ["left", "mode", "right", "size"],
+          wald: ["mean", "scale", "size"],
+          weibull: ["a", "size"],
+          poisson: ["lam", "size"],
+          binomial: ["n", "p", "size"],
+          geometric: ["p", "size"],
+          hypergeometric: ["ngood", "nbad", "nsample", "size"],
+          logseries: ["p", "size"],
+          negative_binomial: ["n", "p", "size"],
+          zipf: ["a", "size"],
+          multinomial: ["n", "pvals", "size"],
+          multivariate_normal: ["mean", "cov", "size"],
+          dirichlet: ["alpha", "size"],
+          vonmises: ["mu", "kappa", "size"],
+          randint: ["low", "high", "size"],
+          random_integers: ["low", "high", "size"],
+        };
+        const coerceDistParam = (value: Any): Any =>
+          Array.isArray(value) ? coerceArrayArg(value) : value;
+        const normalWithArrayParams = (
+          stdNormalFn: (...a: Any[]) => Any,
+          origNormalFn: (...a: Any[]) => Any,
+          positional: Any[],
+        ): Any => {
+          let loc = positional.length > 0 ? positional[0] : undefined;
+          let scale = positional.length > 1 ? positional[1] : undefined;
+          const size = positional.length > 2 ? positional[2] : undefined;
+          if (loc === undefined || loc === null) loc = 0;
+          if (scale === undefined || scale === null) scale = 1;
+          const locA = coerceDistParam(loc);
+          const scaleA = coerceDistParam(scale);
+          if ((isNdArray(locA) || isNdArray(scaleA)) && size !== undefined && size !== null) {
+            const z = (stdNormalFn as Any)(size);
+            return (np as Any).add((np as Any).multiply(z, scaleA), locA);
+          }
+          return size === undefined
+            ? (origNormalFn as Any)(locA, scaleA)
+            : (origNormalFn as Any)(locA, scaleA, size);
+        };
+        const wrapDistFn = (
+          origFn: (...a: Any[]) => Any,
+          stdNormalFn: Any,
+          origNormalFn: Any,
+          argnames: string[],
+          isNormal: boolean,
+        ): ((...a: Any[]) => Any) => {
+          const fn = function (...args: Any[]): Any {
+            const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+            let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+            if (kwargs !== null) {
+              positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+            }
+            if (isNormal) {
+              return normalWithArrayParams(stdNormalFn, origNormalFn, positional);
+            }
+            // Coerce distribution parameters (everything but the trailing
+            // `size`, which numpy-ts wants as a plain array/number) so plain
+            // Python lists reach NDArray storage.
+            if (positional.length > 1) {
+              positional = positional.map((elt, i) =>
+                i < positional.length - 1 ? coerceDistParam(elt) : elt,
+              );
+            }
+            return (origFn as Any)(...positional);
+          };
+          (fn as Any).__argnames__ = [...argnames];
+          return fn;
+        };
         const wrapGenerator = (gen: Any): Any => {
           if (gen === null || typeof gen !== "object") return gen;
           const origShuffle = gen.shuffle;
@@ -3056,6 +3160,30 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           };
           (choiceFn as Any).__argnames__ = ["a", "size", "replace", "p"];
           wrapped.choice = choiceFn;
+          // `Generator` distribution methods are the same bare numpy-ts
+          // closures as the legacy module functions: give them kwargs
+          // mapping (plus the array-`loc`/`scale` fix for `normal`) so
+          // `rng.normal(loc=..., scale=..., size=...)` works like numpy.
+          try {
+            for (const [name, argnames] of Object.entries(RANDOM_DIST_ARGNAMES)) {
+              try {
+                if (name === "shuffle" || name === "permutation" || name === "choice") continue;
+                const origFn = (gen as Any)[name];
+                if (typeof origFn !== "function") continue;
+                (wrapped as Any)[name] = wrapDistFn(
+                  origFn,
+                  (gen as Any).standard_normal,
+                  (gen as Any).normal,
+                  argnames,
+                  name === "normal",
+                );
+              } catch {
+                /* keep the raw generator method on wrap failure */
+              }
+            }
+          } catch {
+            /* distribution wrapping is best-effort */
+          }
           return wrapped;
         };
         const origDefaultRng = origRandom.default_rng;
@@ -3110,6 +3238,28 @@ export function createRuntimeCore(deps: RuntimeDeps) {
             }
           } catch {
             /* keep default_rng-only wrapping */
+          }
+          // Map the legacy module-level distributions onto the same wrappers.
+          try {
+            for (const [name, argnames] of Object.entries(RANDOM_DIST_ARGNAMES)) {
+              try {
+                const origFn = (origRandom as Any)[name];
+                if (typeof origFn !== "function") continue;
+                // Do not clobber the plain-list wrappers above.
+                if ((wrappedRandom as Any)[name] !== origFn) continue;
+                (wrappedRandom as Any)[name] = wrapDistFn(
+                  origFn,
+                  (origRandom as Any).standard_normal,
+                  (origRandom as Any).normal,
+                  argnames,
+                  name === "normal",
+                );
+              } catch {
+                /* keep the raw numpy-ts distribution on wrap failure */
+              }
+            }
+          } catch {
+            /* distribution wrapping is best-effort */
           }
           // Legacy `np.random.RandomState(seed)` (e.g.
           // `rng = np.random.RandomState(1)` then `rng.uniform(-np.pi, np.pi)`):
@@ -3189,7 +3339,24 @@ export function createRuntimeCore(deps: RuntimeDeps) {
               rs.random = delegate("random", ["size"]);
               rs.ranf = delegate("random", ["size"]);
               rs.sample = delegate("random", ["size"]);
-              rs.normal = delegate("normal", ["loc", "scale", "size"]);
+              rs.normal = (function () {
+                // Like `delegate("normal", ...)` above, but array `loc`/`scale`
+                // go through `standard_normal` (numpy-ts returns NaNs for array
+                // distribution parameters).  Closed over `gen` (not the method)
+                // so `rs.seed(...)` reseeding keeps working.
+                const fn = function (...callArgs: Any[]): Any {
+                  const kw = callArgs.length > 0 ? detectKwargs(callArgs[callArgs.length - 1]) : null;
+                  let pos = kw !== null ? callArgs.slice(0, -1) : callArgs.slice();
+                  if (kw !== null) pos = placeKwargs(["loc", "scale", "size"], pos, kw as Record<string, Any>);
+                  return normalWithArrayParams(
+                    (...a: Any[]) => (gen as Any).standard_normal(...a),
+                    (...a: Any[]) => (gen as Any).normal(...a),
+                    pos,
+                  );
+                };
+                (fn as Any).__argnames__ = ["loc", "scale", "size"];
+                return fn;
+              })();
               rs.standard_normal = delegate("standard_normal", ["size"]);
               rs.exponential = delegate("exponential", ["scale", "size"]);
               rs.poisson = delegate("poisson", ["lam", "size"]);
