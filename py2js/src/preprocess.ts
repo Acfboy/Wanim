@@ -971,3 +971,589 @@ export function desugarNumpySubscripts(source: string): string {
   }
   return out;
 }
+
+// --- matmul `@` desugar ------------------------------------------------------
+//
+// rapydscript-ng tokenises `@` but only accepts it as a decorator (`@name` at
+// the start of a logical line); a binary `a @ b` (PEP 465 matrix
+// multiplication, ubiquitous in numpy/manim code such as `rot @ center`)
+// fails with "Unexpected token: operator «@»".  We rewrite binary `@` (and
+// the augmented `a @= b`) into runtime helper calls before compilation:
+//
+//   `a @ b`   -> `__wan_matmul(a, b)`
+//   `a @= b`  -> `a = __wan_matmul(a, b)`
+//
+// (helper provided by the runtime in `runtime_core.ts`; chains associate to
+// the left, so `a @ b @ c` becomes `__wan_matmul(__wan_matmul(a, b), c)`.)
+//
+// Only `@` with the precedence of Python's multiplicative operators is
+// rewritten: the left operand absorbs same-precedence `*`/`/`/`//`/`%` and
+// higher-precedence `**` chains (`a * b @ c` -> `__wan_matmul(a * b, c)`)
+// while the right operand absorbs `**`/unary/postfix only
+// (`a @ b * c` -> `__wan_matmul(a, b) * c`, `a @ -b` keeps the sign).
+// Anything that does not parse cleanly (decorators, strings, comments,
+// `@@`, f-string interpolations, `#`-commented gaps, ...) is left untouched
+// so the compiler still reports it instead of being silently miscompiled.
+//
+// Known limitations (documented in ): like the other
+// desugars this is a source-level heuristic, not a full parser — an `@`
+// inside an f-string `{...}` interpolation is not rewritten, and an `@=`
+// target with side effects (`a[i()] @= b`) is evaluated twice.
+
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_MATMUL_HELPER = "__wan_matmul";
+
+const MATMUL_NUMBER_RE =
+  /^(?:0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][+-]?[0-9_]+)?[jJ]?|\.[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?[jJ]?)/;
+
+/** Skip gaps after an operand going forward; null on a `#` comment. */
+function matmulGapForward(
+  text: string,
+  i: number,
+  allowNewline: boolean,
+): number | null {
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (isHorizontalSpace(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === "\\" && (text[i + 1] === "\n" || text[i + 1] === "\r")) {
+      if (isEscaped(text, i)) return null;
+      i += text[i + 1] === "\r" && text[i + 2] === "\n" ? 3 : 2;
+      continue;
+    }
+    if (ch === "\n" || ch === "\r") {
+      if (!allowNewline) return i;
+      i += 1;
+      continue;
+    }
+    if (ch === "#") return null;
+    return i;
+  }
+  return i;
+}
+
+/** Skip gaps before an operand going backward; null on a `#` comment. */
+function matmulGapBackward(
+  text: string,
+  i: number,
+  allowNewline: boolean,
+): number | null {
+  while (i >= 0) {
+    const ch = text[i]!;
+    if (isHorizontalSpace(ch)) {
+      i -= 1;
+      continue;
+    }
+    if (ch === "\n" || ch === "\r") {
+      if (!allowNewline) return i;
+      let back = i - 1;
+      if (ch === "\n" && text[back] === "\r") back -= 1;
+      // A `\` immediately before the newline is an explicit continuation.
+      if (back >= 0 && text[back] === "\\" && !isEscaped(text, back)) {
+        i = back - 1;
+        continue;
+      }
+      // Implicit continuation only happens inside brackets: the line we are
+      // leaving must not contain a `#` comment, whose text would otherwise
+      // be mistaken for code when scanning backwards.
+      const prevNl = Math.max(
+        text.lastIndexOf("\n", back),
+        text.lastIndexOf("\r", back),
+      );
+      if (findMatmulCommentHash(text, prevNl + 1, back + 1) !== -1) {
+        return null;
+      }
+      i = back;
+      continue;
+    }
+    return i;
+  }
+  return i;
+}
+
+/** Index of a `#` starting a comment in `[from, to)`, or -1. */
+function findMatmulCommentHash(
+  text: string,
+  from: number,
+  to: number,
+): number {
+  let j = Math.max(0, from);
+  const stop = Math.min(text.length, to);
+  while (j < stop) {
+    const ch = text[j]!;
+    if (ch === '"' || ch === "'") {
+      j = Math.min(readString(text, j), stop);
+      continue;
+    }
+    if (ch === "#") return j;
+    if (ch === "\n" || ch === "\r") return -1;
+    j += 1;
+  }
+  return -1;
+}
+
+/** True when a `+`/`-`/`~` at `k` is unary (not a binary operator). */
+function matmulIsUnary(text: string, k: number): boolean {
+  let j = k - 1;
+  while (j >= 0 && isHorizontalSpace(text[j]!)) j -= 1;
+  if (j < 0) return true;
+  const ch = text[j]!;
+  if (ch === "\n" || ch === "\r") return true;
+  // After a value (or a closing bracket/quote/dot) the sign is binary.
+  if (/[A-Za-z0-9_)\]}"'`.]/.test(ch)) return false;
+  return true;
+}
+
+/**
+ * Extend an operand start leftwards over attribute/call chains:
+ * `a.b`, `f(x)`, `a[i]`, `f(x)(y)`.  Returns the new start, or null when a
+ * keyword is hit (e.g. `return [x]` stops at the keyword).
+ */
+function matmulChainBackward(
+  text: string,
+  i: number,
+  start: number,
+  allowNewline: boolean,
+): number | null {
+  for (;;) {
+    const j = matmulGapBackward(text, i, allowNewline);
+    if (j === null) return null;
+    if (j < 0) return start;
+    const ch = text[j]!;
+    if (ch === ")" || ch === "]" || ch === "}") {
+      const opener = findOpenerBackward(text, j);
+      if (opener === -1) return null;
+      start = opener;
+      i = opener - 1;
+      continue;
+    }
+    if (ch === ".") {
+      const k = matmulGapBackward(text, j - 1, allowNewline);
+      if (k === null || k < 0 || !IDENT_PART.test(text[k]!)) return null;
+      let s = k;
+      while (s >= 0 && IDENT_PART.test(text[s]!)) s -= 1;
+      s += 1;
+      if (PYTHON_KEYWORDS.has(text.slice(s, k + 1))) return null;
+      start = s;
+      i = s - 1;
+      continue;
+    }
+    if (IDENT_START.test(ch)) {
+      let s = j;
+      while (s >= 0 && IDENT_PART.test(text[s]!)) s -= 1;
+      s += 1;
+      // A keyword directly ahead cannot extend the operand (`for x in y`,
+      // `return [x]`); anything else is a callee/object (`f` in `f(x)`).
+      if (PYTHON_KEYWORDS.has(text.slice(s, j + 1))) return start;
+      start = s;
+      i = s - 1;
+      continue;
+    }
+    return start;
+  }
+}
+
+/**
+ * Parse one operand unit backwards: `[start, end)` (end exclusive), or null.
+ * `i` is the inclusive index where the unit ends.
+ */
+function matmulParseUnitBackward(
+  text: string,
+  i: number,
+  allowNewline: boolean,
+): [number, number] | null {
+  const end = matmulGapBackward(text, i, allowNewline);
+  if (end === null || end < 0) return null;
+  const ch = text[end]!;
+  let start: number;
+  if (ch === ")" || ch === "]" || ch === "}") {
+    const opener = findOpenerBackward(text, end);
+    if (opener === -1) return null;
+    const chained = matmulChainBackward(text, opener - 1, opener, allowNewline);
+    if (chained === null) return null;
+    start = chained;
+  } else if (IDENT_START.test(ch)) {
+    let s = end;
+    while (s >= 0 && IDENT_PART.test(text[s]!)) s -= 1;
+    s += 1;
+    const word = text.slice(s, end + 1);
+    if (
+      PYTHON_KEYWORDS.has(word) &&
+      word !== "True" &&
+      word !== "False" &&
+      word !== "None"
+    ) {
+      return null;
+    }
+    const chained = matmulChainBackward(text, s - 1, s, allowNewline);
+    if (chained === null) return null;
+    start = chained;
+  } else if (ch === '"' || ch === "'") {
+    const before = skipStringBackward(text, end);
+    if (before === -1) return null;
+    start = before + 1;
+    if (start - 1 >= 0 && /[A-Za-z_]/.test(text[start - 1]!)) {
+      let s = start - 1;
+      while (s >= 0 && /[A-Za-z0-9_]/.test(text[s]!)) s -= 1;
+      if (/^[rRbBuUfF]+$/.test(text.slice(s + 1, start))) start = s + 1;
+    }
+  } else if (/[0-9]/.test(ch) || ch === ".") {
+    if (
+      ch === "." &&
+      text[end - 1] === "." &&
+      text[end - 2] === "."
+    ) {
+      // `...` (Ellipsis literal).
+      start = end - 2;
+    } else if (ch === "." && !/[0-9]/.test(text[end - 1] ?? "")) {
+      // A lone trailing dot (`a.`); invalid Python, leave it to the compiler.
+      return null;
+    } else {
+      let s = end;
+      while (s >= 0 && /[0-9a-zA-Z_.]/.test(text[s]!)) s -= 1;
+      // Exponent sign in `1e-5`/`2E+3` stops the run above; rejoin it.
+      if (
+        (text[s] === "-" || text[s] === "+") &&
+        (text[s + 1] === "e" || text[s + 1] === "E") &&
+        s - 1 >= 0 &&
+        /[0-9.]/.test(text[s - 1]!)
+      ) {
+        s -= 1;
+        while (s >= 0 && /[0-9a-zA-Z_.]/.test(text[s]!)) s -= 1;
+      }
+      s += 1;
+      const candidate = text.slice(s, end + 1);
+      const match = MATMUL_NUMBER_RE.exec(candidate);
+      if (match === null || match[0].length !== candidate.length) return null;
+      start = s;
+    }
+  } else {
+    return null;
+  }
+  // Leading unary signs (`-a @ b`, `a * -b @ c`).
+  for (;;) {
+    const k = matmulGapBackward(text, start - 1, allowNewline);
+    if (k === null) return null;
+    if (
+      k >= 0 &&
+      (text[k] === "+" || text[k] === "-" || text[k] === "~") &&
+      matmulIsUnary(text, k)
+    ) {
+      start = k;
+      continue;
+    }
+    break;
+  }
+  return [start, end + 1];
+}
+
+/**
+ * Parse one right-hand operand forward: exclusive end index, or null.  The
+ * operand absorbs postfix trailers (`.attr`, calls, subscripts) and `**`
+ * powers, but stops before same-precedence `*`/`/`/`//`/`%` and everything
+ * of lower precedence.
+ */
+function matmulParseRight(
+  text: string,
+  pos: number,
+  allowNewline: boolean,
+): number | null {
+  let i = matmulGapForward(text, pos, allowNewline);
+  if (i === null) return null;
+  while (text[i] === "+" || text[i] === "-" || text[i] === "~") {
+    i = matmulGapForward(text, i + 1, allowNewline);
+    if (i === null) return null;
+  }
+  if (i >= text.length) return null;
+  const ch = text[i]!;
+  if (ch === '"' || ch === "'") {
+    i = readString(text, i);
+  } else if (ch === "(" || ch === "[" || ch === "{") {
+    const close = findMatchingBracket(text, i);
+    if (close === -1) return null;
+    i = close + 1;
+  } else if (text.startsWith("...", i)) {
+    i += 3;
+  } else if (/[A-Za-z_]/.test(ch)) {
+    let j = i + 1;
+    while (j < text.length && /[A-Za-z0-9_]/.test(text[j]!)) j += 1;
+    const word = text.slice(i, j);
+    if (
+      PYTHON_KEYWORDS.has(word) &&
+      word !== "True" &&
+      word !== "False" &&
+      word !== "None"
+    ) {
+      return null;
+    }
+    i = j;
+  } else if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(text[i + 1] ?? ""))) {
+    const match = MATMUL_NUMBER_RE.exec(text.slice(i));
+    if (match === null) return null;
+    i += match[0].length;
+  } else {
+    return null;
+  }
+  for (;;) {
+    const h = matmulGapForward(text, i, allowNewline);
+    if (h === null) return null;
+    const t = text[h] ?? "";
+    if (t === ".") {
+      let k = matmulGapForward(text, h + 1, allowNewline);
+      if (k === null || k >= text.length || !/[A-Za-z_]/.test(text[k]!)) {
+        return null;
+      }
+      k += 1;
+      while (k < text.length && /[A-Za-z0-9_]/.test(text[k]!)) k += 1;
+      i = k;
+      continue;
+    }
+    if (t === "(" || t === "[") {
+      const close = findMatchingBracket(text, h);
+      if (close === -1) return null;
+      i = close + 1;
+      continue;
+    }
+    break;
+  }
+  // `**` binds tighter than `@`: `a @ b ** c` is `a @ (b ** c)`.
+  const h = matmulGapForward(text, i, allowNewline);
+  if (
+    h !== null &&
+    text.startsWith("**", h) &&
+    text[h + 2] !== "*"
+  ) {
+    const expEnd = matmulParseRight(
+      text,
+      matmulGapForward(text, h + 2, allowNewline) ?? text.length,
+      allowNewline,
+    );
+    if (expEnd === null) return null;
+    i = expEnd;
+  }
+  return i;
+}
+
+/** True when the `@` at `p` starts a decorator (line-leading, depth zero). */
+function matmulIsDecorator(text: string, p: number): boolean {
+  let k = p - 1;
+  while (k >= 0 && isHorizontalSpace(text[k]!)) k -= 1;
+  if (k < 0) return true;
+  const ch = text[k]!;
+  if (ch !== "\n" && ch !== "\r") return false;
+  // A `\` at the end of the previous line continues it: `x = a \<newline> @ b`
+  // is a binary operator, not a decorator.
+  let m = k - 1;
+  while (m >= 0 && (text[m] === "\n" || text[m] === "\r")) m -= 1;
+  while (m >= 0 && isHorizontalSpace(text[m]!)) m -= 1;
+  if (m >= 0 && text[m] === "\\" && !isEscaped(text, m)) return false;
+  return true;
+}
+
+/** Rewrite binary `@` (skipping `@=` for the later augmented pass). */
+function rewriteMatmulBinary(source: string): string {
+  let out = "";
+  let i = 0;
+  let depth = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth = Math.max(0, depth - 1);
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch !== "@") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const next = source[i + 1] ?? "";
+    if (next === "@" || next === "=") {
+      // `@@` is invalid Python; `@=` is handled by the augmented pass.
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (depth === 0 && matmulIsDecorator(source, i)) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const allowNewline = depth > 0;
+    const left = matmulLeftStart(out, allowNewline);
+    const rightEnd = matmulParseRight(source, i + 1, allowNewline);
+    if (left === null || rightEnd === null || rightEnd <= i + 1) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const [start, end] = left;
+    const right = source.slice(i + 1, rightEnd).trim();
+    if (right === "") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    out =
+      out.slice(0, start) +
+      `${WANIM_MATMUL_HELPER}(${out.slice(start, end).trim()}, ${right})`;
+    i = rightEnd;
+  }
+  return out;
+}
+
+/**
+ * Find the left operand of a binary `@`: `[start, end)` into `out` (the
+ * already-emitted prefix), absorbing same-precedence `*`/`/`/`//`/`%` and
+ * higher-precedence `**` chains to its left.  Returns null when no clean
+ * operand boundary exists.
+ */
+function matmulLeftStart(
+  out: string,
+  allowNewline: boolean,
+): [number, number] | null {
+  if (out.length === 0) return null;
+  const unit = matmulParseUnitBackward(out, out.length - 1, allowNewline);
+  if (unit === null) return null;
+  let [start, end] = unit;
+  for (;;) {
+    const j = matmulGapBackward(out, start - 1, allowNewline);
+    if (j === null) return null;
+    let opStart = -1;
+    if (j >= 1 && out[j] === "*" && out[j - 1] === "*") opStart = j - 1;
+    else if (j >= 1 && out[j] === "/" && out[j - 1] === "/") opStart = j - 1;
+    else if (
+      j >= 0 &&
+      (out[j] === "*" || out[j] === "/" || out[j] === "%")
+    ) {
+      opStart = j;
+    } else {
+      break;
+    }
+    const prev = matmulParseUnitBackward(out, opStart - 1, allowNewline);
+    if (prev === null) break;
+    start = prev[0];
+  }
+  return [start, end];
+}
+
+/** Rewrite augmented `target @= value` into `target = __wan_matmul(...)`. */
+function rewriteMatmulAugmented(source: string): string {
+  let out = "";
+  let i = 0;
+  let depth = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth = Math.max(0, depth - 1);
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (
+      ch !== "@" ||
+      source[i + 1] !== "=" ||
+      source[i + 2] === "="
+    ) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (depth === 0 && matmulIsDecorator(source, i)) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const allowNewline = depth > 0;
+    // The target is a single unit (a Name, attribute or subscript); operator
+    // chains cannot be assignment targets.
+    const target = matmulParseUnitBackward(out, out.length - 1, allowNewline);
+    const rightEnd = matmulParseRight(source, i + 2, allowNewline);
+    if (
+      target === null ||
+      rightEnd === null ||
+      rightEnd <= i + 2 ||
+      out.length === 0
+    ) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const [start, end] = target;
+    const targetText = out.slice(start, end).trim();
+    const right = source.slice(i + 2, rightEnd).trim();
+    if (targetText === "" || right === "") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    out =
+      out.slice(0, start) +
+      `${targetText} = ${WANIM_MATMUL_HELPER}(${targetText}, ${right})`;
+    i = rightEnd;
+  }
+  return out;
+}
+
+/**
+ * Rewrite PEP 465 matrix multiplication (`a @ b`, `a @= b`) into
+ * `__wan_matmul(...)` runtime calls (see above) so rapydscript-ng -- which
+ * only accepts `@` as a decorator -- can compile them.  Binary operators are
+ * rewritten before augmented ones so `x @= a @ b` keeps the right-hand side
+ * together (`x = __wan_matmul(x, __wan_matmul(a, b))`).  Anything that does
+ * not parse cleanly passes through untouched.
+ */
+export function desugarMatmul(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_MATMUL_HELPER)) return source;
+  return rewriteMatmulAugmented(rewriteMatmulBinary(source));
+}

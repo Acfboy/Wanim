@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 
 import {
+  desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   formatUnsupportedImportError,
@@ -280,6 +281,89 @@ check("subscript desugar handles nested multi-dim inside dims", () => {
 check("subscript desugar leaves strings and comments alone", () => {
   const src = '# a[:, 1]\nx = "a[:, 1]"\n';
   assert.equal(desugarNumpySubscripts(src), src);
+});
+
+check("matmul desugar rewrites rot @ center", () => {
+  assert.equal(
+    desugarMatmul("new_center = rot @ old_center\n"),
+    "new_center = __wan_matmul(rot, old_center)\n",
+  );
+});
+
+check("matmul desugar chains left-associatively", () => {
+  assert.equal(
+    desugarMatmul("X = Q @ np.diag(u) @ Q.T\n"),
+    "X = __wan_matmul(__wan_matmul(Q, np.diag(u)), Q.T)\n",
+  );
+});
+
+check("matmul desugar respects multiplicative precedence", () => {
+  assert.equal(
+    desugarMatmul("x = a + b @ c\n"),
+    "x = a + __wan_matmul(b, c)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = a * b @ c\n"),
+    "x = __wan_matmul(a * b, c)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = a @ b * c\n"),
+    "x = __wan_matmul(a, b) * c\n",
+  );
+  assert.equal(
+    desugarMatmul("x = a @ b ** 2\n"),
+    "x = __wan_matmul(a, b ** 2)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = a @ -b\n"),
+    "x = __wan_matmul(a, -b)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = f(a @ b, c)\n"),
+    "x = f(__wan_matmul(a, b), c)\n",
+  );
+});
+
+check("matmul desugar handles attributes, subscripts and calls", () => {
+  assert.equal(
+    desugarMatmul("x = self.basis @ self.model[word]\n"),
+    "x = __wan_matmul(self.basis, self.model[word])\n",
+  );
+  assert.equal(
+    desugarMatmul("x = A[:, 0] @ b\n"),
+    "x = __wan_matmul(A[:, 0], b)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = 2 * np.array([self.basis @ self.model[w] for w in ws])\n"),
+    "x = 2 * np.array([__wan_matmul(self.basis, self.model[w]) for w in ws])\n",
+  );
+});
+
+check("matmul desugar rewrites @=", () => {
+  assert.equal(
+    desugarMatmul("x @= M\n"),
+    "x = __wan_matmul(x, M)\n",
+  );
+  assert.equal(
+    desugarMatmul("self.x @= M @ v\n"),
+    "self.x = __wan_matmul(self.x, __wan_matmul(M, v))\n",
+  );
+});
+
+check("matmul desugar leaves decorators, strings and comments alone", () => {
+  const src =
+    "@property\ndef f(self):\n    pass\n" +
+    "@dec(arg)\ndef g(self):\n    pass\n" +
+    'x = "a @ b"\n# y = a @ b\n';
+  assert.equal(desugarMatmul(src), src);
+});
+
+check("matmul desugar leaves unparseable @ for the compiler", () => {
+  assert.equal(desugarMatmul("x = a @ @ b\n"), "x = a @ @ b\n");
+  assert.equal(
+    desugarMatmul("x = a @\n"),
+    "x = a @\n",
+  );
 });
 
 console.log(`\n${passed} tests passed`);

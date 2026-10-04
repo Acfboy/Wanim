@@ -21,6 +21,7 @@ import {
   type PythonRuntime,
 } from "./runtime_core.js";
 import {
+  desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   formatUnsupportedImportError,
@@ -40,6 +41,7 @@ const core = createRuntimeCore({
 
 export const buildRuntime = core.buildRuntime;
 export {
+  desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   formatUnsupportedImportError,
@@ -80,14 +82,17 @@ export interface CompiledScene {
  * error, because the Python standard library is not available in the runtime.
  */
 export async function compilePython(source: string): Promise<CompiledScene> {
-  // rapydscript-ng only parses a single `for` clause per comprehension and a
-  // single index/slice per `[...]`, so both are desugared before compilation:
-  // multi-`for` comprehensions into nested single-`for` ones (plus
-  // `__wan_flatten1` calls) and numpy multi-dim subscripts (`a[:, 1]`) into
-  // `__wan_getitem`/`__wan_slice` calls.
+  // rapydscript-ng only parses a single `for` clause per comprehension, a
+  // single index/slice per `[...]`, and `@` as a decorator, so all three are
+  // desugared before compilation: multi-`for` comprehensions into nested
+  // single-`for` ones (plus `__wan_flatten1` calls), numpy multi-dim
+  // subscripts (`a[:, 1]`) into `__wan_getitem`/`__wan_slice` calls, and
+  // matrix multiplication (`a @ b`) into `__wan_matmul` calls.  The matmul
+  // step runs first so `@` operands containing `[...]` (e.g. `A[:, 0] @ b`)
+  // still reach the subscript step intact.
   const pre = preprocessImports(
     desugarMultiForComprehensions(
-      desugarNumpySubscripts(renameJsReservedWords(source)),
+      desugarNumpySubscripts(desugarMatmul(renameJsReservedWords(source))),
     ),
   );
   const importError = unsupportedImportError(pre);

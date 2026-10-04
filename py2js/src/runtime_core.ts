@@ -1086,6 +1086,27 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return -a;
   }
 
+  /**
+   * PEP 465 matrix multiplication (`a @ b`).
+   *
+   * Target of the `desugarMatmul` preprocess step (see `preprocess.ts`),
+   * because rapydscript-ng only accepts `@` as a decorator.  Dunder dispatch
+   * mirrors CPython (`__matmul__` first, then the reflected `__rmatmul__`);
+   * plain arrays and NDArrays go through `np.matmul` like every other
+   * numeric operator goes through its numpy-ts ufunc.
+   */
+  function wanMatmul(a: Any, b: Any): Any {
+    const matmul = (a as Any)?.__matmul__;
+    if (typeof matmul === "function") return matmul.call(a, b);
+    const rmatmul = (b as Any)?.__rmatmul__;
+    if (typeof rmatmul === "function") return rmatmul.call(b, a);
+    const fn = (np as Any).matmul;
+    if (typeof fn !== "function") {
+      throw new Error("matmul is not available in this numpy build");
+    }
+    return scalarize(fn(asNd(a), asNd(b)));
+  }
+
   // --- numpy multi-dim subscripts (`a[:, 1]`) -------------------------------
   //
   // rapydscript-ng only parses a single index/slice per `[...]`, so
@@ -1780,6 +1801,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // (likewise reserved names; see `preprocess.ts`).
     globals.__wan_getitem = wanGetItem;
     globals.__wan_slice = wanSliceDim;
+    // Matrix-multiplication helper for the `desugarMatmul` step (likewise a
+    // reserved name; see `preprocess.ts`).
+    globals.__wan_matmul = wanMatmul;
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -1800,6 +1824,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     wanFlatten1,
     wanGetItem,
     wanSlice: wanSliceDim,
+    wanMatmul,
     getDot,
   };
 }
