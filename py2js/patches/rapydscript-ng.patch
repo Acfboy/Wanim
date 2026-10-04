@@ -198,10 +198,49 @@ index 341df63..6bda020 100644
              else:
                  output.print('[')
 diff --git a/src/output/loops.pyj b/src/output/loops.pyj
-index b38e56f..a9f7437 100644
+index b38e56f..ac9c9e1 100644
 --- a/src/output/loops.pyj
 +++ b/src/output/loops.pyj
-@@ -296,15 +296,26 @@ def print_list_comprehension(self, output):
+@@ -21,6 +21,28 @@ def unpack_tuple(elems, output, in_statement):
+             output.newline()
+ 
+ 
++def shallow_target_count(arr):
++    # Number of top-level loop targets: a Seq element (a flat or nested
++    # tuple like `a, b, c`) counts as its arity, anything else as one.
++    # NOTE (wanim): AST_Array.flatten() deep-flattens nested tuples, so
++    # comparing its length against elements.length misfires whenever a tuple
++    # target is wrapped as a single element (e.g. `for a, b, c in ...` parses
++    # to Array([Seq(a, b, c)]): 3 > 1).  Only a *nested* target needs the
++    # runtime ρσ_flatten; a flat tuple must keep list values (coordinate
++    # vectors, colors, ...) atomic.
++    count = 0
++    for elem in arr.elements:
++        if is_node_type(elem, AST_Seq):
++            count += elem.to_array().length
++        else:
++            count += 1
++    return count
++
++
++def needs_deep_flatten(arr):
++    return arr.flatten().length > shallow_target_count(arr)
++
++
+ def print_do_loop(self, output):
+     output.print('do')
+     output.space()
+@@ -80,7 +102,7 @@ def print_for_loop_body(output):
+             if is_node_type(self.init, AST_Array):
+                 flat = self.init.flatten()
+                 output.assign('ρσ_unpack')
+-                if flat.length > self.init.elements.length:
++                if needs_deep_flatten(self.init):
+                     output.print('ρσ_flatten(' + itervar + ')')
+                 else:
+                     output.print(itervar)
+@@ -295,16 +317,27 @@ def print_list_comprehension(self, output):
+                 output.set_indentation(output.next_indent())
              body_out.indent()
              body_out.assign('var ρσ_Iter')
 -            self.object.print(body_out)
@@ -230,6 +269,15 @@ index b38e56f..a9f7437 100644
                      body_out.comma()
                      i.print(body_out)
              else:
+@@ -325,7 +358,7 @@ def print_list_comprehension(self, output):
+                 if is_node_type(self.init, AST_Array):
+                     flat = self.init.flatten()
+                     body_out.assign('ρσ_unpack')
+-                    if flat.length > self.init.elements.length:
++                    if needs_deep_flatten(self.init):
+                         body_out.print('ρσ_flatten(' + itervar + ')')
+                     else:
+                         body_out.print(itervar)
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
 index a16673a..24c8683 100644
 --- a/src/output/operators.pyj
