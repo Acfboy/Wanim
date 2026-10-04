@@ -187,7 +187,7 @@ index 341df63..6bda020 100644
  from ast import (
 -    AST_ClassCall, AST_New, has_calls, AST_Dot, AST_SymbolRef, is_node_type
 +    AST_ClassCall, AST_New, has_calls, AST_Dot, AST_SymbolRef, is_node_type,
-+    AST_GeneratorComprehension
++    AST_GeneratorComprehension, AST_Seq
  )
  from output.operators import print_getattr
  from output.statements import print_bracketed
@@ -203,6 +203,36 @@ index 341df63..6bda020 100644
          # Read values from the kwargs object for any formal parameters
          if a.has_defaults:
              for dname in Object.keys(a.defaults):
+@@ -240,13 +245,28 @@ def function_annotation(self, output, strip_first, name):
+             output.print('}')
+
+     # Create __defaults__
++    # NOTE (wanim): a tuple default is an AST_Seq, which prints as a bare
++    # comma list outside a bracketing parent (see print_seq), so without
++    # wrapping it would emit the invalid `{years:1700, ...}` for
++    # `def timeline(years=(1700, 1800, 1900, 2000))`
++    # (SyntaxError: Unexpected number).  Wrap tuple defaults in an array.
++    def print_default_value(value, output):
++        if is_node_type(value, AST_Seq):
++            output.with_square(def ():
++                value.print(output)
++            )
++        else:
++                value.print(output)
++
+     defaults = self.argnames.defaults
+     dkeys = Object.keys(self.argnames.defaults)
+     if dkeys.length:
+         props.__defaults__ = def ():
+             output.print('{')
+             for i, k in enumerate(dkeys):
+-                output.print(k + ':'), defaults[k].print(output)
++                output.print(k + ':')
++                output.space()
++                print_default_value(defaults[k], output)
+                 if i is not dkeys.length - 1:
+                     output.comma()
+             output.print('}')
 @@ -461,7 +467,15 @@ def print_function_call(self, output):
              if not is_first:
                  output.print('.concat(')
