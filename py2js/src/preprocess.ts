@@ -1923,3 +1923,335 @@ export function desugarReversedBuiltin(source: string): string {
   }
   return out;
 }
+
+// --- dotted/tuple `except` handler desugar -----------------------------------
+//
+// rapydscript-ng's `try_` parser only accepts a bare name (or a comma-separated
+// list of bare names) after `except`, so valid Python such as
+// `except np.linalg.LinAlgError:` or `except (ValueError, np.linalg.LinAlgError):`
+// fails with "Unexpected token punc «.», expected punc «:»".  We rewrite such
+// handlers before compilation: every caught expression that is not a plain
+// identifier is hoisted into an alias assignment placed immediately before the
+// matching `try:` statement (same indentation), and the handler itself keeps a
+// plain name the compiler accepts:
+//
+//   `try: ... except np.linalg.LinAlgError: ...`
+//   -> `__wan_exc_0 = np.linalg.LinAlgError` (before `try:`)
+//      `try: ... except __wan_exc_0: ...`
+//
+// Parenthesised tuples are flattened to rapydscript's native comma list:
+//
+//   `except (ValueError, np.linalg.LinAlgError) as e:`
+//   -> `except ValueError, __wan_exc_0 as e:`
+//
+// (with `__wan_exc_0 = np.linalg.LinAlgError` hoisted as above).
+//
+// Only single-line `except` headers are rewritten; anything that does not parse
+// cleanly (multi-line headers, `except*`, tuple targets containing `lambda`,
+// a handler whose `try:` cannot be found, ...) is left untouched so the
+// compiler still reports it.
+//
+// Known limitations: the alias right-hand side is evaluated once when the
+// `try` statement is entered, while CPython evaluates the `except` expression
+// when an exception is being matched (so an expression that depends on names
+// bound inside the `try` body would behave differently); and `except*` is not
+// rewritten at all.
+
+/** Prefix for the hoisted `except`-handler alias variables (see above). */
+export const WANIM_EXCEPT_ALIAS_PREFIX = "__wan_exc_";
+
+const EXCEPT_SIMPLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** First depth-zero `:` in `line[from:]`, strings/comments/brackets aware. */
+function findExceptHeaderColon(line: string, from: number): number {
+  let depth = 0;
+  let i = from;
+  while (i < line.length) {
+    const ch = line[i]!;
+    if (ch === '"' || ch === "'") {
+      i = Math.max(readString(line, i), i + 1);
+      continue;
+    }
+    if (ch === "#") return -1;
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth < 0) return -1;
+    } else if (ch === ":" && depth === 0) return i;
+    i += 1;
+  }
+  return -1;
+}
+
+/** First depth-zero `as` keyword in `text`, or -1. */
+function findExceptAsSplit(text: string): number {
+  let depth = 0;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === '"' || ch === "'") {
+      i = Math.max(readString(text, i), i + 1);
+      continue;
+    }
+    if (ch === "#") return -1;
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth < 0) return -1;
+    } else if (depth === 0 && matchKeyword(text, i, "as")) return i;
+    i += 1;
+  }
+  return -1;
+}
+
+/** Strip every outer paren layer wrapping the whole of `text`. */
+function unwrapExceptParens(text: string): string | null {
+  let out = text;
+  while (out.startsWith("(")) {
+    const close = findMatchingBracket(out, 0);
+    if (close === -1) return null;
+    if (close !== out.length - 1) return out;
+    out = out.slice(1, -1).trim();
+  }
+  return out;
+}
+
+/**
+ * Flatten an `except` expression list: split on depth-zero commas and unwrap
+ * (recursively) parenthesised tuples.  Returns null when malformed.
+ */
+function flattenExceptPieces(text: string): string[] | null {
+  const flat: string[] = [];
+  for (const piece of splitDepthZero(text, ",")) {
+    const trimmed = piece.trim();
+    if (trimmed === "") return null;
+    const unwrapped = unwrapExceptParens(trimmed);
+    if (unwrapped === null) return null;
+    if (unwrapped !== trimmed) {
+      if (unwrapped === "") return null;
+      const inner = flattenExceptPieces(unwrapped);
+      if (inner === null) return null;
+      flat.push(...inner);
+      continue;
+    }
+    flat.push(trimmed);
+  }
+  return flat;
+}
+
+interface ExceptTrySite {
+  line: number;
+  indent: string;
+  offset: number;
+}
+
+interface ExceptRewrite {
+  line: number;
+  indent: string;
+  headerStart: number;
+  headerEnd: number;
+  newHeader: string;
+  aliases: { name: string; rhs: string }[];
+}
+
+/**
+ * Rewrite dotted/non-trivial `except` handlers into hoisted plain-name
+ * aliases (see above).  Handlers the compiler already accepts pass through
+ * untouched.  Anything that does not parse cleanly passes through untouched.
+ */
+export function desugarDottedExcept(source: string): string {
+  if (!source.includes("except")) return source;
+  const trySites: ExceptTrySite[] = [];
+  const rewrites: ExceptRewrite[] = [];
+  let counter = 0;
+  const fresh = (): string => {
+    let name = `${WANIM_EXCEPT_ALIAS_PREFIX}${counter}`;
+    while (source.includes(name)) {
+      counter += 1;
+      name = `${WANIM_EXCEPT_ALIAS_PREFIX}${counter}`;
+    }
+    counter += 1;
+    return name;
+  };
+
+  let line = 0;
+  let lineStart = 0;
+  let blank = true;
+  let indent = "";
+  let depth = 0;
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "\n") {
+      line += 1;
+      lineStart = i + 1;
+      blank = true;
+      indent = "";
+      i += 1;
+      continue;
+    }
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) break;
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = Math.max(readString(source, i), i + 1);
+      let k = i;
+      while (k < stop) {
+        if (source[k] === "\n") {
+          line += 1;
+          lineStart = k + 1;
+          blank = true;
+          indent = "";
+        }
+        k += 1;
+      }
+      // The line fragment holding the literal's tail is code, never blank.
+      blank = false;
+      i = stop;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+      blank = false;
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth = Math.max(0, depth - 1);
+      blank = false;
+      i += 1;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\f" || ch === "\v") {
+      if (blank) indent += ch;
+      i += 1;
+      continue;
+    }
+    if (blank && depth === 0 && matchKeyword(source, i, "try")) {
+      let j = i + 3;
+      while (j < source.length && (source[j] === " " || source[j] === "\t")) {
+        j += 1;
+      }
+      if (source[j] === ":") {
+        trySites.push({ line, indent, offset: lineStart });
+      }
+      blank = false;
+      i += 3;
+      continue;
+    }
+    if (blank && depth === 0 && matchKeyword(source, i, "except")) {
+      const kwStart = i;
+      const lineEnd = source.indexOf("\n", i);
+      const end = lineEnd === -1 ? source.length : lineEnd;
+      const lineText = source.slice(kwStart, end);
+      const colon = findExceptHeaderColon(lineText, 6);
+      blank = false;
+      i += 6;
+      if (colon !== -1) {
+        const header = lineText.slice(6, colon);
+        const asPos = findExceptAsSplit(header);
+        const excText = (asPos === -1 ? header : header.slice(0, asPos)).trim();
+        const asName = asPos === -1 ? null : header.slice(asPos + 2).trim();
+        if (
+          excText !== "" &&
+          !excText.startsWith("*") &&
+          !/\blambda\b/.test(excText) &&
+          (asName === null || EXCEPT_SIMPLE_NAME_RE.test(asName))
+        ) {
+          const pieces = flattenExceptPieces(excText);
+          if (pieces !== null && pieces.length > 0) {
+            const hadParens = excText.trim().startsWith("(");
+            const needsAlias = pieces.some(
+              (piece) => !EXCEPT_SIMPLE_NAME_RE.test(piece),
+            );
+            if (hadParens || needsAlias) {
+              const newPieces: string[] = [];
+              const aliases: { name: string; rhs: string }[] = [];
+              for (const piece of pieces) {
+                if (EXCEPT_SIMPLE_NAME_RE.test(piece)) {
+                  newPieces.push(piece);
+                } else {
+                  const name = fresh();
+                  aliases.push({ name, rhs: piece });
+                  newPieces.push(name);
+                }
+              }
+              const newHeader =
+                `except ${newPieces.join(", ")}` +
+                (asName === null ? "" : ` as ${asName}`);
+              rewrites.push({
+                line,
+                indent,
+                headerStart: kwStart,
+                headerEnd: kwStart + colon,
+                newHeader,
+                aliases,
+              });
+            }
+          }
+        }
+      }
+      continue;
+    }
+    blank = false;
+    i += 1;
+  }
+
+  if (rewrites.length === 0) return source;
+  // An alias must be bound before its `try` runs; drop any handler whose
+  // `try:` cannot be located so the compiler still reports the original.
+  const kept = rewrites.filter((rewrite) => {
+    if (rewrite.aliases.length === 0) return true;
+    for (let k = trySites.length - 1; k >= 0; k -= 1) {
+      if (trySites[k]!.line < rewrite.line && trySites[k]!.indent === rewrite.indent) {
+        return true;
+      }
+    }
+    return false;
+  });
+  if (kept.length === 0) return source;
+
+  interface Splice {
+    start: number;
+    end: number;
+    text: string;
+  }
+  const splices: Splice[] = [];
+  const inserts = new Map<number, string[]>();
+  for (const rewrite of kept) {
+    splices.push({
+      start: rewrite.headerStart,
+      end: rewrite.headerEnd,
+      text: rewrite.newHeader,
+    });
+    if (rewrite.aliases.length === 0) continue;
+    let site: ExceptTrySite | null = null;
+    for (let k = trySites.length - 1; k >= 0; k -= 1) {
+      if (trySites[k]!.line < rewrite.line && trySites[k]!.indent === rewrite.indent) {
+        site = trySites[k]!;
+        break;
+      }
+    }
+    if (site === null) continue;
+    let lines = inserts.get(site.offset);
+    if (lines === undefined) {
+      lines = [];
+      inserts.set(site.offset, lines);
+    }
+    for (const alias of rewrite.aliases) {
+      lines.push(`${rewrite.indent}${alias.name} = ${alias.rhs}\n`);
+    }
+  }
+  for (const [offset, lines] of inserts) {
+    splices.push({ start: offset, end: offset, text: lines.join("") });
+  }
+  splices.sort((a, b) => b.start - a.start);
+  let out = source;
+  for (const splice of splices) {
+    out = out.slice(0, splice.start) + splice.text + out.slice(splice.end);
+  }
+  return out;
+}

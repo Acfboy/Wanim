@@ -2628,6 +2628,22 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           }
         }
         facade.linalg = wrappedLinalg;
+        // numpy-ts ships no `LinAlgError` (its `linalg.solve` returns NaN
+        // instead of throwing on singular input), but valid numpy/manim code
+        // catches `np.linalg.LinAlgError` -- and the `except` desugar in
+        // `preprocess.ts` hoists exactly such attribute paths into aliases
+        // that are matched with `instanceof`.  Provide the class so the
+        // attribute exists and `except np.linalg.LinAlgError:` compiles and
+        // runs (matching nothing unless actually thrown, like CPython).
+        if (typeof (wrappedLinalg as Any).LinAlgError !== "function") {
+          class LinAlgError extends Error {
+            constructor(message?: string) {
+              super(message);
+              this.name = "LinAlgError";
+            }
+          }
+          (wrappedLinalg as Any).LinAlgError = LinAlgError;
+        }
       }
     } catch {
       /* leave facade.linalg untouched */
@@ -2666,6 +2682,48 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       }
     } catch {
       /* ignore */
+    }
+    // --- stacking helpers on plain Python lists --------------------------
+    //
+    // `column_stack`/`vstack`/`hstack`/`dstack`/`row_stack`/`stack`/
+    // `concatenate` take a single sequence of arrays, but numpy-ts requires
+    // NDArray storage: a plain-JS inner vector (which is how a Python list or
+    // an elementwise `p1[:2] - p0[:2]` arrives, e.g.
+    // `np.column_stack([p1[:2] - p0[:2], p2[:2] - p0[:2]])`) throws
+    // `TypeError: undefined is not iterable`.  Coerce each element of the
+    // sequence like `multi_dot` does above; NDArray elements pass through
+    // untouched.
+    const SEQUENCE_WRAPS: Record<string, string[]> = {
+      column_stack: ["tup"],
+      row_stack: ["tup"],
+      vstack: ["tup"],
+      hstack: ["tup"],
+      dstack: ["tup"],
+      stack: ["arrays", "axis", "out"],
+      concatenate: ["a", "axis", "out", "dtype", "casting"],
+    };
+    for (const [name, argnames] of Object.entries(SEQUENCE_WRAPS)) {
+      try {
+        const origFn = (np as Any)[name];
+        if (typeof origFn !== "function") continue;
+        // Do not clobber an existing facade wrapper.
+        if ((facade as Any)[name] !== origFn) continue;
+        const wrapped = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+          }
+          if (positional.length > 0 && Array.isArray(positional[0])) {
+            positional[0] = positional[0].map(coerceArrayArg);
+          }
+          return (origFn as Any)(...positional);
+        };
+        (wrapped as Any).__argnames__ = [...argnames];
+        (facade as Any)[name] = wrapped;
+      } catch {
+        /* ignore */
+      }
     }
     // --- np.random shuffle/permutation/choice on plain Python lists --------
     //

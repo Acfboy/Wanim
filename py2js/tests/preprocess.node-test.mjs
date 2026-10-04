@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 
 import {
+  desugarDottedExcept,
   desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
@@ -407,6 +408,70 @@ check("reversed desugar leaves attributes, strings, comments and shadowing alone
     desugarReversedBuiltin("x = __wan_reversed(y)\n"),
     "x = __wan_reversed(y)\n",
   );
+});
+
+check("except desugar hoists dotted handlers before try", () => {
+  assert.equal(
+    desugarDottedExcept(
+      "        try:\n            x = 1\n        except np.linalg.LinAlgError:\n            return False\n",
+    ),
+    "        __wan_exc_0 = np.linalg.LinAlgError\n" +
+      "        try:\n            x = 1\n        except __wan_exc_0:\n            return False\n",
+  );
+});
+
+check("except desugar flattens tuples and keeps as-names", () => {
+  assert.equal(
+    desugarDottedExcept(
+      "try:\n    pass\nexcept (ValueError, np.linalg.LinAlgError) as e:\n    print(e)\n",
+    ),
+    "__wan_exc_0 = np.linalg.LinAlgError\n" +
+      "try:\n    pass\nexcept ValueError, __wan_exc_0 as e:\n    print(e)\n",
+  );
+  assert.equal(
+    desugarDottedExcept("try:\n    pass\nexcept (ValueError):\n    pass\n"),
+    "try:\n    pass\nexcept ValueError:\n    pass\n",
+  );
+});
+
+check("except desugar binds each handler to the nearest same-indent try", () => {
+  assert.equal(
+    desugarDottedExcept(
+      "try:\n    try:\n        pass\n    except a.B:\n        pass\nexcept C:\n    pass\n",
+    ),
+    "try:\n    __wan_exc_0 = a.B\n    try:\n        pass\n    except __wan_exc_0:\n        pass\nexcept C:\n    pass\n",
+  );
+});
+
+check("except desugar leaves supported handlers, strings and comments alone", () => {
+  const src =
+    "try:\n    pass\nexcept Exception:\n    pass\nexcept ValueError, TypeError as e:\n    pass\nexcept:\n    pass\n";
+  assert.equal(desugarDottedExcept(src), src);
+  assert.equal(
+    desugarDottedExcept('x = "except np.E:"\n# except np.E:\ntry:\n    pass\nexcept ValueError:\n    pass\n'),
+    'x = "except np.E:"\n# except np.E:\ntry:\n    pass\nexcept ValueError:\n    pass\n',
+  );
+});
+
+check("except desugar skips except-star, multiline headers and missing try", () => {
+  assert.equal(
+    desugarDottedExcept("try:\n    pass\nexcept* ValueError:\n    pass\n"),
+    "try:\n    pass\nexcept* ValueError:\n    pass\n",
+  );
+  assert.equal(
+    desugarDottedExcept("try:\n    pass\nexcept (ValueError,\n        TypeError):\n    pass\n"),
+    "try:\n    pass\nexcept (ValueError,\n        TypeError):\n    pass\n",
+  );
+  assert.equal(
+    desugarDottedExcept("def f():\n    except np.E:\n        pass\n"),
+    "def f():\n    except np.E:\n        pass\n",
+  );
+});
+
+check("except desugar output is stable", () => {
+  const src = "try:\n    pass\nexcept np.E:\n    pass\n";
+  const once = desugarDottedExcept(src);
+  assert.equal(desugarDottedExcept(once), once);
 });
 
 console.log(`\n${passed} tests passed`);

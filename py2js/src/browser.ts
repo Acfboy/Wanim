@@ -22,6 +22,7 @@ import {
 } from "./runtime_core.js";
 import {
   desugarComplexLiterals,
+  desugarDottedExcept,
   desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
@@ -44,6 +45,7 @@ const core = createRuntimeCore({
 export const buildRuntime = core.buildRuntime;
 export {
   desugarComplexLiterals,
+  desugarDottedExcept,
   desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
@@ -87,11 +89,14 @@ export interface CompiledScene {
  */
 export async function compilePython(source: string): Promise<CompiledScene> {
   // rapydscript-ng only parses a single `for` clause per comprehension, a
-  // single index/slice per `[...]`, `@` as a decorator, and no `j`-suffixed
-  // complex literals, and its `reversed()` only accepts plain arrays/strings,
-  // so all five are desugared before compilation:
+  // single index/slice per `[...]`, `@` as a decorator, no `j`-suffixed
+  // complex literals, a bare name per `except` handler, and its `reversed()`
+  // only accepts plain arrays/strings, so all six are desugared before
+  // compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
-  // `__wan_flatten1` calls), numpy multi-dim subscripts (`a[:, 1]`) into
+  // `__wan_flatten1` calls), dotted/tuple `except` handlers
+  // (`except np.linalg.LinAlgError:`) into hoisted `__wan_exc_N` aliases,
+  // numpy multi-dim subscripts (`a[:, 1]`) into
   // `__wan_getitem`/`__wan_slice` calls, matrix multiplication (`a @ b`)
   // into `__wan_matmul` calls, complex literals (`0j`) into
   // `__wan_complex(0, imag)` calls, and bare `reversed(x)` calls into
@@ -100,10 +105,12 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // subscript step so `@` operands containing `[...]` (e.g. `A[:, 0] @ b`)
   // still reach the subscript step intact.
   const pre = preprocessImports(
-    desugarMultiForComprehensions(
-      desugarNumpySubscripts(
-        desugarReversedBuiltin(
-          desugarMatmul(desugarComplexLiterals(renameJsReservedWords(source))),
+    desugarDottedExcept(
+      desugarMultiForComprehensions(
+        desugarNumpySubscripts(
+          desugarReversedBuiltin(
+            desugarMatmul(desugarComplexLiterals(renameJsReservedWords(source))),
+          ),
         ),
       ),
     ),
