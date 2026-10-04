@@ -2488,11 +2488,46 @@ export class Mobject {
     yield* this.__iter__();
   }
 
+  /** Let native `Array.prototype.concat` spread Mobjects (e.g. rapydscript
+   * `[...]` splats compiling to `[].concat(mobject)`), mirroring `__iter__`
+   * order via the Proxy-provided `length`/indices. */
+  get [Symbol.isConcatSpreadable](): boolean {
+    return true;
+  }
+
   __len__(): number { return this.submobjects.length + (this.has_points() ? 1 : 0); }
 
   split(): Mobject[] {
     const result: Mobject[] = this.get_num_points() > 0 ? [this] : [];
     return [...result, ...this.submobjects];
+  }
+
+  /**
+   * JS-array-compatible `concat` so rapydscript `*` splats work on Mobjects.
+   *
+   * `f(*a, *b)` compiles to `a.concat(b)` and `f(*a, kw=...)` to
+   * `a.concat([kwbag])`. Python `*a` iterates `a`, so spread each argument
+   * the same way: plain arrays element-wise, other iterables (Mobjects,
+   * VGroups, NDArrays, generators) via their iterator, anything else as a
+   * single element. Always returns a plain array suitable for `.apply`.
+   */
+  concat(...args: unknown[]): unknown[] {
+    const out: unknown[] = [...this.__iter__()];
+    for (const arg of args) {
+      if (Array.isArray(arg)) {
+        out.push(...arg);
+      } else if (
+        arg !== null &&
+        arg !== undefined &&
+        typeof arg !== "string" &&
+        typeof (arg as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function"
+      ) {
+        for (const item of arg as Iterable<unknown>) out.push(item);
+      } else {
+        out.push(arg);
+      }
+    }
+    return out;
   }
 
   nonempty_submobjects(): Mobject[] {
