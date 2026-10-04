@@ -629,6 +629,76 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
+   * Normalize a Python-side `dtype` (positional or `dtype=...`) into a
+   * numpy-ts dtype string.
+   *
+   * Python `np.array(obj, dtype=float)` passes the *type* `float`
+   * (rapydscript's `ρσ_float` function) as `dtype`, and common aliases such
+   * as `"float"`/`"int"` are not valid numpy-ts dtypes either.  Returns
+   * `undefined` when there is no (supportable) dtype so the caller lets
+   * numpy-ts infer instead of throwing `Unknown dtype`.
+   */
+  function normalizeNumpyDtype(dtype: Any): string | undefined {
+    if (dtype === null || dtype === undefined) return undefined;
+    if (typeof dtype === "string") {
+      const s = dtype.trim().toLowerCase();
+      const alias: Record<string, string> = {
+        float64: "float64", f8: "float64", double: "float64", d: "float64",
+        float: "float64",
+        float32: "float32", f4: "float32", single: "float32",
+        float16: "float16", f2: "float16", half: "float16",
+        complex128: "complex128", c16: "complex128", complex: "complex128",
+        cdouble: "complex128",
+        complex64: "complex64", c8: "complex64", csingle: "complex64",
+        int64: "int64", i8: "int64", int: "int64", long: "int64",
+        int32: "int32", i4: "int32",
+        int16: "int16", i2: "int16", short: "int16",
+        int8: "int8", i1: "int8", byte: "int8",
+        uint64: "uint64", u8: "uint64",
+        uint32: "uint32", u4: "uint32",
+        uint16: "uint16", u2: "uint16",
+        uint8: "uint8", u1: "uint8", ubyte: "uint8",
+        bool: "bool", "?": "bool",
+      };
+      const mapped = alias[s];
+      if (mapped !== undefined) return mapped;
+      // Accept an already-valid numpy-ts dtype verbatim (e.g. "bool").
+      const supported: Any = (np as Any).SUPPORTED_DTYPES;
+      if (Array.isArray(supported) && (supported as string[]).includes(s)) return s;
+      if (Array.isArray(supported) && (supported as string[]).includes(dtype.trim())) {
+        return dtype.trim();
+      }
+      // Unsupported (e.g. "object", "str"): let numpy-ts infer instead of throwing.
+      return undefined;
+    }
+    if (typeof dtype === "function") {
+      const rawName = String((dtype as Any).__name__ ?? dtype.name ?? "").toLowerCase();
+      const has = (sub: string): boolean => rawName.includes(sub);
+      // Sized variants first, then the generic Python builtins
+      // (`ρσ_float`/`ρσ_int`/`ρσ_bool` from rapydscript's baselib).
+      if (has("complex64") || has("csingle") || has("c8")) return "complex64";
+      if (has("complex")) return "complex128";
+      if (has("float16") || has("half") || has("f2")) return "float16";
+      if (has("float32") || has("single") || has("f4")) return "float32";
+      if (has("float")) return "float64";
+      if (has("int8") || has("i1") || has("byte")) return "int8";
+      if (has("int16") || has("i2") || has("short")) return "int16";
+      if (has("int32") || has("i4")) return "int32";
+      if (has("uint8") || has("u1")) return "uint8";
+      if (has("uint16") || has("u2")) return "uint16";
+      if (has("uint32") || has("u4")) return "uint32";
+      if (has("uint64") || has("u8")) return "uint64";
+      if (has("int") || has("long")) return "int64";
+      if (has("bool")) return "bool";
+      if (has("number")) return "float64";
+      if (has("boolean")) return "bool";
+      // Unknown callable dtype: infer instead of throwing.
+      return undefined;
+    }
+    return undefined;
+  }
+
+  /**
    * Teach numpy-ts NDArrays the Python call shapes rapydscript emits.
    *
    * 1. `f(*arr, kw=...)` compiles to `arr.concat([kwbag])`, but NDArray has no
@@ -641,6 +711,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    *    kwargs bag onto positional slots when `f.__argnames__` exists.  Annotate
    *    the reduction methods (nump-ts signatures: `mean(axis?, keepdims?)`,
    *    `percentile(q, axis?, keepdims?)`, ...) so the mapping happens.
+   * 4. `arr.astype(float)` passes rapydscript's `ρσ_float` function as dtype
+   *    while numpy-ts only accepts dtype strings; normalize to `"float64"`.
+   * 5. `arr[::-1]` compiles to `ρσ_eslice(arr, -1)`, whose baselib assumes
+   *    JS-array `.slice()/.reverse()/.filter()`.  Serve numeric/no-arg
+   *    `.slice()` from a plain-JS copy so the extended-slice path works.
    */
   function patchNDArrayForPython(): void {
     const proto = (NDArray as Any)?.prototype;
@@ -722,12 +797,105 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (typeof proto.astype === "function" && !Array.isArray(proto.astype.__argnames__)) {
         proto.astype.__argnames__ = ["dtype", "copy"];
       }
+      if (typeof proto.astype === "function" && (proto.astype as Any).__wanim_dtype_wrapped__ !== true) {
+        const originalAstype = proto.astype;
+        const wrappedAstype = function (this: Any, ...args: Any[]): Any {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          const positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          const kwargsDtype = kwargs !== null ? (kwargs as Record<string, Any>)["dtype"] : undefined;
+          const rawDtype = positional.length > 0 ? positional[0] : kwargsDtype;
+          const normalized = normalizeNumpyDtype(rawDtype);
+          if (normalized !== undefined) {
+            positional[0] = normalized;
+          } else if (rawDtype !== undefined && rawDtype !== null) {
+            // Unsupported dtype (e.g. "object", which numpy-ts cannot
+            // represent): keep the current dtype instead of throwing
+            // `Unknown dtype`.
+            try {
+              positional[0] = this.dtype;
+            } catch {
+              positional.length = 0;
+            }
+          }
+          // `copy` defaults to true in numpy; numpy-ts requires a boolean.
+          if (positional.length > 1 && (positional[1] === undefined || positional[1] === null)) {
+            positional[1] = true;
+          }
+          return (originalAstype as Any).apply(this, positional);
+        };
+        (wrappedAstype as Any).__argnames__ = ["dtype", "copy"];
+        (wrappedAstype as Any).__wanim_dtype_wrapped__ = true;
+        proto.astype = wrappedAstype;
+      }
     } catch {
       /* ignore */
     }
     try {
       if (typeof proto.clip === "function" && !Array.isArray(proto.clip.__argnames__)) {
         proto.clip.__argnames__ = ["a_min", "a_max"];
+      }
+    } catch {
+      /* ignore */
+    }
+    // rapydscript's `ρσ_eslice` (extended slices such as `arr[::-1]`) assumes
+    // JS-array semantics: `arr.slice().reverse()` then numeric
+    // `arr.slice(start, end).filter(...)`.  numpy-ts' `.slice` instead takes
+    // `"start:stop[:step]"` strings and returns an NDArray without `.reverse`.
+    // Serve numeric/no-arg `.slice()` from a plain-JS copy so that path works;
+    // string specs keep delegating to the original numpy slicing.  The result
+    // is a plain array, which the runtime's arithmetic (`pythonMul`, ...)
+    // already handles elementwise.
+    try {
+      if (typeof proto.slice === "function" && (proto.slice as Any).__wanim_slice_wrapped__ !== true) {
+        const originalSlice = proto.slice;
+        const wrappedSlice = function (this: Any, ...args: Any[]): Any {
+          const hasStringSpec = args.some((a) => typeof a === "string");
+          if (!hasStringSpec) {
+            let plain: Any[];
+            try {
+              if (typeof this.tolist === "function") {
+                plain = this.tolist() as Any[];
+              } else if (typeof this[Symbol.iterator] === "function") {
+                plain = [...this];
+              } else {
+                return (originalSlice as Any).apply(this, args);
+              }
+            } catch {
+              return (originalSlice as Any).apply(this, args);
+            }
+            if (args.length === 0) return plain.slice();
+            const start = args[0] === undefined || args[0] === null ? undefined : Math.trunc(Number(args[0]));
+            const end = args.length < 2 || args[1] === undefined || args[1] === null
+              ? undefined
+              : Math.trunc(Number(args[1]));
+            return plain.slice(start, end);
+          }
+          return (originalSlice as Any).apply(this, args);
+        };
+        (wrappedSlice as Any).__wanim_slice_wrapped__ = true;
+        proto.slice = wrappedSlice;
+      }
+    } catch {
+      /* ignore */
+    }
+    // `ρσ_eslice` with a negative step calls `arr.slice().reverse()`; plain
+    // arrays get that from `Array.prototype`, but NDArrays have no `reverse`.
+    // Provide one over a plain-JS copy (non-mutating, unlike `Array.reverse`).
+    try {
+      if (typeof proto.reverse !== "function") {
+        Object.defineProperty(proto, "reverse", {
+          configurable: true,
+          writable: true,
+          value: function (this: Any): Any[] {
+            try {
+              if (typeof this.tolist === "function") return (this.tolist() as Any[]).reverse();
+              if (typeof this[Symbol.iterator] === "function") return [...this].reverse();
+            } catch {
+              /* fall through */
+            }
+            return [];
+          },
+        });
       }
     } catch {
       /* ignore */
@@ -1486,73 +1654,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     const numpyRound = (a: Any, decimals: Any = 0): Any => pythonRound(a, decimals);
     facade.round = numpyRound;
     facade.around = numpyRound;
-    // Python `np.array(obj, dtype=float)` passes the *type* `float` (rapydscript's
-    // `ρσ_float` function) as `dtype`, and rapydscript delivers kwargs as a
-    // trailing null-prototype bag.  numpy-ts only accepts dtype *strings* (e.g.
-    // `"float64"`) as a positional argument, so a raw passthrough crashes with
-    // `TypeError: Cannot convert object to primitive value` (browser WASM build)
-    // or `Unknown dtype: [object Object]`.  Normalize both the kwargs bag and a
-    // positional Python-type dtype into a numpy-ts dtype string.
-    function normalizeNumpyDtype(dtype: Any): string | undefined {
-      if (dtype === null || dtype === undefined) return undefined;
-      if (typeof dtype === "string") {
-        const s = dtype.trim().toLowerCase();
-        const alias: Record<string, string> = {
-          float64: "float64", f8: "float64", double: "float64", d: "float64",
-          float: "float64",
-          float32: "float32", f4: "float32", single: "float32",
-          float16: "float16", f2: "float16", half: "float16",
-          complex128: "complex128", c16: "complex128", complex: "complex128",
-          cdouble: "complex128",
-          complex64: "complex64", c8: "complex64", csingle: "complex64",
-          int64: "int64", i8: "int64", int: "int64", long: "int64",
-          int32: "int32", i4: "int32",
-          int16: "int16", i2: "int16", short: "int16",
-          int8: "int8", i1: "int8", byte: "int8",
-          uint64: "uint64", u8: "uint64",
-          uint32: "uint32", u4: "uint32",
-          uint16: "uint16", u2: "uint16",
-          uint8: "uint8", u1: "uint8", ubyte: "uint8",
-          bool: "bool", "?": "bool",
-        };
-        const mapped = alias[s];
-        if (mapped !== undefined) return mapped;
-        // Accept an already-valid numpy-ts dtype verbatim (e.g. "bool").
-        const supported: Any = (np as Any).SUPPORTED_DTYPES;
-        if (Array.isArray(supported) && (supported as string[]).includes(s)) return s;
-        if (Array.isArray(supported) && (supported as string[]).includes(dtype.trim())) {
-          return dtype.trim();
-        }
-        // Unsupported (e.g. "object", "str"): let numpy-ts infer instead of throwing.
-        return undefined;
-      }
-      if (typeof dtype === "function") {
-        const rawName = String((dtype as Any).__name__ ?? dtype.name ?? "").toLowerCase();
-        const has = (sub: string): boolean => rawName.includes(sub);
-        // Sized variants first, then the generic Python builtins
-        // (`ρσ_float`/`ρσ_int`/`ρσ_bool` from rapydscript's baselib).
-        if (has("complex64") || has("csingle") || has("c8")) return "complex64";
-        if (has("complex")) return "complex128";
-        if (has("float16") || has("half") || has("f2")) return "float16";
-        if (has("float32") || has("single") || has("f4")) return "float32";
-        if (has("float")) return "float64";
-        if (has("int8") || has("i1") || has("byte")) return "int8";
-        if (has("int16") || has("i2") || has("short")) return "int16";
-        if (has("int32") || has("i4")) return "int32";
-        if (has("uint8") || has("u1")) return "uint8";
-        if (has("uint16") || has("u2")) return "uint16";
-        if (has("uint32") || has("u4")) return "uint32";
-        if (has("uint64") || has("u8")) return "uint64";
-        if (has("int") || has("long")) return "int64";
-        if (has("bool")) return "bool";
-        if (has("number")) return "float64";
-        if (has("boolean")) return "bool";
-        // Unknown callable dtype: infer instead of throwing.
-        return undefined;
-      }
-      return undefined;
-    }
-
+    // `normalizeNumpyDtype` (hoisted to `createRuntimeCore` scope above) maps
+    // a positional/`dtype=` Python-type dtype into a numpy-ts dtype string.
     function callNumpyWithDtype(fn: (...a: Any[]) => Any, dtypeIndex: number, args: Any[]): Any {
       const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
       const positional = kwargs !== null ? args.slice(0, -1) : args.slice();
