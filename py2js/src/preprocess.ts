@@ -288,6 +288,10 @@ export function unsupportedImportError(result: PreprocessResult): Error | null {
 /** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
 export const WANIM_FLATTEN_HELPER = "__wan_flatten1";
 
+/** Global runtime helpers for numpy multi-dim subscripts (see below). */
+export const WANIM_GETITEM_HELPER = "__wan_getitem";
+export const WANIM_SLICE_HELPER = "__wan_slice";
+
 interface DesugarClause {
   target: string;
   iter: string;
@@ -643,6 +647,327 @@ export function desugarMultiForComprehensions(source: string): string {
     const rewritten = rewriteFirstMultiFor(out);
     if (rewritten === null) return out;
     out = rewritten;
+  }
+  return out;
+}
+
+// --- numpy multi-dim subscript desugar -------------------------------------
+//
+// rapydscript-ng parses only a single index or a single `start:stop` slice
+// inside `[...]`, so valid numpy code such as `pts[:, 1]` or `a[1:2, 0]`
+// fails with "Unexpected token: punc «,»".  We rewrite multi-dim subscripts
+// (a top-level comma inside `[...]`) into runtime helper calls:
+//
+//   `pts[:, 1]`    -> `__wan_getitem(pts, __wan_slice(None, None), 1)`
+//   `a[1:2, 0]`    -> `__wan_getitem(a, __wan_slice(1, 2), 0)`
+//   `a[::-1, ...]` -> `__wan_getitem(a, __wan_slice(None, None, -1), "...")`
+//   `a[0][:, 1]`   -> `__wan_getitem(a[0], __wan_slice(None, None), 1)`
+//
+// (helpers provided by the runtime in `runtime_core.ts`; `...` is Python's
+// `Ellipsis`.)  Single subscripts (`a[0]`, `a[1:2]`, `a[-1]`) pass through
+// untouched so rapydscript's own (well-tested) slice path keeps handling
+// them.  List displays (`[1, 2]`), calls and dicts are never rewritten: a `[`
+// only counts as a subscript when it directly follows an object expression
+// (identifier, `)`/`]` group, or attribute chain) and not a Python keyword
+// (`in`, `return`, ...), so `for i in [1, 2]` is left alone.
+//
+// The object expression is found by scanning backwards from the `[`; anything
+// that does not parse cleanly (unbalanced brackets, keywords, string-literal
+// objects, ...) is left untouched so the compiler still reports it.
+//
+// Known limitations: a bare `lambda x: x` as a dimension is kept verbatim
+// (its `:` would otherwise look like a slice); `await` is the only keyword
+// allowed at the head of an object chain (`await foo(x)[a, b]`); comments
+// containing brackets/quotes inside a subscripted call's arguments may defeat
+// the backwards scan (the subscript is then left as-is).
+
+const PYTHON_KEYWORDS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+  "try", "while", "with", "yield",
+]);
+
+const IDENT_CHAR = /[\p{L}\p{N}_]/u;
+
+function isIdentCharAt(text: string, index: number): boolean {
+  if (index < 0 || index >= text.length) return false;
+  return IDENT_CHAR.test(text[index]!);
+}
+
+function isCloser(ch: string): boolean {
+  return ch === ")" || ch === "]" || ch === "}";
+}
+
+function isHorizontalSpace(ch: string): boolean {
+  return ch === " " || ch === "\t" || ch === "\r" || ch === "\f" || ch === "\v";
+}
+
+/** True when the quote at `pos` is escaped by an odd run of backslashes. */
+function isEscaped(text: string, pos: number): boolean {
+  let backslashes = 0;
+  let i = pos - 1;
+  while (i >= 0 && text[i] === "\\") {
+    backslashes += 1;
+    i -= 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+/**
+ * Given the index of a closing quote, return the index just before the
+ * matching opening quote (or -1 when it cannot be found).  Handles escapes,
+ * triple-quoted strings and (for single-quoted strings) `\`-continuations.
+ */
+function skipStringBackward(text: string, endPos: number): number {
+  const quote = text[endPos]!;
+  const triple =
+    endPos >= 2 && text[endPos - 1] === quote && text[endPos - 2] === quote;
+  if (triple) {
+    let p = endPos - 5;
+    while (p >= 0) {
+      if (
+        text[p] === quote &&
+        text[p + 1] === quote &&
+        text[p + 2] === quote &&
+        !isEscaped(text, p)
+      ) {
+        return p - 1;
+      }
+      p -= 1;
+    }
+    return -1;
+  }
+  let j = endPos - 1;
+  while (j >= 0) {
+    const ch = text[j]!;
+    if (ch === "\n") {
+      // A `\` at end of line continues a single-quoted string.
+      if (j > 0 && text[j - 1] === "\\" && !isEscaped(text, j - 1)) {
+        j -= 2;
+        continue;
+      }
+      return -1;
+    }
+    if (ch === quote && !isEscaped(text, j)) return j - 1;
+    j -= 1;
+  }
+  return -1;
+}
+
+/**
+ * Given the index of a `)`/`]`/`}`, return the index of its mate while
+ * skipping string literals (or -1).  Bracket kinds are not distinguished,
+ * mirroring the laxity of the forward matcher above.
+ */
+function findOpenerBackward(text: string, closePos: number): number {
+  let depth = 0;
+  let j = closePos;
+  while (j >= 0) {
+    const ch = text[j]!;
+    if (ch === '"' || ch === "'") {
+      j = skipStringBackward(text, j);
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") depth += 1;
+    else if (ch === "(" || ch === "[" || ch === "{") {
+      depth -= 1;
+      if (depth === 0) return j;
+    }
+    j -= 1;
+  }
+  return -1;
+}
+
+/**
+ * Split `text` on every depth-zero `sep` (nesting and strings respected).
+ * Newlines are kept verbatim (valid inside `[...]` by implicit continuation).
+ */
+function splitDepthZero(text: string, sep: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "#") {
+      const nl = text.indexOf("\n", i);
+      i = nl === -1 ? text.length : nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = readString(text, i);
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
+    else if (depth === 0 && ch === sep) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+    i += 1;
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/**
+ * Find the start of the object expression subscripted by a `[` whose matching
+ * source position's already-emitted output is `out` (i.e. the object is the
+ * tail of `out`).  Returns the start index, or null when the `[` is not a
+ * subscript (list display, keyword-led like `in [1, 2]`, ...) or the object
+ * cannot be determined (in which case the caller leaves the code untouched).
+ */
+function subscriptObjStart(out: string): number | null {
+  let i = out.length - 1;
+  while (i >= 0 && isHorizontalSpace(out[i]!)) i -= 1;
+  if (i < 0 || out[i] === "\n") return null;
+  let start: number | null = null;
+  for (;;) {
+    if (i < 0) return start;
+    const ch = out[i]!;
+    if (isCloser(ch)) {
+      const opener = findOpenerBackward(out, i);
+      if (opener === -1) return null;
+      start = opener;
+      i = opener - 1;
+      while (i >= 0 && isHorizontalSpace(out[i]!)) i -= 1;
+      if (i < 0 || out[i] === "\n") return start;
+      if (isIdentCharAt(out, i) || out[i] === "." || isCloser(out[i]!)) continue;
+      return start;
+    }
+    if (IDENT_CHAR.test(ch)) {
+      let j = i;
+      while (j >= 0 && IDENT_CHAR.test(out[j]!)) j -= 1;
+      const word = out.slice(j + 1, i + 1);
+      if (PYTHON_KEYWORDS.has(word)) {
+        // `await foo(x)[a, b]` parses as `await (foo(x)[a, b])`, so the
+        // object starts after the keyword; every other keyword means this
+        // `[` is not a subscript (`in [1, 2]`, `return [..]`, ...).
+        if (start !== null && word === "await") {
+          let k = i + 1;
+          while (k < out.length && isHorizontalSpace(out[k]!)) k += 1;
+          return k;
+        }
+        return null;
+      }
+      start = j + 1;
+      i = j;
+      while (i >= 0 && isHorizontalSpace(out[i]!)) i -= 1;
+      if (i < 0 || out[i] === "\n") return start;
+      if (out[i] === ".") {
+        i -= 1;
+        while (i >= 0 && isHorizontalSpace(out[i]!)) i -= 1;
+        if (i < 0 || out[i] === "\n") return null;
+        continue;
+      }
+      // Two bare words in a row (`foo bar[x]`) or a group directly glued
+      // after a word (`(x)foo[y]`) cannot be an object chain.
+      if (isIdentCharAt(out, i) || isCloser(out[i]!)) return null;
+      return start;
+    }
+    return start;
+  }
+}
+
+/** Rewrite one comma-separated dimension; null when it is not supported. */
+function rewriteSubscriptDim(dim: string): string | null {
+  const trimmed = dim.trim();
+  if (trimmed === "") return null;
+  if (trimmed === "..." || trimmed === "Ellipsis") return '"..."';
+  // A bare lambda's `:` is not a slice (`a[lambda x: x, 0]`).
+  if (/^lambda(?![\p{L}\p{N}_])/u.test(trimmed)) {
+    return desugarNumpySubscripts(trimmed);
+  }
+  const slices = splitDepthZero(trimmed, ":");
+  if (slices.length === 1) return desugarNumpySubscripts(trimmed);
+  if (slices.length > 3) return null;
+  const bounds = slices.map((part) =>
+    part.trim() === "" ? "None" : desugarNumpySubscripts(part.trim()),
+  );
+  return `${WANIM_SLICE_HELPER}(${bounds.join(", ")})`;
+}
+
+/**
+ * Rewrite numpy multi-dim subscripts (`a[:, 1]`, `a[1:2, 0]`) into
+ * `__wan_getitem`/`__wan_slice` runtime calls (see above) so rapydscript-ng
+ * -- which only parses a single index/slice per `[...]` -- can compile them.
+ * Anything that does not parse cleanly passes through untouched.
+ */
+export function desugarNumpySubscripts(source: string): string {
+  // The helper names are reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses them, leave the source alone rather than silently
+  // calling the wrong function.
+  if (
+    source.includes(WANIM_GETITEM_HELPER) ||
+    source.includes(WANIM_SLICE_HELPER)
+  ) {
+    return source;
+  }
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch !== "[") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const close = findMatchingBracket(source, i);
+    if (close === -1) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const dims = splitDepthZero(source.slice(i + 1, close), ",");
+    if (dims.length < 2) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const rewritten: string[] = [];
+    let ok = true;
+    for (const dim of dims) {
+      const part = rewriteSubscriptDim(dim);
+      if (part === null) {
+        ok = false;
+        break;
+      }
+      rewritten.push(part);
+    }
+    if (!ok) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const objStart = subscriptObjStart(out);
+    if (objStart === null) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const obj = out.slice(objStart);
+    out =
+      out.slice(0, objStart) +
+      `${WANIM_GETITEM_HELPER}(${obj}, ${rewritten.join(", ")})`;
+    i = close + 1;
   }
   return out;
 }

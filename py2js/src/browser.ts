@@ -21,8 +21,9 @@ import {
   type PythonRuntime,
 } from "./runtime_core.js";
 import {
-  formatUnsupportedImportError,
   desugarMultiForComprehensions,
+  desugarNumpySubscripts,
+  formatUnsupportedImportError,
   preprocessImports,
   renameJsReservedWords,
   unsupportedImportError,
@@ -40,6 +41,7 @@ const core = createRuntimeCore({
 export const buildRuntime = core.buildRuntime;
 export {
   desugarMultiForComprehensions,
+  desugarNumpySubscripts,
   formatUnsupportedImportError,
   installPythonShims,
   preprocessImports,
@@ -78,11 +80,15 @@ export interface CompiledScene {
  * error, because the Python standard library is not available in the runtime.
  */
 export async function compilePython(source: string): Promise<CompiledScene> {
-  // rapydscript-ng only parses a single `for` clause per comprehension, so
-  // multi-`for` comprehensions are desugared into nested single-`for` ones
-  // (plus `__wan_flatten1` calls) before compilation.
+  // rapydscript-ng only parses a single `for` clause per comprehension and a
+  // single index/slice per `[...]`, so both are desugared before compilation:
+  // multi-`for` comprehensions into nested single-`for` ones (plus
+  // `__wan_flatten1` calls) and numpy multi-dim subscripts (`a[:, 1]`) into
+  // `__wan_getitem`/`__wan_slice` calls.
   const pre = preprocessImports(
-    desugarMultiForComprehensions(renameJsReservedWords(source)),
+    desugarMultiForComprehensions(
+      desugarNumpySubscripts(renameJsReservedWords(source)),
+    ),
   );
   const importError = unsupportedImportError(pre);
   if (importError !== null) throw importError;

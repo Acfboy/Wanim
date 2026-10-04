@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   desugarMultiForComprehensions,
+  desugarNumpySubscripts,
   formatUnsupportedImportError,
   preprocessImports,
   renameJsReservedWords,
@@ -222,6 +223,63 @@ check("desugar keeps ternary elements and nested multi-for", () => {
 check("desugar leaves async-for alone", () => {
   const src = "x = [e async for a in A for b in B]\n";
   assert.equal(desugarMultiForComprehensions(src), src);
+});
+
+check("subscript desugar rewrites pts[:, 1]", () => {
+  assert.equal(
+    desugarNumpySubscripts("idx = int(np.argmin(np.abs(pts[:, 1] - b)))\n"),
+    "idx = int(np.argmin(np.abs(__wan_getitem(pts, __wan_slice(None, None), 1) - b)))\n",
+  );
+});
+
+check("subscript desugar handles ranges, steps and ellipsis", () => {
+  assert.equal(
+    desugarNumpySubscripts("x = a[1:2, 0]\n"),
+    "x = __wan_getitem(a, __wan_slice(1, 2), 0)\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("x = a[::-1, ...]\n"),
+    'x = __wan_getitem(a, __wan_slice(None, None, -1), "...")\n',
+  );
+  assert.equal(
+    desugarNumpySubscripts("x = a[0, 1]\n"),
+    "x = __wan_getitem(a, 0, 1)\n",
+  );
+});
+
+check("subscript desugar chains through calls and prior subscripts", () => {
+  assert.equal(
+    desugarNumpySubscripts("x = a[0][:, 1]\n"),
+    "x = __wan_getitem(a[0], __wan_slice(None, None), 1)\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("x = foo(bar)[1, 2]\n"),
+    "x = __wan_getitem(foo(bar), 1, 2)\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("x = self.grid.values[:, 0]\n"),
+    "x = __wan_getitem(self.grid.values, __wan_slice(None, None), 0)\n",
+  );
+});
+
+check("subscript desugar leaves single subscripts and displays alone", () => {
+  const src =
+    "a[0]\na[1:2]\na[-1]\n" +
+    "x = [1, 2]\nfor i in [1, 2]:\n    pass\n" +
+    "return [a, b]\nd = {k: v}\ns = a['k']\n";
+  assert.equal(desugarNumpySubscripts(src), src);
+});
+
+check("subscript desugar handles nested multi-dim inside dims", () => {
+  assert.equal(
+    desugarNumpySubscripts("x = a[b[:, 1], 0]\n"),
+    "x = __wan_getitem(a, __wan_getitem(b, __wan_slice(None, None), 1), 0)\n",
+  );
+});
+
+check("subscript desugar leaves strings and comments alone", () => {
+  const src = '# a[:, 1]\nx = "a[:, 1]"\n';
+  assert.equal(desugarNumpySubscripts(src), src);
 });
 
 console.log(`\n${passed} tests passed`);

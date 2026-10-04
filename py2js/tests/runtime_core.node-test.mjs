@@ -3,6 +3,8 @@
 // Run with:  pnpm test:py2js
 import assert from "node:assert/strict";
 
+import * as npReal from "numpy-ts";
+
 import { createRuntimeCore } from "../dist/runtime_core.js";
 
 class FakeNDArray {}
@@ -10,6 +12,12 @@ const core = createRuntimeCore({
   wanim: {},
   np: { round: (x) => x },
   NDArray: FakeNDArray,
+});
+
+const ndCore = createRuntimeCore({
+  wanim: {},
+  np: npReal,
+  NDArray: npReal.NDArray,
 });
 
 let passed = 0;
@@ -98,6 +106,40 @@ check("wanFlatten1 is exposed to compiled scenes as a global", () => {
   const runtime = core.buildRuntime();
   assert.equal(typeof runtime.globals.__wan_flatten1, "function");
   assert.deepEqual(runtime.globals.__wan_flatten1([[1], [2, 3]]), [1, 2, 3]);
+});
+
+check("wanSlice builds numpy slice strings", () => {
+  assert.equal(ndCore.wanSlice(null, null), ":");
+  assert.equal(ndCore.wanSlice(1, 2), "1:2");
+  assert.equal(ndCore.wanSlice(null, null, -1), "::-1");
+  assert.equal(ndCore.wanSlice(0, -1), "0:-1");
+});
+
+check("wanGetItem slices NDArray columns (pts[:, 1])", () => {
+  const pts = npReal.asarray([[1, 2, 3], [4, 5, 6]]);
+  const col = ndCore.wanGetItem(pts, ndCore.wanSlice(null, null), 1);
+  assert.deepEqual(col.toArray(), [2, 5]);
+  assert.deepEqual(
+    ndCore.wanGetItem(pts, "0:2", "1:3").toArray(),
+    [[2, 3], [5, 6]],
+  );
+  assert.deepEqual(ndCore.wanGetItem(pts, "...", 0).toArray(), [1, 4]);
+  assert.equal(ndCore.wanGetItem(pts, 0, 1).toArray(), 2);
+});
+
+check("wanGetItem descends nested plain lists numpy-style", () => {
+  const grid = [[1, 2, 3], [4, 5, 6]];
+  assert.deepEqual(ndCore.wanGetItem(grid, ":", 1), [2, 5]);
+  assert.deepEqual(ndCore.wanGetItem(grid, 0, "1:"), [2, 3]);
+  assert.equal(ndCore.wanGetItem(grid, 1, -1), 6);
+  assert.deepEqual(ndCore.wanGetItem(grid, "::-1", ":"), [[4, 5, 6], [1, 2, 3]]);
+});
+
+check("wanGetItem helpers are exposed to compiled scenes as globals", () => {
+  const runtime = ndCore.buildRuntime();
+  assert.equal(typeof runtime.globals.__wan_getitem, "function");
+  assert.equal(typeof runtime.globals.__wan_slice, "function");
+  assert.equal(runtime.globals.__wan_slice(null, null), ":");
 });
 
 console.log(`\n${passed} tests passed`);
