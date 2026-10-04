@@ -18,6 +18,7 @@
  * (`runtime.ts`) and in the browser (`runtime_browser.ts`).
  */
 import type * as NumpyTS from "numpy-ts";
+import { buildPythonItertools } from "./python_itertools.js";
 import { buildPythonMath } from "./python_math.js";
 import { buildPythonRandom } from "./python_random.js";
 
@@ -3469,6 +3470,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // `from math import ...` are stripped by `preprocess.ts`, and the
     // module object is provided here as a global instead.
     globals.math = buildPythonMath();
+    // Python's `itertools` module (see `python_itertools.ts`):
+    // `import itertools` and `from itertools import ...` are stripped by
+    // `preprocess.ts`, and the module object is provided here as a global
+    // instead.
+    globals.itertools = buildPythonItertools();
     globals.ρσ_op_add = pythonAdd;
     globals.ρσ_op_sub = pythonSub;
     globals.ρσ_op_mul = pythonMul;
@@ -3510,6 +3516,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     buildNumpy,
     buildPythonRandom,
     buildPythonMath,
+    buildPythonItertools,
     wrapWanimNamespace,
     buildRuntime,
     pythonAdd,

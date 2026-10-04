@@ -1,18 +1,20 @@
 /**
  * Very small source pre-processor for the "native" modules `manim`,
- * `numpy`, `random` and `math`.
+ * `numpy`, `random`, `math` and `itertools`.
  *
  * rapydscript resolves imports to `.pyj` files, and it does not support star
  * imports at all.  Instead of shipping a huge generated stub for the wanim API
  * we simply drop these imports and expose every wanim export (plus a numpy
- * facade, a Python-compatible `random` module (see `python_random.ts`), and a
- * Python-compatible `math` module (see `python_math.ts`)) as
+ * facade, a Python-compatible `random` module (see `python_random.ts`), a
+ * Python-compatible `math` module (see `python_math.ts`), and a
+ * Python-compatible `itertools` module (see `python_itertools.ts`)) as
  * globals of the execution context, so the user's Python source is
  * used *unmodified*.  Any symbol imported explicitly from numpy is recorded so
- * the runner can add the matching global alias; names imported from `random`
- * or `math` are rebound from the respective global (`seed = random.seed`,
- * `sin = math.sin`) because the modules' functions are detachment-safe
- * closures.
+ * the runner can add the matching global alias; names imported from `random`,
+ * `math` or `itertools` are rebound from the respective global
+ * (`seed = random.seed`, `sin = math.sin`, `combinations =
+ * itertools.combinations`) because the modules' functions are
+ * detachment-safe closures.
  *
  * Every OTHER import (`import os`, `from collections import ...`, ...) cannot
  * work in the browser/JS runtime, because neither the rest of the Python
@@ -29,6 +31,7 @@
  * relies on them.
  */
 
+import { ITERTOOLS_PUBLIC } from "./python_itertools.js";
 import { MATH_PUBLIC } from "./python_math.js";
 import { RANDOM_PUBLIC } from "./python_random.js";
 
@@ -150,6 +153,9 @@ const RANDOM_IMPORT = /^\s*import\s+random(\s+as\s+(\w+))?\s*(?:#.*)?$/;
 // `math` is provided as a runtime global (see `python_math.ts`).
 const MATH_FROM = /^\s*from\s+math\s+import\s+(.+?)\s*(?:#.*)?$/;
 const MATH_IMPORT = /^\s*import\s+math(\s+as\s+(\w+))?\s*(?:#.*)?$/;
+// `itertools` is provided as a runtime global (see `python_itertools.ts`).
+const ITERTOOLS_FROM = /^\s*from\s+itertools\s+import\s+(.+?)\s*(?:#.*)?$/;
+const ITERTOOLS_IMPORT = /^\s*import\s+itertools(\s+as\s+(\w+))?\s*(?:#.*)?$/;
 
 // Any `from X import (` statement (no matter the module) may span several
 // lines; join them so both the module name and the line number survive.
@@ -217,6 +223,15 @@ export function preprocessImports(source: string): PreprocessResult {
   let mathAlias = "__wan_math";
   while (source.includes(mathAlias)) mathAlias += "_";
   let mathAliasEmitted = false;
+  // Internal alias the emitted `itertools` bindings read the module through.
+  // `from itertools import chain` rebinds a user-visible name, and a later
+  // `import itertools as it` must still see the module, so emitted code
+  // reads `__wan_itertools` (suffixed when user code already uses it) which is
+  // bound once, before any shadowing can happen.  Same pattern as `random`
+  // above; `itertools` functions are detachment-safe closures too.
+  let itertoolsAlias = "__wan_itertools";
+  while (source.includes(itertoolsAlias)) itertoolsAlias += "_";
+  let itertoolsAliasEmitted = false;
 
   for (let i = 0; i < lines.length; i += 1) {
     let line = lines[i];
@@ -323,6 +338,41 @@ export function preprocessImports(source: string): PreprocessResult {
       continue;
     }
 
+    // `itertools` is provided as a runtime global (see `python_itertools.ts`):
+    // `import itertools` needs no rewrite, `import itertools as it` binds the
+    // alias, and `from itertools import ...` rebinds each name from the module.
+    // All emitted bindings read the module through the internal
+    // `itertoolsAlias`, never the shadowable `itertools`.
+    const itertoolsImport = line.match(ITERTOOLS_IMPORT);
+    if (itertoolsImport) {
+      stripped.push(line.trim());
+      out.push(`# [wanim] stripped: ${line.trim()}`);
+      if (!itertoolsAliasEmitted) {
+        out.push(`${itertoolsAlias} = itertools`);
+        itertoolsAliasEmitted = true;
+      }
+      const alias = itertoolsImport[2];
+      if (alias !== undefined && alias !== "itertools") out.push(`${alias} = ${itertoolsAlias}`);
+      continue;
+    }
+    const itertoolsFrom = line.match(ITERTOOLS_FROM);
+    if (itertoolsFrom) {
+      stripped.push(line.trim());
+      out.push(`# [wanim] stripped: ${line.trim()}`);
+      if (!itertoolsAliasEmitted) {
+        out.push(`${itertoolsAlias} = itertools`);
+        itertoolsAliasEmitted = true;
+      }
+      for (const [name, alias] of parseFromNames(itertoolsFrom[1])) {
+        if (name === "*") {
+          for (const pub of ITERTOOLS_PUBLIC) out.push(`${pub} = ${itertoolsAlias}.${pub}`);
+        } else {
+          out.push(`${alias} = ${itertoolsAlias}.${name}`);
+        }
+      }
+      continue;
+    }
+
     const fromMatch = line.match(FROM_IMPORT);
     if (fromMatch) {
       unsupported.push({ module: fromMatch[1], line: startLine, text: normalize(line) });
@@ -349,10 +399,10 @@ export function preprocessImports(source: string): PreprocessResult {
 export function formatUnsupportedImportError(item: UnsupportedImport): string {
   return (
     `wanim: cannot use Python module '${item.module}' (line ${item.line}: ${item.text}).\n` +
-    "Only the manim API, numpy, and the Python 'random' and 'math' modules are available in the browser/JS " +
+    "Only the manim API, numpy, and the Python 'random', 'math' and 'itertools' modules are available in the browser/JS " +
     "runtime; the rest of the Python standard library and third-party packages cannot be imported.\n" +
     "Use 'from manim import *' and 'import numpy as np' instead (both are provided as globals; " +
-    "'import random' and 'import math' are supported too).\n" +
+    "'import random', 'import math' and 'import itertools' are supported too).\n" +
     "Math functions such as sin/cos/exp are available as numpy functions, e.g. " +
     "'from numpy import sin, cos, exp' or 'np.sin(...)' (plain JS Math is not exposed)."
   );
