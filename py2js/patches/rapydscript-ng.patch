@@ -116,7 +116,7 @@ index e0ec495..4f5667d 100644
  ρσ_desugar_kwargs = (def ():
      if jstype(Object.assign) is 'function':
          return def ():
-@@ -177,13 +213,35 @@ def ρσ_interpolate_kwargs_constructor(apply, f, supplied_args):
+@@ -177,13 +213,58 @@ def ρσ_interpolate_kwargs_constructor(apply, f, supplied_args):
  
  
  def ρσ_getitem(obj, key):
@@ -130,8 +130,13 @@ index e0ec495..4f5667d 100644
 +        return g.call(obj, key)
      if jstype(key) is 'number' and key < 0:
 +        # numpy-style arrays support negative indices natively; plain JS
-+        # arrays index from the end via .length
-+        if Array.isArray(obj.shape):
++        # arrays index from the end via .length.  Probe defensively: wanim
++        # Mobjects raise AttributeError on unknown attributes (Proxy trap).
++        try:
++            has_shape = Array.isArray(obj.shape)
++        except:
++            has_shape = False
++        if has_shape:
 +            return v'obj[key]'
          key += obj.length
      return obj[key]
@@ -140,14 +145,32 @@ index e0ec495..4f5667d 100644
 +def ρσ_getslice(obj, start, end):
 +    if obj is undefined or obj is None:
 +        return obj
++    # Attribute probes must not throw: wanim Mobjects raise AttributeError on
++    # unknown attributes (Proxy get trap), so read them defensively.
++    try:
++        shape = obj.shape
++    except:
++        shape = undefined
++    try:
++        sl = obj.slice
++    except:
++        sl = undefined
 +    # numpy-style arrays expose a string-based .slice API; translate the Python
 +    # slice bounds into a "start:end" slice string.
-+    if Array.isArray(obj.shape) and jstype(obj.slice) is 'function':
++    if Array.isArray(shape) and jstype(sl) is 'function':
 +        a = '' if start is undefined or start is None else String(start)
 +        b = '' if end is undefined or end is None else String(end)
-+        return obj.slice(a + ':' + b)
-+    if jstype(obj.slice) is 'function':
-+        return obj.slice(start, end)
++        return sl.call(obj, a + ':' + b)
++    # Python objects with __getitem__ (e.g. wanim Mobjects/VGroups) handle
++    # slices themselves; forward the bounds as a slice-like object.
++    try:
++        g = obj.__getitem__
++    except:
++        g = undefined
++    if g:
++        return g.call(obj, v'{start: start, stop: end}')
++    if jstype(sl) is 'function':
++        return sl.call(obj, start, end)
 +    raise new TypeError('object is not subscriptable')
 +
 +
