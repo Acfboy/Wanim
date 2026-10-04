@@ -368,4 +368,29 @@ check("numpy facade gcd/lcm accept Python scalars and lists", () => {
   assert.throws(() => np.gcd(4.5, 2), TypeError);
 });
 
+check("numpy facade exposes legacy np.random.RandomState", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(typeof np.random.RandomState, "function");
+  // Bare-call construction (rapydscript emits `RandomState(1)`, no `new`).
+  const rng = np.random.RandomState(1);
+  const a = rng.uniform(-Math.PI, Math.PI);
+  assert.equal(typeof a, "number");
+  assert.ok(a >= -Math.PI && a <= Math.PI);
+  // Deterministic per seed: a fresh instance replays the same stream.
+  const rng2 = np.random.RandomState(1);
+  assert.equal(rng2.uniform(-Math.PI, Math.PI), a);
+  // Reseeding replays the stream as well.
+  rng2.seed(1);
+  assert.equal(rng2.uniform(-Math.PI, Math.PI), a);
+  // Common legacy methods exist and return sane shapes.
+  assert.equal(typeof rng.rand(), "number");
+  assert.equal(typeof rng.randn(), "number");
+  assert.equal(typeof rng.random(), "number");
+  const i = rng.randint(0, 10);
+  assert.equal(typeof i, "number");
+  assert.ok(i >= 0 && i < 10);
+  const n = rng.normal(0, 1);
+  assert.equal(typeof n, "number");
+});
+
 console.log(`\n${passed} tests passed`);
