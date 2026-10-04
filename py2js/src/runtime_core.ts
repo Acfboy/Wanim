@@ -1264,6 +1264,294 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     throw new TypeError("object is not subscriptable with multiple indices");
   }
 
+  // --- numpy multi-dim setitem (`a[:, 1] = v`) ------------------------------
+  //
+  // Target of the subscript-store branch of `desugarNumpySubscripts` (see
+  // `preprocess.ts`): `a[:, 1] = v` becomes
+  // `__wan_setitem(a, __wan_slice(None, None), 1, (v))` because a bare
+  // `__wan_getitem(...) = ...` is not valid JavaScript. The last argument is
+  // always the assigned value; the preceding arguments are the same specs
+  // `__wan_getitem` accepts. Returns the value so chained stores
+  // (`a[:, 0] = b[:, 0] = v`) work.
+
+  /** True when `v` broadcasts as a scalar for setitem distribution. */
+  function isSetScalar(v: Any): boolean {
+    if (v === null || v === undefined) return true;
+    if (typeof v === "number" || typeof v === "boolean" || typeof v === "string") {
+      return true;
+    }
+    if (isNdArray(v)) return (v.shape as readonly number[]).length === 0;
+    if (Array.isArray(v)) return false;
+    return true;
+  }
+
+  /** Convert an NDArray value to a plain scalar/nested list for distribution. */
+  function plainSetValue(v: Any): Any {
+    if (isNdArray(v)) {
+      if ((v.shape as readonly number[]).length === 0) return scalarize(v);
+      try {
+        return (v as Any).tolist();
+      } catch {
+        try {
+          return [...(v as Any)];
+        } catch {
+          return v;
+        }
+      }
+    }
+    return v;
+  }
+
+  /** The `k`-th element of a (possibly NDArray) sequence value. */
+  function setValueAt(v: Any, k: number): Any {
+    if (isNdArray(v)) {
+      try {
+        const row = (v as Any)[k];
+        if (row !== undefined) return row;
+      } catch {
+        /* fall through to tolist */
+      }
+      try {
+        return ((v as Any).tolist() as Any[])[k];
+      } catch {
+        return [...(v as Any)][k];
+      }
+    }
+    return (v as Any[])[k];
+  }
+
+  function normalizeSetIndex(idx: Any, length: number): number {
+    const n = typeof idx === "boolean" ? (idx ? 1 : 0) : Math.trunc(Number(idx));
+    if (!Number.isFinite(n)) {
+      throw new TypeError("slice indices must be integers or None");
+    }
+    let k = n < 0 ? n + length : n;
+    if (k < 0 || k >= length) {
+      throw new Error(`index ${String(idx)} is out of bounds for axis with size ${length}`);
+    }
+    return k;
+  }
+
+  function parseSetIntSpec(spec: string): number | null {
+    const n = Number(spec);
+    return Number.isNaN(n) ? null : Math.trunc(n);
+  }
+
+  function setNdRec(
+    arr: Any,
+    shape: readonly number[],
+    specs: Any[],
+    dim: number,
+    prefix: number[],
+    val: Any,
+  ): void {
+    if (dim === specs.length) {
+      if (!isSetScalar(val)) {
+        throw new Error("setting an array element with a sequence");
+      }
+      const scalar = isNdArray(val) ? scalarize(val) : val;
+      (arr as Any).set(prefix, scalar);
+      return;
+    }
+    const spec = specs[dim];
+    const length = shape[dim] as number;
+    if (typeof spec === "number" || typeof spec === "boolean") {
+      setNdRec(arr, shape, specs, dim + 1, [...prefix, normalizeSetIndex(spec, length)], val);
+      return;
+    }
+    if (typeof spec === "string") {
+      if (spec === ":" || spec === "..." || spec === "") {
+        if (isSetScalar(val)) {
+          const scalar = isNdArray(val) ? scalarize(val) : val;
+          for (let k = 0; k < length; k += 1) {
+            setNdRec(arr, shape, specs, dim + 1, [...prefix, k], scalar);
+          }
+        } else {
+          const seq = plainSetValue(val) as Any[];
+          if (!Array.isArray(seq) || seq.length !== length) {
+            throw new Error("could not broadcast input array from shape");
+          }
+          for (let k = 0; k < length; k += 1) {
+            setNdRec(arr, shape, specs, dim + 1, [...prefix, k], seq[k]);
+          }
+        }
+        return;
+      }
+      if (!spec.includes(":")) {
+        const parsed = parseSetIntSpec(spec);
+        if (parsed === null) throw new TypeError("slice indices must be integers or None");
+        setNdRec(arr, shape, specs, dim + 1, [...prefix, normalizeSetIndex(parsed, length)], val);
+        return;
+      }
+      const indices = sliceIndices(length, spec);
+      if (isSetScalar(val)) {
+        const scalar = isNdArray(val) ? scalarize(val) : val;
+        for (const k of indices) {
+          setNdRec(arr, shape, specs, dim + 1, [...prefix, k], scalar);
+        }
+      } else {
+        const seq = plainSetValue(val) as Any[];
+        if (!Array.isArray(seq) || seq.length !== indices.length) {
+          throw new Error("could not broadcast input array from shape");
+        }
+        for (let t = 0; t < indices.length; t += 1) {
+          setNdRec(arr, shape, specs, dim + 1, [...prefix, indices[t] as number], seq[t]);
+        }
+      }
+      return;
+    }
+    if (spec === null || spec === undefined) {
+      throw new TypeError("newaxis is not assignable");
+    }
+    throw new TypeError("fancy indexing assignment is not supported");
+  }
+
+  function wanSetItemNd(arr: Any, specs: Any[], value: Any): Any {
+    const shape = arr.shape as readonly number[];
+    const ndim = shape.length;
+    let finalSpecs = specs;
+    const dot = specs.indexOf("...");
+    if (dot !== -1) {
+      const fill = Math.max(0, ndim - (specs.length - 1));
+      finalSpecs = [
+        ...specs.slice(0, dot),
+        ...new Array<string>(fill).fill(":"),
+        ...specs.slice(dot + 1),
+      ];
+    }
+    if (finalSpecs.length < ndim) {
+      finalSpecs = [...finalSpecs, ...new Array<string>(ndim - finalSpecs.length).fill(":")];
+    }
+    if (finalSpecs.length !== ndim) {
+      throw new Error(`too many indices for array with ${ndim} dimensions`);
+    }
+    setNdRec(arr, shape, finalSpecs, 0, [], value);
+    return value;
+  }
+
+  function setArrayRec(container: Any[], specs: Any[], dim: number, val: Any): void {
+    const spec = specs[dim];
+    const isLast = dim === specs.length - 1;
+    if (typeof spec === "number" || typeof spec === "boolean") {
+      const idx = normalizeSetIndex(spec, container.length);
+      if (isLast) {
+        container[idx] = isNdArray(val) && (val.shape as readonly number[]).length === 0
+          ? scalarize(val)
+          : isNdArray(val)
+            ? plainSetValue(val)
+            : val;
+        return;
+      }
+      const sub = container[idx];
+      if (!Array.isArray(sub)) throw new TypeError("'int' object is not subscriptable");
+      setArrayRec(sub, specs, dim + 1, val);
+      return;
+    }
+    if (typeof spec === "string") {
+      let indices: number[];
+      if (spec === ":" || spec === "..." || spec === "") {
+        indices = container.map((_, k) => k);
+      } else if (!spec.includes(":")) {
+        const parsed = parseSetIntSpec(spec);
+        if (parsed === null) throw new TypeError("slice indices must be integers or None");
+        const idx = normalizeSetIndex(parsed, container.length);
+        if (isLast) {
+          container[idx] = isNdArray(val) && (val.shape as readonly number[]).length === 0
+            ? scalarize(val)
+            : isNdArray(val)
+              ? plainSetValue(val)
+              : val;
+          return;
+        }
+        const sub = container[idx];
+        if (!Array.isArray(sub)) throw new TypeError("'int' object is not subscriptable");
+        setArrayRec(sub, specs, dim + 1, val);
+        return;
+      } else {
+        indices = sliceIndices(container.length, spec);
+      }
+      if (isLast) {
+        if (isSetScalar(val)) {
+          const scalar = isNdArray(val) ? scalarize(val) : val;
+          for (const k of indices) container[k] = scalar;
+        } else {
+          const seq = plainSetValue(val) as Any[];
+          if (!Array.isArray(seq) || seq.length !== indices.length) {
+            throw new Error("could not broadcast input array from shape");
+          }
+          for (let t = 0; t < indices.length; t += 1) {
+            const elt = seq[t];
+            container[indices[t] as number] = isNdArray(elt) && (elt.shape as readonly number[]).length === 0
+              ? scalarize(elt)
+              : isNdArray(elt)
+                ? plainSetValue(elt)
+                : elt;
+          }
+        }
+        return;
+      }
+      if (isSetScalar(val)) {
+        const scalar = isNdArray(val) ? scalarize(val) : val;
+        for (const k of indices) {
+          const sub = container[k];
+          if (!Array.isArray(sub)) throw new TypeError("'int' object is not subscriptable");
+          setArrayRec(sub, specs, dim + 1, scalar);
+        }
+      } else {
+        const seq = plainSetValue(val) as Any[];
+        if (!Array.isArray(seq) || seq.length !== indices.length) {
+          throw new Error("could not broadcast input array from shape");
+        }
+        for (let t = 0; t < indices.length; t += 1) {
+          const sub = container[indices[t] as number];
+          if (!Array.isArray(sub)) throw new TypeError("'int' object is not subscriptable");
+          setArrayRec(sub, specs, dim + 1, seq[t]);
+        }
+      }
+      return;
+    }
+    if (spec === null || spec === undefined) {
+      throw new TypeError("newaxis is not assignable");
+    }
+    throw new TypeError("fancy indexing assignment is not supported");
+  }
+
+  function wanSetItemArray(arr: Any[], specs: Any[], value: Any): Any {
+    const finalSpecs = specs.map((s) => (s === "..." ? ":" : s));
+    setArrayRec(arr, finalSpecs, 0, value);
+    return value;
+  }
+
+  /**
+   * Multi-dim setitem target of the `desugarNumpySubscripts` preprocess step.
+   * The last argument is the assigned value; the preceding arguments are the
+   * same specs `wanGetItem` accepts. Returns the value for chained stores.
+   */
+  function wanSetItem(obj: Any, ...args: Any[]): Any {
+    if (args.length < 2) {
+      throw new TypeError("__wan_setitem requires at least one index and a value");
+    }
+    const value = args[args.length - 1];
+    const specs = args.slice(0, -1);
+    if (obj === null || obj === undefined) {
+      throw new TypeError("'NoneType' object is not subscriptable");
+    }
+    if (isNdArray(obj)) return wanSetItemNd(obj, specs, value);
+    if (Array.isArray(obj)) return wanSetItemArray(obj, specs, value);
+    if (typeof obj === "string") {
+      throw new TypeError("'str' object does not support item assignment");
+    }
+    const setitem = (obj as Any).__setitem__;
+    if (typeof setitem === "function") {
+      return setitem.call(obj, specs.length === 1 ? specs[0] : specs, value);
+    }
+    if (specs.length === 1) {
+      (obj as Any)[specs[0] as Any] = value;
+      return value;
+    }
+    throw new TypeError("object does not support multi-dim item assignment");
+  }
+
   /**
    * Round a JS number the way CPython's `round(x, n)` does.
    *
@@ -1800,6 +2088,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // Multi-dim subscript helpers for the `desugarNumpySubscripts` step
     // (likewise reserved names; see `preprocess.ts`).
     globals.__wan_getitem = wanGetItem;
+    globals.__wan_setitem = wanSetItem;
     globals.__wan_slice = wanSliceDim;
     // Matrix-multiplication helper for the `desugarMatmul` step (likewise a
     // reserved name; see `preprocess.ts`).
@@ -1823,6 +2112,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonRound,
     wanFlatten1,
     wanGetItem,
+    wanSetItem,
     wanSlice: wanSliceDim,
     wanMatmul,
     getDot,
