@@ -964,6 +964,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonAdd(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) return complexAdd(a, b);
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
     if (b !== null && b !== undefined && typeof b.__radd__ === "function") return b.__radd__(a);
     if (typeof a === "number" && typeof b === "number") return a + b;
@@ -983,6 +984,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonSub(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) return complexSub(a, b);
     if (a !== null && a !== undefined && typeof a.__sub__ === "function") return a.__sub__(b);
     if (b !== null && b !== undefined && typeof b.__rsub__ === "function") return b.__rsub__(a);
     if (typeof a === "number" && typeof b === "number") return a - b;
@@ -998,6 +1000,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonMul(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) return complexMul(a, b);
     if (a !== null && a !== undefined && typeof a.__mul__ === "function") return a.__mul__(b);
     if (b !== null && b !== undefined && typeof b.__rmul__ === "function") return b.__rmul__(a);
     if (typeof a === "number" && typeof b === "number") return a * b;
@@ -1027,6 +1030,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonDiv(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) return complexDiv(a, b);
     if (a !== null && a !== undefined && typeof a.__truediv__ === "function") return a.__truediv__(b);
     if (b !== null && b !== undefined && typeof b.__rtruediv__ === "function") return b.__rtruediv__(a);
     if (typeof a === "number" && typeof b === "number") return a / b;
@@ -1037,6 +1041,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonFloorDiv(a: Any, b: Any): Any {
+    // CPython: `complex // x` raises (there is no complex floor division).
+    if (isComplexLike(a) || isComplexLike(b)) {
+      throw new TypeError("unsupported operand type(s) for //: 'complex'");
+    }
     if (a !== null && a !== undefined && typeof a.__floordiv__ === "function") return a.__floordiv__(b);
     if (typeof a === "number" && typeof b === "number") return Math.floor(a / b);
     if (isArrayLike(a) && typeof b === "number") return a.map((v) => Math.floor(v / b));
@@ -1051,6 +1059,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (a !== null && a !== undefined && typeof a.__mod__ === "function") return a.__mod__(b);
     // `"..." % x` is Python's printf-style string formatting, not modulo.
     if (typeof a === "string") return pythonPercentFormat(a, b);
+    // CPython: `complex % x` raises (there is no complex modulo).
+    if (isComplexLike(a) || isComplexLike(b)) {
+      throw new TypeError("can't mod complex numbers.");
+    }
     if (typeof a === "number" && typeof b === "number") {
       const r = a % b;
       return r !== 0 && r < 0 !== b < 0 ? r + b : r;
@@ -1068,6 +1080,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonPow(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) return complexPow(a, b);
     if (a !== null && a !== undefined && typeof a.__pow__ === "function") return a.__pow__(b);
     if (typeof a === "number" && typeof b === "number") return a ** b;
     if (isArrayLike(a) && typeof b === "number") return a.map((v) => v ** b);
@@ -1079,11 +1092,251 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonNeg(a: Any): Any {
+    if (isComplexLike(a)) return complexNeg(a);
     if (a !== null && a !== undefined && typeof a.__neg__ === "function") return a.__neg__();
     if (typeof a === "number") return -a;
     if (isArrayLike(a)) return a.map((v) => -v);
     if (isNdArray(a)) return scalarize(np.negative(a));
     return -a;
+  }
+
+  // --- Python complex ------------------------------------------------------
+  //
+  // rapydscript-ng has no complex-number support: its tokenizer rejects the
+  // `j`-suffixed literal ("Invalid syntax: 0j") and the baselib defines no
+  // `complex` builtin.  `desugarComplexLiterals` (see `preprocess.ts`)
+  // rewrites every decimal `...j` literal into `__wan_complex(0, imag)` before
+  // compilation; this section implements the runtime side:
+  //
+  //   - `pythonComplex(...)` (also exposed as the `complex` and
+  //     `__wan_complex` globals), mirroring CPython's
+  //     `complex([real[, imag]])` including the string form
+  //     (`complex("1+2j")`, `complex("3j")`, `complex("2")`);
+  //   - an immutable `{ re, im, real, imag, ...dunders }` representation:
+  //     `re`/`im` match wanim's `ComplexPoint` (so `complex_to_R3(z)` keeps
+  //     working) while `real`/`imag` match CPython's attribute names (so
+  //     `z.real` / `z.imag` keep working);
+  //   - explicit complex branches in the numeric operators below, so plain
+  //     `{ re, im }` points (e.g. from `ComplexPlane.point_to_number`, which
+  //     carry no methods) interoperate with real numbers and
+  //     method-carrying complex values alike.
+  //
+  // Known limitations (documented in ): `abs(complex)`
+  // still goes through rapydscript's baselib (`Math.abs`, i.e. NaN); use
+  // `(z.real ** 2 + z.imag ** 2) ** 0.5` instead.  `==`/`!=` on complex
+  // values compare object identity, not value equality.
+
+  /**
+   * True when `value` is a complex number: either a value created by
+   * `makeComplex`/`pythonComplex` (marked) or any plain `{ re, im }` /
+   * `{ real, imag }` pair such as wanim's `ComplexPoint`.  Arrays and
+   * NDArrays are never complex, even though an NDArray row view could
+   * duck-type `{ re, im }` through its Proxy.
+   */
+  function isComplexLike(value: unknown): boolean {
+    if (value === null || value === undefined || typeof value !== "object") return false;
+    if (Array.isArray(value) || isNdArray(value)) return false;
+    const obj = value as Record<string, unknown>;
+    if (obj.__wan_complex__ === true) return true;
+    if (typeof obj.re === "number" && typeof obj.im === "number") return true;
+    if (typeof obj.real === "number" && typeof obj.imag === "number") return true;
+    return false;
+  }
+
+  /** Split a numeric-ish value into `[re, im]`; throws `TypeError` otherwise. */
+  function complexParts(value: Any, op: string): [number, number] {
+    if (typeof value === "number") return [value, 0];
+    if (typeof value === "boolean") return [value ? 1 : 0, 0];
+    if (isNdArray(value)) {
+      const scalar = scalarize(value);
+      if (scalar !== value) return complexParts(scalar, op);
+    }
+    if (isComplexLike(value)) {
+      const obj = value as Any;
+      const re = typeof obj.re === "number" ? obj.re : obj.real;
+      const im = typeof obj.im === "number" ? obj.im : obj.imag;
+      return [re, im];
+    }
+    throw new TypeError(`unsupported operand type(s) for ${op}: 'complex' and '${typeof value}'`);
+  }
+
+  function complexAdd(a: Any, b: Any): Any {
+    const [ar, ai] = complexParts(a, "+");
+    const [br, bi] = complexParts(b, "+");
+    return makeComplex(ar + br, ai + bi);
+  }
+
+  function complexSub(a: Any, b: Any): Any {
+    const [ar, ai] = complexParts(a, "-");
+    const [br, bi] = complexParts(b, "-");
+    return makeComplex(ar - br, ai - bi);
+  }
+
+  function complexMul(a: Any, b: Any): Any {
+    const [ar, ai] = complexParts(a, "*");
+    const [br, bi] = complexParts(b, "*");
+    return makeComplex(ar * br - ai * bi, ar * bi + ai * br);
+  }
+
+  function complexDiv(a: Any, b: Any): Any {
+    const [ar, ai] = complexParts(a, "/");
+    const [br, bi] = complexParts(b, "/");
+    const denom = br * br + bi * bi;
+    if (denom === 0) {
+      const error = new Error("complex division by zero");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    return makeComplex(
+      (ar * br + ai * bi) / denom,
+      (ai * br - ar * bi) / denom,
+    );
+  }
+
+  function complexPow(a: Any, b: Any): Any {
+    const [ar, ai] = complexParts(a, "**");
+    const [br, bi] = complexParts(b, "**");
+    if (ar === 0 && ai === 0) {
+      if (br === 0 && bi === 0) return makeComplex(1, 0);
+      if (br > 0) return makeComplex(0, 0);
+      const error = new Error("0.0 to a negative or complex power");
+      error.name = "ZeroDivisionError";
+      throw error;
+    }
+    // `a ** b == exp(b * log(a))`, with `log` in polar form.
+    const radius = Math.hypot(ar, ai);
+    const theta = Math.atan2(ai, ar);
+    const logRadius = Math.log(radius);
+    const magnitude = Math.exp(br * logRadius - bi * theta);
+    const angle = br * theta + bi * logRadius;
+    return makeComplex(magnitude * Math.cos(angle), magnitude * Math.sin(angle));
+  }
+
+  function complexNeg(a: Any): Any {
+    const [re, im] = complexParts(a, "unary -");
+    return makeComplex(-re, -im);
+  }
+
+  /** Create an immutable complex value (see above for the representation). */
+  function makeComplex(re: number, im: number): Any {
+    const obj: Record<string, Any> = {
+      re,
+      im,
+      real: re,
+      imag: im,
+      __wan_complex__: true,
+    };
+    obj.__add__ = (other: Any) => complexAdd(obj, other);
+    obj.__radd__ = (other: Any) => complexAdd(other, obj);
+    obj.__sub__ = (other: Any) => complexSub(obj, other);
+    obj.__rsub__ = (other: Any) => complexSub(other, obj);
+    obj.__mul__ = (other: Any) => complexMul(obj, other);
+    obj.__rmul__ = (other: Any) => complexMul(other, obj);
+    obj.__truediv__ = (other: Any) => complexDiv(obj, other);
+    obj.__rtruediv__ = (other: Any) => complexDiv(other, obj);
+    obj.__pow__ = (other: Any) => complexPow(obj, other);
+    obj.__rpow__ = (other: Any) => complexPow(other, obj);
+    obj.__neg__ = () => makeComplex(-re, -im);
+    obj.conjugate = () => makeComplex(re, -im);
+    return obj;
+  }
+
+  /** Parse one float component of `complex(text)` (allows `inf`/`nan`). */
+  function parseComplexComponent(part: string, full: string, imag: boolean): number {
+    const fail = (): never => {
+      const error = new Error(`complex() arg is a malformed string: ${full}`);
+      error.name = "ValueError";
+      throw error;
+    };
+    if (imag && (part === "" || part === "+")) return 1;
+    if (imag && part === "-") return -1;
+    if (part === "") fail();
+    const lower = part.toLowerCase();
+    if (lower === "inf" || lower === "+inf" || lower === "infinity" || lower === "+infinity") {
+      return Infinity;
+    }
+    if (lower === "-inf" || lower === "-infinity") return -Infinity;
+    if (lower === "nan" || lower === "+nan" || lower === "-nan") return NaN;
+    const value = Number(part);
+    if (Number.isNaN(value)) fail();
+    return value;
+  }
+
+  /**
+   * Parse the full text of `complex(text)`, mirroring CPython: optional
+   * whitespace, an optional real part, and an optional imaginary part
+   * suffixed with `j`/`J` (a bare `j` means `1j`).  Single underscores
+   * between digits are accepted like CPython.
+   */
+  function parseComplexText(text: string): [number, number] {
+    const fail = (): never => {
+      const error = new Error(`complex() arg is a malformed string: ${text}`);
+      error.name = "ValueError";
+      throw error;
+    };
+    const compact = String(text).replace(/\s+/g, "").replace(/(?<=\d)_(?=\d)/g, "");
+    if (compact === "") fail();
+    const last = compact[compact.length - 1]!;
+    if (last !== "j" && last !== "J") {
+      return [parseComplexComponent(compact, text, false), 0];
+    }
+    const body = compact.slice(0, -1);
+    // Split the body into real/imaginary at the last interior `+`/`-` that is
+    // not part of an exponent (mirrors how Python tokenizes `1e-3+2j`).
+    let split = -1;
+    for (let k = body.length - 1; k > 0; k -= 1) {
+      const c = body[k]!;
+      if ((c === "+" || c === "-") && body[k - 1]!.toLowerCase() !== "e") {
+        split = k;
+        break;
+      }
+    }
+    if (split === -1) return [0, parseComplexComponent(body, text, true)];
+    return [
+      parseComplexComponent(body.slice(0, split), text, false),
+      parseComplexComponent(body.slice(split), text, true),
+    ];
+  }
+
+  /**
+   * CPython's `complex([real[, imag]])`.
+   *
+   * `complex(x, y)` is `x + y*1j`, so a complex first argument contributes
+   * its parts (`complex(1+2j, 3) == (1+5j)`); a string first argument forbids
+   * the second one.  0-d NDArrays unwrap to their scalar like the ufunc
+   * wrappers do.
+   */
+  function pythonComplex(real?: Any, imag?: Any): Any {
+    if (typeof real === "string") {
+      if (imag !== undefined) {
+        throw new TypeError("complex() can't take second arg if first is a string");
+      }
+      const [re, im] = parseComplexText(real);
+      return makeComplex(re, im);
+    }
+    if (real === undefined) {
+      if (imag === undefined) return makeComplex(0, 0);
+      throw new TypeError("complex() first argument must be a string or a number, not 'NoneType'");
+    }
+    if (real === null) {
+      throw new TypeError("complex() first argument must be a string or a number, not 'NoneType'");
+    }
+    const [ar, ai] = complexParts(real, "complex()");
+    if (imag === undefined) return makeComplex(ar, ai);
+    if (typeof imag === "string") {
+      throw new TypeError("complex() second argument must be a number");
+    }
+    const [br, bi] = complexParts(imag, "complex()");
+    return makeComplex(ar - bi, ai + br);
+  }
+
+  /**
+   * Factory target of the `desugarComplexLiterals` preprocess step (see
+   * `preprocess.ts`): `0j` becomes `__wan_complex(0, 0)`.  Always called with
+   * two real numbers; behaves like `complex(real, imag)` otherwise.
+   */
+  function wanComplex(real?: Any, imag?: Any): Any {
+    return pythonComplex(real, imag);
   }
 
   /**
@@ -2236,8 +2489,12 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_getdot = getDot;
     // Python builtins rapydscript's baselib does not provide.  `abs`, `min`,
     // `max` and `sum` come from baselib; `round` has no JS equivalent that
-    // matches CPython's banker's rounding / `ndigits` argument.
+    // matches CPython's banker's rounding / `ndigits` argument.  `complex`
+    // (and the `__wan_complex` factory the `desugarComplexLiterals` step
+    // emits) likewise has no baselib equivalent.
     globals.round = pythonRound;
+    globals.complex = pythonComplex;
+    globals.__wan_complex = wanComplex;
     // One-level flatten for the multi-`for` comprehension desugar (see
     // `desugarMultiForComprehensions` in `preprocess.ts`). The name is
     // reserved: the desugar refuses to run when user code already uses it.
@@ -2267,6 +2524,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonPow,
     pythonNeg,
     pythonRound,
+    pythonComplex,
+    wanComplex,
+    isComplexLike,
     wanFlatten1,
     wanGetItem,
     wanSetItem,
