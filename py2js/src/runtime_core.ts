@@ -590,6 +590,150 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return value;
   }
 
+  /**
+   * Recursively convert NDArrays nested in plain JS arrays to plain lists.
+   *
+   * numpy-ts' `array` infers dtype by inspecting elements as primitives, so
+   * `np.array([nd1, nd2])` (a common manim pattern: stacking point vectors)
+   * yields `NaN`s instead of a 2-D array.  Unwrap each NDArray via `tolist()`
+   * first; plain values pass through untouched.
+   */
+  function deepUnwrapNd(value: Any): Any {
+    if (isNdArray(value)) {
+      try {
+        const plain = (value as Any).tolist?.();
+        if (plain !== undefined) return plain;
+      } catch {
+        /* fall through to iterator */
+      }
+      try {
+        if (typeof (value as Any)[Symbol.iterator] === "function") {
+          return [...(value as Any)].map(deepUnwrapNd);
+        }
+      } catch {
+        /* return as-is */
+      }
+      return value;
+    }
+    if (Array.isArray(value)) {
+      let dirty = false;
+      const out = new Array(value.length);
+      for (let i = 0; i < value.length; i += 1) {
+        const unwrapped = deepUnwrapNd(value[i]);
+        out[i] = unwrapped;
+        if (unwrapped !== value[i]) dirty = true;
+      }
+      return dirty ? out : value;
+    }
+    return value;
+  }
+
+  /**
+   * Teach numpy-ts NDArrays the Python call shapes rapydscript emits.
+   *
+   * 1. `f(*arr, kw=...)` compiles to `arr.concat([kwbag])`, but NDArray has no
+   *    `concat`.  Spread via the (working) iterator so the splat rows plus the
+   *    trailing kwargs bag reach `ρσ_interpolate_kwargs` like a plain array.
+   * 2. `f(*arr)` without kwargs compiles to `f.apply(thisArg, arr)`, which
+   *    reads `length` plus numeric indices.  Indices already work through the
+   *    Proxy (`arr[0]` is a row view); expose `length` as `shape[0]`.
+   * 3. `arr.mean(axis=0)` compiles to `arr.mean(kwbag)`; baselib only maps the
+   *    kwargs bag onto positional slots when `f.__argnames__` exists.  Annotate
+   *    the reduction methods (nump-ts signatures: `mean(axis?, keepdims?)`,
+   *    `percentile(q, axis?, keepdims?)`, ...) so the mapping happens.
+   */
+  function patchNDArrayForPython(): void {
+    const proto = (NDArray as Any)?.prototype;
+    if (proto === undefined || proto === null) return;
+    if ((proto as Any).__wanim_python_patched__ === true) return;
+    (proto as Any).__wanim_python_patched__ = true;
+    if (typeof proto.concat !== "function") {
+      Object.defineProperty(proto, "concat", {
+        configurable: true,
+        writable: true,
+        value: function (this: Any, ...args: Any[]): Any[] {
+          let rows: Any[];
+          try {
+            rows = typeof this[Symbol.iterator] === "function" ? [...this] : [];
+          } catch {
+            rows = [];
+          }
+          if (rows.length === 0 && Array.isArray(this.shape) && this.shape.length > 0) {
+            try {
+              rows = Array.from({ length: this.shape[0] as number }, (_, i) => this[i]);
+            } catch {
+              rows = [];
+            }
+          }
+          return rows.concat(...args);
+        },
+      });
+    }
+    if (Object.getOwnPropertyDescriptor(proto, "length") === undefined) {
+      try {
+        Object.defineProperty(proto, "length", {
+          configurable: true,
+          get(this: Any): number {
+            return Array.isArray(this?.shape) ? (this.shape[0] as number) : 0;
+          },
+        });
+      } catch {
+        /* read-only prototype: splats without kwargs keep failing loudly */
+      }
+    }
+    const axisReductions = [
+      "sum", "mean", "prod", "max", "min", "ptp", "var", "std",
+      "nansum", "nanmean", "nanprod", "nanmin", "nanmax", "nanvar", "nanstd",
+      "all", "any", "median", "nanmedian", "cumsum", "cumprod",
+      "nancumsum", "nancumprod", "argmin", "argmax", "nanargmin", "nanargmax",
+      "sort", "argsort",
+    ];
+    for (const name of axisReductions) {
+      try {
+        const fn = proto[name];
+        if (typeof fn === "function" && !Array.isArray(fn.__argnames__)) {
+          fn.__argnames__ = ["axis", "keepdims", "dtype", "out"];
+        }
+      } catch {
+        /* ignore missing methods across numpy-ts versions */
+      }
+    }
+    for (const name of ["percentile", "quantile", "nanpercentile", "nanquantile"]) {
+      try {
+        const fn = proto[name];
+        if (typeof fn === "function" && !Array.isArray(fn.__argnames__)) {
+          fn.__argnames__ = ["q", "axis", "keepdims"];
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const name of ["partition", "argpartition"]) {
+      try {
+        const fn = proto[name];
+        if (typeof fn === "function" && !Array.isArray(fn.__argnames__)) {
+          fn.__argnames__ = ["kth", "axis"];
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      if (typeof proto.astype === "function" && !Array.isArray(proto.astype.__argnames__)) {
+        proto.astype.__argnames__ = ["dtype", "copy"];
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (typeof proto.clip === "function" && !Array.isArray(proto.clip.__argnames__)) {
+        proto.clip.__argnames__ = ["a_min", "a_max"];
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   function elementwise(a: readonly number[], b: readonly number[], f: (x: number, y: number) => number): number[] {
     if (a.length !== b.length) return undefined as unknown as number[];
     const out = new Array<number>(a.length);
@@ -1278,6 +1422,12 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         if (shapeFirst && positional.length > 0 && typeof positional[0] === "number") {
           positional = [[positional[0]], ...positional.slice(1)];
         }
+        // `np.array([v1, v2])` where each element is an NDArray row (e.g.
+        // stacking point vectors) confuses numpy-ts' dtype inference (NaNs).
+        // Unwrap nested NDArrays to plain lists first.
+        if (positional.length > 0 && Array.isArray(positional[0])) {
+          positional = [deepUnwrapNd(positional[0]), ...positional.slice(1)];
+        }
         return callNumpyWithDtype(fn, dtypeIndex, kwargs !== null
           ? [...positional, kwargs]
           : positional);
@@ -1305,6 +1455,39 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       // at index 1.  Derive from the underlying arity instead of hardcoding.
       const dtypeIndex = name === "identity" ? 1 : 3;
       wrapNumpyCreation(name, dtypeIndex);
+    }
+    // numpy-ts reduction functions take `axis` positionally, but Python calls
+    // them with kwargs (`np.mean(a, axis=0)`, `arr.mean(axis=0)`).  rapydscript
+    // only maps the kwargs bag onto positional slots when `f.__argnames__`
+    // exists, so annotate both the module functions and (via the prototype
+    // patch above) the NDArray methods.
+    patchNDArrayForPython();
+    const moduleAxisReductions = [
+      "sum", "mean", "prod", "max", "min", "ptp", "var", "std",
+      "nansum", "nanmean", "nanprod", "nanmin", "nanmax", "nanvar", "nanstd",
+      "all", "any", "median", "nanmedian", "cumsum", "cumprod",
+      "nancumsum", "nancumprod", "argmin", "argmax", "nanargmin", "nanargmax",
+      "sort", "argsort",
+    ];
+    for (const name of moduleAxisReductions) {
+      try {
+        const fn = facade[name];
+        if (typeof fn === "function" && !Array.isArray((fn as Any).__argnames__)) {
+          (fn as Any).__argnames__ = ["a", "axis", "keepdims", "dtype", "out"];
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const name of ["percentile", "quantile", "nanpercentile", "nanquantile"]) {
+      try {
+        const fn = facade[name];
+        if (typeof fn === "function" && !Array.isArray((fn as Any).__argnames__)) {
+          (fn as Any).__argnames__ = ["a", "q", "axis", "keepdims"];
+        }
+      } catch {
+        /* ignore */
+      }
     }
     return facade;
   }
