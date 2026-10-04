@@ -2310,6 +2310,60 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           ? fast(a, b)
           : wrapped(a, b, ...rest);
     }
+    // `np.conj`/`np.conjugate` on Python scalars throw
+    // "undefined is not iterable": numpy-ts requires NDArray inputs, so
+    // `np.conj(1)` and `np.conj(complex(...))` (a plain `{re, im}` object)
+    // both fail.  Coerce scalars/lists before delegating and map our complex
+    // representation back to `makeComplex` (which carries `.real`/`.imag` and
+    // dunders, unlike numpy-ts' bare `{re, im}`).
+    for (const name of ["conj", "conjugate"]) {
+      const fn = (np as Any)[name];
+      if (typeof fn !== "function") continue;
+      const wrapped = (x: Any, ...rest: Any[]): Any => {
+        const clean = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
+          ? rest.slice(0, -1)
+          : rest;
+        if (clean.length === 0) {
+          if (isComplexLike(x)) {
+            const [re, im] = complexParts(x, name);
+            return makeComplex(re, -im);
+          }
+          if (typeof x === "number" || typeof x === "boolean" || typeof x === "bigint") {
+            return x;
+          }
+          if (isNdArray(x)) {
+            const result = (fn as Any)(x);
+            const scalar = scalarize(result);
+            if (scalar !== result && isComplexLike(scalar)) {
+              const [re, im] = complexParts(scalar, name);
+              return makeComplex(re, im);
+            }
+            return result;
+          }
+          if (Array.isArray(x)) {
+            try {
+              return (fn as Any)((np as Any).asarray(deepUnwrapNd(x)));
+            } catch {
+              /* fall through to the generic path */
+            }
+          }
+        }
+        const coerced = asNd(x);
+        if (isComplexLike(coerced)) {
+          const [re, im] = complexParts(coerced, name);
+          return makeComplex(re, -im);
+        }
+        const result = (fn as Any)(coerced, ...clean);
+        const scalar = scalarize(result);
+        if (scalar !== result && isComplexLike(scalar)) {
+          const [re, im] = complexParts(scalar, name);
+          return makeComplex(re, im);
+        }
+        return scalar;
+      };
+      (wrapped as Any).__argnames__ = ["x"];
+      facade[name] = wrapped;
+    }
     // `np.gcd`/`np.lcm` on Python scalars (or plain lists) throw
     // "undefined is not iterable": numpy-ts requires integer NDArray inputs
     // and additionally rejects float dtype, so even `np.gcd(4, 6)` fails.
