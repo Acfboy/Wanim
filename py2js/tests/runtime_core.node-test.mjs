@@ -331,6 +331,61 @@ check("python random: distributions match CPython (seed 7)", () => {
   );
 });
 
+check("python math: combinatorics match CPython", () => {
+  const runtime = ndCore.buildRuntime();
+  const math = runtime.globals.math;
+  assert.equal(math.comb(3, 1), 3);
+  assert.equal(math.comb(3, 5), 0);
+  assert.equal(math.comb(10, 5), 252);
+  assert.equal(math.perm(3, 1), 3);
+  assert.equal(math.perm(5, 0), 1);
+  assert.equal(math.factorial(5), 120);
+  assert.equal(math.factorial(0), 1);
+  assert.equal(math.gcd(12, 8), 4);
+  assert.equal(math.gcd(0, 0), 0);
+  assert.equal(math.lcm(4, 6), 12);
+  assert.equal(math.lcm(), 1);
+  assert.equal(math.lcm(0, 5), 0);
+  assert.equal(math.isqrt(17), 4);
+  assert.throws(() => math.comb(-1, 0), RangeError);
+  assert.throws(() => math.factorial(3.5), TypeError);
+});
+
+check("python math: floats and constants match JS Math", () => {
+  const runtime = ndCore.buildRuntime();
+  const math = runtime.globals.math;
+  assert.equal(math.pi, Math.PI);
+  assert.equal(math.e, Math.E);
+  assert.equal(math.tau, Math.PI * 2);
+  assert.equal(math.inf, Infinity);
+  assert.ok(Number.isNaN(math.nan));
+  assert.equal(math.sqrt(16), 4);
+  assert.equal(math.sin(0), 0);
+  assert.equal(math.log(Math.E), 1);
+  assert.equal(math.log(8, 2), 3);
+  assert.equal(math.degrees(Math.PI), 180);
+  assert.equal(math.radians(180), Math.PI);
+  assert.equal(math.hypot(3, 4), 5);
+  assert.equal(math.dist([0, 0], [3, 4]), 5);
+  assert.equal(math.isclose(1.0, 1.0 + 1e-10), true);
+  assert.equal(math.isfinite(1.5), true);
+  assert.equal(math.isinf(Infinity), true);
+  assert.equal(math.isnan(NaN), true);
+  assert.equal(math.floor(3.7), 3);
+  assert.equal(math.ceil(3.2), 4);
+  assert.equal(math.trunc(-3.7), -3);
+  assert.deepEqual(math.modf(3.7), [0.7000000000000002, 3]);
+  assert.deepEqual(math.frexp(8), [0.5, 4]);
+  assert.equal(math.remainder(5, 3), -1);
+  assert.equal(math.fsum([0.1, 0.2, 0.3]), 0.6);
+  assert.equal(math.erf(0), 0);
+  assert.equal(math.exp(0), 1);
+  assert.equal(math.pow(2, 10), 1024);
+  // Detached from-imports keep working (closures, like `random`).
+  const comb = runtime.globals.math.comb;
+  assert.equal(comb(4, 2), 6);
+});
+
 check("python random: Random instances and getstate round-trip", () => {
   const runtime = ndCore.buildRuntime();
   const Random = runtime.globals.random.Random;

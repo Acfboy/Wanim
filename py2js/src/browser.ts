@@ -83,7 +83,7 @@ export interface CompiledScene {
 /**
  * Translate manim Python into JavaScript.
  *
- * The `manim`/`numpy`/`random` imports are stripped (their exports are
+ * The `manim`/`numpy`/`random`/`math` imports are stripped (their exports are
  * injected as globals by {@link buildRuntime}) and any other import raises a
  * friendly error, because the rest of the Python standard library is not
  * available in the runtime.
