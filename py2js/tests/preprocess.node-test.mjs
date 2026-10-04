@@ -9,6 +9,7 @@ import {
   desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
+  desugarReversedBuiltin,
   formatUnsupportedImportError,
   preprocessImports,
   renameJsReservedWords,
@@ -363,6 +364,48 @@ check("matmul desugar leaves unparseable @ for the compiler", () => {
   assert.equal(
     desugarMatmul("x = a @\n"),
     "x = a @\n",
+  );
+});
+
+check("reversed desugar rewrites bare reversed() calls", () => {
+  assert.equal(
+    desugarReversedBuiltin("for name, part in zip(names, reversed(parts)):\n"),
+    "for name, part in zip(names, __wan_reversed(parts)):\n",
+  );
+  assert.equal(
+    desugarReversedBuiltin("x = list(reversed([1, 2, 3]))\n"),
+    "x = list(__wan_reversed([1, 2, 3]))\n",
+  );
+  assert.equal(
+    desugarReversedBuiltin("x = reversed (seq)\n"),
+    "x = __wan_reversed (seq)\n",
+  );
+});
+
+check("reversed desugar leaves attributes, strings, comments and shadowing alone", () => {
+  assert.equal(
+    desugarReversedBuiltin("x = obj.reversed(seq)\n"),
+    "x = obj.reversed(seq)\n",
+  );
+  assert.equal(
+    desugarReversedBuiltin('x = "reversed(seq)"\n# y = reversed(seq)\n'),
+    'x = "reversed(seq)"\n# y = reversed(seq)\n',
+  );
+  assert.equal(
+    desugarReversedBuiltin("myreversed(x)\n"),
+    "myreversed(x)\n",
+  );
+  assert.equal(
+    desugarReversedBuiltin("def reversed(x):\n    return x\n"),
+    "def reversed(x):\n    return x\n",
+  );
+  assert.equal(
+    desugarReversedBuiltin("reversed = list\nx = reversed(y)\n"),
+    "reversed = list\nx = reversed(y)\n",
+  );
+  assert.equal(
+    desugarReversedBuiltin("x = __wan_reversed(y)\n"),
+    "x = __wan_reversed(y)\n",
   );
 });
 
