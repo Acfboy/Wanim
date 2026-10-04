@@ -251,7 +251,7 @@ index 341df63..6bda020 100644
              else:
                  output.print('[')
 diff --git a/src/output/loops.pyj b/src/output/loops.pyj
-index b38e56f..c12c23a 100644
+index b38e56f..90c0769 100644
 --- a/src/output/loops.pyj
 +++ b/src/output/loops.pyj
 @@ -4,10 +4,30 @@ from __python__ import hash_literals
@@ -286,7 +286,7 @@ index b38e56f..c12c23a 100644
  def unpack_tuple(elems, output, in_statement):
      for i, elem in enumerate(elems):
          output.indent()
-@@ -21,6 +41,28 @@ def unpack_tuple(elems, output, in_statement):
+@@ -21,6 +41,59 @@ def unpack_tuple(elems, output, in_statement):
              output.newline()
  
  
@@ -312,19 +312,62 @@ index b38e56f..c12c23a 100644
 +    return arr.flatten().length > shallow_target_count(arr)
 +
 +
++def unpack_nested_target(target, base, output):
++    # Shape-aware loop-target unpack: index into the iterated value following
++    # the target structure instead of deep-flattening the *value*.
++    # Deep-flattening (ρσ_flatten) recurses into every nested JS array, so a
++    # coordinate vector such as [-4, 2, 0] bound to `a` in
++    # `for i, (a, b) in enumerate(pairs)` was split into scalars (a=-4, b=2)
++    # and downstream `Dot(a)` failed with "arc_center is not iterable".
++    # Indexing by structure keeps list values atomic.
++    if is_node_type(target, AST_Seq):
++        arr = target.to_array()
++        for k, sub in enumerate(arr):
++            unpack_nested_target(sub, base + '[' + k + ']', output)
++    elif is_node_type(target, AST_Array):
++        for k, sub in enumerate(target.elements):
++            unpack_nested_target(sub, base + '[' + k + ']', output)
++    else:
++        output.indent()
++        output.assign(target)
++        output.print(base)
++        output.end_statement()
++
++
++def emit_nested_unpack(init, itervar, output):
++    elems = init.elements
++    if elems.length is 1 and is_node_type(elems[0], AST_Seq):
++        unpack_nested_target(elems[0], itervar, output)
++    else:
++        for k, elem in enumerate(elems):
++            unpack_nested_target(elem, itervar + '[' + k + ']', output)
++
++
  def print_do_loop(self, output):
      output.print('do')
      output.space()
-@@ -80,7 +122,7 @@ def print_for_loop_body(output):
+@@ -78,14 +151,14 @@ def print_for_loop_body(output):
+             output.indent()
+             itervar = 'ρσ_Index' + output.index_counter
              if is_node_type(self.init, AST_Array):
-                 flat = self.init.flatten()
-                 output.assign('ρσ_unpack')
+-                flat = self.init.flatten()
+-                output.assign('ρσ_unpack')
 -                if flat.length > self.init.elements.length:
+-                    output.print('ρσ_flatten(' + itervar + ')')
 +                if needs_deep_flatten(self.init):
-                     output.print('ρσ_flatten(' + itervar + ')')
++                    emit_nested_unpack(self.init, itervar, output)
                  else:
++                    flat = self.init.flatten()
++                    output.assign('ρσ_unpack')
                      output.print(itervar)
-@@ -279,7 +321,14 @@ def print_list_comprehension(self, output):
+-                output.end_statement()
+-                unpack_tuple(flat, output)
++                    output.end_statement()
++                    unpack_tuple(flat, output)
+             else:
+                 output.assign(self.init)
+                 output.print(itervar)
+@@ -279,7 +352,14 @@ def print_list_comprehension(self, output):
              )
              output.end_statement()
  
@@ -339,7 +382,7 @@ index b38e56f..c12c23a 100644
          output.print('function')
          output.print('()')
          output.space()
-@@ -287,7 +336,10 @@ def print_list_comprehension(self, output):
+@@ -287,7 +367,10 @@ def print_list_comprehension(self, output):
              body_out = output
              if is_generator:
                  body_out.indent()
@@ -351,7 +394,7 @@ index b38e56f..c12c23a 100644
                  body_out.space()
                  body_out.print('{')
                  body_out.newline()
-@@ -295,16 +347,27 @@ def print_list_comprehension(self, output):
+@@ -295,16 +378,27 @@ def print_list_comprehension(self, output):
                  output.set_indentation(output.next_indent())
              body_out.indent()
              body_out.assign('var ρσ_Iter')
@@ -381,7 +424,7 @@ index b38e56f..c12c23a 100644
                      body_out.comma()
                      i.print(body_out)
              else:
-@@ -325,7 +388,7 @@ def print_list_comprehension(self, output):
+@@ -325,7 +419,7 @@ def print_list_comprehension(self, output):
                  if is_node_type(self.init, AST_Array):
                      flat = self.init.flatten()
                      body_out.assign('ρσ_unpack')
