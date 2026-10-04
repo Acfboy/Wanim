@@ -210,6 +210,60 @@ function parseParamNames(fn: (...a: Any[]) => Any): (string | null)[] | null {
 
 const OPTIONS_PARAM = /(options|opts|kwargs|config|parameters)$/i;
 
+// Suffix applied by `renameJsReservedWords` (see `preprocess.ts`): Python
+// identifiers that collide with JavaScript reserved words (`function`, `new`,
+// `default`, ...) are rewritten to `<name>_modified` before compilation, so
+// the translated JS stays valid.  wanim's TypeScript side cannot declare a
+// parameter literally named `function` either, and follows the Python
+// convention of a trailing underscore instead (`function_`, as in
+// `ParametricFunction(function_, ...)` / `ApplyFunction(function_, ...)`).
+// The kwargs bridge below must therefore accept the renamed spelling:
+// `function_modified` -> `function_`.
+const MODIFIED_SUFFIX = "_modified";
+
+/**
+ * Resolve a (possibly `_modified`-renamed) kwargs key to the actual parameter
+ * name.  Exact matches win; a renamed key falls back to its base name and to
+ * the base-plus-underscore TS spelling; an unrenamed key falls back to the
+ * trailing-underscore spelling (Python `function=` vs TS `function_` when the
+ * rename step is ever bypassed).
+ */
+function resolveKwargKey(key: string, params: (string | null)[]): string {
+  if (params.indexOf(key) >= 0) return key;
+  if (key.endsWith(MODIFIED_SUFFIX)) {
+    const base = key.slice(0, -MODIFIED_SUFFIX.length);
+    if (params.indexOf(base) >= 0) return base;
+    if (params.indexOf(`${base}_`) >= 0) return `${base}_`;
+    // No positional slot: normalize the extras/options bag to the base name
+    // so downstream option parsing never sees the `_modified` spelling.
+    return base;
+  }
+  if (params.indexOf(`${key}_`) >= 0) return `${key}_`;
+  return key;
+}
+
+/**
+ * Normalize a kwargs bag for a callee whose parameter names are unknown
+ * (pass-through path): strip the `_modified` rename so the receiver sees the
+ * Python spelling.  Both `base` and `base_` aliases are provided (when absent
+ * from the original bag) because TS receivers may declare either spelling.
+ */
+function normalizeKwargsBag(kwargs: Record<string, Any>): Record<string, Any> {
+  const out: Record<string, Any> = {};
+  for (const [key, value] of Object.entries(kwargs)) {
+    if (key.endsWith(MODIFIED_SUFFIX)) {
+      const base = key.slice(0, -MODIFIED_SUFFIX.length);
+      if (!(base in kwargs) && !(base in out)) out[base] = value;
+      const underscored = `${base}_`;
+      if (!(underscored in kwargs) && !(underscored in out)) out[underscored] = value;
+      out[key] = value;
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 /** Map keyword names onto positional parameter slots, extras into the options bag. */
 function placeKwargs(params: (string | null)[], positional: Any[], kwargs: Record<string, Any>): Any[] {
   const extras: Record<string, Any> = {};
@@ -218,9 +272,10 @@ function placeKwargs(params: (string | null)[], positional: Any[], kwargs: Recor
     ? params.length - 1
     : -1;
   for (const [key, value] of Object.entries(kwargs)) {
-    const index = params.indexOf(key);
+    const resolved = resolveKwargKey(key, params);
+    const index = params.indexOf(resolved);
     if (index >= 0) positional[index] = value;
-    else extras[key] = value;
+    else extras[resolved] = value;
   }
   if (Object.keys(extras).length > 0) {
     if (optionsIndex >= 0) {
@@ -860,14 +915,14 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (kwargs === null) return args;
     const params = parseConstructorParams(Ctor);
     const positional = args.slice(0, -1);
-    if (params === null || params.length === 0) return [...positional, kwargs];
+    if (params === null || params.length === 0) return [...positional, normalizeKwargsBag(kwargs)];
     // Many wanim constructors accept a leading options/kwargs bag (e.g.
     // `Arc(radiusOrOptions, ...)`, `Dot(pointOrOptions, ...)`).  When the call is
     // kwargs-only and the first parameter is such a bag, hand it the whole
     // kwargs object so wanim's own `isPlainOptionsBag` path runs.
     const firstIsOptionsBag =
       typeof params[0] === "string" && OPTIONS_PARAM.test(params[0] as string);
-    if (positional.length === 0 && firstIsOptionsBag) return [kwargs];
+    if (positional.length === 0 && firstIsOptionsBag) return [normalizeKwargsBag(kwargs)];
     return placeKwargs(params, positional, kwargs);
   }
 
@@ -877,7 +932,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     const params = parseParamNames(fn);
     const positional = args.slice(0, -1);
     if (params === null || params.length === 0) {
-      return fn.apply(thisArg, [...positional, kwargs]);
+      return fn.apply(thisArg, [...positional, normalizeKwargsBag(kwargs)]);
     }
     return fn.apply(thisArg, placeKwargs(params, positional, kwargs));
   }
