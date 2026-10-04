@@ -1724,3 +1724,110 @@ export function desugarMatmul(source: string): string {
   if (source.includes(WANIM_MATMUL_HELPER)) return source;
   return rewriteMatmulAugmented(rewriteMatmulBinary(source));
 }
+
+// --- complex literal desugar -------------------------------------------------
+//
+// rapydscript-ng's tokenizer has no complex-number support: a decimal literal
+// with the `j`/`J` suffix (`0j`, `1.5j`, `1e-3j`, `.5j`, `1_000j`) fails with
+// "Invalid syntax: 0j".  We rewrite every such literal into a runtime factory
+// call before compilation:
+//
+//   `0j`    -> `__wan_complex(0, 0)`
+//   `3j`    -> `__wan_complex(0, 3)`
+//   `1e-3j` -> `__wan_complex(0, 0.001)`
+//
+// (helper provided by the runtime in `runtime_core.ts`; the imaginary part is
+// normalized through `Number(...)` so Python underscore separators and
+// exponent forms become plain JS numeric literals.)
+//
+// Only decimal float/int forms take the `j` suffix in CPython: hexadecimal,
+// octal and binary literals (`0x1j`, `0o17j`, `0b1j`) are syntax errors there,
+// so they are deliberately not matched (the compiler still reports them).  A
+// digit run preceded by an identifier character, `_` or `.` is part of a name
+// or an attribute access (`abc0j`, `x.1`) and is likewise left untouched; the
+// scan skips string literals and `#` comments, so `"0j"` and `# 0j` pass
+// through verbatim.  An uppercase `J` is accepted like CPython.
+//
+// The string form (`complex("1+2j")`) needs no rewrite and is handled by the
+// runtime's `complex` builtin directly.
+//
+// Known limitations: like the other desugars this is a source-level heuristic
+// -- a `j`-suffixed literal inside an f-string `{...}` interpolation is
+// rewritten (harmless: it still denotes the same complex value), and code that
+// already mentions `__wan_complex` is left entirely alone (reserved name, see
+// above).
+
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_COMPLEX_HELPER = "__wan_complex";
+
+const COMPLEX_LITERAL_RE =
+  /^(?:[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][+-]?[0-9_]+)?|\.[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?)[jJ]/;
+
+const COMPLEX_PREV_CHAR = /[A-Za-z0-9_.]/;
+
+/**
+ * Rewrite Python complex literals (`0j`, `1.5j`, ...) into
+ * `__wan_complex(0, imag)` runtime calls (see above) so rapydscript-ng --
+ * which rejects the `j` suffix -- can compile them.  Anything that does not
+ * parse cleanly passes through untouched.
+ */
+export function desugarComplexLiterals(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_COMPLEX_HELPER)) return source;
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    const next = source[i + 1] ?? "";
+    const isDigit = ch >= "0" && ch <= "9";
+    const isDotStart =
+      ch === "." && next >= "0" && next <= "9";
+    if (!isDigit && !isDotStart) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    // A digit glued to a name/number/attribute (`abc0j`, `1.5` revisited,
+    // `x.1`) is not a literal start.
+    const prev = out.length === 0 ? "" : out[out.length - 1]!;
+    if (COMPLEX_PREV_CHAR.test(prev)) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const match = COMPLEX_LITERAL_RE.exec(source.slice(i));
+    if (match === null) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const literal = match[0];
+    const imagValue = Number(literal.slice(0, -1).replace(/_/g, ""));
+    if (Number.isNaN(imagValue)) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    out += `${WANIM_COMPLEX_HELPER}(0, ${String(imagValue)})`;
+    i += literal.length;
+  }
+  return out;
+}

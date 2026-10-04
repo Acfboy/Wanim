@@ -21,6 +21,7 @@ import {
   type PythonRuntime,
 } from "./runtime_core.js";
 import {
+  desugarComplexLiterals,
   desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
@@ -41,6 +42,7 @@ const core = createRuntimeCore({
 
 export const buildRuntime = core.buildRuntime;
 export {
+  desugarComplexLiterals,
   desugarMatmul,
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
@@ -83,16 +85,21 @@ export interface CompiledScene {
  */
 export async function compilePython(source: string): Promise<CompiledScene> {
   // rapydscript-ng only parses a single `for` clause per comprehension, a
-  // single index/slice per `[...]`, and `@` as a decorator, so all three are
-  // desugared before compilation: multi-`for` comprehensions into nested
-  // single-`for` ones (plus `__wan_flatten1` calls), numpy multi-dim
-  // subscripts (`a[:, 1]`) into `__wan_getitem`/`__wan_slice` calls, and
-  // matrix multiplication (`a @ b`) into `__wan_matmul` calls.  The matmul
-  // step runs first so `@` operands containing `[...]` (e.g. `A[:, 0] @ b`)
+  // single index/slice per `[...]`, `@` as a decorator, and no `j`-suffixed
+  // complex literals, so all four are desugared before compilation:
+  // multi-`for` comprehensions into nested single-`for` ones (plus
+  // `__wan_flatten1` calls), numpy multi-dim subscripts (`a[:, 1]`) into
+  // `__wan_getitem`/`__wan_slice` calls, matrix multiplication (`a @ b`)
+  // into `__wan_matmul` calls, and complex literals (`0j`) into
+  // `__wan_complex(0, imag)` calls.  The complex step runs first so later
+  // passes never see the `j` suffix; the matmul step runs before the
+  // subscript step so `@` operands containing `[...]` (e.g. `A[:, 0] @ b`)
   // still reach the subscript step intact.
   const pre = preprocessImports(
     desugarMultiForComprehensions(
-      desugarNumpySubscripts(desugarMatmul(renameJsReservedWords(source))),
+      desugarNumpySubscripts(
+        desugarMatmul(desugarComplexLiterals(renameJsReservedWords(source))),
+      ),
     ),
   );
   const importError = unsupportedImportError(pre);
