@@ -421,6 +421,20 @@ function createMobjectProxy(target: Mobject): Mobject {
         };
       }
       if (PROTOCOL_PROPS.has(property) || (typeof property === "string" && property.startsWith("@@"))) return undefined;
+      // Array-like view for rapydscript `f(*mobject)` splats, which compile to
+      // `f.apply(thisArg, mobject)` and read `length` plus numeric indices
+      // natively. Mirrors `__iter__` order (self first when it has points,
+      // then submobjects), consistent with `__len__`/`__getitem__`.
+      if (property === "length") return object.__len__();
+      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) {
+        const index = Number(property);
+        const count = object.__len__();
+        if (index < count) {
+          if (object.has_no_points()) return object.submobjects[index];
+          return index === 0 ? receiver : object.submobjects[index - 1];
+        }
+        return undefined;
+      }
       const error = new Error(`${object.constructor.name} object has no attribute '${String(property)}'`);
       error.name = "AttributeError";
       throw error;
