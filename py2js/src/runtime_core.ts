@@ -918,6 +918,163 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return -a;
   }
 
+  // --- numpy multi-dim subscripts (`a[:, 1]`) -------------------------------
+  //
+  // rapydscript-ng only parses a single index/slice per `[...]`, so
+  // `desugarNumpySubscripts` (see `preprocess.ts`) rewrites `a[:, 1]` into
+  // `__wan_getitem(a, __wan_slice(None, None), 1)`.  These are the runtime
+  // targets of that desugar.  Single subscripts never reach this path
+  // (rapydscript compiles them directly via `ρσ_getitem`/`ρσ_getslice`).
+
+  /** Render one slice bound the way numpy-ts' string slices expect. */
+  function wanSliceBound(value: Any): string {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "boolean") return value ? "1" : "0";
+    if (typeof value === "number") return String(value);
+    if (isNdArray(value)) return wanSliceBound(scalarize(value));
+    const n = Number(value);
+    if (Number.isNaN(n)) {
+      throw new TypeError("slice indices must be integers or None");
+    }
+    return String(Math.trunc(n));
+  }
+
+  /** Build one `"start:stop[:step]"` dimension for `__wan_getitem`. */
+  function wanSliceDim(start: Any, stop: Any, step?: Any): string {
+    const base = `${wanSliceBound(start)}:${wanSliceBound(stop)}`;
+    return step === undefined || step === null
+      ? base
+      : `${base}:${wanSliceBound(step)}`;
+  }
+
+  /** Normalize a step-less/stepped slice string against `length`. */
+  function parseSliceParts(spec: string): [string, string, string] {
+    const parts = spec.split(":");
+    return [
+      parts.length > 0 ? (parts[0] ?? "") : "",
+      parts.length > 1 ? (parts[1] ?? "") : "",
+      parts.length > 2 ? (parts[2] ?? "") : "",
+    ];
+  }
+
+  function parseSliceInt(text: string): number | null {
+    if (text === "") return null;
+    const n = Number(text);
+    return Number.isNaN(n) ? null : Math.trunc(n);
+  }
+
+  /**
+   * Python `slice.indices(length)` expansion for one dimension: returns the
+   * concrete indices a `"start:stop[:step]"` string selects.
+   */
+  function sliceIndices(length: number, spec: string): number[] {
+    const [startText, stopText, stepText] = parseSliceParts(spec);
+    const step = stepText === "" ? 1 : parseSliceInt(stepText);
+    if (step === null) throw new TypeError("slice indices must be integers or None");
+    if (step === 0) throw new Error("slice step cannot be zero");
+    const start = parseSliceInt(startText);
+    const stop = parseSliceInt(stopText);
+    if (step > 0) {
+      let lo = start === null ? 0 : start < 0 ? Math.max(0, start + length) : Math.min(length, start);
+      let hi = stop === null ? length : stop < 0 ? Math.max(0, stop + length) : Math.min(length, stop);
+      const out: number[] = [];
+      for (let k = lo; k < hi; k += step) out.push(k);
+      return out;
+    }
+    let lo = start === null ? length - 1 : start < 0 ? Math.max(-1, start + length) : Math.min(length - 1, start);
+    let hi = stop === null ? -1 : stop < 0 ? Math.max(-1, stop + length) : Math.min(length, stop);
+    const out: number[] = [];
+    for (let k = lo; k > hi; k += step) out.push(k);
+    return out;
+  }
+
+  /**
+   * Multi-dim getitem over nested plain-JS lists (numpy-style): the first spec
+   * selects along the outer axis and the rest recurses into each selected row,
+   * so `[[1, 2], [3, 4]][:, 1]` is the column `[2, 4]`.
+   */
+  function wanGetItemArray(arr: Any[], specs: Any[]): Any {
+    if (specs.length === 0) return arr;
+    const [first, ...rest] = specs as [Any, ...Any[]];
+    if (typeof first === "number" || typeof first === "boolean") {
+      let index =
+        typeof first === "boolean" ? (first ? 1 : 0) : Math.trunc(first);
+      if (index < 0) index += arr.length;
+      const selected = arr[index];
+      if (rest.length === 0) return selected;
+      if (!Array.isArray(selected)) {
+        throw new TypeError("'int' object is not subscriptable");
+      }
+      return wanGetItemArray(selected, rest);
+    }
+    if (typeof first === "string") {
+      let rows: Any[];
+      if (first === ":" || first === "..." || first === "") {
+        rows = arr.slice();
+      } else if (!first.includes(":")) {
+        const index = parseSliceInt(first);
+        if (index === null) {
+          throw new TypeError("slice indices must be integers or None");
+        }
+        const selected = arr[index < 0 ? index + arr.length : index];
+        if (rest.length === 0) return selected;
+        if (!Array.isArray(selected)) {
+          throw new TypeError("'int' object is not subscriptable");
+        }
+        return wanGetItemArray(selected, rest);
+      } else {
+        rows = sliceIndices(arr.length, first).map((k) => arr[k]);
+      }
+      if (rest.length === 0) return rows;
+      return rows.map((row) => {
+        if (!Array.isArray(row)) {
+          throw new TypeError("'int' object is not subscriptable");
+        }
+        return wanGetItemArray(row, rest);
+      });
+    }
+    if (first === null || first === undefined) {
+      // `None` (numpy `newaxis`): wrap, then apply the rest inside.
+      return rest.length === 0 ? [arr] : wanGetItemArray([arr], rest);
+    }
+    throw new TypeError("invalid index type");
+  }
+
+  /**
+   * Multi-dim getitem target of the `desugarNumpySubscripts` preprocess step.
+   * Each spec is a number (integer index), a `"start:stop[:step]"` slice
+   * string (see `wanSliceDim`), or `"..."` (Ellipsis).
+   */
+  function wanGetItem(obj: Any, ...specs: Any[]): Any {
+    if (obj === null || obj === undefined) {
+      throw new TypeError("'NoneType' object is not subscriptable");
+    }
+    if (isNdArray(obj)) {
+      const ndim = (obj.shape as readonly number[]).length;
+      const dot = specs.indexOf("...");
+      let finalSpecs = specs;
+      if (dot !== -1) {
+        const fill = Math.max(0, ndim - (specs.length - 1));
+        finalSpecs = [
+          ...specs.slice(0, dot),
+          ...new Array<string>(fill).fill(":"),
+          ...specs.slice(dot + 1),
+        ];
+      }
+      return (obj as Any).slice(...finalSpecs);
+    }
+    if (Array.isArray(obj)) return wanGetItemArray(obj, specs);
+    if (typeof obj === "string") {
+      throw new TypeError("string indices must be integers");
+    }
+    const getitem = (obj as Any).__getitem__;
+    if (typeof getitem === "function") {
+      return getitem.call(obj, specs.length === 1 ? specs[0] : specs);
+    }
+    if (specs.length === 1) return (obj as Any)[specs[0] as Any];
+    throw new TypeError("object is not subscriptable with multiple indices");
+  }
+
   /**
    * Round a JS number the way CPython's `round(x, n)` does.
    *
@@ -1516,6 +1673,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // `desugarMultiForComprehensions` in `preprocess.ts`). The name is
     // reserved: the desugar refuses to run when user code already uses it.
     globals.__wan_flatten1 = wanFlatten1;
+    // Multi-dim subscript helpers for the `desugarNumpySubscripts` step
+    // (likewise reserved names; see `preprocess.ts`).
+    globals.__wan_getitem = wanGetItem;
+    globals.__wan_slice = wanSliceDim;
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -1534,6 +1695,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonNeg,
     pythonRound,
     wanFlatten1,
+    wanGetItem,
+    wanSlice: wanSliceDim,
     getDot,
   };
 }
