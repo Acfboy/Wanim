@@ -2080,30 +2080,87 @@ export class Mobject {
   }
 
   arrange(
-    directionOrOptions: readonly number[] | NDArray | ArrangeOptions = RIGHT,
-    buff = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
-    center = true,
+    direction: readonly number[] | NDArray | ArrangeOptions = RIGHT,
+    buff: number | ArrangeOptions = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
+    center: boolean | ArrangeOptions = true,
+    aligned_edge: readonly number[] | NDArray | Record<string, unknown> = ORIGIN,
+    kwargs: Record<string, unknown> = {},
   ): this {
     // NOTE: mirrors Python `arrange(direction=RIGHT, buff=..., center=True,
-    // **kwargs)`. A leading options bag `{ direction, buff, center,
+    // **kwargs)` where the extra kwargs are forwarded to `next_to` (e.g.
+    // `aligned_edge`). A leading options bag `{ direction, buff, center,
     // aligned_edge, ... }` is accepted (a raw direction is always an array,
     // so a plain object is unambiguously the kwargs bag).
-    let direction: readonly number[] | NDArray = directionOrOptions as readonly number[];
-    let resolvedBuff = buff;
-    let resolvedCenter = center;
-    let alignedEdge: readonly number[] | NDArray = ORIGIN;
-    if (isPlainOptionsObject(directionOrOptions)) {
-      const options = directionOrOptions as ArrangeOptions;
-      direction = options.direction ?? RIGHT;
+    let resolvedDirection: readonly number[] | NDArray = direction as readonly number[];
+    let resolvedBuff: number = buff as number;
+    let resolvedCenter: boolean = center as boolean;
+    let resolvedAlignedEdge: readonly number[] | NDArray = aligned_edge as readonly number[];
+    let extraNextTo: Record<string, unknown> = {};
+    if (isPlainOptionsObject(direction)) {
+      const options = direction as ArrangeOptions;
+      resolvedDirection = options.direction ?? RIGHT;
       resolvedBuff = options.buff ?? DEFAULT_MOBJECT_TO_MOBJECT_BUFFER;
       resolvedCenter = options.center ?? true;
-      alignedEdge = options.aligned_edge ?? ORIGIN;
+      resolvedAlignedEdge = options.aligned_edge ?? ORIGIN;
+      const { direction: _d, buff: _b, center: _c, aligned_edge: _a, ...rest } = options;
+      extraNextTo = { ...rest };
+    } else {
+      if (isPlainOptionsObject(buff)) {
+        // Defensive: a kwargs bag arrived in the `buff` slot (e.g. an older
+        // py2js bridge that appended unknown kwargs as a trailing object).
+        const options = buff as ArrangeOptions;
+        if (options.direction !== undefined) resolvedDirection = options.direction;
+        resolvedBuff = options.buff ?? DEFAULT_MOBJECT_TO_MOBJECT_BUFFER;
+        if (options.center !== undefined) resolvedCenter = options.center;
+        if (options.aligned_edge !== undefined) resolvedAlignedEdge = options.aligned_edge;
+        const { direction: _d, buff: _b, center: _c, aligned_edge: _a, ...rest } = options;
+        extraNextTo = { ...extraNextTo, ...rest };
+      }
+      if (isPlainOptionsObject(center)) {
+        const options = center as unknown as ArrangeOptions;
+        if (options.direction !== undefined) resolvedDirection = options.direction;
+        if (options.buff !== undefined) resolvedBuff = options.buff;
+        resolvedCenter = (options.center as boolean | undefined) ?? true;
+        if (options.aligned_edge !== undefined) resolvedAlignedEdge = options.aligned_edge;
+        const { direction: _d, buff: _b, center: _c, aligned_edge: _a, ...rest } = options;
+        extraNextTo = { ...extraNextTo, ...rest };
+      }
+      if (isPlainOptionsObject(aligned_edge)) {
+        const options = aligned_edge as unknown as Record<string, unknown>;
+        // A vector is never a plain object, so this slot holding one means a
+        // kwargs bag (old bridge shape or a direct JS call).
+        if ("aligned_edge" in options || "direction" in options || "buff" in options || "center" in options) {
+          const bag = options as unknown as ArrangeOptions;
+          if (bag.direction !== undefined) resolvedDirection = bag.direction;
+          if (bag.buff !== undefined) resolvedBuff = bag.buff;
+          if (bag.center !== undefined) resolvedCenter = bag.center;
+          if (bag.aligned_edge !== undefined) resolvedAlignedEdge = bag.aligned_edge;
+          const { direction: _d, buff: _b, center: _c, aligned_edge: _a, ...rest } = bag;
+          extraNextTo = { ...extraNextTo, ...rest };
+        } else {
+          extraNextTo = { ...extraNextTo, ...options };
+        }
+        resolvedAlignedEdge = resolvedAlignedEdge ?? ORIGIN;
+      }
+      if (isPlainOptionsObject(kwargs)) extraNextTo = { ...extraNextTo, ...(kwargs as Record<string, unknown>) };
     }
-    assertFinite(vector(direction, this.dim));
+    if (resolvedAlignedEdge === undefined || resolvedAlignedEdge === null) resolvedAlignedEdge = ORIGIN;
+    assertFinite(vector(resolvedDirection, this.dim));
     assertFinite(resolvedBuff);
-    assertFinite(vector(alignedEdge, this.dim));
+    assertFinite(vector(resolvedAlignedEdge, this.dim));
+    const submobjectToAlign = (extraNextTo.submobject_to_align as Mobject | null) ?? null;
+    const indexOfSubmobjectToAlign = (extraNextTo.index_of_submobject_to_align as number | null) ?? null;
+    const coorMask = (extraNextTo.coor_mask as readonly number[] | NDArray | undefined) ?? [1, 1, 1];
     for (let index = 0; index < this.submobjects.length - 1; index += 1) {
-      this.submobjects[index + 1].next_to(this.submobjects[index], direction, resolvedBuff, alignedEdge);
+      this.submobjects[index + 1].next_to(
+        this.submobjects[index],
+        resolvedDirection,
+        resolvedBuff,
+        resolvedAlignedEdge,
+        submobjectToAlign,
+        indexOfSubmobjectToAlign,
+        coorMask,
+      );
     }
     if (resolvedCenter) this.center();
     return this;
@@ -2715,13 +2772,25 @@ export class Mobject {
   valueOf(): string { return this.toString(); }
 }
 
-// Explicit Python parameter names for `arrange_in_grid`, surviving bundling.
-// py2js maps Python kwargs onto positional slots via `Function.toString`
-// param names, but esbuild renames colliding locals when bundling (here
-// `rows` became `rows2`), which mis-routed `rows=...` into `row_alignments`
-// and crashed in `init_alignments` ("alignments is not iterable").
+// Explicit Python parameter names for `arrange`/`arrange_in_grid`, surviving
+// bundling. py2js maps Python kwargs onto positional slots via
+// `Function.toString` param names, but esbuild renames colliding locals when
+// bundling (here `rows` became `rows2`), which mis-routed `rows=...` into
+// `row_alignments` and crashed in `init_alignments`
+// ("alignments is not iterable"). `arrange` additionally accepts `**kwargs`
+// forwarded to `next_to` (e.g. `aligned_edge`); without an explicit
+// `aligned_edge` slot the bridge appended it as a trailing options object,
+// which landed in `buff` and poisoned every `shift` with NaN (see
+// 55_patreon_thanks.py: `arrange(DOWN, aligned_edge=LEFT)`).
 // `runtime_core` prefers this metadata over parsed names (see also the
 // `__argnames__` propagation in `wrapPrototypeMethods`).
+(Mobject.prototype.arrange as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "direction",
+  "buff",
+  "center",
+  "aligned_edge",
+  "kwargs",
+];
 (Mobject.prototype.arrange_in_grid as unknown as { __argnames__?: string[] }).__argnames__ = [
   "rows",
   "cols",
