@@ -439,6 +439,23 @@ function createMobjectProxy(target: Mobject): Mobject {
       error.name = "AttributeError";
       throw error;
     },
+    // NOTE: native `Array.prototype.concat` spreads concat-spreadable objects
+    // via `HasProperty` (not `Get`): without this trap `'0' in mobject` is
+    // false, so a chained `a.concat(b).concat(c)` (rapydscript `f(*a, *b,
+    // *c)`) keeps the first splat (custom `Mobject.concat`, iterator-based)
+    // but turns every later Mobject splat into holes. Report the same
+    // array-like view (`length` + numeric indices mirroring `__iter__`) here.
+    has: (object, property) => {
+      if (property === "length") return true;
+      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) {
+        try {
+          return Number(property) < object.__len__();
+        } catch {
+          return false;
+        }
+      }
+      return Reflect.has(object, property);
+    },
     set: (object, property, value, receiver) => Reflect.set(object, property, value, receiver),
   });
 }
