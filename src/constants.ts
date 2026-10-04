@@ -37,6 +37,15 @@ export const SCALE_FACTOR_PER_FONT_POINT = 1 / 960;
 export const PI = Math.PI;
 export const TAU = Math.PI * 2;
 export const DEGREES = TAU / 360;
+// Legacy frame constants (manimlib-era `FRAME_WIDTH` etc., removed from
+// modern manim in favour of `config.frame_width`). Old 3b1b scenes still use
+// them, so re-export static aliases matching the default config
+// (frame_height=8, 16:9 aspect). Kept as plain constants to avoid a
+// constants<->config import cycle.
+export const FRAME_HEIGHT = 8;
+export const FRAME_WIDTH = 14.222222222222221;
+export const FRAME_Y_RADIUS = 4;
+export const FRAME_X_RADIUS = 7.111111111111111;
 export const NORMAL = "NORMAL";
 export const ITALIC = "ITALIC";
 export const OBLIQUE = "OBLIQUE";
