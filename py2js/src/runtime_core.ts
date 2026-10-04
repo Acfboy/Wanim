@@ -3110,6 +3110,170 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           } catch {
             /* keep default_rng-only wrapping */
           }
+          // Legacy `np.random.RandomState(seed)` (e.g.
+          // `rng = np.random.RandomState(1)` then `rng.uniform(-np.pi, np.pi)`):
+          // numpy-ts only ships the new `Generator` API (`default_rng`) and has
+          // no `RandomState` class, so anycourseware using the legacy constructor
+          // fails with `RandomState is not a function`.  Provide a `RandomState`
+          // factory backed by `default_rng(seed)` with the widely used legacy
+          // distribution methods delegating to the inner generator.
+          //
+          // NOTE: the bit stream intentionally differs from CPython's MT19937
+          // legacy stream (numpy-ts has no MT19937); the factory is
+          // deterministic per seed, which is what wanim scenes need.
+          // The factory is a plain function (not an ES class) because
+          // rapydscript compiles `RandomState(1)` to a bare call, and class
+          // constructors throw when invoked without `new`.
+          try {
+            const coerceRsSeed = (s: Any): Any => {
+              if (s === undefined || s === null) return undefined;
+              if (typeof s === "number" && Number.isInteger(s)) return s;
+              if (typeof s === "bigint") {
+                const n = Number(s);
+                if (Number.isInteger(n)) return n;
+                return undefined;
+              }
+              if (Array.isArray(s)) {
+                try {
+                  return (np as Any).asarray(deepUnwrapNd(s));
+                } catch {
+                  return undefined;
+                }
+              }
+              const n = Number(s);
+              if (Number.isInteger(n)) return n;
+              return undefined;
+            };
+            const freshRsGen = (s: Any): Any => {
+              const seedArg = coerceRsSeed(s);
+              try {
+                return (origDefaultRng as Any)(...(seedArg === undefined ? [] : [seedArg]));
+              } catch {
+                return (origDefaultRng as Any)();
+              }
+            };
+            const RandomStateFactory = function (...args: Any[]): Any {
+              const ctorKwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+              let ctorPos = ctorKwargs !== null ? args.slice(0, -1) : args.slice();
+              if (ctorKwargs !== null) {
+                ctorPos = placeKwargs(["seed"], ctorPos, ctorKwargs as Record<string, Any>);
+              }
+              let gen: Any = freshRsGen(ctorPos.length > 0 ? ctorPos[0] : undefined);
+              const rs: Record<string, Any> = {};
+              const delegate = (method: string, argnames: string[]): Any => {
+                const fn = function (...callArgs: Any[]): Any {
+                  const kw = callArgs.length > 0 ? detectKwargs(callArgs[callArgs.length - 1]) : null;
+                  let pos = kw !== null ? callArgs.slice(0, -1) : callArgs.slice();
+                  if (kw !== null) pos = placeKwargs(argnames, pos, kw as Record<string, Any>);
+                  const target = (gen as Any)[method];
+                  if (typeof target === "function") return (target as Any).apply(gen, pos);
+                  const modFn = (origRandom as Any)[method];
+                  if (typeof modFn === "function") return (modFn as Any)(...pos);
+                  throw new Error(`RandomState has no method '${method}'`);
+                };
+                (fn as Any).__argnames__ = [...argnames];
+                return fn;
+              };
+              const seedFn = function (...callArgs: Any[]): Any {
+                const kw = callArgs.length > 0 ? detectKwargs(callArgs[callArgs.length - 1]) : null;
+                let pos = kw !== null ? callArgs.slice(0, -1) : callArgs.slice();
+                if (kw !== null) pos = placeKwargs(["seed"], pos, kw as Record<string, Any>);
+                gen = freshRsGen(pos.length > 0 ? pos[0] : undefined);
+                return undefined;
+              };
+              (seedFn as Any).__argnames__ = ["seed"];
+              rs.seed = seedFn;
+              rs.uniform = delegate("uniform", ["low", "high", "size"]);
+              rs.random_sample = delegate("random", ["size"]);
+              rs.random = delegate("random", ["size"]);
+              rs.ranf = delegate("random", ["size"]);
+              rs.sample = delegate("random", ["size"]);
+              rs.normal = delegate("normal", ["loc", "scale", "size"]);
+              rs.standard_normal = delegate("standard_normal", ["size"]);
+              rs.exponential = delegate("exponential", ["scale", "size"]);
+              rs.poisson = delegate("poisson", ["lam", "size"]);
+              rs.binomial = delegate("binomial", ["n", "p", "size"]);
+              rs.random_integers = delegate("random_integers", ["low", "high", "size"]);
+              // `rand(d0, d1, ...)` / `randn(d0, d1, ...)` take dims as varargs.
+              const randFn = function (...dims: Any[]): Any {
+                const kw = dims.length > 0 ? detectKwargs(dims[dims.length - 1]) : null;
+                let shape: Any[] = kw !== null ? dims.slice(0, -1) : dims.slice();
+                if (shape.length === 1 && Array.isArray(shape[0])) shape = shape[0] as Any[];
+                if (shape.length === 0) return (gen as Any).random();
+                return (gen as Any).random(shape.length === 1 ? shape[0] : shape);
+              };
+              rs.rand = randFn;
+              const randnFn = function (...dims: Any[]): Any {
+                const kw = dims.length > 0 ? detectKwargs(dims[dims.length - 1]) : null;
+                let shape: Any[] = kw !== null ? dims.slice(0, -1) : dims.slice();
+                if (shape.length === 1 && Array.isArray(shape[0])) shape = shape[0] as Any[];
+                if (shape.length === 0) return (gen as Any).standard_normal();
+                return (gen as Any).standard_normal(shape.length === 1 ? shape[0] : shape);
+              };
+              rs.randn = randnFn;
+              // Legacy `randint(low, high=None, size=None)`: one-arg form means
+              // `integers(0, low)`.
+              const randintFn = function (...callArgs: Any[]): Any {
+                const kw = callArgs.length > 0 ? detectKwargs(callArgs[callArgs.length - 1]) : null;
+                let pos = kw !== null ? callArgs.slice(0, -1) : callArgs.slice();
+                if (kw !== null) pos = placeKwargs(["low", "high", "size"], pos, kw as Record<string, Any>);
+                let low = pos.length > 0 ? pos[0] : undefined;
+                let high = pos.length > 1 ? pos[1] : undefined;
+                const size = pos.length > 2 ? pos[2] : undefined;
+                if (high === undefined || high === null) {
+                  high = low;
+                  low = 0;
+                }
+                const iargs = size === undefined || size === null ? [low, high] : [low, high, size];
+                if (typeof (gen as Any).integers === "function") {
+                  return (gen as Any).integers(...iargs);
+                }
+                return (origRandom as Any).randint(...iargs);
+              };
+              (randintFn as Any).__argnames__ = ["low", "high", "size"];
+              rs.randint = randintFn;
+              // `shuffle` / `permutation` / `choice` need the same plain-list
+              // index delegation as `wrapGenerator` (lists of arbitrary objects
+              // cannot enter NDArray storage), but bound to the *current*
+              // generator so `rs.seed(...)` reseeding keeps working.
+              const rsShuffleFn = function (...callArgs: Any[]): Any {
+                const { positional } = stripKwargs(callArgs);
+                const target = positional.length > 0 ? positional[0] : undefined;
+                if (Array.isArray(target)) {
+                  applyPermutationInPlace(target, (...a: Any[]) => (gen as Any).permutation(...a));
+                  return undefined;
+                }
+                return (gen as Any).shuffle(...positional);
+              };
+              (rsShuffleFn as Any).__argnames__ = ["x"];
+              rs.shuffle = rsShuffleFn;
+              const rsPermFn = function (...callArgs: Any[]): Any {
+                const { positional } = stripKwargs(callArgs);
+                const target = positional.length > 0 ? positional[0] : undefined;
+                if (Array.isArray(target)) {
+                  return permutedCopy(target, (...a: Any[]) => (gen as Any).permutation(...a));
+                }
+                return (gen as Any).permutation(...positional);
+              };
+              (rsPermFn as Any).__argnames__ = ["x"];
+              rs.permutation = rsPermFn;
+              const rsChoiceFn = function (...callArgs: Any[]): Any {
+                const { positional } = stripKwargs(callArgs);
+                const target = positional.length > 0 ? positional[0] : undefined;
+                if (Array.isArray(target)) {
+                  return choiceFromPlainList(target, callArgs, (...a: Any[]) => (gen as Any).choice(...a));
+                }
+                return (gen as Any).choice(...callArgs);
+              };
+              (rsChoiceFn as Any).__argnames__ = ["a", "size", "replace", "p"];
+              rs.choice = rsChoiceFn;
+              return rs;
+            };
+            (RandomStateFactory as Any).__argnames__ = ["seed"];
+            wrappedRandom.RandomState = RandomStateFactory;
+          } catch {
+            /* leave RandomState missing rather than breaking the facade */
+          }
           facade.random = wrappedRandom;
           if ((facade as Any).default_rng === origDefaultRng) {
             (facade as Any).default_rng = wrappedDefaultRng;
