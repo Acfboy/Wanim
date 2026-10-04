@@ -2282,8 +2282,48 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // them with kwargs (`np.mean(a, axis=0)`, `arr.mean(axis=0)`).  rapydscript
     // only maps the kwargs bag onto positional slots when `f.__argnames__`
     // exists, so annotate both the module functions and (via the prototype
-    // patch above) the NDArray methods.
+    // patch above) the NDArray methods.  numpy-ts also requires NDArray
+    // inputs, so `np.mean([1, 2, 3])` on a plain Python list throws
+    // `Cannot read properties of undefined (reading 'length')`; coerce the
+    // leading array argument (plain list or scalar) before delegating and
+    // scalarize 0-d results back to Python numbers.
     patchNDArrayForPython();
+    function coerceReductionArg(value: Any): Any {
+      if (isNdArray(value)) return value;
+      if (Array.isArray(value)) {
+        try {
+          return (np as Any).asarray(deepUnwrapNd(value));
+        } catch {
+          return value;
+        }
+      }
+      if (typeof value === "number" || typeof value === "boolean") {
+        try {
+          return (np as Any).asarray(value);
+        } catch {
+          return value;
+        }
+      }
+      return value;
+    }
+    function wrapReductionFn(
+      origFn: (...a: Any[]) => Any,
+      argnames: string[],
+    ): (...a: Any[]) => Any {
+      const wrapped = (...args: Any[]): Any => {
+        const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+        let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+        if (kwargs !== null) {
+          positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+        }
+        if (positional.length > 0) {
+          positional = [coerceReductionArg(positional[0]), ...positional.slice(1)];
+        }
+        return scalarize((origFn as Any)(...positional));
+      };
+      (wrapped as Any).__argnames__ = [...argnames];
+      return wrapped;
+    }
     const moduleAxisReductions = [
       "sum", "mean", "prod", "max", "min", "ptp", "var", "std",
       "nansum", "nanmean", "nanprod", "nanmin", "nanmax", "nanvar", "nanstd",
@@ -2294,8 +2334,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     for (const name of moduleAxisReductions) {
       try {
         const fn = facade[name];
-        if (typeof fn === "function" && !Array.isArray((fn as Any).__argnames__)) {
-          (fn as Any).__argnames__ = ["a", "axis", "keepdims", "dtype", "out"];
+        if (typeof fn === "function" && (fn as Any).__wanim_reduction_wrapped__ !== true) {
+          facade[name] = wrapReductionFn(fn, ["a", "axis", "keepdims", "dtype", "out"]);
+          (facade[name] as Any).__wanim_reduction_wrapped__ = true;
         }
       } catch {
         /* ignore */
@@ -2304,8 +2345,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     for (const name of ["percentile", "quantile", "nanpercentile", "nanquantile"]) {
       try {
         const fn = facade[name];
-        if (typeof fn === "function" && !Array.isArray((fn as Any).__argnames__)) {
-          (fn as Any).__argnames__ = ["a", "q", "axis", "keepdims"];
+        if (typeof fn === "function" && (fn as Any).__wanim_reduction_wrapped__ !== true) {
+          facade[name] = wrapReductionFn(fn, ["a", "q", "axis", "keepdims"]);
+          (facade[name] as Any).__wanim_reduction_wrapped__ = true;
         }
       } catch {
         /* ignore */
