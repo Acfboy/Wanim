@@ -290,6 +290,7 @@ export const WANIM_FLATTEN_HELPER = "__wan_flatten1";
 
 /** Global runtime helpers for numpy multi-dim subscripts (see below). */
 export const WANIM_GETITEM_HELPER = "__wan_getitem";
+export const WANIM_SETITEM_HELPER = "__wan_setitem";
 export const WANIM_SLICE_HELPER = "__wan_slice";
 
 interface DesugarClause {
@@ -889,11 +890,143 @@ function rewriteSubscriptDim(dim: string): string | null {
   return `${WANIM_SLICE_HELPER}(${bounds.join(", ")})`;
 }
 
+/** Assignment operators handled for multi-dim subscript targets. Longest first. */
+const SUBSCRIPT_ASSIGN_OPS = [
+  "**=",
+  "//=",
+  ">>=",
+  "<<=",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "&=",
+  "|=",
+  "^=",
+  "@=",
+  "=",
+];
+
+/**
+ * Look for an assignment operator right after a `]` at `close`.
+ * Only horizontal gaps and `\`-continuations may sit between `]` and `=`;
+ * a newline, `;`, comment or comparison (`==`) means this is not a store.
+ */
+function parseAssignOpAfter(
+  source: string,
+  close: number,
+): { op: string; opEnd: number } | null {
+  let j = close + 1;
+  while (j < source.length) {
+    const ch = source[j]!;
+    if (ch === " " || ch === "\t" || ch === "\f" || ch === "\v") {
+      j += 1;
+      continue;
+    }
+    if (
+      ch === "\\" &&
+      (source[j + 1] === "\n" || source[j + 1] === "\r")
+    ) {
+      if (isEscaped(source, j)) return null;
+      j += source[j + 1] === "\r" && source[j + 2] === "\n" ? 3 : 2;
+      continue;
+    }
+    break;
+  }
+  if (j >= source.length) return null;
+  const rest = source[j];
+  if (rest === "\n" || rest === "\r" || rest === ";" || rest === "#") {
+    return null;
+  }
+  for (const op of SUBSCRIPT_ASSIGN_OPS) {
+    if (!source.startsWith(op, j)) continue;
+    if (op === "=" && source[j + 1] === "=") return null;
+    if (op !== "=" && source[j + op.length] === "=") return null;
+    return { op, opEnd: j + op.length };
+  }
+  return null;
+}
+
+/**
+ * Find the end of an assignment value starting at `start` (first char after
+ * the operator): the first depth-zero `;`/newline/`#`, or end of source.
+ * Brackets, strings and `\`-continuations are respected.
+ */
+function findAssignValueEnd(source: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === '"' || ch === "'") {
+      i = readString(source, i);
+      continue;
+    }
+    if (ch === "\\" && (source[i + 1] === "\n" || source[i + 1] === "\r")) {
+      if (!isEscaped(source, i)) {
+        i += source[i + 1] === "\r" && source[i + 2] === "\n" ? 3 : 2;
+        continue;
+      }
+    }
+    if (ch === "#") {
+      if (depth === 0) return i;
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 ? source.length : nl;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0) return i;
+      depth -= 1;
+    } else if (depth === 0 && (ch === ";" || ch === "\n" || ch === "\r")) {
+      return i;
+    }
+    i += 1;
+  }
+  return i;
+}
+
+/** Skip gaps (spaces, newlines, continuations, comments) before a value. */
+function skipToAssignValue(source: string, pos: number): number {
+  let i = pos;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (
+      ch === " " ||
+      ch === "\t" ||
+      ch === "\f" ||
+      ch === "\v" ||
+      ch === "\n" ||
+      ch === "\r"
+    ) {
+      i += 1;
+      continue;
+    }
+    if (ch === "\\" && (source[i + 1] === "\n" || source[i + 1] === "\r")) {
+      if (isEscaped(source, i)) return i;
+      i += source[i + 1] === "\r" && source[i + 2] === "\n" ? 3 : 2;
+      continue;
+    }
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 ? source.length : nl + 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") return i;
+    return i;
+  }
+  return i;
+}
+
 /**
  * Rewrite numpy multi-dim subscripts (`a[:, 1]`, `a[1:2, 0]`) into
  * `__wan_getitem`/`__wan_slice` runtime calls (see above) so rapydscript-ng
  * -- which only parses a single index/slice per `[...]` -- can compile them.
- * Anything that does not parse cleanly passes through untouched.
+ * Multi-dim subscript *stores* (`a[:, 1] = v`, `a[:, 1] += v`) become
+ * `__wan_setitem` calls instead: a bare `__wan_getitem(...) = ...` is not
+ * valid JavaScript (`Invalid left-hand side in assignment`), so the store
+ * must be detected here. Anything that does not parse cleanly passes through
+ * untouched.
  */
 export function desugarNumpySubscripts(source: string): string {
   // The helper names are reserved for the runtime (see `runtime_core.ts`); if
@@ -901,6 +1034,7 @@ export function desugarNumpySubscripts(source: string): string {
   // calling the wrong function.
   if (
     source.includes(WANIM_GETITEM_HELPER) ||
+    source.includes(WANIM_SETITEM_HELPER) ||
     source.includes(WANIM_SLICE_HELPER)
   ) {
     return source;
@@ -961,6 +1095,39 @@ export function desugarNumpySubscripts(source: string): string {
     if (objStart === null) {
       out += ch;
       i += 1;
+      continue;
+    }
+    const assign = parseAssignOpAfter(source, close);
+    if (assign !== null) {
+      const valueStart = skipToAssignValue(source, assign.opEnd);
+      const valueEnd = findAssignValueEnd(source, valueStart);
+      const rawValue = source.slice(valueStart, valueEnd).trim();
+      if (rawValue === "") {
+        out += ch;
+        i += 1;
+        continue;
+      }
+      const obj = out.slice(objStart).trim();
+      if (obj === "") {
+        out += ch;
+        i += 1;
+        continue;
+      }
+      const dimsJoin = rewritten.join(", ");
+      const value = desugarNumpySubscripts(rawValue);
+      const prefix = out.slice(0, objStart);
+      if (assign.op === "=") {
+        out = `${prefix}${WANIM_SETITEM_HELPER}(${obj}, ${dimsJoin}, (${value}))`;
+      } else {
+        const binOp = assign.op.slice(0, -1);
+        const current = `${WANIM_GETITEM_HELPER}(${obj}, ${dimsJoin})`;
+        const rhs =
+          binOp === "@"
+            ? `${WANIM_MATMUL_HELPER}(${current}, (${value}))`
+            : `(${current} ${binOp} (${value}))`;
+        out = `${prefix}${WANIM_SETITEM_HELPER}(${obj}, ${dimsJoin}, ${rhs})`;
+      }
+      i = valueEnd;
       continue;
     }
     const obj = out.slice(objStart);
