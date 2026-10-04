@@ -963,6 +963,82 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return out;
   }
 
+  /**
+   * CPython-compatible `reversed()`.
+   *
+   * rapydscript's baselib `ρσ_reversed` only accepts plain JS arrays and
+   * strings, while CPython accepts any object with `__reversed__` or the
+   * sequence protocol (`__len__` + `__getitem__`) -- notably wanim
+   * `Mobject`/`VGroup` instances, which are iterable class objects (see
+   * `desugarReversedBuiltin` in `preprocess.ts`, which rewrites bare
+   * `reversed(x)` calls to this helper).  Always returns a plain array in
+   * reverse order, which the rest of the pipeline (`zip`, `for`, `list`,
+   * ...) already handles; this matches observing the reversed iteration
+   * order (the CPython iterator itself is not observable from rapydscript).
+   */
+  function wanReversed(iterable: Any): Any[] {
+    if (typeof iterable === "string") return iterable.split("").reverse();
+    if (Array.isArray(iterable)) return [...iterable].reverse();
+    if (iterable !== null && iterable !== undefined) {
+      const obj = iterable as Any;
+      // NOTE: wanim `Mobject`s are Proxies whose `get` trap throws
+      // `AttributeError` for absent attributes (see `createMobjectProxy`), so
+      // dunders must be probed with `in` (the `has` trap), never read blindly.
+      const dunder = (name: string): Any => {
+        try {
+          if (
+            (typeof obj === "object" || typeof obj === "function") &&
+            name in obj
+          ) {
+            return obj[name];
+          }
+        } catch {
+          /* hostile Proxy: treat as absent */
+        }
+        return undefined;
+      };
+      const reversedMethod = dunder("__reversed__");
+      if (typeof reversedMethod === "function") {
+        const rev = reversedMethod.call(obj);
+        if (Array.isArray(rev)) return [...rev];
+        if (rev !== null && rev !== undefined && typeof rev[Symbol.iterator] === "function") {
+          return [...(rev as Iterable<Any>)];
+        }
+      }
+      let iteratorMethod: Any;
+      try {
+        iteratorMethod = obj[Symbol.iterator];
+      } catch {
+        iteratorMethod = undefined;
+      }
+      if (typeof iteratorMethod === "function") {
+        const items = obj instanceof Map ? [...obj.keys()] : [...(obj as Iterable<Any>)];
+        return items.reverse();
+      }
+      // Sequence-protocol fallback (`__len__` + `__getitem__`); `length` covers
+      // the Mobject Proxy's array-like view (`f(*mobject)` splats, see
+      // `createMobjectProxy`) and plain array-likes rapydscript cannot see.
+      const lenMethod = dunder("__len__");
+      let len: Any;
+      try {
+        len = typeof lenMethod === "function" ? lenMethod.call(obj) : obj.length;
+      } catch {
+        len = undefined;
+      }
+      if (typeof len === "number" && Number.isFinite(len)) {
+        const n = Math.max(0, Math.trunc(len));
+        const getMethod = dunder("__getitem__");
+        const get = typeof getMethod === "function"
+          ? (index: number) => getMethod.call(obj, index)
+          : (index: number) => obj[index];
+        const out: Any[] = new Array(n);
+        for (let i = 0; i < n; i += 1) out[i] = get(n - 1 - i);
+        return out;
+      }
+    }
+    throw new TypeError("argument to reversed() must be a sequence");
+  }
+
   function pythonAdd(a: Any, b: Any): Any {
     if (isComplexLike(a) || isComplexLike(b)) return complexAdd(a, b);
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
@@ -2830,6 +2906,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // Matrix-multiplication helper for the `desugarMatmul` step (likewise a
     // reserved name; see `preprocess.ts`).
     globals.__wan_matmul = wanMatmul;
+    // CPython-compatible `reversed()` for the `desugarReversedBuiltin` step
+    // (likewise a reserved name; see `preprocess.ts`). rapydscript's own
+    // `reversed` only handles plain arrays/strings.
+    globals.__wan_reversed = wanReversed;
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -2855,6 +2935,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     wanSetItem,
     wanSlice: wanSliceDim,
     wanMatmul,
+    wanReversed,
     getDot,
   };
 }

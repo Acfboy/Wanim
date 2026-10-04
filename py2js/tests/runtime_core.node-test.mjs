@@ -201,4 +201,51 @@ check("NDArray numeric slice serves plain-JS copies (ρσ_eslice path)", () => {
   assert.deepEqual(arr.slice("::-1").toArray(), [4, 3, 2, 1, 0]);
 });
 
+check("wanReversed reverses arrays without mutating, strings, and iterables", () => {
+  const arr = [1, 2, 3];
+  assert.deepEqual(core.wanReversed(arr), [3, 2, 1]);
+  assert.deepEqual(arr, [1, 2, 3]);
+  assert.deepEqual(core.wanReversed("abc"), ["c", "b", "a"]);
+  // Any Symbol.iterator object (e.g. a VGroup/Mobject) reverses in iteration order.
+  const seq = { *[Symbol.iterator]() { yield "a"; yield "b"; yield "c"; } };
+  assert.deepEqual(core.wanReversed(seq), ["c", "b", "a"]);
+  assert.deepEqual(core.wanReversed(new Map([["k1", 1], ["k2", 2]])), ["k2", "k1"]);
+});
+
+check("wanReversed prefers __reversed__ and falls back to the sequence protocol", () => {
+  const custom = { __reversed__() { return ["x", "y"]; } };
+  assert.deepEqual(core.wanReversed(custom), ["x", "y"]);
+  const gen = { __reversed__() { return (function* () { yield 1; yield 2; })(); } };
+  assert.deepEqual(core.wanReversed(gen), [1, 2]);
+  // No iterator: __len__ + __getitem__ (negative indices must not occur here).
+  const seqLike = { __len__() { return 3; }, __getitem__(i) { return ["a", "b", "c"][i]; } };
+  assert.deepEqual(core.wanReversed(seqLike), ["c", "b", "a"]);
+  assert.throws(() => core.wanReversed(42), TypeError);
+  assert.throws(() => core.wanReversed(null), TypeError);
+});
+
+check("wanReversed tolerates Mobject-like Proxies that throw on missing attrs", () => {
+  // Mirrors `createMobjectProxy`: absent attributes raise AttributeError
+  // instead of yielding `undefined`, so dunders must be probed with `in`.
+  const target = {
+    *[Symbol.iterator]() { yield "a"; yield "b"; },
+    __len__() { return 2; },
+    __getitem__(i) { return ["a", "b"][i]; },
+  };
+  const proxy = new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (prop in obj || typeof prop === "symbol") return Reflect.get(obj, prop, receiver);
+      const error = new Error(`VGroup object has no attribute '${String(prop)}'`);
+      error.name = "AttributeError";
+      throw error;
+    },
+  });
+  assert.deepEqual(core.wanReversed(proxy), ["b", "a"]);
+});
+
+check("wanReversed is exposed to compiled scenes as a global", () => {
+  const runtime = core.buildRuntime();
+  assert.equal(typeof runtime.globals.__wan_reversed, "function");
+});
+
 console.log(`\n${passed} tests passed`);

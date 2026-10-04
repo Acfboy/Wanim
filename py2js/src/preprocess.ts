@@ -1760,6 +1760,9 @@ export function desugarMatmul(source: string): string {
 /** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
 export const WANIM_COMPLEX_HELPER = "__wan_complex";
 
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_REVERSED_HELPER = "__wan_reversed";
+
 const COMPLEX_LITERAL_RE =
   /^(?:[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][+-]?[0-9_]+)?|\.[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?)[jJ]/;
 
@@ -1828,6 +1831,95 @@ export function desugarComplexLiterals(source: string): string {
     }
     out += `${WANIM_COMPLEX_HELPER}(0, ${String(imagValue)})`;
     i += literal.length;
+  }
+  return out;
+}
+
+// --- `reversed()` builtin desugar ------------------------------------------------
+//
+// rapydscript-ng's `ρσ_reversed` only accepts plain JS arrays and strings
+// ("reversed() can only be called on arrays or strings"), while CPython's
+// `reversed()` works on any object with `__reversed__` or the sequence
+// protocol (`__len__` + `__getitem__`) -- notably wanim `Mobject`/`VGroup`
+// (e.g. `zip(names, reversed(parts))`), which are iterable class instances.
+// We rewrite bare `reversed(x)` calls into `__wan_reversed(x)` runtime calls
+// (helper provided by the runtime in `runtime_core.ts`, mirroring CPython
+// semantics and returning a plain array that the rest of the pipeline --
+// `zip`, `for`, `list`, ... -- already handles).
+//
+// The scan skips string literals and `#` comments and never touches attribute
+// access (`obj.reversed(...)` stays as-is). When user code defines its own
+// `reversed` (`def`/`class`/assignment at line start) the source is left
+// untouched so the local binding keeps working.
+//
+// Known limitations (documented in ): shadowing
+// `reversed` via `lambda`/`global`/`nonlocal`/import alias, or calling it
+// through an alias (`r = reversed; r(x)`), is not detected.
+
+const REVERSED_NAME = "reversed";
+
+/** True when user code binds its own `reversed` at statement level. */
+function shadowsReversedBuiltin(source: string): boolean {
+  return /(^|\n)[ \t]*(def|class)[ \t]+reversed(?![\p{L}\p{N}_])/u.test(source) ||
+    /(^|\n)[ \t]*reversed[ \t]*=(?![=>])/m.test(source);
+}
+
+/**
+ * Rewrite bare `reversed(...)` calls into `__wan_reversed(...)` (see above).
+ * Anything that does not parse cleanly passes through untouched.
+ */
+export function desugarReversedBuiltin(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_REVERSED_HELPER)) return source;
+  if (!source.includes(REVERSED_NAME)) return source;
+  if (shadowsReversedBuiltin(source)) return source;
+  let out = "";
+  let i = 0;
+  // Last non-whitespace character emitted (a `.` means attribute access).
+  let previous = "";
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      previous = '"';
+      continue;
+    }
+    if (IDENT_START.test(ch)) {
+      let j = i + 1;
+      while (j < source.length && IDENT_PART.test(source[j]!)) j += 1;
+      const word = source.slice(i, j);
+      if (word === REVERSED_NAME && previous !== ".") {
+        let k = j;
+        while (k < source.length && /\s/.test(source[k]!)) k += 1;
+        if (source[k] === "(") {
+          out += WANIM_REVERSED_HELPER;
+          previous = WANIM_REVERSED_HELPER[WANIM_REVERSED_HELPER.length - 1]!;
+          i = j;
+          continue;
+        }
+      }
+      out += word;
+      previous = word[word.length - 1]!;
+      i = j;
+      continue;
+    }
+    out += ch;
+    if (!/\s/.test(ch)) previous = ch;
+    i += 1;
   }
   return out;
 }
