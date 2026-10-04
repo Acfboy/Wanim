@@ -221,10 +221,42 @@ index 341df63..6bda020 100644
              else:
                  output.print('[')
 diff --git a/src/output/loops.pyj b/src/output/loops.pyj
-index b38e56f..ac9c9e1 100644
+index b38e56f..c12c23a 100644
 --- a/src/output/loops.pyj
 +++ b/src/output/loops.pyj
-@@ -21,6 +21,28 @@ def unpack_tuple(elems, output, in_statement):
+@@ -4,10 +4,30 @@ from __python__ import hash_literals
+ 
+ from ast import (
+     AST_BaseCall, AST_SymbolRef, AST_Array, AST_Unary, AST_Number,
+-    has_calls, AST_Seq, AST_ListComprehension, is_node_type
++    has_calls, AST_Seq, AST_ListComprehension, AST_Await, TreeWalker,
++    Found, is_node_type
+ )
+ 
+ 
++def comprehension_has_await(node):
++    # True when the comprehension subtree contains an `await` (emitted by
++    # wanim's `await_scene_methods` for `self.play`/`self.wait`/... inside a
++    # comprehension element).  The comprehension IIFE must then be `async`
++    # and awaited at its use site; otherwise the `await` lands in a sync
++    # function and the whole module fails with
++    # `SyntaxError: missing ) after argument list`.
++    if not node:
++        return False
++    try:
++        node.walk(new TreeWalker(def (child):
++            if is_node_type(child, AST_Await):
++                raise Found()
++        ))
++    except Found:
++        return True
++    return False
++
++
+ def unpack_tuple(elems, output, in_statement):
+     for i, elem in enumerate(elems):
+         output.indent()
+@@ -21,6 +41,28 @@ def unpack_tuple(elems, output, in_statement):
              output.newline()
  
  
@@ -253,7 +285,7 @@ index b38e56f..ac9c9e1 100644
  def print_do_loop(self, output):
      output.print('do')
      output.space()
-@@ -80,7 +102,7 @@ def print_for_loop_body(output):
+@@ -80,7 +122,7 @@ def print_for_loop_body(output):
              if is_node_type(self.init, AST_Array):
                  flat = self.init.flatten()
                  output.assign('ρσ_unpack')
@@ -262,7 +294,34 @@ index b38e56f..ac9c9e1 100644
                      output.print('ρσ_flatten(' + itervar + ')')
                  else:
                      output.print(itervar)
-@@ -295,16 +317,27 @@ def print_list_comprehension(self, output):
+@@ -279,7 +321,14 @@ def print_list_comprehension(self, output):
+             )
+             output.end_statement()
+ 
++    needs_async = comprehension_has_await(self)
++    if needs_async:
++        output.print('await')
++        output.space()
+     output.with_parens(def ():
++        if needs_async:
++            output.print('async')
++            output.space()
+         output.print('function')
+         output.print('()')
+         output.space()
+@@ -287,7 +336,10 @@ def print_list_comprehension(self, output):
+             body_out = output
+             if is_generator:
+                 body_out.indent()
+-                body_out.print('function* js_generator()')
++                if needs_async:
++                    body_out.print('async function* js_generator()')
++                else:
++                    body_out.print('function* js_generator()')
+                 body_out.space()
+                 body_out.print('{')
+                 body_out.newline()
+@@ -295,16 +347,27 @@ def print_list_comprehension(self, output):
                  output.set_indentation(output.next_indent())
              body_out.indent()
              body_out.assign('var ρσ_Iter')
@@ -292,7 +351,7 @@ index b38e56f..ac9c9e1 100644
                      body_out.comma()
                      i.print(body_out)
              else:
-@@ -325,7 +358,7 @@ def print_list_comprehension(self, output):
+@@ -325,7 +388,7 @@ def print_list_comprehension(self, output):
                  if is_node_type(self.init, AST_Array):
                      flat = self.init.flatten()
                      body_out.assign('ρσ_unpack')
