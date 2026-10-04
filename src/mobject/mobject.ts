@@ -2571,6 +2571,24 @@ export class Mobject {
 
   __len__(): number { return this.submobjects.length + (this.has_points() ? 1 : 0); }
 
+  /** Python `x in mobject` membership (``in``/``not in`` operators).
+   *
+   * manim's `Mobject` defines no `__contains__`, so CPython falls back to
+   * `__iter__` and reports membership on identity-or-equality.  Mobjects use
+   * default identity equality, hence an identity scan over `__iter__` order
+   * (self first when it has points, then submobjects).
+   *
+   * This also keeps rapydscript's `ρσ_in(val, arr)` working on proxied
+   * mobjects: it probes `typeof arr.__contains__`, and reading any other
+   * missing attribute through the Mobject proxy raises `AttributeError`
+   * instead of yielding `undefined`. */
+  __contains__(value: unknown): boolean {
+    for (const item of this.__iter__()) {
+      if (item === value) return true;
+    }
+    return false;
+  }
+
   split(): Mobject[] {
     const result: Mobject[] = this.get_num_points() > 0 ? [this] : [];
     return [...result, ...this.submobjects];
