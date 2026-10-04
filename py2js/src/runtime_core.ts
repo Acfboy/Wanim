@@ -2058,6 +2058,163 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         /* ignore */
       }
     }
+    // Plain-JS vectors (`RIGHT = [1, 0, 0]`, `get_center()` returns
+    // `number[]`) reach numpy as plain arrays, but numpy-ts requires NDArray
+    // inputs for `linalg.*`, `dot`/`matmul`/`cross`/etc. and throws
+    // `Unknown dtype: undefined` on them (e.g. `np.linalg.norm(point -
+    // center)` where both sides are plain `number[]`).  Coerce plain-array
+    // arguments to NDArray before delegating.  Only `Array.isArray` values
+    // are converted, so numeric options (`ord`, `axis=0`, ...) pass through
+    // untouched; axis tuples stay plain tuples.
+    function coerceArrayArg(value: Any): Any {
+      if (isNdArray(value)) return value;
+      if (Array.isArray(value)) {
+        try {
+          return (np as Any).asarray(deepUnwrapNd(value));
+        } catch {
+          return value;
+        }
+      }
+      return value;
+    }
+    function wrapArrayFn(
+      origFn: (...a: Any[]) => Any,
+      arrayCount: number,
+      argnames: string[],
+    ): (...a: Any[]) => Any {
+      const wrapped = (...args: Any[]): Any => {
+        const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+        let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+        if (kwargs !== null) {
+          positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+        }
+        for (let i = 0; i < arrayCount && i < positional.length; i += 1) {
+          positional[i] = coerceArrayArg(positional[i]);
+        }
+        return (origFn as Any)(...positional);
+      };
+      (wrapped as Any).__argnames__ = [...argnames];
+      return wrapped;
+    }
+    // `multi_dot([A, B, ...])` takes a single list of matrices: coerce each
+    // element instead of the outer list.
+    function wrapMultiDot(origFn: (...a: Any[]) => Any, argnames: string[]): (...a: Any[]) => Any {
+      const wrapped = (...args: Any[]): Any => {
+        const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+        let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+        if (kwargs !== null) {
+          positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+        }
+        if (positional.length > 0 && Array.isArray(positional[0])) {
+          positional = [positional[0].map(coerceArrayArg), ...positional.slice(1)];
+        }
+        return (origFn as Any)(...positional);
+      };
+      (wrapped as Any).__argnames__ = [...argnames];
+      return wrapped;
+    }
+    const LINALG_WRAPS: Record<string, { count: number; names: string[] }> = {
+      norm: { count: 1, names: ["x", "ord", "axis", "keepdims"] },
+      vector_norm: { count: 1, names: ["x", "axis", "keepdims", "ord"] },
+      matrix_norm: { count: 1, names: ["x", "keepdims", "ord"] },
+      det: { count: 1, names: ["a"] },
+      slogdet: { count: 1, names: ["a"] },
+      inv: { count: 1, names: ["a"] },
+      solve: { count: 2, names: ["a", "b"] },
+      tensorsolve: { count: 2, names: ["a", "b", "axes"] },
+      lstsq: { count: 2, names: ["a", "b", "rcond"] },
+      pinv: { count: 1, names: ["a", "rcond", "hermitian"] },
+      matrix_rank: { count: 1, names: ["A", "tol", "hermitian"] },
+      matrix_power: { count: 1, names: ["A", "n"] },
+      cond: { count: 1, names: ["x", "p"] },
+      qr: { count: 1, names: ["a", "mode"] },
+      cholesky: { count: 1, names: ["x", "upper"] },
+      svd: { count: 1, names: ["a", "full_matrices", "compute_uv", "hermitian"] },
+      eig: { count: 1, names: ["a"] },
+      eigh: { count: 1, names: ["a", "UPLO"] },
+      eigvals: { count: 1, names: ["a"] },
+      eigvalsh: { count: 1, names: ["a", "UPLO"] },
+      svdvals: { count: 1, names: ["x"] },
+      tensorinv: { count: 1, names: ["a", "ind"] },
+      dot: { count: 2, names: ["a", "b", "out"] },
+      matmul: { count: 2, names: ["x1", "x2", "out"] },
+      vdot: { count: 2, names: ["a", "b"] },
+      inner: { count: 2, names: ["a", "b"] },
+      outer: { count: 2, names: ["a", "b", "out"] },
+      cross: { count: 2, names: ["a", "b", "axisa", "axisb", "axisc", "axis"] },
+      tensordot: { count: 2, names: ["a", "b", "axes"] },
+      vecdot: { count: 2, names: ["a", "b", "axis"] },
+      kron: { count: 2, names: ["a", "b"] },
+      trace: { count: 1, names: ["a", "offset", "axis1", "axis2", "dtype", "out"] },
+      diagonal: { count: 1, names: ["a", "offset", "axis1", "axis2"] },
+      transpose: { count: 1, names: ["a", "axes"] },
+      matrix_transpose: { count: 1, names: ["x"] },
+      permute_dims: { count: 1, names: ["x", "axes"] },
+    };
+    try {
+      const origLinalg = (np as Any).linalg;
+      if (origLinalg !== null && typeof origLinalg === "object") {
+        const wrappedLinalg: Record<string, Any> = { ...(origLinalg as Record<string, Any>) };
+        for (const key of Object.keys(origLinalg as Record<string, Any>)) {
+          const origFn = (origLinalg as Any)[key];
+          if (typeof origFn !== "function") continue;
+          try {
+            if (key === "multi_dot") {
+              wrappedLinalg[key] = wrapMultiDot(origFn, ["arrays"]);
+              continue;
+            }
+            const spec = LINALG_WRAPS[key];
+            const count = spec !== undefined
+              ? spec.count
+              : (origFn.length >= 2 ? 2 : 1);
+            const names = spec !== undefined
+              ? spec.names
+              : ["a", "b", "c", "d", "e", "f", "g", "h"].slice(0, Math.max(origFn.length, 1));
+            wrappedLinalg[key] = wrapArrayFn(origFn, count, names);
+          } catch {
+            /* keep original on wrap failure */
+          }
+        }
+        facade.linalg = wrappedLinalg;
+      }
+    } catch {
+      /* leave facade.linalg untouched */
+    }
+    const TOPLEVEL_ARRAY_WRAPS: Record<string, { count: number; names: string[] }> = {
+      dot: { count: 2, names: ["a", "b", "out"] },
+      matmul: { count: 2, names: ["x1", "x2", "out"] },
+      vdot: { count: 2, names: ["a", "b"] },
+      inner: { count: 2, names: ["a", "b"] },
+      outer: { count: 2, names: ["a", "b", "out"] },
+      kron: { count: 2, names: ["a", "b"] },
+      cross: { count: 2, names: ["a", "b", "axisa", "axisb", "axisc", "axis"] },
+      tensordot: { count: 2, names: ["a", "b", "axes"] },
+      vecdot: { count: 2, names: ["a", "b", "axis"] },
+      trace: { count: 1, names: ["a", "offset", "axis1", "axis2", "dtype", "out"] },
+      diagonal: { count: 1, names: ["a", "offset", "axis1", "axis2"] },
+      transpose: { count: 1, names: ["a", "axes"] },
+      matrix_transpose: { count: 1, names: ["x"] },
+      permute_dims: { count: 1, names: ["x", "axes"] },
+    };
+    for (const [name, spec] of Object.entries(TOPLEVEL_ARRAY_WRAPS)) {
+      try {
+        const origFn = (np as Any)[name];
+        if (typeof origFn !== "function") continue;
+        // Do not clobber an existing facade wrapper (e.g. ufunc fast paths).
+        if ((facade as Any)[name] !== origFn) continue;
+        (facade as Any)[name] = wrapArrayFn(origFn, spec.count, spec.names);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      const origMultiDot = (np as Any).multi_dot;
+      if (typeof origMultiDot === "function" && (facade as Any).multi_dot === origMultiDot) {
+        (facade as Any).multi_dot = wrapMultiDot(origMultiDot, ["arrays"]);
+      }
+    } catch {
+      /* ignore */
+    }
     return facade;
   }
 
