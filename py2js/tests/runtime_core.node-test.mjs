@@ -248,4 +248,20 @@ check("wanReversed is exposed to compiled scenes as a global", () => {
   assert.equal(typeof runtime.globals.__wan_reversed, "function");
 });
 
+check("numpy facade exposes linalg.LinAlgError for except handlers", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(typeof np.linalg.LinAlgError, "function");
+  const error = new np.linalg.LinAlgError("singular");
+  assert.ok(error instanceof Error);
+  assert.equal(error.name, "LinAlgError");
+});
+
+check("numpy facade stacks plain Python lists (column_stack et al.)", () => {
+  const np = ndCore.buildNumpy();
+  const rows = (a) => Array.from(a, (r) => [...r]);
+  assert.deepEqual(rows(np.column_stack([[1, 2], [3, 4]])), [[1, 3], [2, 4]]);
+  assert.deepEqual(rows(np.vstack([[1, 2], [3, 4]])), [[1, 2], [3, 4]]);
+  assert.deepEqual([...np.hstack([[1, 2], [3, 4]])], [1, 2, 3, 4]);
+});
+
 console.log(`\n${passed} tests passed`);
