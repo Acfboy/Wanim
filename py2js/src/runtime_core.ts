@@ -1026,13 +1026,31 @@ export function createRuntimeCore(deps: RuntimeDeps) {
 
     const scalarUfuncs = [
       "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
-      "exp", "log", "log2", "log10", "sqrt", "cbrt", "absolute", "abs", "sign",
-      "floor", "ceil", "rint", "trunc", "square", "reciprocal", "deg2rad", "rad2deg",
+      "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "sqrt", "cbrt",
+      "absolute", "abs", "fabs", "sign", "floor", "ceil", "rint", "trunc",
+      "square", "reciprocal", "deg2rad", "rad2deg", "degrees", "radians",
+      "sinc",
     ];
     for (const name of scalarUfuncs) {
       const fn = (np as Any)[name];
       if (typeof fn !== "function") continue;
       facade[name] = (x: Any, ...rest: Any[]) => scalarize(fn(asNd(x), ...rest));
+    }
+    // Two-argument ufuncs need the same treatment: numpy-ts requires NDArray
+    // inputs, so `np.arctan2(0, 1)` on plain Python scalars throws
+    // "undefined is not iterable".  Coerce both operands like the unary case.
+    const binaryUfuncs = [
+      "arctan2", "atan2", "hypot", "power", "pow", "float_power",
+      "maximum", "minimum", "fmax", "fmin", "remainder", "mod", "fmod",
+      "copysign", "nextafter", "ldexp", "logaddexp", "logaddexp2",
+      "add", "subtract", "multiply", "divide", "true_divide", "floor_divide",
+      "heaviside",
+    ];
+    for (const name of binaryUfuncs) {
+      const fn = (np as Any)[name];
+      if (typeof fn !== "function") continue;
+      facade[name] = (a: Any, b: Any, ...rest: Any[]) =>
+        scalarize(fn(asNd(a), asNd(b), ...rest));
     }
     // Plain-number fast path: `np.cos(t)` on a scalar otherwise boxes the value
     // into an NDArray, dispatches through numpy-ts (WASM/alloc), then unwraps —
@@ -1044,11 +1062,15 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       sin: Math.sin, cos: Math.cos, tan: Math.tan,
       arcsin: Math.asin, arccos: Math.acos, arctan: Math.atan,
       sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
-      exp: Math.exp, log: Math.log, log2: Math.log2, log10: Math.log10,
+      exp: Math.exp, exp2: (x) => 2 ** x, expm1: Math.expm1,
+      log: Math.log, log2: Math.log2, log10: Math.log10, log1p: Math.log1p,
       sqrt: Math.sqrt, cbrt: Math.cbrt, abs: Math.abs, absolute: Math.abs,
+      fabs: Math.abs,
       sign: Math.sign, floor: Math.floor, ceil: Math.ceil, trunc: Math.trunc,
       square: (x) => x * x, reciprocal: (x) => 1 / x,
       deg2rad: (x) => (x * Math.PI) / 180, rad2deg: (x) => (x * 180) / Math.PI,
+      degrees: (x) => (x * 180) / Math.PI, radians: (x) => (x * Math.PI) / 180,
+      sinc: (x) => (x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x)),
     };
     for (const name of Object.keys(numberUfuncs)) {
       const fast = numberUfuncs[name];
@@ -1056,6 +1078,40 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (typeof wrapped !== "function") continue;
       facade[name] = (x: Any, ...rest: Any[]) =>
         typeof x === "number" && rest.length === 0 ? fast(x) : wrapped(x, ...rest);
+    }
+    // Plain-number fast path for two-argument ufuncs (same WASM/alloc reason
+    // as above).  `remainder` follows Python/numpy sign-of-divisor semantics,
+    // while `fmod` keeps C sign-of-dividend semantics (plain JS `%`).
+    const numberBinaryUfuncs: Record<string, (a: number, b: number) => number> = {
+      arctan2: Math.atan2, atan2: Math.atan2, hypot: Math.hypot,
+      power: (a, b) => a ** b, pow: (a, b) => a ** b, float_power: (a, b) => a ** b,
+      maximum: Math.max, minimum: Math.min, fmax: Math.max, fmin: Math.min,
+      remainder: (a, b) => {
+        const r = a % b;
+        return r !== 0 && (r < 0 !== b < 0) ? r + b : r;
+      },
+      mod: (a, b) => {
+        const r = a % b;
+        return r !== 0 && (r < 0 !== b < 0) ? r + b : r;
+      },
+      fmod: (a, b) => a % b,
+      copysign: (a, b) => (b < 0 || Object.is(b, -0) ? -Math.abs(a) : Math.abs(a)),
+      ldexp: (a, b) => a * 2 ** b,
+      logaddexp: (a, b) => Math.log(Math.exp(a) + Math.exp(b)),
+      logaddexp2: (a, b) => Math.log2(2 ** a + 2 ** b),
+      add: (a, b) => a + b, subtract: (a, b) => a - b,
+      multiply: (a, b) => a * b, divide: (a, b) => a / b,
+      true_divide: (a, b) => a / b, floor_divide: (a, b) => Math.floor(a / b),
+      heaviside: (a, b) => (a < 0 ? 0 : a > 0 ? 1 : b),
+    };
+    for (const name of Object.keys(numberBinaryUfuncs)) {
+      const fast = numberBinaryUfuncs[name];
+      const wrapped = facade[name];
+      if (typeof wrapped !== "function") continue;
+      facade[name] = (a: Any, b: Any, ...rest: Any[]) =>
+        typeof a === "number" && typeof b === "number" && rest.length === 0
+          ? fast(a, b)
+          : wrapped(a, b, ...rest);
     }
     // numpy-ts' `round`/`around` never coerce their input, so they throw on
     // Python scalars (and plain lists): `np.round(x, 6)` on a float fails with
