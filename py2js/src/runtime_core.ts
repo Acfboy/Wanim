@@ -1278,6 +1278,48 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* ignore */
     }
+    // Elementwise `==`/`!=` for the `ρσ_equals`/`ρσ_not_equals` path.
+    // `write_smart_equality` emits `(a === b || typeof a === "object" &&
+    // ρσ_equals(a, b))`, and `ρσ_equals` prefers `a.__eq__` when present, so
+    // defining `__eq__`/`__ne__` here makes `(ndarray == k).sum()` work
+    // (error 204) without touching the `==` codegen.  0-d results become
+    // plain booleans so `if arr == x:` keeps working.
+    const defineComparisonDunder = (
+      name: string,
+      numpyOp: string,
+    ): void => {
+      try {
+        if (typeof (proto as Any)[name] === "function") return;
+        Object.defineProperty(proto, name, {
+          configurable: true,
+          writable: true,
+          value: function (this: Any, other: Any): Any {
+            try {
+              const fn = (np as Any)[numpyOp];
+              if (typeof fn === "function") {
+                const res = (fn as Any)(this, asNd(other));
+                if (
+                  res !== null &&
+                  res !== undefined &&
+                  Array.isArray((res as Any).shape) &&
+                  (res as Any).shape.length === 0
+                ) {
+                  return Boolean(scalarize(res));
+                }
+                return res;
+              }
+            } catch {
+              /* fall through to undefined */
+            }
+            return undefined;
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+    defineComparisonDunder("__eq__", "equal");
+    defineComparisonDunder("__ne__", "not_equal");
   }
 
   function elementwise(a: readonly number[], b: readonly number[], f: (x: number, y: number) => number): number[] {
@@ -1640,6 +1682,87 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (isArrayLike(a)) return a.map((v) => -v);
     if (isNdArray(a)) return scalarize(np.negative(a));
     return -a;
+  }
+
+  // --- Python comparisons (numpy elementwise) ------------------------------
+  //
+  // rapydscript emits `<`/`>`/`<=`/`>=` as plain JS operators, which cannot
+  // dispatch on numpy arrays: `(np.random.random((n, m)) < p)` coerces the
+  // NDArray to a primitive (`false`) so `.sum()` fails with
+  // "is not a function" (error 204).  The patched compiler routes these four
+  // operators through `ρσ_op_lt`/`ρσ_op_gt`/`ρσ_op_le`/`ρσ_op_ge` when
+  // `operator_overloading` is on (see `py2js/patches/rapydscript-ng.patch`);
+  // these helpers implement Python semantics with a numpy fast path:
+  //
+  //   - complex operands raise like CPython (no ordering on complex);
+  //   - `__lt__`/`__gt__`/`__le__`/`__ge__` dunders are honored first;
+  //   - when either side is an NDArray, delegate to numpy-ts
+  //     (`less`/`greater`/`less_equal`/`greater_equal`) with broadcasting,
+  //     returning the boolean NDArray (0-d results become plain booleans);
+  //   - otherwise fall back to plain JS `<`/`>`/`<=`/`>=` so numbers, strings
+  //     and existing non-numpy code behave exactly as before.
+  //
+  // `==`/`!=` keep their existing `ρσ_equals` path; NDArray elementwise
+  // equality for that path is provided via `__eq__`/`__ne__` on the NDArray
+  // prototype in `patchNDArrayForPython` below.
+  function comparisonNumpy(op: string, a: Any, b: Any): Any | undefined {
+    if (!isNdArray(a) && !isNdArray(b)) return undefined;
+    const fn = (np as Any)[op];
+    if (typeof fn !== "function") return undefined;
+    const res = (fn as Any)(asNd(a), asNd(b));
+    if (
+      res !== null &&
+      res !== undefined &&
+      Array.isArray((res as Any).shape) &&
+      (res as Any).shape.length === 0
+    ) {
+      return Boolean(scalarize(res));
+    }
+    return res;
+  }
+
+  function pythonLt(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) {
+      throw new TypeError("'<' not supported between instances of 'complex'");
+    }
+    if (a !== null && a !== undefined && typeof a.__lt__ === "function") return a.__lt__(b);
+    if (b !== null && b !== undefined && typeof b.__gt__ === "function") return b.__gt__(a);
+    const viaNumpy = comparisonNumpy("less", a, b);
+    if (viaNumpy !== undefined) return viaNumpy;
+    return a < b;
+  }
+
+  function pythonGt(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) {
+      throw new TypeError("'>' not supported between instances of 'complex'");
+    }
+    if (a !== null && a !== undefined && typeof a.__gt__ === "function") return a.__gt__(b);
+    if (b !== null && b !== undefined && typeof b.__lt__ === "function") return b.__lt__(a);
+    const viaNumpy = comparisonNumpy("greater", a, b);
+    if (viaNumpy !== undefined) return viaNumpy;
+    return a > b;
+  }
+
+  function pythonLe(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) {
+      throw new TypeError("'<=' not supported between instances of 'complex'");
+    }
+    if (a !== null && a !== undefined && typeof a.__le__ === "function") return a.__le__(b);
+    if (b !== null && b !== undefined && typeof b.__ge__ === "function") return b.__ge__(a);
+    const viaNumpy = comparisonNumpy("less_equal", a, b);
+    if (viaNumpy !== undefined) return viaNumpy;
+    return a <= b;
+  }
+
+  function pythonGe(a: Any, b: Any): Any {
+    if (isComplexLike(a) || isComplexLike(b)) {
+      throw new TypeError("'>=' not supported between instances of 'complex'");
+    }
+    if (a !== null && a !== undefined && typeof a.__ge__ === "function") return a.__ge__(b);
+    if (b !== null && b !== undefined && typeof b.__le__ === "function") return b.__le__(a);
+    const viaNumpy = comparisonNumpy("greater_equal", a, b);
+    if (viaNumpy !== undefined) return viaNumpy;
+    return a >= b;
   }
 
   // --- Python complex ------------------------------------------------------
@@ -4167,6 +4290,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_op_mod = pythonMod;
     globals.ρσ_op_pow = pythonPow;
     globals.ρσ_op_neg = pythonNeg;
+    globals.ρσ_op_lt = pythonLt;
+    globals.ρσ_op_gt = pythonGt;
+    globals.ρσ_op_le = pythonLe;
+    globals.ρσ_op_ge = pythonGe;
     globals.ρσ_getdot = getDot;
     // Python builtins rapydscript's baselib does not provide.  `min`,
     // `max` and `sum` come from baselib; `round` has no JS equivalent that
@@ -4234,6 +4361,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonMod,
     pythonPow,
     pythonNeg,
+    pythonLt,
+    pythonGt,
+    pythonLe,
+    pythonGe,
     pythonRound,
     pythonAbs,
     pythonComplex,

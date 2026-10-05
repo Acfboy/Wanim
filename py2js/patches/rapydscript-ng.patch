@@ -70,11 +70,10 @@ index 7c28645..d5e1f03 100644
  
  
 diff --git a/src/baselib-internal.pyj b/src/baselib-internal.pyj
-index e0ec495..4f5667d 100644
+index e0ec495..ed23bcf 100644
 --- a/src/baselib-internal.pyj
 +++ b/src/baselib-internal.pyj
-@@ -8,5 +8,18 @@ def ρσ_eslice(arr, step, start, end):
-     if jstype(arr) is 'string' or v'arr instanceof String':
+@@ -10,6 +10,19 @@ def ρσ_eslice(arr, step, start, end):
          is_string = True
          arr = arr.split('')
  
@@ -92,7 +91,9 @@ index e0ec495..4f5667d 100644
 +        return g.call(arr, v'{start: start, stop: end, step: step}')
 +
      if step < 0:
-@@ -122,6 +122,42 @@ def ρσ_Iterable(iterable):
+         step = -step
+         arr = arr.slice().reverse()
+@@ -122,6 +135,42 @@ def ρσ_Iterable(iterable):
      # with dicts in python
      return Object.keys(iterable)
  
@@ -135,7 +136,7 @@ index e0ec495..4f5667d 100644
  ρσ_desugar_kwargs = (def ():
      if jstype(Object.assign) is 'function':
          return def ():
-@@ -177,13 +213,58 @@ def ρσ_interpolate_kwargs_constructor(apply, f, supplied_args):
+@@ -177,13 +226,58 @@ def ρσ_interpolate_kwargs_constructor(apply, f, supplied_args):
  
  
  def ρσ_getitem(obj, key):
@@ -197,7 +198,7 @@ index e0ec495..4f5667d 100644
      if obj.__setitem__:
          obj.__setitem__(key, val)
 diff --git a/src/output/functions.pyj b/src/output/functions.pyj
-index 341df63..6bda020 100644
+index 341df63..62bc4ac 100644
 --- a/src/output/functions.pyj
 +++ b/src/output/functions.pyj
 @@ -3,7 +3,8 @@
@@ -222,9 +223,9 @@ index 341df63..6bda020 100644
          # Read values from the kwargs object for any formal parameters
          if a.has_defaults:
              for dname in Object.keys(a.defaults):
-@@ -240,13 +245,28 @@ def function_annotation(self, output, strip_first, name):
+@@ -240,13 +246,28 @@ def function_annotation(self, output, strip_first, name):
              output.print('}')
-
+ 
      # Create __defaults__
 +    # NOTE (wanim): a tuple default is an AST_Seq, which prints as a bare
 +    # comma list outside a bracketing parent (see print_seq), so without
@@ -252,7 +253,7 @@ index 341df63..6bda020 100644
                  if i is not dkeys.length - 1:
                      output.comma()
              output.print('}')
-@@ -461,7 +467,15 @@ def print_function_call(self, output):
+@@ -461,7 +482,15 @@ def print_function_call(self, output):
              if not is_first:
                  output.print('.concat(')
              if expr.is_array:
@@ -453,7 +454,7 @@ index b38e56f..90c0769 100644
                      else:
                          body_out.print(itervar)
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..24c8683 100644
+index a16673a..144b0b6 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
 @@ -12,8 +12,33 @@ from output.loops import unpack_tuple
@@ -555,12 +556,14 @@ index a16673a..24c8683 100644
      output.print(op)
      if /^[a-z]/i.test(op):
          output.space()
-@@ -211,9 +269,37 @@ function_ops = {
+@@ -211,9 +269,87 @@ function_ops = {
      'nin': '!ρσ_in',
  }
  
-+# Arithmetic operators that can be routed through the Python-semantics runtime
-+# helpers when `operator_overloading` is enabled.
++# Arithmetic and comparison operators that can be routed through the
++# Python-semantics runtime helpers when `operator_overloading` is enabled.
++# Comparisons need it for numpy: plain JS `<` coerces an NDArray to a
++# primitive, so `(arr < p).sum()` fails (wanim error 204).
 +op_overload_map = {
 +    '+': 'ρσ_op_add',
 +    '-': 'ρσ_op_sub',
@@ -569,6 +572,10 @@ index a16673a..24c8683 100644
 +    '//': 'ρσ_op_floordiv',
 +    '%': 'ρσ_op_mod',
 +    '**': 'ρσ_op_pow',
++    '<': 'ρσ_op_lt',
++    '>': 'ρσ_op_gt',
++    '<=': 'ρσ_op_le',
++    '>=': 'ρσ_op_ge',
 +}
 +
 +compound_op_overload_map = {
@@ -583,6 +590,50 @@ index a16673a..24c8683 100644
  
  def print_binary_op(self, output):
 -    if function_ops[self.operator]:
++    if comparators[self.operator] and is_node_type(
++        self.left,
++        AST_Binary
++    ) and comparators[self.left.operator] and output.options.operator_overloading and op_overload_map[self.operator] and op_overload_map[self.left.operator]:
++        # A chained comparison such as a < b < c with operator_overloading:
++        # both halves go through the ρσ_op_* helpers so numpy masks keep
++        # working (plain values fall back to JS semantics in the helpers).
++        left_op = op_overload_map[self.left.operator]
++        right_op = op_overload_map[self.operator]
++        if is_node_type(self.left.right, AST_Symbol):
++            output.print(left_op)
++            output.with_parens(def ():
++                self.left.left.print(output)
++                output.comma()
++                self.left.right.print(output)
++            )
++            leftvar = self.left.right.name
++            leftvar_node = self.left.right
++        else:
++            output.print(left_op)
++            output.with_parens(def ():
++                self.left.left.print(output)
++                output.comma()
++                output.with_parens(def ():
++                    nonlocal leftvar
++                    output.assign('ρσ_cond_temp')
++                    self.left.right.print(output)
++                    leftvar = 'ρσ_cond_temp'
++                )
++            )
++            leftvar_node = None
++        output.space()
++        output.print('&&')
++        output.space()
++        output.print(right_op)
++        output.with_parens(def ():
++            if leftvar_node is not None:
++                leftvar_node.print(output)
++            else:
++                output.print(leftvar)
++            output.comma()
++            self.right.print(output)
++        )
++        return
 +    if output.options.operator_overloading and op_overload_map[self.operator]:
 +        output.print(op_overload_map[self.operator])
 +        output.with_parens(def ():
@@ -594,7 +645,7 @@ index a16673a..24c8683 100644
          output.print(function_ops[self.operator])
          output.with_parens(def ():
              self.left.print(output)
-@@ -363,6 +449,20 @@ def print_existential(self, output):
+@@ -363,6 +499,20 @@ def print_existential(self, output):
  
  
  def print_assignment(self, output):
@@ -615,7 +666,7 @@ index a16673a..24c8683 100644
      flattened = False
      left = self.left
      if is_node_type(left, AST_Seq):
-@@ -372,7 +472,13 @@ def print_assignment(self, output):
+@@ -372,7 +522,13 @@ def print_assignment(self, output):
          flattened = flat.length > left.elements.length
          output.print('ρσ_unpack')
      else:
@@ -629,7 +680,7 @@ index a16673a..24c8683 100644
      output.space()
      output.print(self.operator)
      output.space()
-@@ -460,14 +566,32 @@ def print_conditional(self, output, condition, consequent, alternative):
+@@ -460,14 +616,32 @@ def print_conditional(self, output, condition, consequent, alternative):
  def print_seq(output):
      self = this
      p = output.parent()
