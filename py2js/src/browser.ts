@@ -23,6 +23,7 @@ import {
 import {
   desugarAbsBuiltin,
   desugarComplexLiterals,
+  desugarDictGet,
   desugarDottedExcept,
   desugarMatmul,
   desugarMultiForComprehensions,
@@ -51,6 +52,7 @@ export const buildRuntime = core.buildRuntime;
 export {
   desugarAbsBuiltin,
   desugarComplexLiterals,
+  desugarDictGet,
   desugarDottedExcept,
   desugarMatmul,
   desugarMultiForComprehensions,
@@ -105,8 +107,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // inside `(...)` tuples, no `*` spread inside list/tuple displays, no newline
   // between a generator expression's element and its `for`, and its
   // `reversed()` only accepts plain arrays/strings, baselib `abs` is
-  // `Math.abs` (NaN on complex), and baselib `sum` accumulates with plain JS
-  // `+` (which stringifies NDArray terms), so all eleven are
+  // `Math.abs` (NaN on complex), baselib `sum` accumulates with plain JS
+  // `+` (which stringifies NDArray terms), and plain-object dict literals
+  // have no `.get`, so all twelve are
   // desugared before compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
   // `__wan_flatten1` calls), dotted/tuple `except` handlers
@@ -120,8 +123,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // generator unpackings (`f(*(x for x in xs))`) into unpackings of the
   // equivalent list comprehension (`f(*([x for x in xs]))`), bare
   // `reversed(x)` calls into `__wan_reversed(x)` calls, bare `abs(x)`
-  // calls into `__wan_abs(x)` calls, and bare `sum(...)` calls into
-  // `__wan_sum(...)` calls.  The tuple step runs
+  // calls into `__wan_abs(x)` calls, bare `sum(...)` calls into
+  // `__wan_sum(...)` calls, and `d.get(k[, dflt])` calls into
+  // `__wan_dict_get(d, k[, dflt])` calls.  The tuple step runs
   // first so later passes never see the trailing comma; the starred-display
   // step runs right after so later passes only see plain displays; the
   // complex step runs before the matmul step so it never sees the `j`
@@ -131,16 +135,18 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // multi-`for` generator reaches it as a list comprehension.
   const pre = preprocessImports(
     desugarDottedExcept(
-      desugarMultiForComprehensions(
-        desugarStarredGenerators(
-          desugarNumpySubscripts(
-            desugarReversedBuiltin(
-              desugarSumBuiltin(
-                desugarAbsBuiltin(
-                  desugarMatmul(
-                    desugarComplexLiterals(
-                      desugarStarredDisplays(
-                        desugarTupleTrailingCommas(renameJsReservedWords(source)),
+      desugarDictGet(
+        desugarMultiForComprehensions(
+          desugarStarredGenerators(
+            desugarNumpySubscripts(
+              desugarReversedBuiltin(
+                desugarSumBuiltin(
+                  desugarAbsBuiltin(
+                    desugarMatmul(
+                      desugarComplexLiterals(
+                        desugarStarredDisplays(
+                          desugarTupleTrailingCommas(renameJsReservedWords(source)),
+                        ),
                       ),
                     ),
                   ),

@@ -658,6 +658,26 @@ check("plain-object dict literals support update/clear/copy/pop/setdefault (erro
   assert.equal({}.update, Object.prototype.update);
 });
 
+check("wanDictGet serves dict.get without an Object.prototype.get (error 275)", () => {
+  // `counts.get(ch, 0)` desugars to `__wan_dict_get(counts, ch, 0)` because
+  // `Object.prototype` must never gain a `get` (it poisons
+  // `Object.defineProperties` via the descriptor protocol).
+  const get = core.wanDictGet;
+  const counts = {};
+  for (const ch of "abide") counts[ch] = get(counts, ch, 0) + 1;
+  assert.deepEqual(counts, { a: 1, b: 1, i: 1, d: 1, e: 1 });
+  assert.equal(get(counts, "missing", 0), 0);
+  assert.equal(get(counts, "missing"), null);
+  assert.equal(get(counts, "a"), 1);
+  // Real Maps delegate; other receivers with a native `get` delegate too.
+  const m = new Map([["x", 5]]);
+  assert.equal(get(m, "x", 0), 5);
+  assert.equal(get(m, "y", 7), 7);
+  assert.equal(get(m, "y"), null);
+  assert.throws(() => get([1, 2], "a", 0), /no attribute 'get'/);
+  assert.equal(typeof Object.prototype.get, "undefined");
+});
+
 check("np.where accepts scalar conditions (numpy-ts does not)", () => {
   const np = ndCore.buildNumpy();
   // Error 263: nested np.where over a 0-d np.asarray(t) scalar, where the

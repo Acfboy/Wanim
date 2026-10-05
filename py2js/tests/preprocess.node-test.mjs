@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 
 import {
+  desugarDictGet,
   desugarDottedExcept,
   desugarMatmul,
   desugarMultiForComprehensions,
@@ -592,6 +593,38 @@ check("sum desugar leaves attributes, numpy imports, strings, comments and shado
   assert.equal(
     desugarSumBuiltin("from numpy import sum as s\nx = sum(a)\n"),
     "from numpy import sum as s\nx = __wan_sum(a)\n",
+  );
+});
+
+check("dict.get desugar rewrites .get() calls (error 275)", () => {
+  assert.equal(
+    desugarDictGet("counts[ch] = counts.get(ch, 0) + 1\n"),
+    "counts[ch] = __wan_dict_get(counts, ch, 0) + 1\n",
+  );
+  assert.equal(
+    desugarDictGet("x = counts.get(ch)\n"),
+    "x = __wan_dict_get(counts, ch)\n",
+  );
+  assert.equal(
+    desugarDictGet("x = self.d.get(k, 1)\n"),
+    "x = __wan_dict_get(self.d, k, 1)\n",
+  );
+  assert.equal(
+    desugarDictGet("x = d[k].get(k2, 0)\n"),
+    "x = __wan_dict_get(d[k], k2, 0)\n",
+  );
+  // Longer attribute names, strings and comments pass through.
+  assert.equal(
+    desugarDictGet("x = a.get_center()\n"),
+    "x = a.get_center()\n",
+  );
+  assert.equal(
+    desugarDictGet('x = "s.get(x)"\n# y = d.get(x)\n'),
+    'x = "s.get(x)"\n# y = d.get(x)\n',
+  );
+  assert.equal(
+    desugarDictGet("x = __wan_dict_get(d, k)\n"),
+    "x = __wan_dict_get(d, k)\n",
   );
 });
 
