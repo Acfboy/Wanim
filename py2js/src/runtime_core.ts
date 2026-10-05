@@ -3581,7 +3581,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         // distribution parameter is an array, so `normal` with array
         // `loc`/`scale` is routed through `standard_normal` with explicit
         // broadcasting (`standard_normal(size) * scale + loc`), which is
-        // exactly what numpy computes.  Other distributions keep delegating
+        // exactly what numpy computes, and `uniform` with array `low`/`high`
+        // is routed through scalar `uniform(0, 1, size)` as
+        // `low + (high - low) * U`.  Other distributions keep delegating
         // (their array-parameter support stays an upstream limitation).
         const RANDOM_DIST_ARGNAMES: Record<string, string[]> = {
           random: ["size"], random_sample: ["size"], ranf: ["size"], sample: ["size"],
@@ -3645,12 +3647,52 @@ export function createRuntimeCore(deps: RuntimeDeps) {
             ? (origNormalFn as Any)(locA, scaleA)
             : (origNormalFn as Any)(locA, scaleA, size);
         };
+        const uniformWithArrayParams = (
+          origUniformFn: (...a: Any[]) => Any,
+          positional: Any[],
+        ): Any => {
+          let low = positional.length > 0 ? positional[0] : undefined;
+          let high = positional.length > 1 ? positional[1] : undefined;
+          const size = positional.length > 2 ? positional[2] : undefined;
+          if (low === undefined || low === null) low = 0;
+          if (high === undefined || high === null) high = 1;
+          const lowA = coerceDistParam(low);
+          const highA = coerceDistParam(high);
+          if (!isNdArray(lowA) && !isNdArray(highA)) {
+            return size === undefined || size === null
+              ? (origUniformFn as Any)(low, high)
+              : (origUniformFn as Any)(low, high, size);
+          }
+          // numpy-ts returns nulls/NaNs when low/high are arrays; emulate
+          // numpy via low + (high - low) * U[0,1), letting np ufuncs
+          // broadcast (verified: multiply/add broadcast [30,3] x [3]).
+          if (size !== undefined && size !== null) {
+            const u = (origUniformFn as Any)(0, 1, size);
+            return (np as Any).add((np as Any).multiply(u, (np as Any).subtract(highA, lowA)), lowA);
+          }
+          // No size: numpy broadcasts low/high to a common shape.
+          try {
+            const l = isNdArray(lowA) ? lowA : (np as Any).asarray(lowA);
+            const h = isNdArray(highA) ? highA : (np as Any).asarray(highA);
+            const template = (np as Any).add(l, h);
+            const shape = (template as Any)?.shape as number[] | undefined;
+            if (!shape || shape.length === 0) {
+              const u = (origUniformFn as Any)(0, 1);
+              return (np as Any).add((np as Any).multiply(u, (np as Any).subtract(highA, lowA)), lowA);
+            }
+            const u = (origUniformFn as Any)(0, 1, shape);
+            return (np as Any).add((np as Any).multiply(u, (np as Any).subtract(highA, lowA)), lowA);
+          } catch {
+            return (origUniformFn as Any)(lowA, highA);
+          }
+        };
         const wrapDistFn = (
           origFn: (...a: Any[]) => Any,
           stdNormalFn: Any,
           origNormalFn: Any,
           argnames: string[],
           isNormal: boolean,
+          isUniform = false,
         ): ((...a: Any[]) => Any) => {
           const fn = function (...args: Any[]): Any {
             const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
@@ -3660,6 +3702,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
             }
             if (isNormal) {
               return normalWithArrayParams(stdNormalFn, origNormalFn, positional);
+            }
+            if (isUniform) {
+              return uniformWithArrayParams(origFn, positional);
             }
             // Coerce distribution parameters (everything but the trailing
             // `size`, which numpy-ts wants as a plain array/number) so plain
@@ -3732,6 +3777,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
                   (gen as Any).normal,
                   argnames,
                   name === "normal",
+                  name === "uniform",
                 );
               } catch {
                 /* keep the raw generator method on wrap failure */
@@ -3809,6 +3855,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
                   (origRandom as Any).normal,
                   argnames,
                   name === "normal",
+                  name === "uniform",
                 );
               } catch {
                 /* keep the raw numpy-ts distribution on wrap failure */
