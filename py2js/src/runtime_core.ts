@@ -3795,6 +3795,18 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           vonmises: ["mu", "kappa", "size"],
           randint: ["low", "high", "size"],
           random_integers: ["low", "high", "size"],
+          // `Generator.integers(low, high=None, size=None, ...)` is the new
+          // API backing `default_rng` (numpy-ts' `Generator` only ships
+          // `integers`, not `randint`).  Without this entry the bare
+          // numpy-ts closure has no `__argnames__`, so rapydscript's
+          // `ρσ_interpolate_kwargs` hands the kwargs bag (e.g. `{size: n}`)
+          // as a trailing positional and numpy-ts throws
+          // `TypeError: Cannot convert object to primitive value` inside its
+          // `size.reduce(...)` (error 241: `rng.integers(0, 2, size=n)`).
+          // `dtype`/`endpoint` are accepted positionally for kwargs mapping
+          // but dropped on delegation: numpy-ts' `integers(low, high, size)`
+          // takes only three args (extras are ignored by JS arity).
+          integers: ["low", "high", "size", "dtype", "endpoint"],
         };
         const coerceDistParam = (value: Any): Any =>
           Array.isArray(value) ? coerceArrayArg(value) : value;
@@ -3870,6 +3882,21 @@ export function createRuntimeCore(deps: RuntimeDeps) {
             let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
             if (kwargs !== null) {
               positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+            }
+            // `integers` carries unsupported trailing params (`dtype`,
+            // `endpoint`) purely so kwargs mapping accepts them; numpy-ts'
+            // `integers(low, high, size)` takes only three args.  Drop them
+            // (and any unknown-extras bag `placeKwargs` appended) before the
+            // size-sensitive coercion below, so a tuple/list `size` stays a
+            // plain array in the trailing slot instead of being coerced to
+            // an NDArray (which numpy-ts' `Array.isArray(size)` check
+            // rejects with `Cannot convert object to primitive value`).
+            if (
+              argnames.length === 5 &&
+              argnames[3] === "dtype" &&
+              argnames[4] === "endpoint"
+            ) {
+              positional = positional.slice(0, 3);
             }
             if (isNormal) {
               return normalWithArrayParams(stdNormalFn, origNormalFn, positional);
@@ -4174,6 +4201,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
               };
               (randintFn as Any).__argnames__ = ["low", "high", "size"];
               rs.randint = randintFn;
+              // New-API alias: `RandomState(...).integers(...)` delegates to
+              // the same path (extra `dtype`/`endpoint` kwargs are dropped
+              // there, matching the `wrapDistFn` truncation above).
+              rs.integers = randintFn;
               // `shuffle` / `permutation` / `choice` need the same plain-list
               // index delegation as `wrapGenerator` (lists of arbitrary objects
               // cannot enter NDArray storage), but bound to the *current*
