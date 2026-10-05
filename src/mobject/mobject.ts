@@ -484,6 +484,65 @@ export function setDefaultCameraFactory(factory: (() => ImageCapableCamera) | nu
   defaultCameraFactory = factory;
 }
 
+/**
+ * Normalize the `stretch` / `about_point` / `about_edge` / trailing-kwargs
+ * shapes for `match_*` / `rescale_to_fit` / `*_to_fit_*`.
+ *
+ * Mirrors Python `**kwargs` forwarding (`match_width(m, stretch=True)`):
+ * without an explicit `stretch` slot the py2js kwargs bridge appends
+ * `{stretch: true}` as a trailing object, which lands in `about_point` and
+ * poisons `scale` with NaN ("non-finite point/vector value", error 166).
+ * Also tolerates the pre-fix positional order `match_width(m, about_point)`
+ * where a point arrives in the `stretch` slot.
+ */
+export function normalizeMatchKwargs(
+  kwargs: Record<string, unknown> | undefined | null,
+  stretch: unknown,
+  about_point?: readonly number[] | NDArray | null | Record<string, unknown>,
+  about_edge?: readonly number[] | NDArray | null | Record<string, unknown>,
+): { stretch: boolean; about_point?: readonly number[] | NDArray | null; about_edge?: readonly number[] | NDArray | null } {
+  let stretchFlag = false;
+  let point = about_point as readonly number[] | NDArray | null | undefined;
+  let edge = about_edge as readonly number[] | NDArray | null | undefined;
+  const isBag = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+    && !(value instanceof Mobject) && typeof (value as { tolist?: unknown }).tolist !== "function";
+  const pullBag = (bag: Record<string, unknown>): void => {
+    if ("stretch" in bag && stretchFlag === false) stretchFlag = Boolean((bag as Record<string, unknown>)["stretch"]);
+    if ("about_point" in bag && (point === undefined || point === null)) point = (bag as Record<string, unknown>)["about_point"] as never;
+    if ("about_edge" in bag && (edge === undefined || edge === null)) edge = (bag as Record<string, unknown>)["about_edge"] as never;
+  };
+  if (typeof stretch === "boolean" || typeof stretch === "number") {
+    stretchFlag = Boolean(stretch);
+  } else if (stretch !== undefined && stretch !== null) {
+    if (isBag(stretch)) {
+      pullBag(stretch as Record<string, unknown>);
+    } else {
+      // Legacy positional point in the `stretch` slot: shift it to about_point.
+      point = (point ?? undefined) !== undefined ? point : undefined;
+      if (point === undefined) {
+        point = stretch as never;
+      } else {
+        // Both slots filled (should not happen): prefer explicit point slot.
+        if (edge === undefined) edge = point as never;
+        point = stretch as never;
+      }
+    }
+  }
+  if (isBag(point) && ("stretch" in (point as Record<string, unknown>) || "about_point" in (point as Record<string, unknown>) || "about_edge" in (point as Record<string, unknown>))) {
+    const bag = point as unknown as Record<string, unknown>;
+    point = undefined;
+    pullBag(bag);
+  }
+  if (isBag(edge) && ("stretch" in (edge as Record<string, unknown>) || "about_point" in (edge as Record<string, unknown>) || "about_edge" in (edge as Record<string, unknown>))) {
+    const bag = edge as unknown as Record<string, unknown>;
+    edge = undefined;
+    pullBag(bag);
+  }
+  if (kwargs !== undefined && kwargs !== null && typeof kwargs === "object") pullBag(kwargs);
+  return { stretch: stretchFlag, about_point: (point ?? null) as never, about_edge: (edge ?? null) as never };
+}
+
 export class Mobject {
   name: string;
   dim: number;
@@ -1124,21 +1183,41 @@ export class Mobject {
     return max - min;
   }
 
-  scale_to_fit_width(value: number): this { return this.rescale_to_fit(value, 0); }
-  scale_to_fit_height(value: number): this { return this.rescale_to_fit(value, 1); }
-  scale_to_fit_depth(value: number): this { return this.rescale_to_fit(value, 2); }
+  scale_to_fit_width(value: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, undefined, about_point, about_edge);
+    return this.rescale_to_fit(value, 0, false, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+  scale_to_fit_height(value: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, undefined, about_point, about_edge);
+    return this.rescale_to_fit(value, 1, false, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+  scale_to_fit_depth(value: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, undefined, about_point, about_edge);
+    return this.rescale_to_fit(value, 2, false, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
 
-  stretch_to_fit_width(value: number): this { return this.rescale_to_fit(value, 0, true); }
-  stretch_to_fit_height(value: number): this { return this.rescale_to_fit(value, 1, true); }
-  stretch_to_fit_depth(value: number): this { return this.rescale_to_fit(value, 2, true); }
+  stretch_to_fit_width(value: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, undefined, about_point, about_edge);
+    return this.rescale_to_fit(value, 0, true, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+  stretch_to_fit_height(value: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, undefined, about_point, about_edge);
+    return this.rescale_to_fit(value, 1, true, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+  stretch_to_fit_depth(value: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, undefined, about_point, about_edge);
+    return this.rescale_to_fit(value, 2, true, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
 
-  rescale_to_fit(value: number, dim: number, stretch = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+  rescale_to_fit(value: number, dim: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    const doStretch = opts.stretch;
     const current = this.length_over_dim(dim);
     if (current === 0) return this;
-    if (stretch) {
-      this.stretch(value / current, dim, about_point ?? undefined, about_edge ?? undefined);
+    if (doStretch) {
+      this.stretch(value / current, dim, opts.about_point ?? undefined, opts.about_edge ?? undefined);
     } else {
-      this.scale(value / current, about_point ?? undefined, about_edge ?? undefined);
+      this.scale(value / current, opts.about_point ?? undefined, opts.about_edge ?? undefined);
     }
     return this;
   }
@@ -1216,20 +1295,24 @@ export class Mobject {
   get_zenith(): number[] { return this.get_edge_center(OUT); }
   get_nadir(): number[] { return this.get_edge_center(IN); }
 
-  match_dim_size(mobject: Mobject, dim: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
-    return this.rescale_to_fit(mobject.length_over_dim(dim), dim, false, about_point ?? undefined, about_edge ?? undefined);
+  match_dim_size(mobject: Mobject, dim: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.rescale_to_fit(mobject.length_over_dim(dim), dim, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
   }
 
-  match_width(mobject: Mobject, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
-    return this.match_dim_size(mobject, 0, about_point ?? undefined, about_edge ?? undefined);
+  match_width(mobject: Mobject, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.match_dim_size(mobject, 0, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
   }
 
-  match_height(mobject: Mobject, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
-    return this.match_dim_size(mobject, 1, about_point ?? undefined, about_edge ?? undefined);
+  match_height(mobject: Mobject, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.match_dim_size(mobject, 1, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
   }
 
-  match_depth(mobject: Mobject, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
-    return this.match_dim_size(mobject, 2, about_point ?? undefined, about_edge ?? undefined);
+  match_depth(mobject: Mobject, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.match_dim_size(mobject, 2, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
   }
 
   match_coord(mobject: Mobject, dim: number, direction: readonly number[] | NDArray = ORIGIN): this {
@@ -2837,6 +2920,56 @@ export class Mobject {
   "col_widths",
   "flow_order",
 ];
+// `match_*`/`rescale_to_fit`/`*_to_fit_*` accept Python `**kwargs`
+// (`stretch=`, `about_point=`, `about_edge=`); pin the names so the py2js
+// kwargs bridge keeps mapping them after bundling (same failure as `arrange`
+// above: without a `stretch` slot, `match_width(m, stretch=True)` appended
+// `{stretch: true}` into `about_point` and `scale` threw non-finite, error 166).
+(Mobject.prototype.match_dim_size as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "mobject",
+  "dim",
+  "stretch",
+  "about_point",
+  "about_edge",
+  "kwargs",
+];
+(Mobject.prototype.match_width as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "mobject",
+  "stretch",
+  "about_point",
+  "about_edge",
+  "kwargs",
+];
+(Mobject.prototype.match_height as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "mobject",
+  "stretch",
+  "about_point",
+  "about_edge",
+  "kwargs",
+];
+(Mobject.prototype.match_depth as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "mobject",
+  "stretch",
+  "about_point",
+  "about_edge",
+  "kwargs",
+];
+(Mobject.prototype.rescale_to_fit as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "value",
+  "dim",
+  "stretch",
+  "about_point",
+  "about_edge",
+  "kwargs",
+];
+for (const name of ["scale_to_fit_width", "scale_to_fit_height", "scale_to_fit_depth", "stretch_to_fit_width", "stretch_to_fit_height", "stretch_to_fit_depth"] as const) {
+  ((Mobject.prototype[name] as unknown as { __argnames__?: string[] }).__argnames__ = [
+    "value",
+    "about_point",
+    "about_edge",
+    "kwargs",
+  ]);
+}
 
 export class Group extends Mobject {
   constructor(...args: Array<Mobject | Iterable<Mobject> | MobjectOptions>) {
