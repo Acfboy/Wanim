@@ -289,7 +289,15 @@ export class LaggedStartMap extends LaggedStart {
     const hasAnimKwargs = Object.keys(animKwargs).length > 0;
     const animations = argsList.map((args) => {
       let spread: unknown[];
-      if (Array.isArray(args)) spread = args;
+      // NOTE: a `Mobject` returned by `arg_creator` (notably the default
+      // identity) is a single animation argument, not an argument list.
+      // `Mobject` is iterable (`__iter__` yields self when it has points,
+      // then submobjects), so spreading it would unpack e.g. an `Arrow`
+      // into `(arrow, tip)` and pass the tip as `point_color` (error 199).
+      // For point-holding mobjects without submobjects `*mob` coincides
+      // with `(mob,)`, which is why this only breaks composite mobjects.
+      if (args instanceof Mobject) spread = [args];
+      else if (Array.isArray(args)) spread = args;
       else if (isIterableValue(args)) spread = [...args];
       else {
         throw new TypeError(`'${typeof args}' object is not iterable`);

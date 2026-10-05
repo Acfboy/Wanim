@@ -11,6 +11,12 @@ export interface GrowFromPointOptions extends TransformOptions {
 
 function looksLikeOptions(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  // NOTE: `Mobject`s (e.g. an `Arrow` tip accidentally forwarded as
+  // `point_color`, see error 199) carry a `name` field and are iterable, so
+  // the key probe below would misclassify them as an options bag and the
+  // subsequent destructuring would throw `has no attribute 'point_color'`.
+  // Options bags are plain non-iterable objects.
+  if (typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function") return false;
   return ["run_time", "rate_func", "lag_ratio", "remover", "introducer", "suspend_mobject_updating", "name", "path_func", "path_arc", "point_color"].some(
     (key) => key in (value as Record<string, unknown>),
   );
