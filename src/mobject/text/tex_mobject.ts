@@ -315,11 +315,53 @@ export class MathTex extends SingleStringMathTex {
     substrings.push(...Object.keys(colorMap));
     const braceSplit = { occurred: false };
     const prepared = MathTex._prepare_tex_strings(texStrings, braceSplit);
-    const joined = MathTex._join_tex_strings_with_unique_delimiters(
+    let joined = MathTex._join_tex_strings_with_unique_delimiters(
       prepared,
       substrings,
       arg_separator,
     );
+
+    // NOTE: substring isolation via `\cssId` is *not* transparent to the TeX
+    // parser (unlike Python's dvisvgm `\special` raw groups). Isolating a
+    // fragment such as `m_` (from `tex_to_color_map={"m_": BLUE}`) splits
+    // `m_1` into `\cssId{...}{m_}1`, leaving a dangling `_` that makes
+    // MathJax emit an `merror` ("Missing superscript or subscript argument")
+    // for the *whole* expression. The SVG then carries no `uniqueNNN` groups,
+    // `_break_up_by_substrings` falls back to a single root, and indexing
+    // (e.g. `equation[1]`) throws `IndexError: range object index out of
+    // range`. Preflight the isolated expression: if MathJax errors or any
+    // outer id is missing, rebuild the geometry without substring isolation
+    // so the per-argument submobjects survive; fragment colours fall back to
+    // their containing parts (see `set_color_by_tex_to_color_map`).
+    if (substrings.length > 0 && prepared.length > 0) {
+      try {
+        const probeSvg = texToSvgCached(joined.joined_string.trim());
+        const hasMerror =
+          probeSvg.includes("merror") ||
+          probeSvg.includes("Missing superscript") ||
+          probeSvg.includes("MissingSubSup");
+        let hasAllOuterIds = true;
+        for (let idx = 0; idx < prepared.length; idx += 1) {
+          if (!probeSvg.includes(`id="unique${String(idx).padStart(3, "0")}"`)) {
+            hasAllOuterIds = false;
+            break;
+          }
+        }
+        if (hasMerror || !hasAllOuterIds) {
+          joined = MathTex._join_tex_strings_with_unique_delimiters(
+            prepared,
+            [],
+            arg_separator,
+          );
+        }
+      } catch {
+        joined = MathTex._join_tex_strings_with_unique_delimiters(
+          prepared,
+          [],
+          arg_separator,
+        );
+      }
+    }
 
     super(joined.joined_string, {
       ...singleOptions,
@@ -536,8 +578,23 @@ export class MathTex extends SingleStringMathTex {
 
   set_color_by_tex_to_color_map(texsToColorMap: Record<string, ParsableManimColor>, _kwargs: Record<string, unknown> = {}): this {
     for (const [texs, color] of Object.entries(texsToColorMap)) {
+      let colouredExact = false;
       for (const [matchTex, matchId] of this.matched_strings_and_ids) {
-        if (matchTex === texs) this.id_to_vgroup_dict.get(matchId)?.set_color(color);
+        if (matchTex === texs) {
+          const vg = this.id_to_vgroup_dict.get(matchId);
+          if (vg !== undefined) {
+            vg.set_color(color);
+            colouredExact = true;
+          }
+        }
+      }
+      // Fallback for fragment keys whose substring isolation was skipped to
+      // keep MathJax valid (e.g. `m_` inside `\sqrt{m_1}`): colour the
+      // containing per-argument parts instead of colouring nothing.
+      if (!colouredExact) {
+        for (const [matchTex, matchId] of this._main_matches) {
+          if (matchTex.includes(texs)) this.id_to_vgroup_dict.get(matchId)?.set_color(color);
+        }
       }
     }
     return this;
