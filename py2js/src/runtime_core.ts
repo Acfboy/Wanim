@@ -1536,6 +1536,67 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     defineComparisonDunder("__ne__", "not_equal");
   }
 
+  /**
+   * Expose CPython's `complex.real`/`complex.imag` (and `.conjugate()`) on
+   * numpy-ts' `Complex` values.
+   *
+   * numpy-ts spells the parts `re`/`im` (with a `conj()` method), so
+   * `r.real` on an element of `np.roots(...)` (a `Complex` instance) is
+   * `undefined` and `float(r.real)` throws `ValueError` (error 271).  Define
+   * `real`/`imag` getters aliasing `re`/`im` plus a `conjugate` alias for
+   * `conj`, mirroring the `{re, im, real, imag}` shape `makeComplex` already
+   * provides for Python-side complex values.
+   */
+  function patchComplexForPython(): void {
+    try {
+      const Ctor = (np as Any)?.Complex;
+      const proto = Ctor?.prototype;
+      if (proto === undefined || proto === null) return;
+      if ((proto as Any).__wanim_python_patched__ === true) return;
+      (proto as Any).__wanim_python_patched__ = true;
+      if (Object.getOwnPropertyDescriptor(proto, "real") === undefined) {
+        Object.defineProperty(proto, "real", {
+          configurable: true,
+          get(this: Any): number {
+            return this?.re;
+          },
+        });
+      }
+      if (Object.getOwnPropertyDescriptor(proto, "imag") === undefined) {
+        Object.defineProperty(proto, "imag", {
+          configurable: true,
+          get(this: Any): number {
+            return this?.im;
+          },
+        });
+      }
+      if (typeof proto.conjugate !== "function") {
+        Object.defineProperty(proto, "conjugate", {
+          configurable: true,
+          writable: true,
+          value: function (this: Any): Any {
+            try {
+              if (typeof this?.conj === "function") return this.conj();
+            } catch {
+              /* fall through to manual construction */
+            }
+            const C = (np as Any)?.Complex;
+            if (typeof C === "function") {
+              try {
+                return new C(this?.re ?? 0, -(this?.im ?? 0));
+              } catch {
+                /* fall through */
+              }
+            }
+            return makeComplex(this?.re ?? 0, -(this?.im ?? 0));
+          },
+        });
+      }
+    } catch {
+      /* keep bare {re, im} semantics when the Complex class is unavailable */
+    }
+  }
+
   function elementwise(a: readonly number[], b: readonly number[], f: (x: number, y: number) => number): number[] {
     if (a.length !== b.length) return undefined as unknown as number[];
     const out = new Array<number>(a.length);
@@ -2929,6 +2990,19 @@ export function createRuntimeCore(deps: RuntimeDeps) {
 
   function getDot(obj: Any, name: string): Any {
     const value = (obj as Any)[name];
+    if ((value === undefined || value === null) && (name === "real" || name === "imag")) {
+      // Bare `{re, im}` complex values (e.g. a plain object, or a numpy-ts
+      // `Complex` from before the prototype patch): alias to `re`/`im` so
+      // `z.real`/`z.imag` keep working even without the prototype getters.
+      try {
+        if (obj !== null && obj !== undefined && typeof obj === "object") {
+          const alias = name === "real" ? (obj as Any).re : (obj as Any).im;
+          if (typeof alias === "number") return alias;
+        }
+      } catch {
+        /* fall through to the raw (undefined) value */
+      }
+    }
     if (typeof value !== "function") return value;
     if (!isMobjectLike(obj)) return value;
     if (isAccessorProperty(obj, name)) return value;
@@ -3712,6 +3786,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // leading array argument (plain list or scalar) before delegating and
     // scalarize 0-d results back to Python numbers.
     patchNDArrayForPython();
+    patchComplexForPython();
     function coerceReductionArg(value: Any): Any {
       if (isNdArray(value)) return value;
       if (Array.isArray(value)) {
