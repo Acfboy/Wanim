@@ -2429,3 +2429,287 @@ export function desugarDottedExcept(source: string): string {
   }
   return out;
 }
+
+// --- tuple trailing-comma desugar --------------------------------------------
+//
+// rapydscript-ng's `expression(commas=True)` (used for the `(...)` in
+// `expr_atom`) unconditionally parses another element after every `,`, so
+// valid Python with a trailing comma inside parentheses fails with
+// "Unexpected token: punc «)»":
+//
+//   `(a, b,)`  (multi-line tuples almost always end this way)
+//   `(a,)`     (single-element tuple)
+//
+// Calls (`f(a, b,)`), lists (`[a, b,]`), dicts/sets (`{a: 1,}`) already accept
+// trailing commas, so only `(...)` needs a rewrite, done before compilation:
+//
+//   `(e1, ..., en,)`       -> `(e1, ..., en)`   (drop the trailing comma)
+//   `(x,)`                 -> `[x]`             (one-list; tuples and lists
+//                                                are both plain JS arrays
+//                                                at runtime, so iteration,
+//                                                unpacking and `len()` keep
+//                                                working)
+//
+// A single-element `(x,)` that is really a call (`f(x,)`, `def f(x,):`, ...)
+// is left alone -- rapydscript already compiles call trailing commas.  A
+// `(x,)` directly inside a subscript (`a[(x,)]`) keeps its parentheses
+// (`a[(x)]`, exactly equal for numpy) instead of becoming `a[[x]]`
+// (advanced indexing, observably different).  `from X import (a,)` keeps its
+// parentheses (an import list, not a tuple), and a single-element tuple in an
+// `except` header is left for the compiler (rewriting it to a list would turn
+// a compile error into a runtime `TypeError`).
+//
+// All rewrites are single-character substitutions (`(`/`)`/`,` -> `[`/`]`/` `)
+// so line numbers (and even columns) never shift for later diagnostics.  The
+// scan skips string literals and `#` comments and only counts depth-zero
+// commas, so commas inside nested brackets/strings are never touched.
+// Anything that does not parse cleanly passes through untouched.
+//
+// Known limitations: a tuple trailing comma inside an f-string `{...}`
+// interpolation is not rewritten (f-strings are scanned opaquely); a dict
+// with a single-element-tuple key (`{(x,): 1}`) becomes `{[x]: 1}` (a runtime
+// error instead of a lookup); and a *bare* single-element tuple without
+// parentheses (`x = 1,`) is still rejected by the compiler.
+
+/** True when `pos` (the index just past a gap) starts a gap-only suffix. */
+function isTupleGapSuffix(source: string, from: number, to: number): boolean {
+  let i = from;
+  while (i < to) {
+    const ch = source[i]!;
+    if (
+      ch === " " ||
+      ch === "\t" ||
+      ch === "\n" ||
+      ch === "\r" ||
+      ch === "\f" ||
+      ch === "\v"
+    ) {
+      i += 1;
+      continue;
+    }
+    if (ch === "\\" && (source[i + 1] === "\n" || source[i + 1] === "\r")) {
+      if (isEscaped(source, i)) return false;
+      i += source[i + 1] === "\r" && source[i + 2] === "\n" ? 3 : 2;
+      continue;
+    }
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 || nl >= to ? to : nl;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+interface TupleTrailingComma {
+  open: number;
+  close: number;
+  trailingComma: number;
+  count: number;
+}
+
+/**
+ * Analyse the `(...)` at `open` (whose mate is `close`); return the trailing
+ * comma info when the last depth-zero comma has only gaps after it, else
+ * null (no trailing comma, or unparseable -- leave it to the compiler).
+ */
+function analyzeTupleInner(
+  source: string,
+  open: number,
+  close: number,
+): TupleTrailingComma | null {
+  const commas: number[] = [];
+  let depth = 0;
+  let i = open + 1;
+  while (i < close) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 || nl >= close ? close : nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      i = Math.min(stop <= i ? i + 1 : stop, close);
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+      i += 1;
+      continue;
+    }
+    if (ch === "," && depth === 0) commas.push(i);
+    i += 1;
+  }
+  if (depth !== 0 || commas.length === 0) return null;
+  const trailingComma = commas[commas.length - 1]!;
+  if (!isTupleGapSuffix(source, trailingComma + 1, close)) return null;
+  return { open, close, trailingComma, count: commas.length };
+}
+
+/** True when the `(` at `open` opens a call/def/class argument list. */
+function isCallLikeParen(source: string, open: number): boolean {
+  let j = open - 1;
+  while (
+    j >= 0 &&
+    (source[j] === " " ||
+      source[j] === "\t" ||
+      source[j] === "\f" ||
+      source[j] === "\v")
+  ) {
+    j -= 1;
+  }
+  if (j < 0) return false;
+  const ch = source[j]!;
+  if (ch === "\n" || ch === "\r") return false;
+  if (IDENT_CHAR.test(ch)) {
+    let s = j;
+    while (s >= 0 && IDENT_CHAR.test(source[s]!)) s -= 1;
+    s += 1;
+    // `return (x,)`, `in (x,)`, ... are tuples, not calls.
+    if (PYTHON_KEYWORDS.has(source.slice(s, j + 1))) return false;
+    return true;
+  }
+  // `f(x)(y,)`, `a[0](y,)`, `d{k}(y,)` are calls; a string can never be
+  // called in valid Python, but leaving it is still the safer choice.
+  if (ch === "]" || ch === ")" || ch === "}" || ch === '"' || ch === "'") {
+    return true;
+  }
+  return false;
+}
+
+/** True when the `(` at `open` belongs to a `from X import (...)` list. */
+function isFromImportParen(source: string, open: number): boolean {
+  const lineStart = source.lastIndexOf("\n", open - 1) + 1;
+  return /^\s*from\s+[.\w]+\s+import\s*$/.test(source.slice(lineStart, open));
+}
+
+/** True when the `(` at `open` sits on an `except ...:` header line. */
+function isExceptHeaderParen(source: string, open: number): boolean {
+  const lineStart = source.lastIndexOf("\n", open - 1) + 1;
+  let i = lineStart;
+  while (
+    i < open &&
+    (source[i] === " " ||
+      source[i] === "\t" ||
+      source[i] === "\f" ||
+      source[i] === "\v")
+  ) {
+    i += 1;
+  }
+  return matchKeyword(source, i, "except");
+}
+
+/**
+ * True when the `(` at `open` is directly subscripted (`a[(x,)]`): the
+ * enclosing `[` takes an object expression (see `subscriptObjStart`).
+ */
+function isSubscriptedParen(source: string, open: number): boolean {
+  let j = open - 1;
+  while (
+    j >= 0 &&
+    (source[j] === " " ||
+      source[j] === "\t" ||
+      source[j] === "\f" ||
+      source[j] === "\v")
+  ) {
+    j -= 1;
+  }
+  if (j < 0 || source[j] !== "[") return false;
+  return subscriptObjStart(source.slice(0, j)) !== null;
+}
+
+/** Rewrite the first tuple trailing comma in `source`, or null. */
+function rewriteFirstTupleTrailingComma(source: string): string | null {
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 ? source.length : nl + 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = readString(source, i);
+      continue;
+    }
+    if (ch !== "(") {
+      i += 1;
+      continue;
+    }
+    const close = findMatchingBracket(source, i);
+    if (close === -1) {
+      i += 1;
+      continue;
+    }
+    const info = analyzeTupleInner(source, i, close);
+    if (info === null) {
+      i += 1;
+      continue;
+    }
+    if (info.count >= 2) {
+      // Multi-element tuple (or call/def/import list): dropping the trailing
+      // comma is semantics-preserving everywhere.
+      return (
+        source.slice(0, info.trailingComma) +
+        " " +
+        source.slice(info.trailingComma + 1)
+      );
+    }
+    // Single-element `(x,)`: calls, import lists and `except (A,)` headers
+    // keep their parentheses (rapydscript compiles the calls; the import
+    // joiner and the `except` desugar expect them).
+    if (
+      isCallLikeParen(source, i) ||
+      isFromImportParen(source, i) ||
+      isExceptHeaderParen(source, i)
+    ) {
+      i += 1;
+      continue;
+    }
+    if (isSubscriptedParen(source, i)) {
+      // `a[(x,)]` -> `a[(x)]`: exactly equal for numpy (a 1-tuple key is a
+      // scalar key), unlike `a[[x]]` (advanced indexing).
+      return (
+        source.slice(0, info.trailingComma) +
+        " " +
+        source.slice(info.trailingComma + 1)
+      );
+    }
+    // `(x,)` -> `[x]`: both are plain JS arrays at runtime.
+    return (
+      source.slice(0, i) +
+      "[" +
+      source.slice(i + 1, info.trailingComma) +
+      " " +
+      source.slice(info.trailingComma + 1, close) +
+      "]" +
+      source.slice(close + 1)
+    );
+  }
+  return null;
+}
+
+/**
+ * Strip trailing commas inside `(...)` tuple displays (see above) so
+ * rapydscript-ng -- which rejects them -- can compile them.  Runs to a
+ * fixpoint so nested tuples are rewritten as well; each rewrite strictly
+ * reduces the number of trailing commas, so this terminates.
+ */
+export function desugarTupleTrailingCommas(source: string): string {
+  if (!source.includes(",")) return source;
+  let out = source;
+  for (let round = 0; round < 100; round += 1) {
+    const rewritten = rewriteFirstTupleTrailingComma(out);
+    if (rewritten === null) return out;
+    out = rewritten;
+  }
+  return out;
+}

@@ -11,6 +11,7 @@ import {
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   desugarReversedBuiltin,
+  desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
   renameJsReservedWords,
@@ -540,6 +541,56 @@ check("except desugar skips except-star, multiline headers and missing try", () 
   assert.equal(
     desugarDottedExcept("def f():\n    except np.E:\n        pass\n"),
     "def f():\n    except np.E:\n        pass\n",
+  );
+});
+
+check("tuple desugar strips multi-element trailing commas", () => {
+  assert.equal(desugarTupleTrailingCommas("x = (1, 2,)\n"), "x = (1, 2 )\n");
+  assert.equal(
+    desugarTupleTrailingCommas("x = (\n    1,\n    2,\n)\n"),
+    "x = (\n    1,\n    2 \n)\n",
+  );
+  assert.equal(
+    desugarTupleTrailingCommas("pairs = [\n    (a, b),\n    (c, d,),\n]\n"),
+    "pairs = [\n    (a, b),\n    (c, d ),\n]\n",
+  );
+});
+
+check("tuple desugar rewrites single-element tuples to lists", () => {
+  assert.equal(desugarTupleTrailingCommas("x = (1,)\n"), "x = [1 ]\n");
+  assert.equal(desugarTupleTrailingCommas("return (x,)\n"), "return [x ]\n");
+  assert.equal(
+    desugarTupleTrailingCommas("x = ((a, b,),)\n"),
+    "x = [(a, b ) ]\n",
+  );
+});
+
+check("tuple desugar leaves calls, imports and plain tuples alone", () => {
+  // Multi-element call trailing commas are dropped (valid either way);
+  // single-argument calls already compile, so they pass through.
+  assert.equal(desugarTupleTrailingCommas("f(1, 2,)\n"), "f(1, 2 )\n");
+  assert.equal(desugarTupleTrailingCommas("f(x,)\n"), "f(x,)\n");
+  assert.equal(desugarTupleTrailingCommas("x = (1, 2)\n"), "x = (1, 2)\n");
+  assert.equal(desugarTupleTrailingCommas("x = ()\n"), "x = ()\n");
+  assert.equal(
+    desugarTupleTrailingCommas("from x import (a,)\n"),
+    "from x import (a,)\n",
+  );
+  assert.equal(
+    desugarTupleTrailingCommas("x = [1, 2,]\nd = {'a': 1,}\n"),
+    "x = [1, 2,]\nd = {'a': 1,}\n",
+  );
+});
+
+check("tuple desugar keeps subscripts exact and skips strings/comments", () => {
+  assert.equal(desugarTupleTrailingCommas("x = a[(1,)]\n"), "x = a[(1 )]\n");
+  assert.equal(
+    desugarTupleTrailingCommas('x = "(1, 2,)"\n# y = (3, 4,)\n'),
+    'x = "(1, 2,)"\n# y = (3, 4,)\n',
+  );
+  assert.equal(
+    desugarTupleTrailingCommas("x = (\n    1,\n    2,  # done\n)\n"),
+    "x = (\n    1,\n    2   # done\n)\n",
   );
 });
 
