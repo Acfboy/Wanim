@@ -191,6 +191,7 @@ function createSandbox(runtime: PythonRuntime): Sandbox {
   win.__name__ = "__main__";
   installPythonShims({
     Object: win.Object,
+    Array: win.Array,
     String: win.String,
     get ρσ_str() {
       return win.ρσ_str;

@@ -609,12 +609,183 @@ export function installPythonDictShims(ObjectProto: Any): void {
 }
 
 /**
+ * Stable Python `list.sort(key=..., reverse=...)` served in place.
+ *
+ * rapydscript's baselib exposes this as `Array.prototype.pysort`, but the
+ * compiler still emits a plain `.sort(...)` call: with a `key=` kwarg the
+ * call reaches the *native* `Array.prototype.sort` as a single kwargs-bag
+ * object, which throws
+ * `TypeError: The comparison function must be either a function or undefined`
+ * (e.g. `letters.submobjects.sort(key=lambda m: ...)`).  The decorate /
+ * sort / undecorate below mirrors `pysort` semantics (stable; `reverse`
+ * only flips comparisons, equal keys keep original order) without the
+ * dict-keyed lookup `pysort` uses (which collapses duplicate primitives).
+ */
+function pythonListSortInPlace(arr: Any[], key: Any, reverse: Any, nativeSort: Any): void {
+  const hasKey = typeof key === "function";
+  const rev = !!reverse;
+  const decorated = arr.map((value: Any, index: number) => ({
+    value,
+    index,
+    k: hasKey ? (key as Any)(value) : value,
+  }));
+  nativeSort.call(decorated, (a: Any, b: Any): number => {
+    let cmp = 0;
+    try {
+      if (a.k < b.k) cmp = -1;
+      else if (a.k > b.k) cmp = 1;
+    } catch {
+      cmp = 0;
+    }
+    if (cmp !== 0) return rev ? -cmp : cmp;
+    return a.index - b.index;
+  });
+  for (let i = 0; i < arr.length; i += 1) arr[i] = decorated[i]!.value;
+}
+
+/**
+ * Wrap `Array.prototype.sort` so Python `list.sort(key=..., reverse=...)`
+ * calls work while native comparator calls pass through untouched.
+ *
+ * The wrapper deliberately carries no `__argnames__`, so rapydscript's
+ * `ρσ_interpolate_kwargs` hands a `sort(key=..., reverse=...)` kwargs bag
+ * over as a single positional, which is intercepted here.  Native uses
+ * (`sort()`, `sort(undefined)`, `sort(comparatorFn)`) keep native behavior;
+ * a single 1-arity function is treated as a Python `key` (a native
+ * comparator takes 2 args), anything else object-shaped with `key`/
+ * `reverse` goes through the Python path.  Extra kwargs raise the same
+ * `TypeError` CPython raises.
+ */
+export function installPythonArraySortShim(ArrayProto: Any): void {
+  if (ArrayProto === undefined || ArrayProto === null) return;
+  try {
+    if ((ArrayProto as Any).__wanim_sort_patched__ === true) return;
+  } catch {
+    return;
+  }
+  let nativeSort: Any;
+  try {
+    nativeSort = ArrayProto.sort;
+  } catch {
+    return;
+  }
+  if (typeof nativeSort !== "function") return;
+  const wrapper = function (this: Any, ...args: Any[]): Any {
+    if (!Array.isArray(this)) return nativeSort.apply(this, args);
+    // Native comparator fast path (covers internal uses such as
+    // `splices.sort((a, b) => ...)`).
+    if (args.length === 1 && typeof args[0] === "function") {
+      let arity: number = (args[0] as Any).length;
+      try {
+        const names = (args[0] as Any).__argnames__;
+        if (Array.isArray(names)) arity = names.length;
+      } catch {
+        /* keep .length */
+      }
+      if (arity >= 2) return nativeSort.apply(this, args);
+      // 1-arity function passed positionally: Python `key`, not a
+      // comparator (invalid Python3, but `pysort` allows it positionally).
+      pythonListSortInPlace(this, args[0], undefined, nativeSort);
+      return undefined;
+    }
+    if (args.length === 0 || (args.length === 1 && args[0] === undefined)) {
+      // `sort()` / `sort(undefined)`: Python defaults.  Native string sort
+      // would mis-order numbers lexicographically, so serve Python order.
+      // Return `this` (like native) so chaining keeps working; Python code
+      // ignores the return value either way.
+      pythonListSortInPlace(this, undefined, undefined, nativeSort);
+      return this;
+    }
+    if (args.length === 1 && args[0] === null) {
+      pythonListSortInPlace(this, undefined, undefined, nativeSort);
+      return this;
+    }
+    // Split a trailing kwargs bag (`sort(key, reverse=True)` arrives as
+    // `[keyFn, kwbag]` since the callee has no `__argnames__`).
+    let positional: Any[] = args.slice();
+    let kwargs: Record<string, Any> | null = null;
+    if (positional.length > 0) {
+      const maybe = detectKwargs(positional[positional.length - 1]);
+      if (maybe !== null) {
+        kwargs = maybe;
+        positional = positional.slice(0, -1);
+      }
+    }
+    if (kwargs !== null || positional.length > 0) {
+      // Defensive cross-realm fallback: a plain `{key, reverse}` object
+      // without the kwargs symbol (symbol identity differs per realm).
+      if (kwargs === null && positional.length === 1 && positional[0] !== null && typeof positional[0] === "object" && !Array.isArray(positional[0])) {
+        try {
+          const keys = Object.keys(positional[0]);
+          if (keys.length > 0 && keys.every((k) => k === "key" || k === "reverse")) {
+            kwargs = {};
+            for (const k of keys) (kwargs as Any)[k] = (positional[0] as Any)[k];
+            positional = [];
+          }
+        } catch {
+          /* fall through to native */
+        }
+      }
+      if (kwargs !== null || positional.length > 0) {
+        let key: Any = positional.length > 0 ? positional[0] : undefined;
+        let reverse: Any = positional.length > 1 ? positional[1] : undefined;
+        if (positional.length > 2) {
+          throw new TypeError(`sort() takes at most 2 positional arguments (${positional.length} given)`);
+        }
+        if (kwargs !== null) {
+          if (positional.length > 0 && ("key" in (kwargs as Any) || "reverse" in (kwargs as Any))) {
+            // Both positional and keyword for the same slot: keep CPython's
+            // error shape without enumerating every combination.
+            if (positional.length > 0 && "key" in (kwargs as Any) && positional[0] !== undefined) {
+              throw new TypeError("sort() got multiple values for argument 'key'");
+            }
+            if (positional.length > 1 && "reverse" in (kwargs as Any) && positional[1] !== undefined) {
+              throw new TypeError("sort() got multiple values for argument 'reverse'");
+            }
+          }
+          if ("key" in (kwargs as Any)) key = (kwargs as Any)["key"];
+          if ("reverse" in (kwargs as Any)) reverse = (kwargs as Any)["reverse"];
+          const unknown = Object.keys(kwargs as Any).filter((k) => k !== "key" && k !== "reverse");
+          if (unknown.length > 0) {
+            throw new TypeError(`sort() got an unexpected keyword argument '${unknown[0]}'`);
+          }
+        }
+        if (key === null) key = undefined;
+        if (key !== undefined && key !== null && typeof key !== "function") {
+          throw new TypeError(`'${typeof key}' object is not callable`);
+        }
+        pythonListSortInPlace(this, key, reverse, nativeSort);
+        return undefined;
+      }
+    }
+    return nativeSort.apply(this, args);
+  };
+  try {
+    Object.defineProperty(ArrayProto, "sort", {
+      configurable: true,
+      writable: true,
+      enumerable: false,
+      value: wrapper,
+    });
+    Object.defineProperty(ArrayProto, "__wanim_sort_patched__", {
+      configurable: true,
+      writable: true,
+      enumerable: false,
+      value: true,
+    });
+  } catch {
+    /* read-only prototype: Python sort-with-key keeps failing loudly */
+  }
+}
+
+/**
  * Install Python string-method shims on the vm context's own String.prototype.
  * rapydscript exposes these on its `ρσ_str` function object (not on
  * String.prototype), so `"x".upper()` fails unless we bridge them.
  */
 export function installPythonShims(sandbox: Record<string, Any>): void {
   installPythonDictShims(sandbox.Object?.prototype);
+  installPythonArraySortShim((sandbox as Any).Array?.prototype);
   const S = sandbox.String?.prototype as Any;
   if (S === undefined) return;
   for (const name of PYTHON_STR_METHODS) {
@@ -898,6 +1069,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   // scenes gets its own `Object.prototype` patched via `installPythonShims`.
   try {
     installPythonDictShims((globalThis as Any).Object?.prototype);
+  } catch {
+    /* non-configurable host: sandbox patch still covers scenes */
+  }
+  try {
+    installPythonArraySortShim((globalThis as Any).Array?.prototype);
   } catch {
     /* non-configurable host: sandbox patch still covers scenes */
   }
