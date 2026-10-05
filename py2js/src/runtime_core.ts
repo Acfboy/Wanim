@@ -882,6 +882,18 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   function asNd(value: Any): Any {
     if (isNdArray(value)) return value;
     if (Array.isArray(value) || typeof value === "number") return np.asarray(value);
+    // Python complex scalars (`1j`, `complex(...)`) are plain `{re, im}`
+    // objects; numpy-ts ufuncs require NDArray inputs and throw
+    // "undefined is not iterable" on them (e.g. `np.exp(TAU*1j*f*t)`).
+    // numpy-ts' `asarray` understands `{re, im}`, so coerce explicitly.
+    if (isComplexLike(value)) {
+      try {
+        const [re, im] = complexParts(value, "asarray");
+        return np.asarray({ re, im });
+      } catch {
+        return value;
+      }
+    }
     // rapydscript `range()` objects (and other generic iterables) are valid
     // numpy array-likes; materialize them so ufuncs/arithmetic accept them.
     // Mobjects are iterable containers, not data: leave them untouched.
@@ -945,6 +957,27 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       }
     }
     return value;
+  }
+
+  /**
+   * `scalarize` plus complex normalization: numpy-ts returns 0-d complex
+   * results as bare `{re, im}` objects (no `.real`/`.imag` aliases, no
+   * arithmetic dunders), so `p.real` / `p + q` on a `np.exp(complex)` result
+   * would fail.  Map such scalars back to `makeComplex`, which carries both
+   * spellings and the dunders.  Real scalars and non-0-d arrays pass through
+   * untouched.
+   */
+  function scalarizeComplex(value: Any): Any {
+    const s = scalarize(value);
+    if (s !== value && isComplexLike(s)) {
+      try {
+        const [re, im] = complexParts(s, "ufunc");
+        return makeComplex(re, im);
+      } catch {
+        return s;
+      }
+    }
+    return s;
   }
 
   /**
@@ -1598,10 +1631,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   //     carry no methods) interoperate with real numbers and
   //     method-carrying complex values alike.
   //
-  // Known limitations (documented in ): `abs(complex)`
-  // still goes through rapydscript's baselib (`Math.abs`, i.e. NaN); use
-  // `(z.real ** 2 + z.imag ** 2) ** 0.5` instead.  `==`/`!=` on complex
-  // values compare object identity, not value equality.
+  // Known limitations (documented in ): `==`/`!=` on
+  // complex values compare object identity, not value equality.
 
   /**
    * True when `value` is a complex number: either a value created by
@@ -2339,6 +2370,36 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
+   * Python `abs()`.
+   *
+   * rapydscript's baselib `abs` is `Math.abs`, so `abs(1+1j)` (a plain
+   * `{re, im}` object) yields `NaN` instead of the magnitude (error 185:
+   * `r = abs(c)` with `c = 1.5+0j`).  Complex inputs return `hypot(re, im)`
+   * like CPython; NDArrays delegate to `np.absolute` (which handles real and
+   * complex dtypes); other scalars keep `Math.abs` semantics.
+   */
+  function pythonAbs(value: Any): Any {
+    if (isComplexLike(value)) {
+      const [re, im] = complexParts(value, "abs()");
+      return Math.hypot(re, im);
+    }
+    if (typeof value === "number") return Math.abs(value);
+    if (typeof value === "boolean") return value ? 1 : 0;
+    if (typeof value === "bigint") return value < 0n ? -value : value;
+    if (isNdArray(value)) {
+      try {
+        return scalarizeComplex((np as Any).absolute(value));
+      } catch {
+        return scalarize(value);
+      }
+    }
+    if (value !== null && value !== undefined && typeof (value as Any).__abs__ === "function") {
+      return (value as Any).__abs__();
+    }
+    return Math.abs(value as number);
+  }
+
+  /**
    * Python bound-method semantics for attribute *reads*.
    *
    * rapydscript compiles `square.scale` to a plain JS property read, which
@@ -2601,7 +2662,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         const clean = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
           ? rest.slice(0, -1)
           : rest;
-        return scalarize((fn as Any)(asNd(x), ...clean));
+        return scalarizeComplex((fn as Any)(asNd(x), ...clean));
       };
     }
     // Two-argument ufuncs need the same treatment: numpy-ts requires NDArray
@@ -2621,7 +2682,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         const clean = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
           ? rest.slice(0, -1)
           : rest;
-        return scalarize((fn as Any)(asNd(a), asNd(b), ...clean));
+        return scalarizeComplex((fn as Any)(asNd(a), asNd(b), ...clean));
       };
     }
     // Plain-number fast path: `np.cos(t)` on a scalar otherwise boxes the value
@@ -2738,6 +2799,44 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       };
       (wrapped as Any).__argnames__ = ["x"];
       facade[name] = wrapped;
+    }
+    // `np.angle`/`np.real`/`np.imag` on Python complex scalars throw
+    // "undefined is not iterable" (error 185: `np.angle(c)` where `c` is
+    // `1.5+0j`): numpy-ts requires NDArray inputs.  Coerce like the ufunc
+    // wrappers above and scalarize 0-d results back to Python numbers.
+    // `angle` mirrors numpy's `(z, deg=False)` signature.
+    try {
+      const origAngle = (np as Any).angle;
+      if (typeof origAngle === "function") {
+        const wrappedAngle = (z: Any, ...rest: Any[]): Any => {
+          const kwargs = rest.length > 0 ? detectKwargs(rest[rest.length - 1]) : null;
+          let positional = kwargs !== null ? rest.slice(0, -1) : rest.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(["deg"], positional, kwargs as Record<string, Any>);
+          }
+          const deg = positional.length > 0 ? positional[0] : undefined;
+          const coerced = asNd(z);
+          const result = deg === undefined || deg === null
+            ? (origAngle as Any)(coerced)
+            : (origAngle as Any)(coerced, deg);
+          return scalarizeComplex(result);
+        };
+        (wrappedAngle as Any).__argnames__ = ["z", "deg"];
+        facade.angle = wrappedAngle;
+      }
+    } catch {
+      /* keep the raw numpy-ts angle on wrap failure */
+    }
+    for (const name of ["real", "imag"]) {
+      try {
+        const origFn = (np as Any)[name];
+        if (typeof origFn !== "function") continue;
+        const wrappedPart = (x: Any): Any => scalarizeComplex((origFn as Any)(asNd(x)));
+        (wrappedPart as Any).__argnames__ = ["val"];
+        facade[name] = wrappedPart;
+      } catch {
+        /* keep the raw numpy-ts real/imag on wrap failure */
+      }
     }
     // `np.gcd`/`np.lcm` on Python scalars (or plain lists) throw
     // "undefined is not iterable": numpy-ts requires integer NDArray inputs
@@ -3043,7 +3142,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         if (positional.length > 0) {
           positional = [coerceReductionArg(positional[0]), ...positional.slice(1)];
         }
-        return scalarize((origFn as Any)(...positional));
+        return scalarizeComplex((origFn as Any)(...positional));
       };
       (wrapped as Any).__argnames__ = [...argnames];
       return wrapped;
@@ -3962,12 +4061,15 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_op_pow = pythonPow;
     globals.ρσ_op_neg = pythonNeg;
     globals.ρσ_getdot = getDot;
-    // Python builtins rapydscript's baselib does not provide.  `abs`, `min`,
+    // Python builtins rapydscript's baselib does not provide.  `min`,
     // `max` and `sum` come from baselib; `round` has no JS equivalent that
-    // matches CPython's banker's rounding / `ndigits` argument.  `complex`
+    // matches CPython's banker's rounding / `ndigits` argument.  `abs` comes
+    // from baselib as `Math.abs` but returns NaN on complex inputs, so it is
+    // overridden with the complex-aware `pythonAbs` below.  `complex`
     // (and the `__wan_complex` factory the `desugarComplexLiterals` step
     // emits) likewise has no baselib equivalent.
     globals.round = pythonRound;
+    globals.abs = pythonAbs;
     globals.complex = pythonComplex;
     globals.__wan_complex = wanComplex;
     // `tuple()` has no rapydscript baselib equivalent (only `list` exists),
@@ -4022,6 +4124,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonPow,
     pythonNeg,
     pythonRound,
+    pythonAbs,
     pythonComplex,
     wanComplex,
     pythonTuple,
