@@ -2388,7 +2388,7 @@ export class Mobject {
   next_to(
     mobject_or_point: Mobject | readonly number[] | NDArray,
     direction: readonly number[] | NDArray = RIGHT,
-    buff = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
+    buff: number | Record<string, unknown> = DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
     aligned_edge: readonly number[] | NDArray = ORIGIN,
     submobject_to_align: Mobject | null = null,
     index_of_submobject_to_align: number | null = null,
@@ -2397,13 +2397,47 @@ export class Mobject {
     // NOTE: the parameter names mirror Python's `next_to` exactly so that the
     // py2js kwargs bridge can map Python keyword arguments such as
     // `aligned_edge=`/`coor_mask=` onto their positional slots.
-    const npDirection = pointFrom(direction, this.dim).toArray() as number[];
-    const npAlignedEdge = pointFrom(aligned_edge, this.dim).toArray() as number[];
+    // NOTE (py2js kwargs bridge, same as `scale`/`align_on_border` above):
+    // `animate.next_to(m, UP, buff=0.4)` compiles the `update` closure without
+    // `__argnames__`, so the trailing kwargs bag can arrive verbatim as `buff`
+    // (an object, not a number) and `buff * value` poisons the shift with NaN
+    // ("non-finite point/vector value", error 262). Unwrap it defensively;
+    // the wrapped-method bridge usually maps it via `__argnames__` (pinned
+    // below), but `animate` paths bypass that mapping.
+    let resolvedDirection = direction as readonly number[] | NDArray;
+    let resolvedBuff: unknown = buff;
+    let resolvedAlignedEdge = aligned_edge as readonly number[] | NDArray;
+    let resolvedSubmobjectToAlign = submobject_to_align as Mobject | null;
+    let resolvedIndexOfSubmobjectToAlign = index_of_submobject_to_align as number | null;
+    let resolvedCoorMask = coor_mask as readonly number[] | NDArray;
+    const isBagLike = (value: unknown): value is Record<string, unknown> => {
+      if (value === null || value === undefined || typeof value !== "object") return false;
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) return false;
+      if (isNDArray(value)) return false;
+      if (value instanceof Mobject) return false;
+      return true;
+    };
+    for (const slot of [buff, direction, aligned_edge, coor_mask] as unknown[]) {
+      if (!isBagLike(slot)) continue;
+      const bag = slot as Record<string, unknown>;
+      if (bag["buff"] !== undefined) resolvedBuff = bag["buff"];
+      if (bag["direction"] !== undefined) resolvedDirection = bag["direction"] as never;
+      if (bag["aligned_edge"] !== undefined) resolvedAlignedEdge = bag["aligned_edge"] as never;
+      if (bag["submobject_to_align"] !== undefined) resolvedSubmobjectToAlign = bag["submobject_to_align"] as never;
+      if (bag["index_of_submobject_to_align"] !== undefined) resolvedIndexOfSubmobjectToAlign = bag["index_of_submobject_to_align"] as never;
+      if (bag["coor_mask"] !== undefined) resolvedCoorMask = bag["coor_mask"] as never;
+    }
+    if (isBagLike(resolvedBuff) && !Array.isArray(resolvedBuff)) {
+      const bag = resolvedBuff as Record<string, unknown>;
+      resolvedBuff = bag["buff"] ?? DEFAULT_MOBJECT_TO_MOBJECT_BUFFER;
+    }
+    const npDirection = pointFrom(resolvedDirection, this.dim).toArray() as number[];
+    const npAlignedEdge = pointFrom(resolvedAlignedEdge, this.dim).toArray() as number[];
     let targetPoint: number[];
     if (mobject_or_point instanceof Mobject) {
       const mob = mobject_or_point;
-      const targetAligner = index_of_submobject_to_align !== null && index_of_submobject_to_align !== undefined
-        ? (mob.__getitem__(index_of_submobject_to_align) as Mobject)
+      const targetAligner = resolvedIndexOfSubmobjectToAlign !== null && resolvedIndexOfSubmobjectToAlign !== undefined
+        ? (mob.__getitem__(resolvedIndexOfSubmobjectToAlign) as Mobject)
         : mob;
       targetPoint = targetAligner.get_critical_point(
         addPoints(npAlignedEdge, npDirection, this.dim),
@@ -2412,20 +2446,20 @@ export class Mobject {
       targetPoint = vector(mobject_or_point, this.dim);
     }
     let aligner: Mobject;
-    if (submobject_to_align !== null && submobject_to_align !== undefined) {
-      aligner = submobject_to_align;
-    } else if (index_of_submobject_to_align !== null && index_of_submobject_to_align !== undefined) {
-      aligner = this.__getitem__(index_of_submobject_to_align) as Mobject;
+    if (resolvedSubmobjectToAlign !== null && resolvedSubmobjectToAlign !== undefined) {
+      aligner = resolvedSubmobjectToAlign;
+    } else if (resolvedIndexOfSubmobjectToAlign !== null && resolvedIndexOfSubmobjectToAlign !== undefined) {
+      aligner = this.__getitem__(resolvedIndexOfSubmobjectToAlign) as Mobject;
     } else {
       aligner = this;
     }
     const pointToAlign = aligner.get_critical_point(
       subtractPoints(npAlignedEdge, npDirection, this.dim),
     );
-    const mask = vector(coor_mask, this.dim);
+    const mask = vector(resolvedCoorMask, this.dim);
     const delta = addPoints(
       subtractPoints(targetPoint, pointToAlign, this.dim),
-      scalePoint(npDirection, buff, this.dim),
+      scalePoint(npDirection, Number(resolvedBuff), this.dim),
       this.dim,
     ).map((value, index) => value * (mask[index] ?? 1));
     this.shift(delta);
@@ -3116,6 +3150,22 @@ for (const name of ["scale_to_fit_width", "scale_to_fit_height", "scale_to_fit_d
 (Mobject.prototype.to_edge as unknown as { __argnames__?: string[] }).__argnames__ = [
   "edge",
   "buff",
+];
+// `next_to(mobject_or_point, direction, buff=, aligned_edge=, ...)` takes
+// `buff`/`aligned_edge` keywords (e.g. `animate.next_to(m, UP, buff=0.4)`);
+// pin the Python spellings so the py2js kwargs bridge maps the trailing bag
+// instead of leaving the whole `{buff: ...}` object in the numeric `buff`
+// slot (which poisons the shift with NaN, error 262). `next_to` additionally
+// unwraps the bag defensively for `animate` paths that bypass the bridge
+// (same as `scale`/`align_on_border`).
+(Mobject.prototype.next_to as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "mobject_or_point",
+  "direction",
+  "buff",
+  "aligned_edge",
+  "submobject_to_align",
+  "index_of_submobject_to_align",
+  "coor_mask",
 ];
 
 export class Group extends Mobject {
