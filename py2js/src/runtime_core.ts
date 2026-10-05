@@ -1480,12 +1480,25 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (typeof a === "number" && typeof b === "number") return a + b;
     if (typeof a === "string" || typeof b === "string") return String(a) + String(b);
     if (isArrayLike(a) && isArrayLike(b)) {
-      // Python `list + list` concatenates; only all-number vectors add
-      // elementwise (e.g. `center + RIGHT * 2`).
-      if (!isNumericVector(a) || !isNumericVector(b)) return [...a, ...b];
-      const r = elementwise(a, b, (x, y) => x + y);
-      if (r !== undefined) return r;
-      return scalarize(np.add(asNd(a), asNd(b)));
+      // Python `list + list` concatenates. Plain JS arrays double as manim
+      // point vectors (e.g. `center + RIGHT * 2`, where `get_center()`
+      // returns a plain `number[]` in wanim but an ndarray in Python), so a
+      // narrow elementwise exception exists for same-length length-3 numeric
+      // vectors only. Every other shape concatenates: notably `used = used +
+      // [n]` (length-1 or differing lengths) must grow the list instead of
+      // doing vector math (error 186: `[1] + [3]` became `[4]`, poisoning
+      // downstream `(-1) ** 1.5` into NaN and `float(NaN)` into ValueError).
+      if (
+        isNumericVector(a) &&
+        isNumericVector(b) &&
+        a.length === b.length &&
+        a.length === 3
+      ) {
+        const r = elementwise(a, b, (x, y) => x + y);
+        if (r !== undefined) return r;
+        return scalarize(np.add(asNd(a), asNd(b)));
+      }
+      return [...a, ...b];
     }
     if (isArrayLike(a) && typeof b === "number") return a.map((v) => v + b);
     if (typeof a === "number" && isArrayLike(b)) return b.map((v) => v + a);
