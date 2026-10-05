@@ -192,7 +192,15 @@ export function clearCanvas(
 ): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = backgroundCss;
-  styleState(ctx).fill = backgroundCss;
+  const state = styleState(ctx);
+  state.fill = backgroundCss;
+  // Reusing one canvas for a new run (`canvas.width = ...` resets the context
+  // to its default black styles) or an embedder assigning styles directly
+  // invalidates the cached stroke: drop it so the next stroke is written even
+  // when its colour matches the previous run's last one.  Without this, a
+  // second run of a scene drew blue strokes with the context's default black
+  // and the shapes vanished on the black background.
+  state.stroke = null;
   ctx.fillRect(0, 0, camera.pixel_width, camera.pixel_height);
 }
 
