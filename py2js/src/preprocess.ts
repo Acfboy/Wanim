@@ -2484,6 +2484,115 @@ export function desugarSumBuiltin(source: string): string {
   return out;
 }
 
+// --- dict `.get()` desugar -----------------------------------------------------
+//
+// Plain-object dict literals (`counts = {}` compiles to `{}`) have no `.get`
+// method, so the extremely common `counts.get(ch, 0)` fails with
+// `TypeError: counts.get is not a function` (error 275: wordle `counts.get`).
+// Installing a `get` shim on `Object.prototype` is not an option: `Object.
+// defineProperties` reads `get`/`set`/`value`/... off every property
+// descriptor (including inherited ones), so an inherited `get` turns each
+// `{value: ...}` descriptor into an invalid mixed descriptor and every
+// subsequent `defineProperties` call throws (see `installPythonDictShims` in
+// `runtime_core.ts`).  We instead rewrite the call into a runtime helper:
+//
+//   `obj.get(key)`          -> `__wan_dict_get(obj, key)`
+//   `obj.get(key, default)` -> `__wan_dict_get(obj, key, default)`
+//
+// (helper provided by the runtime in `runtime_core.ts`; it serves plain dict
+// objects with Python semantics and delegates to the native `.get` for real
+// `Map`s and other receivers that define one, so `map.get(k)` keeps working.)
+//
+// Only an exact `.get` attribute followed by `(` is rewritten (`obj.get_...`
+// / `obj.getter(...)` pass through).  The receiver is the same object
+// expression `desugarNumpySubscripts` finds via `subscriptObjStart`, so
+// `counts.get(...)`, `self.d.get(...)` and `d[k].get(...)` all rewrite.
+// Anything that does not parse cleanly passes through untouched.
+//
+// Known limitations (same as the other source-level heuristics): a `.get(`
+// inside an f-string `{...}` interpolation is not distinguished from one in
+// code (the whole f-string is treated as a string); a bare attribute read
+// (`f = d.get`) is left alone (binding the helper would need a closure).
+
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_DICT_GET_HELPER = "__wan_dict_get";
+
+/**
+ * Rewrite `obj.get(key[, default])` into `__wan_dict_get(obj, key[, default])`
+ * (see above).  Anything that does not parse cleanly passes through untouched.
+ */
+export function desugarDictGet(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_DICT_GET_HELPER)) return source;
+  if (!source.includes(".get")) return source;
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch !== ".") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    // Possible `.get(`: exact attribute name with word boundaries, then
+    // optional whitespace and `(`.
+    let j = i + 1;
+    if (!source.startsWith("get", j) || isIdentCharAt(source, j + 3)) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    let k = j + 3;
+    while (k < source.length && isHorizontalSpace(source[k]!)) k += 1;
+    if (source[k] !== "(") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const objStart = subscriptObjStart(out);
+    if (objStart === null) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const obj = out.slice(objStart);
+    if (obj.trim() === "") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const close = findMatchingBracket(source, k);
+    if (close === -1) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    // Recursively desugar the arguments so nested `.get(` calls rewrite too.
+    const args = desugarDictGet(source.slice(k + 1, close));
+    out = out.slice(0, objStart) + `${WANIM_DICT_GET_HELPER}(${obj}, ${args})`;
+    i = close + 1;
+  }
+  return out;
+}
+
 // --- dotted/tuple `except` handler desugar -----------------------------------
 //
 // rapydscript-ng's `try_` parser only accepts a bare name (or a comma-separated

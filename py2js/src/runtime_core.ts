@@ -2871,6 +2871,41 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
+   * Python `dict.get(key[, default])` target of the `desugarDictGet`
+   * preprocess step (see `preprocess.ts`).
+   *
+   * Plain-object dict literals have no `.get` (and `Object.prototype` must
+   * never gain one: it poisons `Object.defineProperties` via the descriptor
+   * protocol), so `d.get(k, dflt)` is rewritten to `__wan_dict_get(d, k,
+   * dflt)` before compilation.  Real `Map`s delegate to `has`/`get`; plain
+   * dict objects use `hasOwnProperty`; any other receiver with its own
+   * `.get` (e.g. a rapydscript `**kwargs` bag with `ρσ_dict_methods`, or a
+   * wanim config/map object) delegates to it; anything else raises the
+   * same `TypeError` the direct call raised before.  A missing key yields
+   * the default when one is supplied, else `None` (`null`).
+   */
+  function wanDictGet(obj: Any, key: Any, defval?: Any): Any {
+    const hasDefault = arguments.length > 2;
+    if (obj === null || obj === undefined) {
+      throw new TypeError("'NoneType' object has no attribute 'get'");
+    }
+    if (isRealMap(obj)) {
+      const map = obj as Map<Any, Any>;
+      if (map.has(key)) return map.get(key);
+      return hasDefault ? defval : null;
+    }
+    if (isPlainDictObject(obj)) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) return (obj as Any)[key as Any];
+      return hasDefault ? defval : null;
+    }
+    const maybeGet = (obj as Any).get;
+    if (typeof maybeGet === "function") {
+      return hasDefault ? maybeGet.call(obj, key, defval) : maybeGet.call(obj, key);
+    }
+    throw new TypeError(`'${typeof obj}' object has no attribute 'get'`);
+  }
+
+  /**
    * Round a JS number the way CPython's `round(x, n)` does.
    *
    * Scaling by `10 ** n` is not enough: `2.675 * 100` is exactly `267.5` in
@@ -4881,6 +4916,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // a reserved name; see `preprocess.ts`). rapydscript's own `sum`
     // accumulates with plain JS `+` and stringifies NDArray terms.
     globals.__wan_sum = pythonSum;
+    // Python `dict.get()` for the `desugarDictGet` step (likewise a reserved
+    // name; see `preprocess.ts`). Plain-object dict literals have no `.get`
+    // and `Object.prototype` must never gain one.
+    globals.__wan_dict_get = wanDictGet;
     // CPython's `__import__` for dynamic imports such as
     // `__import__("numpy").cos(x)`. rapydscript's baselib provides no such
     // builtin, so bare `__import__` calls fail with `ReferenceError`.
@@ -4926,6 +4965,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     wanFlatten1,
     wanGetItem,
     wanSetItem,
+    wanDictGet,
     wanSlice: wanSliceDim,
     wanMatmul,
     wanReversed,
