@@ -3082,6 +3082,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    * options bag).  Constructors are untouched.
    */
   function wrapPrototypeMethods(Ctor: new (...args: Any[]) => Any): void {
+    // Internal machinery classes (the animate/updater builders) shuttle
+    // kwargs bags around as *values* and separate args from kwargs
+    // themselves; mapping a trailing bag onto their slots would detag it
+    // (see `__wanim_skip_kwargs_bridge__` in mobject.ts).
+    if ((Ctor as Any).__wanim_skip_kwargs_bridge__) return;
     for (const name of Object.getOwnPropertyNames(Ctor.prototype)) {
       if (name === "constructor") continue;
       const descriptor = Object.getOwnPropertyDescriptor(Ctor.prototype, name);
