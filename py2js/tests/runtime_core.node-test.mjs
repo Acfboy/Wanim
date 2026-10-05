@@ -256,6 +256,40 @@ check("numpy facade exposes linalg.LinAlgError for except handlers", () => {
   assert.equal(error.name, "LinAlgError");
 });
 
+check("numpy facade accepts rapydscript range() objects as array-likes", () => {
+  const np = ndCore.buildNumpy();
+  // Mimics rapydscript's ρσ_range: a plain {start, step, stop} bag with
+  // Symbol.iterator, not a JS array. `np.prod(range(1, k + 1))` is valid numpy
+  // but used to throw `Cannot read properties of undefined (reading 'length')`.
+  const fakeRange = (start, stop, step = 1) => {
+    const length = Math.max(Math.ceil((stop - start) / step), 0);
+    const ans = { start, step, stop };
+    ans[Symbol.iterator] = function () {
+      let i = start - step;
+      let idx = -1;
+      const it = {};
+      it.next = () => {
+        i += step;
+        idx += 1;
+        if (idx >= length) return { done: true };
+        return { done: false, value: i };
+      };
+      it[Symbol.iterator] = () => it;
+      return it;
+    };
+    ans.__len__ = () => length;
+    return ans;
+  };
+  assert.equal(np.prod(fakeRange(1, 4)), 6);
+  assert.equal(np.sum(fakeRange(1, 4)), 6);
+  assert.equal(np.mean(fakeRange(1, 4)), 2);
+  assert.equal(np.prod(fakeRange(1, 1)), 1); // empty range: identity
+  assert.deepEqual(np.array(fakeRange(1, 4)).tolist(), [1, 2, 3]);
+  assert.deepEqual(np.asarray([fakeRange(1, 3), fakeRange(1, 3)]).tolist(), [[1, 2], [1, 2]]);
+  // Strings stay rejected (they also have Symbol.iterator but are not arrays).
+  assert.throws(() => np.prod("ab"));
+});
+
 check("python random: seed(7) matches CPython exactly", () => {
   const runtime = ndCore.buildRuntime();
   const random = runtime.globals.random;
