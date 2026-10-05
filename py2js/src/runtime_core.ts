@@ -377,20 +377,34 @@ function isPlainDictObject(value: Any): boolean {
   }
 }
 
-function dictItemsOf(obj: Any): Array<[string, Any]> {
-  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).entries()] as Array<[string, Any]>;
+function restoreDictKey(key: string): string | number {
+  // Plain JS objects coerce every key to a string, so `{0: v}` and
+  // `{"0": v}` both arrive as `"0"`. Python keeps `0` (int) and `"0"`
+  // (str) distinct; the int-key form is far more common (e.g.
+  // `parity = {0: 0, 1: 1, 3: 0}` indexed back into a VGroup via
+  // `for pos, v in parity.items()`), so restore the numeric form when the
+  // key round-trips exactly (`String(Number(k)) === k`). Non-numeric keys
+  // (`"a"`, `""`) and non-canonical forms (`"01"`) stay strings.
+  if (key === "") return key;
+  const n = Number(key);
+  if (!Number.isNaN(n) && String(n) === key) return n;
+  return key;
+}
+
+function dictItemsOf(obj: Any): Array<[string | number, Any]> {
+  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).entries()] as Array<[string | number, Any]>;
   if (!isPlainDictObject(obj)) {
     throw new TypeError("dict.items() called on a non-dict object");
   }
-  return Object.keys(obj).map((k) => [k, (obj as Any)[k]] as [string, Any]);
+  return Object.keys(obj).map((k) => [restoreDictKey(k), (obj as Any)[k]] as [string | number, Any]);
 }
 
-function dictKeysOf(obj: Any): string[] {
-  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).keys()] as string[];
+function dictKeysOf(obj: Any): Array<string | number> {
+  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).keys()] as Array<string | number>;
   if (!isPlainDictObject(obj)) {
     throw new TypeError("dict.keys() called on a non-dict object");
   }
-  return Object.keys(obj);
+  return Object.keys(obj).map(restoreDictKey);
 }
 
 function dictValuesOf(obj: Any): Any[] {
@@ -433,7 +447,7 @@ function dictUpdateEntriesOf(source: Any): Array<[Any, Any]> {
   if (typeof source === "object" || typeof source === "function") {
     return Object.keys(source)
       .filter((key) => !key.startsWith("kwargs-object-Symbol-"))
-      .map((key) => [key, (source as Any)[key]] as [Any, Any]);
+      .map((key) => [restoreDictKey(key), (source as Any)[key]] as [Any, Any]);
   }
   throw new TypeError("dict.update() argument must be a mapping or an iterable of pairs");
 }
@@ -494,10 +508,10 @@ export function installPythonDictShims(ObjectProto: Any): void {
       /* read-only prototype: dict literals keep failing loudly */
     }
   };
-  define("items", function (this: Any): Array<[string, Any]> {
+  define("items", function (this: Any): Array<[string | number, Any]> {
     return dictItemsOf(this);
   });
-  define("keys", function (this: Any): string[] {
+  define("keys", function (this: Any): Array<string | number> {
     return dictKeysOf(this);
   });
   define("values", function (this: Any): Any[] {
@@ -1505,7 +1519,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       }
       if (typeof obj === "object") {
         try {
-          return Object.keys(obj);
+          // `tuple(dict)` yields its keys; restore numeric keys the same
+          // way `dict.keys()` does (plain-object int keys arrive as strings).
+          return Object.keys(obj).map(restoreDictKey);
         } catch {
           /* fall through to throw */
         }
