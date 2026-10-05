@@ -1937,6 +1937,9 @@ export const WANIM_COMPLEX_HELPER = "__wan_complex";
 /** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
 export const WANIM_REVERSED_HELPER = "__wan_reversed";
 
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_ABS_HELPER = "__wan_abs";
+
 const COMPLEX_LITERAL_RE =
   /^(?:[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][+-]?[0-9_]+)?|\.[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?)[jJ]/;
 
@@ -2082,6 +2085,95 @@ export function desugarReversedBuiltin(source: string): string {
         if (source[k] === "(") {
           out += WANIM_REVERSED_HELPER;
           previous = WANIM_REVERSED_HELPER[WANIM_REVERSED_HELPER.length - 1]!;
+          i = j;
+          continue;
+        }
+      }
+      out += word;
+      previous = word[word.length - 1]!;
+      i = j;
+      continue;
+    }
+    out += ch;
+    if (!/\s/.test(ch)) previous = ch;
+    i += 1;
+  }
+  return out;
+}
+
+// --- bare `abs()` desugar ------------------------------------------------------
+//
+// rapydscript's baselib defines `abs` as `Math.abs`, so `abs(1+1j)` (a plain
+// `{re, im}` object) yields `NaN` instead of the magnitude: the compiled JS
+// declares its own local `var abs = Math.abs`, which shadows the complex-aware
+// `globals.abs` override in `runtime_core.ts` (wanim error 221:
+// `scale = abs(z)` with `z = complex(2, 1)` produced `NaN` and poisoned
+// `Mobject.scale`). We rewrite bare `abs(x)` calls into `__wan_abs(x)`
+// runtime calls (helper provided by the runtime, mirroring CPython semantics
+// for complex/NDArray inputs), exactly like `desugarReversedBuiltin` above.
+//
+// The scan skips string literals and `#` comments and never touches attribute
+// access (`obj.abs(...)` stays as-is). When user code defines its own
+// `abs` (`def`/`class`/assignment at line start) or already mentions
+// `__wan_abs`, the source is left untouched so the local binding keeps
+// working.
+//
+// Known limitations (same as `reversed`): shadowing `abs` via
+// `lambda`/`global`/`nonlocal`/import alias, or calling it through an alias
+// (`f = abs; f(x)`), is not detected.
+
+const ABS_NAME = "abs";
+
+/** True when user code binds its own `abs` at statement level. */
+function shadowsAbsBuiltin(source: string): boolean {
+  return /(^|\n)[ \t]*(def|class)[ \t]+abs(?![\p{L}\p{N}_])/u.test(source) ||
+    /(^|\n)[ \t]*abs[ \t]*=(?![=>])/m.test(source);
+}
+
+/**
+ * Rewrite bare `abs(...)` calls into `__wan_abs(...)` (see above).
+ * Anything that does not parse cleanly passes through untouched.
+ */
+export function desugarAbsBuiltin(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_ABS_HELPER)) return source;
+  if (!source.includes(ABS_NAME)) return source;
+  if (shadowsAbsBuiltin(source)) return source;
+  let out = "";
+  let i = 0;
+  // Last non-whitespace character emitted (a `.` means attribute access).
+  let previous = "";
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      previous = '"';
+      continue;
+    }
+    if (IDENT_START.test(ch)) {
+      let j = i + 1;
+      while (j < source.length && IDENT_PART.test(source[j]!)) j += 1;
+      const word = source.slice(i, j);
+      if (word === ABS_NAME && previous !== ".") {
+        let k = j;
+        while (k < source.length && /\s/.test(source[k]!)) k += 1;
+        if (source[k] === "(") {
+          out += WANIM_ABS_HELPER;
+          previous = WANIM_ABS_HELPER[WANIM_ABS_HELPER.length - 1]!;
           i = j;
           continue;
         }
