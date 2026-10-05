@@ -803,23 +803,79 @@ export class NumberLine extends VGroup {
   }
 
   add_numbers(
-    x_values: Iterable<number> | null = null,
-    excluding: Iterable<number> | null = null,
+    x_values: Iterable<number> | number | null = null,
+    excluding: Iterable<number> | number | null = null,
     font_size: number | null = null,
     label_constructor: unknown = null,
     number_config: Record<string, unknown> = {},
+    ...extra: unknown[]
   ): this {
+    // NOTE: 2019-era manim used the variadic form `add_numbers(*values)`
+    // (e.g. `add_numbers(*np.arange(0, 1.2, 0.2))`, `add_numbers(*range(1, 12))`),
+    // which py2js compiles to `add_numbers.apply(obj, values)`. Modern manim
+    // takes a single iterable instead. Accept both: when the first argument
+    // is a bare number or extra positionals are present, treat every numeric
+    // positional as a value and fall back to defaults for the options.
+    const isVariadic =
+      typeof x_values === "number" ||
+      typeof x_values === "bigint" ||
+      extra.length > 0;
     let values: number[];
-    if (x_values === null || x_values === undefined) {
+    if (isVariadic) {
+      const raw: unknown[] = [x_values, excluding, font_size, label_constructor, number_config, ...extra];
+      // A trailing kwargs bag (null-prototype object tagged by the py2js
+      // bridge) is not a value. The bridge normally maps kwargs onto named
+      // slots already, so just drop such bags here.
+      const withoutKwargs = raw.filter((item) => {
+        if (item === null || item === undefined) return false;
+        if (typeof item === "object" && !Array.isArray(item) && !isNDArray(item)) {
+          const proto = Object.getPrototypeOf(item);
+          if (proto === null) return false;
+          // Plain option bags (e.g. `{font_size: 16}` arriving as trailing
+          // object) are not numeric values.
+          if (proto === Object.prototype) {
+            const keys = Object.keys(item as Record<string, unknown>);
+            if (keys.length > 0 && keys.every((k) => typeof k === "string")) {
+              const hasNonNumeric = keys.some((k) =>
+                ["excluding", "font_size", "label_constructor", "number_config", "fontSize"].includes(k),
+              );
+              if (hasNonNumeric) return false;
+            }
+          }
+        }
+        return true;
+      });
+      values = [];
+      for (const item of withoutKwargs) {
+        if (typeof item === "number" || typeof item === "bigint") {
+          values.push(Number(item));
+        } else if (isNDArray(item)) {
+          values.push(...((item as NDArray).toArray() as unknown[]).map(Number));
+        } else if (Array.isArray(item)) {
+          values.push(...(item as unknown[]).map(Number));
+        } else if (
+          item !== null &&
+          typeof item === "object" &&
+          typeof (item as Iterable<number>)[Symbol.iterator] === "function"
+        ) {
+          values.push(...[...(item as Iterable<unknown>)].map(Number));
+        }
+      }
+    } else if (x_values === null || x_values === undefined) {
       values = (this.get_tick_range().toArray() as unknown[]).map(Number);
     } else if (isNDArray(x_values)) {
       values = ((x_values as NDArray).toArray() as unknown[]).map(Number);
     } else {
-      values = [...x_values];
+      values = [...(x_values as Iterable<number>)].map(Number);
     }
-    const resolvedExcluding = excluding ?? this.numbers_to_exclude;
-    const resolvedFontSize = font_size ?? this.font_size;
-    const resolvedConstructor = label_constructor ?? this.label_constructor;
+    const resolvedExcluding = isVariadic
+      ? this.numbers_to_exclude
+      : ((excluding as Iterable<number> | null) ?? this.numbers_to_exclude);
+    const resolvedFontSize = isVariadic ? this.font_size : ((font_size as number | null) ?? this.font_size);
+    const resolvedConstructor = isVariadic ? this.label_constructor : ((label_constructor as unknown) ?? this.label_constructor);
+    // In variadic mode the `number_config` slot actually holds a numeric
+    // value, so ignore it and use the default empty config.
+    const resolvedNumberConfig = isVariadic ? {} : ((number_config as Record<string, unknown>) ?? {});
     const numbers = new VGroup();
     for (const x of values) {
       if ([...resolvedExcluding].includes(x)) continue;
@@ -830,7 +886,7 @@ export class NumberLine extends VGroup {
           undefined,
           resolvedFontSize,
           resolvedConstructor,
-          number_config,
+          resolvedNumberConfig,
         ),
       );
     }
