@@ -30,6 +30,7 @@ import {
   desugarReversedBuiltin,
   desugarStarredDisplays,
   desugarStarredGenerators,
+  desugarSumBuiltin,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
@@ -57,6 +58,7 @@ export {
   desugarReversedBuiltin,
   desugarStarredDisplays,
   desugarStarredGenerators,
+  desugarSumBuiltin,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   installPythonShims,
@@ -102,8 +104,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // complex literals, a bare name per `except` handler, no trailing comma
   // inside `(...)` tuples, no `*` spread inside list/tuple displays, no newline
   // between a generator expression's element and its `for`, and its
-  // `reversed()` only accepts plain arrays/strings, and baselib `abs` is
-  // `Math.abs` (NaN on complex), so all ten are
+  // `reversed()` only accepts plain arrays/strings, baselib `abs` is
+  // `Math.abs` (NaN on complex), and baselib `sum` accumulates with plain JS
+  // `+` (which stringifies NDArray terms), so all eleven are
   // desugared before compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
   // `__wan_flatten1` calls), dotted/tuple `except` handlers
@@ -116,8 +119,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // `(*a, b)`) into `[].concat(__wan_spread(a), [b])` calls, starred
   // generator unpackings (`f(*(x for x in xs))`) into unpackings of the
   // equivalent list comprehension (`f(*([x for x in xs]))`), bare
-  // `reversed(x)` calls into `__wan_reversed(x)` calls, and bare `abs(x)`
-  // calls into `__wan_abs(x)` calls.  The tuple step runs
+  // `reversed(x)` calls into `__wan_reversed(x)` calls, bare `abs(x)`
+  // calls into `__wan_abs(x)` calls, and bare `sum(...)` calls into
+  // `__wan_sum(...)` calls.  The tuple step runs
   // first so later passes never see the trailing comma; the starred-display
   // step runs right after so later passes only see plain displays; the
   // complex step runs before the matmul step so it never sees the `j`
@@ -131,11 +135,13 @@ export async function compilePython(source: string): Promise<CompiledScene> {
         desugarStarredGenerators(
           desugarNumpySubscripts(
             desugarReversedBuiltin(
-              desugarAbsBuiltin(
-                desugarMatmul(
-                  desugarComplexLiterals(
-                    desugarStarredDisplays(
-                      desugarTupleTrailingCommas(renameJsReservedWords(source)),
+              desugarSumBuiltin(
+                desugarAbsBuiltin(
+                  desugarMatmul(
+                    desugarComplexLiterals(
+                      desugarStarredDisplays(
+                        desugarTupleTrailingCommas(renameJsReservedWords(source)),
+                      ),
                     ),
                   ),
                 ),

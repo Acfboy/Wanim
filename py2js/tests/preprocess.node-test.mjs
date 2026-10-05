@@ -13,6 +13,7 @@ import {
   desugarReversedBuiltin,
   desugarStarredDisplays,
   desugarStarredGenerators,
+  desugarSumBuiltin,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
@@ -532,6 +533,65 @@ check("reversed desugar leaves attributes, strings, comments and shadowing alone
   assert.equal(
     desugarReversedBuiltin("x = __wan_reversed(y)\n"),
     "x = __wan_reversed(y)\n",
+  );
+});
+
+check("sum desugar rewrites bare sum() calls", () => {
+  assert.equal(
+    desugarSumBuiltin("wave_fn = lambda t: sum(a * np.sin(f * t) for a, f in zip(amps, freqs))\n"),
+    "wave_fn = lambda t: __wan_sum(a * np.sin(f * t) for a, f in zip(amps, freqs))\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("x = sum ([1, 2, 3])\n"),
+    "x = __wan_sum ([1, 2, 3])\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("x = sum(vals, start)\n"),
+    "x = __wan_sum(vals, start)\n",
+  );
+});
+
+check("sum desugar leaves attributes, numpy imports, strings, comments and shadowing alone", () => {
+  assert.equal(
+    desugarSumBuiltin("x = np.sum(a, axis=0)\n"),
+    "x = np.sum(a, axis=0)\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("x = obj.sum(seq)\n"),
+    "x = obj.sum(seq)\n",
+  );
+  assert.equal(
+    desugarSumBuiltin('x = "sum(seq)"\n# y = sum(seq)\n'),
+    'x = "sum(seq)"\n# y = sum(seq)\n',
+  );
+  assert.equal(
+    desugarSumBuiltin("mysum(x)\n"),
+    "mysum(x)\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("def sum(x):\n    return x\n"),
+    "def sum(x):\n    return x\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("sum = list\nx = sum(y)\n"),
+    "sum = list\nx = sum(y)\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("x = __wan_sum(y)\n"),
+    "x = __wan_sum(y)\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("from numpy import sum\nx = sum(a, axis=0)\n"),
+    "from numpy import sum\nx = sum(a, axis=0)\n",
+  );
+  assert.equal(
+    desugarSumBuiltin("from numpy import *\nx = sum(a)\n"),
+    "from numpy import *\nx = sum(a)\n",
+  );
+  // `sum` aliased away from numpy keeps the builtin meaning.
+  assert.equal(
+    desugarSumBuiltin("from numpy import sum as s\nx = sum(a)\n"),
+    "from numpy import sum as s\nx = __wan_sum(a)\n",
   );
 });
 
