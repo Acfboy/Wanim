@@ -1209,6 +1209,26 @@ export class Mobject {
     return this.rescale_to_fit(value, 2, true, opts.about_point ?? undefined, opts.about_edge ?? undefined);
   }
 
+  // NOTE: 2019-era manim `set_width(width, stretch=False, ...)` /
+  // `set_height` / `set_depth`. Modern manim removed these in favour of the
+  // `width`/`height`/`depth` properties plus `scale_to_fit_*` /
+  // `stretch_to_fit_*`. Keep the legacy names so 3b1b dataset scenes keep
+  // working (e.g. `mu_box.set_width(1.1, stretch=True)`). Without explicit
+  // methods the Mobject Proxy `set_*` fallback would silently ignore the
+  // `stretch` flag and always scale.
+  set_width(width: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.rescale_to_fit(width, 0, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+  set_height(height: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.rescale_to_fit(height, 1, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+  set_depth(depth: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
+    const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
+    return this.rescale_to_fit(depth, 2, opts.stretch, opts.about_point ?? undefined, opts.about_edge ?? undefined);
+  }
+
   rescale_to_fit(value: number, dim: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
     const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
     const doStretch = opts.stretch;
