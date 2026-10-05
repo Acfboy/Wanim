@@ -1265,6 +1265,62 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     throw new TypeError("argument to reversed() must be a sequence");
   }
 
+  /**
+   * CPython-compatible `tuple()`.
+   *
+   * rapydscript's baselib provides `list`/`dict`/`set`/`str`/... but has no
+   * `tuple` builtin, so a bare `tuple(x)` call (e.g.
+   * `"q=(%.2f, ...)" % tuple(q)` where `q` is an NDArray row) fails with
+   * `ReferenceError: tuple is not defined`.  rapydscript represents both
+   * lists and tuples as plain JS arrays, so `tuple()` is `list()` semantics:
+   * return a fresh plain array holding the iterable's items.  0-d NDArray
+   * elements are scalarized so `"%f" % tuple(row)` formats numbers.
+   */
+  function pythonTuple(iterable?: Any): Any[] {
+    if (iterable === undefined) return [];
+    if (Array.isArray(iterable)) return iterable.slice();
+    if (typeof iterable === "string") return iterable.split("");
+    if (iterable !== null && iterable !== undefined) {
+      const obj = iterable as Any;
+      let iteratorMethod: Any;
+      try {
+        iteratorMethod = obj[Symbol.iterator];
+      } catch {
+        iteratorMethod = undefined;
+      }
+      if (typeof iteratorMethod === "function") {
+        try {
+          const items = obj instanceof Map
+            ? [...(obj as Map<Any, Any>).keys()]
+            : [...(obj as Iterable<Any>)];
+          return items.map(scalarize);
+        } catch {
+          /* fall through to length fallback */
+        }
+      }
+      try {
+        const length = obj.length;
+        if (typeof length === "number" && Number.isFinite(length)) {
+          const n = Math.max(0, Math.trunc(length));
+          const out: Any[] = new Array(n);
+          for (let i = 0; i < n; i += 1) out[i] = scalarize(obj[i]);
+          return out;
+        }
+      } catch {
+        /* fall through to throw */
+      }
+      if (typeof obj === "object") {
+        try {
+          return Object.keys(obj);
+        } catch {
+          /* fall through to throw */
+        }
+      }
+    }
+    throw new TypeError(`'${typeof iterable}' object is not iterable`);
+  }
+  (pythonTuple as Any).__argnames__ = ["iterable"];
+
   function pythonAdd(a: Any, b: Any): Any {
     if (isComplexLike(a) || isComplexLike(b)) return complexAdd(a, b);
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
@@ -3732,6 +3788,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.round = pythonRound;
     globals.complex = pythonComplex;
     globals.__wan_complex = wanComplex;
+    // `tuple()` has no rapydscript baselib equivalent (only `list` exists),
+    // so bare `tuple(x)` calls fail with `ReferenceError: tuple is not
+    // defined`.  Tuples and lists share the plain-array representation.
+    globals.tuple = pythonTuple;
     // One-level flatten for the multi-`for` comprehension desugar (see
     // `desugarMultiForComprehensions` in `preprocess.ts`). The name is
     // reserved: the desugar refuses to run when user code already uses it.
@@ -3770,6 +3830,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonRound,
     pythonComplex,
     wanComplex,
+    pythonTuple,
     isComplexLike,
     wanFlatten1,
     wanGetItem,
