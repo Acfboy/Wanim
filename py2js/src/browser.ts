@@ -27,6 +27,7 @@ import {
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   desugarReversedBuiltin,
+  desugarStarredDisplays,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
@@ -51,6 +52,7 @@ export {
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   desugarReversedBuiltin,
+  desugarStarredDisplays,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   installPythonShims,
@@ -94,8 +96,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // rapydscript-ng only parses a single `for` clause per comprehension, a
   // single index/slice per `[...]`, `@` as a decorator, no `j`-suffixed
   // complex literals, a bare name per `except` handler, no trailing comma
-  // inside `(...)` tuples, and its `reversed()` only accepts plain
-  // arrays/strings, so all seven are desugared before compilation:
+  // inside `(...)` tuples, no `*` spread inside list/tuple displays, and its
+  // `reversed()` only accepts plain arrays/strings, so all eight are
+  // desugared before compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
   // `__wan_flatten1` calls), dotted/tuple `except` handlers
   // (`except np.linalg.LinAlgError:`) into hoisted `__wan_exc_N` aliases,
@@ -103,12 +106,15 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // `__wan_getitem`/`__wan_slice` calls, matrix multiplication (`a @ b`)
   // into `__wan_matmul` calls, complex literals (`0j`) into
   // `__wan_complex(0, imag)` calls, tuple trailing commas (`(a, b,)`,
-  // `(x,)`) into `(a, b)`/`[x]`, and bare `reversed(x)` calls into
-  // `__wan_reversed(x)` calls.  The tuple step runs first so later passes
-  // never see the trailing comma; the complex step runs before the matmul
-  // step so it never sees the `j` suffix; the matmul step runs before the
-  // subscript step so `@` operands containing `[...]` (e.g. `A[:, 0] @ b`)
-  // still reach the subscript step intact.
+  // `(x,)`) into `(a, b)`/`[x]`, starred list/tuple displays (`[*a, b]`,
+  // `(*a, b)`) into `[].concat(__wan_spread(a), [b])` calls, and bare
+  // `reversed(x)` calls into `__wan_reversed(x)` calls.  The tuple step runs
+  // first so later passes never see the trailing comma; the starred-display
+  // step runs right after so later passes only see plain displays; the
+  // complex step runs before the matmul step so it never sees the `j`
+  // suffix; the matmul step runs before the subscript step so `@` operands
+  // containing `[...]` (e.g. `A[:, 0] @ b`) still reach the subscript step
+  // intact.
   const pre = preprocessImports(
     desugarDottedExcept(
       desugarMultiForComprehensions(
@@ -116,7 +122,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
           desugarReversedBuiltin(
             desugarMatmul(
               desugarComplexLiterals(
-                desugarTupleTrailingCommas(renameJsReservedWords(source)),
+                desugarStarredDisplays(
+                  desugarTupleTrailingCommas(renameJsReservedWords(source)),
+                ),
               ),
             ),
           ),

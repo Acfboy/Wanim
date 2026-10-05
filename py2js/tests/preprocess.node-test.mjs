@@ -11,6 +11,7 @@ import {
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   desugarReversedBuiltin,
+  desugarStarredDisplays,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
@@ -598,6 +599,79 @@ check("except desugar output is stable", () => {
   const src = "try:\n    pass\nexcept np.E:\n    pass\n";
   const once = desugarDottedExcept(src);
   assert.equal(desugarDottedExcept(once), once);
+});
+
+check("starred desugar rewrites [*seam, (i, j)]", () => {
+  assert.equal(
+    desugarStarredDisplays("new_seams.append([*seam, (i + 1, j_prime)])\n"),
+    "new_seams.append([].concat(__wan_spread(seam), [(i + 1, j_prime)]))\n",
+  );
+});
+
+check("starred desugar groups plains and handles tuples", () => {
+  assert.equal(
+    desugarStarredDisplays("x = [a, *b, c, *d]\n"),
+    "x = [].concat([a], __wan_spread(b), [c], __wan_spread(d))\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("x = (*a, b)\n"),
+    "x = [].concat(__wan_spread(a), [b])\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("x = [*a]\n"),
+    "x = [].concat(__wan_spread(a))\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("x = [*a,]\n"),
+    "x = [].concat(__wan_spread(a))\n",
+  );
+});
+
+check("starred desugar rewrites nested displays to a fixpoint", () => {
+  assert.equal(
+    desugarStarredDisplays("x = [*ys, [*a, b]]\n"),
+    "x = [].concat(__wan_spread(ys), [[].concat(__wan_spread(a), [b])])\n",
+  );
+});
+
+check("starred desugar leaves calls, subscripts and plain displays alone", () => {
+  assert.equal(
+    desugarStarredDisplays("g = VGroup(*items)\n"),
+    "g = VGroup(*items)\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("x = [a * b, c]\n"),
+    "x = [a * b, c]\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("x = (a, b)\n"),
+    "x = (a, b)\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("return [*a]\n"),
+    "return [].concat(__wan_spread(a))\n",
+  );
+  assert.equal(
+    desugarStarredDisplays('x = "[*a]"\n# y = [*a]\n'),
+    'x = "[*a]"\n# y = [*a]\n',
+  );
+});
+
+check("starred desugar skips comprehensions but rewrites displays inside them", () => {
+  assert.equal(
+    desugarStarredDisplays("x = [e for e in es]\n"),
+    "x = [e for e in es]\n",
+  );
+  assert.equal(
+    desugarStarredDisplays("x = [[*s, 1] for s in ss]\n"),
+    "x = [[].concat(__wan_spread(s), [1]) for s in ss]\n",
+  );
+});
+
+check("starred desugar output is stable", () => {
+  const src = "x = [*a, b]\n";
+  const once = desugarStarredDisplays(src);
+  assert.equal(desugarStarredDisplays(once), once);
 });
 
 console.log(`\n${passed} tests passed`);

@@ -2713,3 +2713,178 @@ export function desugarTupleTrailingCommas(source: string): string {
   }
   return out;
 }
+
+// --- starred list/tuple display desugar ------------------------------------
+//
+// rapydscript-ng's `array_()` (used for `[...]`) delegates element parsing to
+// `expr_list(closing, ..., func_call=False)`, which never accepts the `*`
+// operator, so valid Python such as `[*seam, (i + 1, j)]` fails with
+// "Unexpected token: operator «*»".  Only calls (`func_call_list`) accept
+// `*args`/`**kwargs`, so `f(*args)` already compiles and is left alone.  We
+// rewrite starred list/tuple displays before compilation:
+//
+//   `[*a, b, *c]`   -> `[].concat(__wan_spread(a), [b], __wan_spread(c))`
+//   `(*a, b)`       -> `[].concat(__wan_spread(a), [b])`
+//   `[*a]` / `(*a)` -> `[].concat(__wan_spread(a))`
+//
+// (`__wan_spread` provided by the runtime in `runtime_core.ts`; it is
+// `tuple(x)` semantics, so any iterable spreads and a non-iterable raises
+// `TypeError` like CPython's `[*123]`.  Plain `[].concat` always
+// concatenates -- unlike wanim's overloaded `+`, which adds length-3 point
+// vectors elementwise -- so the desugared form stays exact for numeric
+// vectors too.)  Tuples and lists share the plain-array representation at
+// runtime, so the same form covers both.
+//
+// Only `[`/`(` that open a *display* are rewritten: a `[` directly
+// subscripting an object expression (`a[0]`, hence also the exotic `a[*b]`)
+// and a `(` opening a call (`f(*args)`, already supported) are skipped, using
+// the same preceding-expression tests as the subscript/tuple desugars above
+// (so `return [*a]` still counts as a display -- `return` is a keyword, not
+// an object).  Brackets holding a depth-zero `for` (comprehensions such as
+// `[x for x in xs]`) are skipped; a starred display nested inside one is
+// still rewritten on a later fixpoint round.  `{*a}`/`{**a}` set/dict
+// unpackings are not rewritten (left for the compiler).  The scan skips
+// string literals and `#` comments, so `"[*a]"` passes through verbatim.  An
+// element starting with `**` inside `[...]` is invalid Python and is left
+// untouched so the compiler still reports it.
+//
+// Known limitations (documented in ): like the other
+// desugars this is a source-level heuristic -- a starred display inside an
+// f-string `{...}` interpolation is not rewritten; a starred comprehension
+// element (`[*a for a in b]`, valid Python) is left for the compiler; and
+// code that already mentions `__wan_spread` is left entirely alone
+// (reserved name, see above).
+
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_SPREAD_HELPER = "__wan_spread";
+
+interface StarredPart {
+  spread: boolean;
+  text: string;
+}
+
+/**
+ * Analyse the display bracket at `open` (whose mate is `close`); return its
+ * element parts when it is a starred list/tuple display, else null (no star,
+ * comprehension, call, subscript, set/dict display, or unparseable -- leave
+ * it to the compiler or a later fixpoint round).
+ */
+function analyzeStarredDisplay(
+  source: string,
+  open: number,
+  close: number,
+): { kind: "[" | "("; parts: StarredPart[] } | null {
+  const ch = source[open]!;
+  if (ch !== "[" && ch !== "(") return null;
+  if (ch === "[") {
+    // A `[` glued to an object expression is a subscript (`a[0]`), not a
+    // display; `return [..]` / `in [..]` / `= [..]` have no object (keywords
+    // are excluded by `subscriptObjStart`), so they stay displays.
+    if (subscriptObjStart(source.slice(0, open)) !== null) return null;
+  } else {
+    // A `(` glued to a callee/object is a call (`f(*args)`, already
+    // supported), not a tuple display; keywords (`return (...)`, ...) stay
+    // displays via the same keyword test the tuple desugar uses.
+    if (isCallLikeParen(source, open)) return null;
+  }
+  // Comprehensions (`[x for x in xs]`, generator arguments, ...) keep their
+  // brackets; only the element displays nested inside are rewritten later.
+  if (
+    collectClauseKeywords(source, open + 1, close).some(
+      (occ) => occ.keyword === "for",
+    )
+  ) {
+    return null;
+  }
+  const parts: StarredPart[] = [];
+  let sawSpread = false;
+  for (const raw of splitDepthZero(source.slice(open + 1, close), ",")) {
+    const trimmed = raw.trim();
+    if (trimmed === "") continue; // trailing comma (`[*a,]`)
+    if (trimmed.startsWith("*")) {
+      if (trimmed.startsWith("**")) return null;
+      const expr = trimmed.slice(1).trim();
+      if (expr === "") return null;
+      sawSpread = true;
+      parts.push({ spread: true, text: expr });
+    } else {
+      parts.push({ spread: false, text: trimmed });
+    }
+  }
+  if (!sawSpread || parts.length === 0) return null;
+  return { kind: ch, parts };
+}
+
+/** Rewrite the first starred list/tuple display in `source`, or null. */
+function rewriteFirstStarredDisplay(source: string): string | null {
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 ? source.length : nl + 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = readString(source, i);
+      continue;
+    }
+    if (ch !== "(" && ch !== "[") {
+      i += 1;
+      continue;
+    }
+    const close = findMatchingBracket(source, i);
+    if (close === -1) {
+      i += 1;
+      continue;
+    }
+    // `{...}` is handled by the set/dict path (unsupported stars stay with
+    // the compiler); only `[...]`/`(...)` are candidates here.
+    const info = analyzeStarredDisplay(source, i, close);
+    if (info === null) {
+      i += 1;
+      continue;
+    }
+    const args: string[] = [];
+    let group: string[] = [];
+    const flush = (): void => {
+      if (group.length > 0) {
+        args.push(`[${group.join(", ")}]`);
+        group = [];
+      }
+    };
+    for (const part of info.parts) {
+      if (part.spread) {
+        flush();
+        args.push(`${WANIM_SPREAD_HELPER}(${part.text})`);
+      } else {
+        group.push(part.text);
+      }
+    }
+    flush();
+    return `${source.slice(0, i)}[].concat(${args.join(", ")})${source.slice(close + 1)}`;
+  }
+  return null;
+}
+
+/**
+ * Rewrite starred list/tuple displays (`[*a, b]`, `(*a, b)`) into
+ * `[].concat(__wan_spread(a), [b])` calls (see above) so rapydscript-ng --
+ * which rejects `*` outside calls -- can compile them.  Runs to a fixpoint so
+ * nested displays are rewritten as well; each rewrite strictly reduces the
+ * number of starred brackets, so this terminates.
+ */
+export function desugarStarredDisplays(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_SPREAD_HELPER)) return source;
+  if (!source.includes("*")) return source;
+  let out = source;
+  for (let round = 0; round < 100; round += 1) {
+    const rewritten = rewriteFirstStarredDisplay(out);
+    if (rewritten === null) return out;
+    out = rewritten;
+  }
+  return out;
+}
