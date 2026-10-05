@@ -4314,12 +4314,16 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // Python builtins rapydscript's baselib does not provide.  `min`,
     // `max` and `sum` come from baselib; `round` has no JS equivalent that
     // matches CPython's banker's rounding / `ndigits` argument.  `abs` comes
-    // from baselib as `Math.abs` but returns NaN on complex inputs, so it is
-    // overridden with the complex-aware `pythonAbs` below.  `complex`
+    // from baselib as `Math.abs` but returns NaN on complex inputs. The
+    // compiled JS declares its own local `var abs = Math.abs`, which shadows
+    // this override, so bare `abs(x)` calls are rewritten to `__wan_abs(x)`
+    // by the `desugarAbsBuiltin` step (see `preprocess.ts`); both names point
+    // at the same complex-aware `pythonAbs`.  `complex`
     // (and the `__wan_complex` factory the `desugarComplexLiterals` step
     // emits) likewise has no baselib equivalent.
     globals.round = pythonRound;
     globals.abs = pythonAbs;
+    globals.__wan_abs = pythonAbs;
     globals.complex = pythonComplex;
     globals.__wan_complex = wanComplex;
     // `tuple()` has no rapydscript baselib equivalent (only `list` exists),

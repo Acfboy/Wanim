@@ -21,6 +21,7 @@ import {
   type PythonRuntime,
 } from "./runtime_core.js";
 import {
+  desugarAbsBuiltin,
   desugarComplexLiterals,
   desugarDottedExcept,
   desugarMatmul,
@@ -46,6 +47,7 @@ const core = createRuntimeCore({
 
 export const buildRuntime = core.buildRuntime;
 export {
+  desugarAbsBuiltin,
   desugarComplexLiterals,
   desugarDottedExcept,
   desugarMatmul,
@@ -97,7 +99,8 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // single index/slice per `[...]`, `@` as a decorator, no `j`-suffixed
   // complex literals, a bare name per `except` handler, no trailing comma
   // inside `(...)` tuples, no `*` spread inside list/tuple displays, and its
-  // `reversed()` only accepts plain arrays/strings, so all eight are
+  // `reversed()` only accepts plain arrays/strings, and baselib `abs` is
+  // `Math.abs` (NaN on complex), so all nine are
   // desugared before compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
   // `__wan_flatten1` calls), dotted/tuple `except` handlers
@@ -107,8 +110,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // into `__wan_matmul` calls, complex literals (`0j`) into
   // `__wan_complex(0, imag)` calls, tuple trailing commas (`(a, b,)`,
   // `(x,)`) into `(a, b)`/`[x]`, starred list/tuple displays (`[*a, b]`,
-  // `(*a, b)`) into `[].concat(__wan_spread(a), [b])` calls, and bare
-  // `reversed(x)` calls into `__wan_reversed(x)` calls.  The tuple step runs
+  // `(*a, b)`) into `[].concat(__wan_spread(a), [b])` calls, bare
+  // `reversed(x)` calls into `__wan_reversed(x)` calls, and bare `abs(x)`
+  // calls into `__wan_abs(x)` calls.  The tuple step runs
   // first so later passes never see the trailing comma; the starred-display
   // step runs right after so later passes only see plain displays; the
   // complex step runs before the matmul step so it never sees the `j`
@@ -120,10 +124,12 @@ export async function compilePython(source: string): Promise<CompiledScene> {
       desugarMultiForComprehensions(
         desugarNumpySubscripts(
           desugarReversedBuiltin(
-            desugarMatmul(
-              desugarComplexLiterals(
-                desugarStarredDisplays(
-                  desugarTupleTrailingCommas(renameJsReservedWords(source)),
+            desugarAbsBuiltin(
+              desugarMatmul(
+                desugarComplexLiterals(
+                  desugarStarredDisplays(
+                    desugarTupleTrailingCommas(renameJsReservedWords(source)),
+                  ),
                 ),
               ),
             ),
