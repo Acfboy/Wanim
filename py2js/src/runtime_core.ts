@@ -1227,6 +1227,17 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     try {
       if (typeof proto.slice === "function" && (proto.slice as Any).__wanim_slice_wrapped__ !== true) {
         const originalSlice = proto.slice;
+        // Stash the true numpy-ts slice so multi-dim `__wan_getitem` (which
+        // passes several numeric indices, e.g. `a[j, i]`) keeps numpy
+        // semantics instead of falling into the plain-JS `ρσ_eslice` path
+        // below (which would misread `(j, i)` as `rows.slice(j, i)`).
+        try {
+          if ((proto as Any).__wanim_original_slice__ === undefined) {
+            (proto as Any).__wanim_original_slice__ = originalSlice;
+          }
+        } catch {
+          /* ignore */
+        }
         const wrappedSlice = function (this: Any, ...args: Any[]): Any {
           const hasStringSpec = args.some((a) => typeof a === "string");
           if (!hasStringSpec) {
@@ -2195,7 +2206,40 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           ...specs.slice(dot + 1),
         ];
       }
-      return (obj as Any).slice(...finalSpecs);
+      // `None` inside `[...]` is numpy's `newaxis`: `xs[None, :]` adds a
+      // leading size-1 axis.  numpy-ts' `.slice` rejects the extra index
+      // ("Too many indices for array"), so handle it here with
+      // `np.expand_dims` (error 242: `xs[None, :]` in `escape_grid`).
+      if (finalSpecs.some((s) => s === null || s === undefined)) {
+        const baseSpecs = finalSpecs.filter((s) => s !== null && s !== undefined);
+        const sliceFn =
+          (NDArray as Any)?.prototype?.__wanim_original_slice__ ?? (obj as Any).slice;
+        const base =
+          baseSpecs.length === 0 ? obj : sliceFn.apply(obj, baseSpecs);
+        const keepsDim = (spec: Any): boolean => {
+          if (typeof spec !== "string") return false;
+          if (spec.includes(":")) return true;
+          return spec === "..." || spec === "";
+        };
+        let result = base;
+        let nonesSeen = 0;
+        for (let p = 0; p < finalSpecs.length; p += 1) {
+          if (finalSpecs[p] !== null && finalSpecs[p] !== undefined) continue;
+          let keepsBefore = 0;
+          for (let q = 0; q < p; q += 1) {
+            const prior = finalSpecs[q];
+            if (prior === null || prior === undefined) continue;
+            if (keepsDim(prior)) keepsBefore += 1;
+          }
+          const axis = keepsBefore + nonesSeen;
+          result = (np as Any).expand_dims(result, axis);
+          nonesSeen += 1;
+        }
+        return result;
+      }
+      const sliceFn =
+        (NDArray as Any)?.prototype?.__wanim_original_slice__ ?? (obj as Any).slice;
+      return sliceFn.apply(obj, finalSpecs);
     }
     if (Array.isArray(obj)) return wanGetItemArray(obj, specs);
     if (typeof obj === "string") {

@@ -357,6 +357,25 @@ check("subscript desugar handles nested multi-dim inside dims", () => {
   );
 });
 
+check("subscript desugar keeps keyword-led objects (error 242)", () => {
+  assert.equal(
+    desugarNumpySubscripts("col = YELLOW if bounded[j, i] else BLUE_D\n"),
+    "col = YELLOW if __wan_getitem(bounded, j, i) else BLUE_D\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("x = a[i] if a[j, k] else b\n"),
+    "x = a[i] if __wan_getitem(a, j, k) else b\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("return a[x, y]\n"),
+    "return __wan_getitem(a, x, y)\n",
+  );
+  // Two bare identifiers in a row are still not a subscript.
+  assert.equal(desugarNumpySubscripts("x = foo bar[0, 1]\n"), "x = foo bar[0, 1]\n");
+  // Bare keyword-led displays are still not subscripts.
+  assert.equal(desugarNumpySubscripts("for i in [1, 2]:\n    pass\n"), "for i in [1, 2]:\n    pass\n");
+});
+
 check("subscript desugar leaves strings and comments alone", () => {
   const src = '# a[:, 1]\nx = "a[:, 1]"\n';
   assert.equal(desugarNumpySubscripts(src), src);
