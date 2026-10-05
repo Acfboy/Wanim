@@ -3751,10 +3751,73 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return facade;
   }
 
+  /**
+   * CPython's `__import__` builtin for dynamic imports.
+   *
+   * Valid Python such as `__import__("numpy").cos(x)` (seen in the wild, e.g.
+   * a slanted-shadow updater closing over `tracker`) otherwise fails with
+   * `ReferenceError: __import__ is not defined`, because rapydscript's
+   * baselib provides no such builtin. Only the modules available in the
+   * browser/JS runtime can be returned (`numpy`, `math`, `random`,
+   * `itertools`, `manim`); anything else raises `ModuleNotFoundError` like
+   * CPython. Dotted paths drill into the facade (`numpy.linalg`), honouring
+   * the `fromlist` rule (bare `__import__("a.b")` returns top module `a`,
+   * `from a.b import c` passes a non-empty `fromlist` and gets `a.b`).
+   */
+  function hasFromEntries(fromlist: Any): boolean {
+    if (fromlist === null || fromlist === undefined) return false;
+    if (typeof fromlist === "string") return fromlist.length > 0;
+    if (Array.isArray(fromlist)) return fromlist.length > 0;
+    if (typeof fromlist === "object" && typeof (fromlist as Any).length === "number") {
+      return (fromlist as Any).length > 0;
+    }
+    return !!fromlist;
+  }
+
+  function resolveImportModule(
+    modules: Record<string, Any>,
+    name: Any,
+    fromlist?: Any,
+  ): Any {
+    const modName = String(name);
+    const parts = modName.split(".");
+    const top = parts[0] as string;
+    const topMod = modules[top];
+    if (topMod === undefined) {
+      const error = new Error(`No module named '${modName}'`);
+      error.name = "ModuleNotFoundError";
+      throw error;
+    }
+    let cur: Any = topMod;
+    for (let i = 1; i < parts.length; i += 1) {
+      const part = parts[i] as string;
+      if (cur !== null && cur !== undefined && part in cur) {
+        cur = cur[part];
+      } else {
+        const error = new Error(`No module named '${modName}'`);
+        error.name = "ModuleNotFoundError";
+        throw error;
+      }
+    }
+    // CPython: bare `__import__("a.b")` returns top module `a`; with a
+    // non-empty `fromlist` (the `from a.b import c` form) it returns `a.b`.
+    if (parts.length > 1 && !hasFromEntries(fromlist)) return topMod;
+    return cur;
+  }
+
+  function makePythonImport(modules: Record<string, Any>): Any {
+    const fn = function (name: Any, _g?: Any, _l?: Any, fromlist?: Any, _level?: Any): Any {
+      return resolveImportModule(modules, name, fromlist);
+    };
+    (fn as Any).__argnames__ = ["name", "globals", "locals", "fromlist", "level"];
+    return fn;
+  }
+
   /** Build the global environment the compiled Python module runs in. */
   function buildRuntime(): PythonRuntime {
     const globals: Record<string, Any> = {};
-    Object.assign(globals, wrapWanimNamespace(wanim));
+    const wrapped = wrapWanimNamespace(wanim);
+    Object.assign(globals, wrapped);
     const numpyFacade = buildNumpy();
     globals.np = numpyFacade;
     globals.numpy = numpyFacade;
@@ -3808,6 +3871,18 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // (likewise a reserved name; see `preprocess.ts`). rapydscript's own
     // `reversed` only handles plain arrays/strings.
     globals.__wan_reversed = wanReversed;
+    // CPython's `__import__` for dynamic imports such as
+    // `__import__("numpy").cos(x)`. rapydscript's baselib provides no such
+    // builtin, so bare `__import__` calls fail with `ReferenceError`.
+    // Only the browser/JS-runtime modules are resolvable here.
+    globals.__import__ = makePythonImport({
+      numpy: numpyFacade,
+      np: numpyFacade,
+      math: globals.math,
+      random: globals.random,
+      itertools: globals.itertools,
+      manim: wrapped,
+    });
     return { globals, wanim, np: numpyFacade };
   }
 
@@ -3839,5 +3914,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     wanMatmul,
     wanReversed,
     getDot,
+    resolveImportModule,
+    makePythonImport,
   };
 }
