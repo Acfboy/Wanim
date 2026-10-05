@@ -321,11 +321,154 @@ const PYTHON_STR_METHODS = [
 ];
 
 /**
+ * Plain-object view of a Python dict.
+ *
+ * rapydscript compiles `{...}` dict literals to plain JS objects (`{}`), not
+ * to its `ρσ_dict` (Map-backed) type -- the latter requires an explicit
+ * `from __python__ import dict_literals`, which wanim never enables.  A plain
+ * object therefore has no `.items()`/`.keys()`/..., so the extremely common
+ * `for k, v in d.items()` fails with `d.items is not a function` (error 156).
+ * These helpers implement the read side of the Python dict API over plain
+ * objects; they are installed (non-enumerable) on `Object.prototype` so every
+ * plain dict literal picks them up.  Only genuine plain objects (prototype is
+ * `Object.prototype`) are served -- class instances (Mobjects, ...), arrays
+ * and NDArrays keep throwing as before, and real `Map`s delegate to
+ * `entries()`.
+ */
+function isRealMap(value: Any): value is Map<Any, Any> {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== "object") return false;
+  // `instanceof` fails across iframe realms (scenes run in an iframe whose
+  // `Map` differs from this realm's), so fall back to the brand string.
+  if (value instanceof Map) return true;
+  try {
+    return Object.prototype.toString.call(value) === "[object Map]";
+  } catch {
+    return false;
+  }
+}
+
+function isPlainDictObject(value: Any): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== "object") return false;
+  if (Array.isArray(value)) return false;
+  if (isRealMap(value)) return false;
+  // Realm-agnostic plain-object check: a plain dict literal's prototype is
+  // some realm's `Object.prototype` (whose own prototype is `null`); a class
+  // instance's prototype chain is longer.  Comparing against this realm's
+  // `Object.prototype` directly fails for iframe-realm objects.
+  let proto: Any;
+  try {
+    proto = Object.getPrototypeOf(value);
+  } catch {
+    return false;
+  }
+  if (proto === null) return true;
+  try {
+    return Object.getPrototypeOf(proto) === null;
+  } catch {
+    return false;
+  }
+}
+
+function dictItemsOf(obj: Any): Array<[string, Any]> {
+  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).entries()] as Array<[string, Any]>;
+  if (!isPlainDictObject(obj)) {
+    throw new TypeError("dict.items() called on a non-dict object");
+  }
+  return Object.keys(obj).map((k) => [k, (obj as Any)[k]] as [string, Any]);
+}
+
+function dictKeysOf(obj: Any): string[] {
+  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).keys()] as string[];
+  if (!isPlainDictObject(obj)) {
+    throw new TypeError("dict.keys() called on a non-dict object");
+  }
+  return Object.keys(obj);
+}
+
+function dictValuesOf(obj: Any): Any[] {
+  if (isRealMap(obj)) return [...(obj as Map<Any, Any>).values()];
+  if (!isPlainDictObject(obj)) {
+    throw new TypeError("dict.values() called on a non-dict object");
+  }
+  return Object.keys(obj).map((k) => (obj as Any)[k]);
+}
+
+/**
+ * Install Python dict-method shims for plain-object dict literals on the
+ * given `Object.prototype` (the vm context's own when available).
+ *
+ * NOTE: `get`/`set`/`value`/etc. must NEVER be defined here:
+ * `Object.defineProperties` reads those fields (including inherited ones) off
+ * every property descriptor, so an inherited `get` turns each
+ * `{value: ...}` descriptor into an invalid mixed descriptor and every
+ * subsequent `defineProperties` call throws (this broke the rapydscript
+ * compiler itself).  Only `items`/`keys`/`values`/`__contains__` -- none of
+ * which `ToPropertyDescriptor` reads -- are installed.
+ */
+export function installPythonDictShims(ObjectProto: Any): void {
+  if (ObjectProto === undefined || ObjectProto === null) return;
+  // Clean up the `get` shim installed by the first (broken) revision of this
+  // fix: it poisons `Object.defineProperties` via the descriptor protocol
+  // (see above) and must not survive in long-lived daemon processes.
+  try {
+    if (
+      Object.prototype.hasOwnProperty.call(ObjectProto, "get") &&
+      String((ObjectProto as Any).get).includes("dictGetOf")
+    ) {
+      delete (ObjectProto as Any).get;
+    }
+  } catch {
+    /* keep going: the `define` calls below still guard per-name */
+  }
+  if ((ObjectProto as Any).__wanim_dict_patched__ === true) return;
+  try {
+    Object.defineProperty(ObjectProto, "__wanim_dict_patched__", {
+      configurable: true,
+      writable: true,
+      enumerable: false,
+      value: true,
+    });
+  } catch {
+    return;
+  }
+  const define = (name: string, value: Any): void => {
+    try {
+      if (Object.prototype.hasOwnProperty.call(ObjectProto, name)) return;
+      Object.defineProperty(ObjectProto, name, {
+        configurable: true,
+        writable: true,
+        enumerable: false,
+        value,
+      });
+    } catch {
+      /* read-only prototype: dict literals keep failing loudly */
+    }
+  };
+  define("items", function (this: Any): Array<[string, Any]> {
+    return dictItemsOf(this);
+  });
+  define("keys", function (this: Any): string[] {
+    return dictKeysOf(this);
+  });
+  define("values", function (this: Any): Any[] {
+    return dictValuesOf(this);
+  });
+  define("__contains__", function (this: Any, key: Any): boolean {
+    if (isRealMap(this)) return (this as Map<Any, Any>).has(key);
+    if (!isPlainDictObject(this)) return false;
+    return Object.prototype.hasOwnProperty.call(this, key);
+  });
+}
+
+/**
  * Install Python string-method shims on the vm context's own String.prototype.
  * rapydscript exposes these on its `ρσ_str` function object (not on
  * String.prototype), so `"x".upper()` fails unless we bridge them.
  */
 export function installPythonShims(sandbox: Record<string, Any>): void {
+  installPythonDictShims(sandbox.Object?.prototype);
   const S = sandbox.String?.prototype as Any;
   if (S === undefined) return;
   for (const name of PYTHON_STR_METHODS) {
@@ -603,6 +746,15 @@ export function pythonPercentFormat(format: string, values: Any): string {
 /** Build the runtime helpers bound to a specific wanim/numpy pair. */
 export function createRuntimeCore(deps: RuntimeDeps) {
   const { wanim, np, NDArray } = deps;
+  // Plain-object dict literals (`{"a": 1}` compiles to `{}`) need Python
+  // dict methods in every realm that runs translated code (Node unit tests,
+  // the browser main window, ...).  The iframe sandbox that actually runs
+  // scenes gets its own `Object.prototype` patched via `installPythonShims`.
+  try {
+    installPythonDictShims((globalThis as Any).Object?.prototype);
+  } catch {
+    /* non-configurable host: sandbox patch still covers scenes */
+  }
 
   function isNdArray(value: unknown): value is NumpyTS.NDArray {
     return value instanceof (NDArray as Any);
