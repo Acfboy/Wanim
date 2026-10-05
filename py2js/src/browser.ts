@@ -27,6 +27,7 @@ import {
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   desugarReversedBuiltin,
+  desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
   renameJsReservedWords,
@@ -50,6 +51,7 @@ export {
   desugarMultiForComprehensions,
   desugarNumpySubscripts,
   desugarReversedBuiltin,
+  desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   installPythonShims,
   preprocessImports,
@@ -91,18 +93,20 @@ export interface CompiledScene {
 export async function compilePython(source: string): Promise<CompiledScene> {
   // rapydscript-ng only parses a single `for` clause per comprehension, a
   // single index/slice per `[...]`, `@` as a decorator, no `j`-suffixed
-  // complex literals, a bare name per `except` handler, and its `reversed()`
-  // only accepts plain arrays/strings, so all six are desugared before
-  // compilation:
+  // complex literals, a bare name per `except` handler, no trailing comma
+  // inside `(...)` tuples, and its `reversed()` only accepts plain
+  // arrays/strings, so all seven are desugared before compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
   // `__wan_flatten1` calls), dotted/tuple `except` handlers
   // (`except np.linalg.LinAlgError:`) into hoisted `__wan_exc_N` aliases,
   // numpy multi-dim subscripts (`a[:, 1]`) into
   // `__wan_getitem`/`__wan_slice` calls, matrix multiplication (`a @ b`)
   // into `__wan_matmul` calls, complex literals (`0j`) into
-  // `__wan_complex(0, imag)` calls, and bare `reversed(x)` calls into
-  // `__wan_reversed(x)` calls.  The complex step runs first so later
-  // passes never see the `j` suffix; the matmul step runs before the
+  // `__wan_complex(0, imag)` calls, tuple trailing commas (`(a, b,)`,
+  // `(x,)`) into `(a, b)`/`[x]`, and bare `reversed(x)` calls into
+  // `__wan_reversed(x)` calls.  The tuple step runs first so later passes
+  // never see the trailing comma; the complex step runs before the matmul
+  // step so it never sees the `j` suffix; the matmul step runs before the
   // subscript step so `@` operands containing `[...]` (e.g. `A[:, 0] @ b`)
   // still reach the subscript step intact.
   const pre = preprocessImports(
@@ -110,7 +114,11 @@ export async function compilePython(source: string): Promise<CompiledScene> {
       desugarMultiForComprehensions(
         desugarNumpySubscripts(
           desugarReversedBuiltin(
-            desugarMatmul(desugarComplexLiterals(renameJsReservedWords(source))),
+            desugarMatmul(
+              desugarComplexLiterals(
+                desugarTupleTrailingCommas(renameJsReservedWords(source)),
+              ),
+            ),
           ),
         ),
       ),
