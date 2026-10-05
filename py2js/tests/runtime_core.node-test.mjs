@@ -108,6 +108,49 @@ check("wanFlatten1 is exposed to compiled scenes as a global", () => {
   assert.deepEqual(runtime.globals.__wan_flatten1([[1], [2, 3]]), [1, 2, 3]);
 });
 
+check("pythonSum matches CPython on numbers, lists and generators", () => {
+  assert.equal(core.pythonSum([1, 2, 3]), 6);
+  assert.equal(core.pythonSum([1, 2, 3], 10), 16);
+  assert.equal(core.pythonSum([]), 0);
+  assert.equal(core.pythonSum([], 5), 5);
+  assert.deepEqual(core.pythonSum([[1, 2], [3]]), [1, 2, 3]);
+  function* gen() {
+    yield 1;
+    yield 2;
+    yield 3;
+  }
+  assert.equal(core.pythonSum(gen()), 6);
+  assert.throws(() => core.pythonSum(["a", "b"]), TypeError);
+  assert.throws(() => core.pythonSum(123), TypeError);
+  assert.throws(() => core.pythonSum(), TypeError);
+});
+
+check("pythonSum adds NDArray terms elementwise (error 270)", () => {
+  ndCore.buildRuntime(); // NDArray prototype patch like the browser
+  const np = ndCore.buildNumpy();
+  const t = np.linspace(0, 1, 4);
+  function* terms() {
+    yield ndCore.pythonMul(2, t);
+    yield ndCore.pythonMul(3, t);
+  }
+  const total = ndCore.pythonSum(terms());
+  const got = total.toArray();
+  const want = [0, 5 / 3, 10 / 3, 5];
+  assert.equal(got.length, want.length);
+  for (let i = 0; i < want.length; i += 1) {
+    assert.ok(Math.abs(got[i] - want[i]) < 1e-12);
+  }
+  // The downstream `np.fft.rfft` from the failing scene accepts the result.
+  const spectrum = npReal.fft.rfft(total);
+  assert.equal(spectrum.shape[0], 3);
+});
+
+check("__wan_sum is exposed to compiled scenes as a global", () => {
+  const runtime = core.buildRuntime();
+  assert.equal(typeof runtime.globals.__wan_sum, "function");
+  assert.equal(runtime.globals.__wan_sum([1, 2]), 3);
+});
+
 check("wanSlice builds numpy slice strings", () => {
   assert.equal(ndCore.wanSlice(null, null), ":");
   assert.equal(ndCore.wanSlice(1, 2), "1:2");

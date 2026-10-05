@@ -1750,6 +1750,98 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
   (wanSpread as Any).__argnames__ = ["iterable"];
 
+  /**
+   * CPython-compatible `sum(iterable, start=0)`.
+   *
+   * rapydscript's baselib `sum` accumulates with plain JS `+`, so summing
+   * numpy values silently produces garbage (`0 + ndarray` coerces the array
+   * to a string) instead of an elementwise sum.  This helper accumulates with
+   * `pythonAdd` (numpy/complex aware) instead, so
+   * `sum(a * np.sin(...) for ...)` over an NDArray argument returns an
+   * NDArray like CPython/numpy does (error 270: the baselib version returned
+   * a string and the downstream `np.fft.rfft` threw
+   * `undefined is not iterable`).  Plain numbers behave exactly like the
+   * baselib version, including list concatenation for list terms.
+   * Target of the `desugarSumBuiltin` preprocess step (see `preprocess.ts`),
+   * which rewrites bare `sum(...)` calls to this helper.
+   */
+  function pythonSum(iterable: Any, start?: Any): Any {
+    if (iterable === undefined) {
+      throw new TypeError("sum() missing 1 required positional argument: 'iterable'");
+    }
+    let acc = start === undefined ? 0 : start;
+    const addOne = (value: Any): void => {
+      if (typeof value === "string") {
+        throw new TypeError("sum() can't sum strings [use ''.join(seq) instead]");
+      }
+      acc = pythonAdd(acc, value);
+    };
+    if (iterable !== null && iterable !== undefined) {
+      const obj = iterable as Any;
+      let iteratorMethod: Any;
+      try {
+        iteratorMethod = obj[Symbol.iterator];
+      } catch {
+        iteratorMethod = undefined;
+      }
+      if (typeof iteratorMethod === "function") {
+        // NOTE: only the materialization itself is guarded here: an
+        // element-level `addOne` failure (e.g. the string check above) must
+        // propagate to the caller, not fall through to another path.
+        let items: Any[] | undefined;
+        try {
+          items = obj instanceof Map
+            ? [...(obj as Map<Any, Any>).keys()]
+            : [...(obj as Iterable<Any>)];
+        } catch {
+          items = undefined;
+        }
+        if (items !== undefined) {
+          for (const value of items) addOne(value);
+          return acc;
+        }
+      }
+      // `.next()`-only iterators without `Symbol.iterator`.
+      if (typeof obj.next === "function") {
+        let r = obj.next();
+        while (!r.done) {
+          addOne(r.value);
+          r = obj.next();
+        }
+        return acc;
+      }
+      let count: number | undefined;
+      try {
+        const length = obj.length;
+        count = typeof length === "number" && Number.isFinite(length)
+          ? Math.max(0, Math.trunc(length))
+          : undefined;
+      } catch {
+        count = undefined;
+      }
+      if (count !== undefined) {
+        for (let i = 0; i < count; i += 1) addOne(obj[i]);
+        return acc;
+      }
+      if (typeof obj === "object") {
+        let keys: string[] | undefined;
+        try {
+          keys = Object.keys(obj);
+        } catch {
+          keys = undefined;
+        }
+        if (keys !== undefined) {
+          // `sum(dict)` sums its keys; restore numeric keys the same way
+          // `dict.keys()` does (plain-object int keys arrive as strings).
+          for (const key of keys) addOne(restoreDictKey(key));
+          return acc;
+        }
+      }
+    }
+    throw new TypeError(`'${typeof iterable}' object is not iterable`);
+  }
+  (pythonSum as Any).__argnames__ = ["iterable", "start"];
+
   function pythonAdd(a: Any, b: Any): Any {
     if (isComplexLike(a) || isComplexLike(b)) return complexAdd(a, b);
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
@@ -4662,14 +4754,18 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_op_le = pythonLe;
     globals.ρσ_op_ge = pythonGe;
     globals.ρσ_getdot = getDot;
-    // Python builtins rapydscript's baselib does not provide.  `min`,
-    // `max` and `sum` come from baselib; `round` has no JS equivalent that
+    // Python builtins rapydscript's baselib does not provide.  `min` and
+    // `max` come from baselib; `round` has no JS equivalent that
     // matches CPython's banker's rounding / `ndigits` argument.  `abs` comes
     // from baselib as `Math.abs` but returns NaN on complex inputs. The
     // compiled JS declares its own local `var abs = Math.abs`, which shadows
     // this override, so bare `abs(x)` calls are rewritten to `__wan_abs(x)`
     // by the `desugarAbsBuiltin` step (see `preprocess.ts`); both names point
-    // at the same complex-aware `pythonAbs`.  `complex`
+    // at the same complex-aware `pythonAbs`.  `sum` comes from baselib but
+    // accumulates with plain JS `+`, which stringifies NDArray terms instead
+    // of adding them elementwise, so bare `sum(...)` calls are likewise
+    // rewritten to `__wan_sum(...)` by the `desugarSumBuiltin` step.
+    // `complex`
     // (and the `__wan_complex` factory the `desugarComplexLiterals` step
     // emits) likewise has no baselib equivalent.
     globals.round = pythonRound;
@@ -4701,6 +4797,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // reserved name; see `preprocess.ts`). rapydscript accepts `*args` in
     // calls but rejects `*` inside list/tuple displays.
     globals.__wan_spread = wanSpread;
+    // Numpy/complex-aware `sum()` for the `desugarSumBuiltin` step (likewise
+    // a reserved name; see `preprocess.ts`). rapydscript's own `sum`
+    // accumulates with plain JS `+` and stringifies NDArray terms.
+    globals.__wan_sum = pythonSum;
     // CPython's `__import__` for dynamic imports such as
     // `__import__("numpy").cos(x)`. rapydscript's baselib provides no such
     // builtin, so bare `__import__` calls fail with `ReferenceError`.
@@ -4741,6 +4841,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonComplex,
     wanComplex,
     pythonTuple,
+    pythonSum,
     isComplexLike,
     wanFlatten1,
     wanGetItem,

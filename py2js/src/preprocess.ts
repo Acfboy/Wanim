@@ -2357,6 +2357,133 @@ export function desugarAbsBuiltin(source: string): string {
   return out;
 }
 
+// --- bare `sum()` desugar ------------------------------------------------------
+//
+// rapydscript's baselib `sum` accumulates with plain JS `+`, so a Python
+// `sum(...)` over numpy values silently produces garbage instead of an
+// elementwise sum: `0 + ndarray` coerces the array to a string
+// (`"0[object Object]"`) rather than adding it (wanim error 270:
+// `wave_fn = lambda t: sum(a * np.sin(...) for ...)` returned a string for
+// an NDArray `t`, and the downstream `np.fft.rfft` threw
+// `undefined is not iterable`).  We rewrite bare `sum(...)` calls into
+// `__wan_sum(...)` runtime calls (helper provided by the runtime in
+// `runtime_core.ts`, which accumulates with the numpy/complex-aware
+// `pythonAdd`), exactly like `desugarAbsBuiltin`/`desugarReversedBuiltin`
+// above.
+//
+// The scan skips string literals and `#` comments and never touches attribute
+// access (`np.sum(...)` / `obj.sum(...)` stays as-is).  When user code defines
+// its own `sum` (`def`/`class`/assignment at line start), already mentions
+// `__wan_sum`, or binds `sum` from numpy (`from numpy import sum` /
+// `from numpy import *`, where the bare name means numpy's `sum`), the source
+// is left untouched so the local/numpy binding keeps working.
+//
+// Known limitations (same as `reversed`/`abs`): shadowing `sum` via
+// `lambda`/`global`/`nonlocal`/import alias, or calling it through an alias
+// (`f = sum; f(x)`), is not detected.
+
+/** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
+export const WANIM_SUM_HELPER = "__wan_sum";
+
+const SUM_NAME = "sum";
+
+/** True when user code binds its own `sum` at statement level. */
+function shadowsSumBuiltin(source: string): boolean {
+  return /(^|\n)[ \t]*(def|class)[ \t]+sum(?![\p{L}\p{N}_])/u.test(source) ||
+    /(^|\n)[ \t]*sum[ \t]*=(?![=>])/m.test(source);
+}
+
+/**
+ * True when a `from numpy import ...` line binds the bare name `sum` (either
+ * a star import or an explicit `sum` binding, including `x as sum`).  In that
+ * case the bare name means numpy's `sum`, not the Python builtin, and must
+ * not be rewritten.
+ */
+function numpyBindsSum(source: string): boolean {
+  const lines = source.split("\n");
+  for (const line of lines) {
+    const stripped = line.replace(/#.*$/, "").trim();
+    const match = /^from\s+numpy\s+import\s+(.+)$/.exec(stripped);
+    if (match === null) continue;
+    // Parenthesised multi-line imports are left for the compiler; only the
+    // single-line form is analysed here.
+    const names = (match[1] as string).split(",");
+    for (const part of names) {
+      const trimmed = part.trim().replace(/^\(+|\)+$/g, "").trim();
+      if (trimmed === "*") return true;
+      const asMatch = /^(.*?)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+      if (asMatch !== null) {
+        if (asMatch[2] === SUM_NAME) return true;
+        continue;
+      }
+      const nameMatch = /^([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+      if (nameMatch !== null && nameMatch[1] === SUM_NAME) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Rewrite bare `sum(...)` calls into `__wan_sum(...)` (see above).
+ * Anything that does not parse cleanly passes through untouched.
+ */
+export function desugarSumBuiltin(source: string): string {
+  // The helper name is reserved for the runtime (see `runtime_core.ts`); if
+  // user code already uses it, leave the source alone rather than silently
+  // calling the wrong function.
+  if (source.includes(WANIM_SUM_HELPER)) return source;
+  if (!source.includes(SUM_NAME)) return source;
+  if (shadowsSumBuiltin(source)) return source;
+  if (numpyBindsSum(source)) return source;
+  let out = "";
+  let i = 0;
+  // Last non-whitespace character emitted (a `.` means attribute access).
+  let previous = "";
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      if (nl === -1) {
+        out += source.slice(i);
+        break;
+      }
+      out += source.slice(i, nl);
+      i = nl;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const stop = readString(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      previous = '"';
+      continue;
+    }
+    if (IDENT_START.test(ch)) {
+      let j = i + 1;
+      while (j < source.length && IDENT_PART.test(source[j]!)) j += 1;
+      const word = source.slice(i, j);
+      if (word === SUM_NAME && previous !== ".") {
+        let k = j;
+        while (k < source.length && /\s/.test(source[k]!)) k += 1;
+        if (source[k] === "(") {
+          out += WANIM_SUM_HELPER;
+          previous = WANIM_SUM_HELPER[WANIM_SUM_HELPER.length - 1]!;
+          i = j;
+          continue;
+        }
+      }
+      out += word;
+      previous = word[word.length - 1]!;
+      i = j;
+      continue;
+    }
+    out += ch;
+    if (!/\s/.test(ch)) previous = ch;
+    i += 1;
+  }
+  return out;
+}
+
 // --- dotted/tuple `except` handler desugar -----------------------------------
 //
 // rapydscript-ng's `try_` parser only accepts a bare name (or a comma-separated
