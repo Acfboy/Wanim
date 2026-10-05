@@ -1473,6 +1473,25 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
   (pythonTuple as Any).__argnames__ = ["iterable"];
 
+  /**
+   * Spread helper for the `desugarStarredDisplays` step in `preprocess.ts`.
+   *
+   * rapydscript-ng parses `*args` in calls but rejects `*` inside list/tuple
+   * displays (`[*a, b]` fails with "Unexpected token: operator «*»"), so the
+   * desugar rewrites `[*a, b, *c]` into
+   * `[].concat(__wan_spread(a), [b], __wan_spread(c))` (tuples share the
+   * plain-array representation, so the same form covers `(*a, b)`).  This is
+   * `tuple(x)` semantics: any iterable becomes a fresh plain array, while a
+   * non-iterable raises `TypeError` like CPython's `[*123]`.  Plain
+   * `[].concat` always concatenates (unlike wanim's overloaded `+`, which
+   * adds length-3 point vectors elementwise), so the desugared form stays
+   * exact for numeric vectors too.
+   */
+  function wanSpread(iterable: Any): Any[] {
+    return pythonTuple(iterable);
+  }
+  (wanSpread as Any).__argnames__ = ["iterable"];
+
   function pythonAdd(a: Any, b: Any): Any {
     if (isComplexLike(a) || isComplexLike(b)) return complexAdd(a, b);
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
@@ -4180,6 +4199,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // (likewise a reserved name; see `preprocess.ts`). rapydscript's own
     // `reversed` only handles plain arrays/strings.
     globals.__wan_reversed = wanReversed;
+    // Spread helper for the `desugarStarredDisplays` step (likewise a
+    // reserved name; see `preprocess.ts`). rapydscript accepts `*args` in
+    // calls but rejects `*` inside list/tuple displays.
+    globals.__wan_spread = wanSpread;
     // CPython's `__import__` for dynamic imports such as
     // `__import__("numpy").cos(x)`. rapydscript's baselib provides no such
     // builtin, so bare `__import__` calls fail with `ReferenceError`.
@@ -4223,6 +4246,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     wanSlice: wanSliceDim,
     wanMatmul,
     wanReversed,
+    wanSpread,
     getDot,
     resolveImportModule,
     makePythonImport,
