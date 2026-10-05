@@ -569,10 +569,12 @@ export class Table extends VGroup {
   override scale(
     scale_factor: number,
     // NOTE: same positional convention as VMobject.scale (see note there):
-    // second slot is either a scale_stroke flag or an about_point.
-    scale_stroke_or_about_point: boolean | readonly number[] | import("numpy-ts").NDArray | null = false,
-    about_point?: readonly number[] | import("numpy-ts").NDArray | null,
-    about_edge?: readonly number[] | import("numpy-ts").NDArray | null,
+    // second slot is either a scale_stroke flag or an about_point. `Record`
+    // slots carry a py2js kwargs bag; forwarded to `super.scale` which
+    // unwraps it.
+    scale_stroke_or_about_point: boolean | readonly number[] | import("numpy-ts").NDArray | Record<string, unknown> | null = false,
+    about_point?: readonly number[] | import("numpy-ts").NDArray | Record<string, unknown> | null,
+    about_edge?: readonly number[] | import("numpy-ts").NDArray | Record<string, unknown> | null,
   ): this {
     // h_buff and v_buff must be adjusted so that Table.get_cell
     // can construct an accurate polygon for a cell.
