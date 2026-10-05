@@ -3,11 +3,13 @@ import { array } from "numpy-ts";
 import {
   applyMobject3DFlags,
   backgroundCss,
+  clearCanvas,
   colorStyle,
   computeSubpathRanges,
   configureFrameCamera,
   deserialize_vmobject,
   drawFrame,
+  drawVmobject,
   isThreeDFrame,
   PreviewThreeDCamera,
   setCanvasPath,
@@ -162,6 +164,24 @@ describe("colorStyle", () => {
 describe("backgroundCss", () => {
   test("adds opacity", () => {
     expect(backgroundCss({ background_color: "#123456", background_opacity: 0.5 })).toBe("rgba(18, 52, 86, 0.5)");
+  });
+});
+
+describe("clearCanvas style cache", () => {
+  test("re-writes the stroke after the context was reset between runs", () => {
+    const { ctx, calls, state } = mockContext();
+    const camera = new Camera({ pixel_width: 100, pixel_height: 100, frame_width: 10, frame_height: 10 });
+    const square = new Square(2, { color: BLUE });
+    clearCanvas(ctx, camera, "#000000");
+    drawVmobject(ctx, camera, square);
+    const afterFirst = calls.filter((call) => call.name === "strokeStyle").length;
+    expect(afterFirst).toBeGreaterThan(0);
+    // `canvas.width = ...` at the start of a rerun resets the real context to
+    // its default styles; the cached stroke must not survive that.
+    state.strokeStyle = "#000000";
+    clearCanvas(ctx, camera, "#000000");
+    drawVmobject(ctx, camera, square);
+    expect(calls.filter((call) => call.name === "strokeStyle").length).toBeGreaterThan(afterFirst);
   });
 });
 
