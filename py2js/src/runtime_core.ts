@@ -3066,10 +3066,38 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         // stacking point vectors) confuses numpy-ts' dtype inference (NaNs).
         // Unwrap nested NDArrays to plain lists first.  A rapydscript
         // `range()` object is also valid input (`np.array(range(3))`), so
-        // materialize generic iterables the same way.
-        if (positional.length > 0 && Array.isArray(positional[0])) {
+        // materialize generic iterables the same way.  NDArray inputs are
+        // passed through untouched: unwrapping a top-level NDArray via
+        // `tolist()` destroys the template for the `*_like` family
+        // (`np.zeros_like(np.asarray(x))` on a 0-d template became a plain
+        // number and threw "undefined is not iterable", error 188).
+        // `*_like` additionally requires an NDArray template (numpy-ts
+        // rejects plain lists/scalars), so coerce non-NDArray array-likes
+        // (Python allows `np.zeros_like([1, 2, 3])`) via `asarray` first.
+        if (name.endsWith("_like")) {
+          if (positional.length > 0 && !isNdArray(positional[0])) {
+            const tmpl = positional[0];
+            if (
+              Array.isArray(tmpl) ||
+              typeof tmpl === "number" ||
+              typeof tmpl === "boolean" ||
+              typeof tmpl === "bigint" ||
+              isGenericIterable(tmpl)
+            ) {
+              try {
+                positional = [(np as Any).asarray(deepUnwrapNd(tmpl)), ...positional.slice(1)];
+              } catch {
+                /* leave the original input so the underlying fn throws */
+              }
+            }
+          }
+        } else if (positional.length > 0 && Array.isArray(positional[0])) {
           positional = [deepUnwrapNd(positional[0]), ...positional.slice(1)];
-        } else if (positional.length > 0 && isGenericIterable(positional[0])) {
+        } else if (
+          positional.length > 0 &&
+          !isNdArray(positional[0]) &&
+          isGenericIterable(positional[0])
+        ) {
           try {
             positional = [deepUnwrapNd(positional[0]), ...positional.slice(1)];
           } catch {
