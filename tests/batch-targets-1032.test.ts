@@ -20,8 +20,9 @@
 //  (D2) Axes.get_axis_labels(): needs Tex -> out of scope; TS base throws
 //       NotImplementedError (same as Python's CoordinateSystem base).
 //  (D3) Union/Difference/Intersection/Exclusion: Python computes via Skia
-//       `pathops`; TS throws TODO (no pathops among allowed deps). Only the
-//       argument-validation errors are shared ground truth.
+//       `pathops`; TS computes via a local flattened-polygon engine (no
+//       pathops among allowed deps). Argument-validation errors are shared
+//       ground truth; areas are validated below.
 //  (D4) Label: now builds via the ported MathTex/Text pipeline (text/tex is
 //       no longer out of scope).
 //  (D5) Cone._set_start_and_end_attributes faithfully mirrors the upstream
@@ -62,6 +63,7 @@ import {
   Cube,
 } from "../src/mobject/three_d/three_dimensions.js";
 import { pointRows } from "../src/utils/arrays.js";
+import { computeSubpathRanges } from "../src/renderer/canvas.js";
 
 function close(a: number, b: number, tol = 1e-9): boolean {
   if (Object.is(a, b)) return true;
@@ -75,6 +77,26 @@ function expectClose(actual: number, expected: number, tol = 1e-9): void {
 
 function rowsOf(v: NDArray, width: number): number[][] {
   return pointRows(v, width);
+}
+
+/** Absolute area summed over a VMobject's subpaths (exact for polylines). */
+function booleanArea(mob: VMobject): number {
+  const rows = pointRows(mob.points, mob.dim).map(
+    (row) => [Number(row[0] ?? 0), Number(row[1] ?? 0)],
+  );
+  const ranges = computeSubpathRanges(rows, mob.n_points_per_cubic_curve, 1e-6);
+  let total = 0;
+  for (const [start, end] of ranges) {
+    const s = start as number;
+    const e = end as number;
+    if (e - s < 3) continue;
+    for (let i = s; i < e; i += 1) {
+      const a = rows[i] ?? [0, 0];
+      const b = rows[(i + 1 - s) % (e - s) + s] ?? [0, 0];
+      total += (a[0] ?? 0) * (b[1] ?? 0) - (b[0] ?? 0) * (a[1] ?? 0);
+    }
+  }
+  return Math.abs(total) / 2;
 }
 
 function expectRowsClose(actual: number[][], expected: number[][], tol = 1e-9): void {
@@ -489,7 +511,7 @@ describe("StealthTip", () => {
 //   Intersection / Exclusion
 // Python: Union needs >= 2 mobjects (ValueError otherwise);
 //   Union/Difference/Intersection/Exclusion compute via pathops.
-//   (D3) TS throws TODO for the actual op.
+//   (D3) TS computes via the local polygon engine; areas checked below.
 // ---------------------------------------------------------------------------
 describe("boolean_ops validation", () => {
   it("Union requires at least 2 mobjects", () => {
@@ -505,20 +527,20 @@ describe("boolean_ops validation", () => {
     );
   });
 
-  it("Union of two squares defers on pathops (D3)", () => {
-    expect(() => new Union(new Square(), new Square())).toThrowError(/pathops/);
+  it("Union of two squares computes the combined outline (D3)", () => {
+    expect(booleanArea(new Union(new Square(), new Square()))).toBeCloseTo(4, 0);
   });
 
-  it("Difference defers on pathops (D3)", () => {
-    expect(() => new Difference(new Square(), new Square())).toThrowError(/pathops/);
+  it("Difference of identical squares is empty (D3)", () => {
+    expect(new Difference(new Square(), new Square()).get_num_points()).toBe(0);
   });
 
-  it("Intersection of two mobjects defers on pathops (D3)", () => {
-    expect(() => new Intersection(new Square(), new Square())).toThrowError(/pathops/);
+  it("Intersection of two mobjects computes the overlap (D3)", () => {
+    expect(booleanArea(new Intersection(new Square(), new Square()))).toBeCloseTo(4, 0);
   });
 
-  it("Exclusion defers on pathops (D3)", () => {
-    expect(() => new Exclusion(new Square(), new Square())).toThrowError(/pathops/);
+  it("Exclusion of identical squares is empty (D3)", () => {
+    expect(new Exclusion(new Square(), new Square()).get_num_points()).toBe(0);
   });
 });
 
