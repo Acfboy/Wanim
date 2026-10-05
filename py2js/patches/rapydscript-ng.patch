@@ -692,7 +692,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..d69e5f6 100644
+index 5533155..e51e92a 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -746,7 +746,38 @@ index 5533155..d69e5f6 100644
              tmp_ = S.token.value
              next()
              if tmp_ is 'break':
-@@ -830,13 +853,16 @@ def create_parser_ctx(
+@@ -723,10 +746,14 @@ def create_parser_ctx(
+             elif tmp_ is 'return':
+                 if S.in_function is 0:
+                     croak("'return' outside of function")
+-                if S.functions[-1].is_generator:
+-                    croak("'return' not allowed in a function with yield")
+-                S.functions[-1].is_generator = False
+-
++                # NOTE (wanim): a bare `return` (and, since Python 3.3, even
++                # `return value`) is legal inside a generator: it terminates
++                # iteration (with `StopIteration.value`).  This used to croak
++                # unconditionally, which rejected valid code such as
++                # `yield x; return` in `combos()` helpers.  The emitted JS
++                # `return;`/`return v;` inside `function* js_generator` has
++                # exactly the same semantics, so no flag bookkeeping is needed
++                # here; `is_generator` is set by `yield_` alone.
+                 ret_val = await return_()
+                 return new AST_Return({'value': ret_val})
+             elif tmp_ is 'await':
+@@ -814,8 +841,9 @@ def create_parser_ctx(
+             croak("'yield' outside of function")
+         if S.functions[-1].is_async:
+             croak("'yield' not allowed in an async function")
+-        if S.functions[-1].is_generator is False:
+-            croak("'yield' not allowed in a function with return")
++        # NOTE (wanim): any `yield` marks the function a generator, even when
++        # mixed with `return`/`return value` (legal since Python 3.3; the old
++        # check rejected `return` followed by `yield` and vice versa).
+         S.functions[-1].is_generator = True
+         is_yield_from = is_('keyword', 'from')
+         if is_yield_from:
+@@ -830,13 +858,16 @@ def create_parser_ctx(
              init = await expression(True, True)
              # standardize AST_Seq into array now for consistency
              if is_node_type(init, AST_Seq):
@@ -769,7 +800,7 @@ index 5533155..d69e5f6 100644
                  else:
                      tmp = [init]
                  init = new AST_Array({
-@@ -1418,6 +1444,7 @@ def create_parser_ctx(
+@@ -1418,6 +1449,7 @@ def create_parser_ctx(
          ctor = AST_Method if in_class else AST_Function
          return_annotation = None
          is_generator = v'[]'
@@ -777,7 +808,7 @@ index 5533155..d69e5f6 100644
          docstrings = v'[]'
  
          fn_argnames = await (async def ():
-@@ -1584,7 +1611,11 @@ def create_parser_ctx(
+@@ -1584,7 +1616,11 @@ def create_parser_ctx(
              a = await block_(docstrings)
              S.in_function -= 1
              S.scoped_flags.pop()
@@ -790,7 +821,7 @@ index 5533155..d69e5f6 100644
              S.classes.pop()
              S.in_class.pop()
              S.in_loop = loop
-@@ -1604,7 +1635,7 @@ def create_parser_ctx(
+@@ -1604,7 +1640,7 @@ def create_parser_ctx(
          })
          definition.return_annotation = return_annotation
          definition.is_generator = is_generator[0]
@@ -799,7 +830,7 @@ index 5533155..d69e5f6 100644
          if is_node_type(definition, AST_Method):
              definition.static = staticmethod
              definition.is_getter = property_getter
-@@ -1652,6 +1683,97 @@ def create_parser_ctx(
+@@ -1652,6 +1688,97 @@ def create_parser_ctx(
          )
          return definition
  
@@ -897,7 +928,7 @@ index 5533155..d69e5f6 100644
      async def if_():
          cond = await expression(True)
          body = await statement()
-@@ -1975,6 +2097,57 @@ def create_parser_ctx(
+@@ -1975,6 +2102,57 @@ def create_parser_ctx(
              func.end = prev()
              return await subscripts(func, allow_calls)
  
@@ -955,7 +986,7 @@ index 5533155..d69e5f6 100644
          if is_('keyword', 'await'):
              next()
              if S.in_function is 0 or not S.functions[-1].is_async:
-@@ -2047,6 +2220,7 @@ def create_parser_ctx(
+@@ -2047,6 +2225,7 @@ def create_parser_ctx(
                  'args': a, 'kwargs': kwargs,
                  'kwarg_items': kwarg_items, 'starargs': starargs
              })
@@ -963,7 +994,7 @@ index 5533155..d69e5f6 100644
          single_comprehension = False
          while not is_('punc', ')') and not is_('eof'):
              if not first:
-@@ -2087,6 +2261,18 @@ def create_parser_ctx(
+@@ -2087,6 +2266,18 @@ def create_parser_ctx(
                          break
                      a.push(new AST_CallArg({'value': arg, 'is_array': False}))
              first = False
@@ -982,7 +1013,7 @@ index 5533155..d69e5f6 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2381,6 +2567,18 @@ def create_parser_ctx(
+@@ -2381,6 +2572,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1001,7 +1032,7 @@ index 5533155..d69e5f6 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2586,7 @@ def create_parser_ctx(
+@@ -2388,12 +2591,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1015,7 +1046,7 @@ index 5533155..d69e5f6 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2497,12 +2690,24 @@ def create_parser_ctx(
+@@ -2497,12 +2695,24 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1042,7 +1073,7 @@ index 5533155..d69e5f6 100644
              S.in_parenthesized_expr = prev_parens
              return ret
  
-@@ -2711,12 +2916,25 @@ def create_parser_ctx(
+@@ -2711,12 +2921,25 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1071,7 +1102,7 @@ index 5533155..d69e5f6 100644
          if commas:
              left = v'[ expr ]'
              while is_(
-@@ -2853,6 +3071,8 @@ def create_parser_ctx(
+@@ -2853,6 +3076,8 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -1080,7 +1111,7 @@ index 5533155..d69e5f6 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3206,92 @@ def create_parser_ctx(
+@@ -2986,6 +3211,92 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -1173,7 +1204,7 @@ index 5533155..d69e5f6 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3305,16 @@ async def parse(text, options):
+@@ -2999,6 +3310,16 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
