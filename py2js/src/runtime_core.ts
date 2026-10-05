@@ -68,11 +68,24 @@ function isGenericIterable(value: unknown): value is Iterable<Any> {
 
 /** Return a scalar for 0-d NDArray results, mirroring numpy scalars. */
 function scalarize(value: Any): Any {
-  if (value !== null && value !== undefined && Array.isArray(value.shape) && value.shape.length === 0) {
-    const raw = value.toArray();
-    return Array.isArray(raw) ? raw[0] : raw;
+  if (value === null || value === undefined) return value;
+  // NOTE: Mobject instances are Proxies that throw AttributeError on unknown
+  // property reads (e.g. `.shape`), so probe defensively: a missing `.shape`
+  // means "not a 0-d array", not an error (error 239: `[*vgroup]` spread
+  // threw inside `map(scalarize)` and fell through to `Object.keys`).
+  let shape: unknown;
+  try {
+    shape = (value as Any).shape;
+  } catch {
+    return value;
   }
-  return value;
+  if (!Array.isArray(shape) || (shape as unknown[]).length !== 0) return value;
+  try {
+    const raw = (value as Any).toArray();
+    return Array.isArray(raw) ? raw[0] : raw;
+  } catch {
+    return value;
+  }
 }
 
 /**
