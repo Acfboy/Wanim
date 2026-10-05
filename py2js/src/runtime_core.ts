@@ -1960,19 +1960,19 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (typeof a === "string" && typeof b === "number") return a.repeat(b);
     if (typeof a === "number" && typeof b === "string") return b.repeat(a);
     if (isArrayLike(a) && typeof b === "number") {
-      // Python `list * int` repeats; numeric vectors scale.
-      if (!isNumericVector(a)) {
-        if (!Number.isInteger(b)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
-        return repeatList(a, b);
-      }
-      return a.map((v) => v * b);
+      // Python `list * int` repeats; only 3D manim point vectors scale
+      // (mirrors pythonAdd's length-3 rule). Plain JS arrays double as both,
+      // so `[0] * 11` must repeat to 11 zeros instead of scaling to `[0]`
+      // (error 281: heights stayed length-1, heights[k] was undefined, and
+      // axes.c2p(k, NaN) poisoned move_to).
+      if (isNumericVector(a) && a.length === 3) return a.map((v) => v * b);
+      if (!Number.isInteger(b)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
+      return repeatList(a, b);
     }
     if (typeof a === "number" && isArrayLike(b)) {
-      if (!isNumericVector(b)) {
-        if (!Number.isInteger(a)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
-        return repeatList(b, a);
-      }
-      return b.map((v) => v * a);
+      if (isNumericVector(b) && b.length === 3) return b.map((v) => v * a);
+      if (!Number.isInteger(a)) throw new TypeError("can't multiply sequence by non-int of type 'float'");
+      return repeatList(b, a);
     }
     if (isArrayLike(a) && isArrayLike(b)) {
       const r = elementwise(a, b, (x, y) => x * y);
