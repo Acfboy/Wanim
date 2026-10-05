@@ -329,7 +329,13 @@ const PYTHON_STR_METHODS = [
  * object therefore has no `.items()`/`.keys()`/..., so the extremely common
  * `for k, v in d.items()` fails with `d.items is not a function` (error 156).
  * These helpers implement the read side of the Python dict API over plain
- * objects; they are installed (non-enumerable) on `Object.prototype` so every
+ * objects, plus the write side (`update`/`clear`/`pop`/`setdefault`/`copy`):
+ * a `state = {"t1": ..., ...}; state.update(t1=..., ...)` cell -- the standard
+ * manim updater pattern -- otherwise fails with
+ * `TypeError: Cannot read properties of undefined (reading '__argnames__')`
+ * (error 167), because `state.update` resolves to `undefined` and rapydscript
+ * still routes the kwargs call through `ρσ_interpolate_kwargs`.
+ * They are installed (non-enumerable) on `Object.prototype` so every
  * plain dict literal picks them up.  Only genuine plain objects (prototype is
  * `Object.prototype`) are served -- class instances (Mobjects, ...), arrays
  * and NDArrays keep throwing as before, and real `Map`s delegate to
@@ -396,16 +402,54 @@ function dictValuesOf(obj: Any): Any[] {
 }
 
 /**
+ * Entries of a `dict.update(...)` source: a kwargs bag / plain mapping (own
+ * enumerable keys), a real `Map`, a rapydscript Map-backed `ρσ_dict`
+ * (entries live in `jsmap`), or a list of `[key, value]` pairs.
+ */
+function dictUpdateEntriesOf(source: Any): Array<[Any, Any]> {
+  if (source === null || source === undefined) {
+    throw new TypeError("dict.update() argument must be a mapping or an iterable of pairs");
+  }
+  if (Array.isArray(source)) {
+    return (source as Any[]).map((pair) => [(pair as Any)[0], (pair as Any)[1]] as [Any, Any]);
+  }
+  if (isRealMap(source)) return [...(source as Map<Any, Any>).entries()] as Array<[Any, Any]>;
+  const jsmap = (source as Any).jsmap;
+  if (jsmap !== undefined && jsmap !== null && typeof jsmap === "object") {
+    if (isRealMap(jsmap)) return [...(jsmap as Map<Any, Any>).entries()] as Array<[Any, Any]>;
+    if (typeof jsmap.entries === "function") {
+      const iterator = jsmap.entries();
+      if (iterator !== null && typeof iterator === "object" && typeof iterator.next === "function") {
+        const out: Array<[Any, Any]> = [];
+        let result = iterator.next();
+        while (!result.done) {
+          out.push([result.value[0], result.value[1]]);
+          result = iterator.next();
+        }
+        return out;
+      }
+    }
+  }
+  if (typeof source === "object" || typeof source === "function") {
+    return Object.keys(source)
+      .filter((key) => !key.startsWith("kwargs-object-Symbol-"))
+      .map((key) => [key, (source as Any)[key]] as [Any, Any]);
+  }
+  throw new TypeError("dict.update() argument must be a mapping or an iterable of pairs");
+}
+
+/**
  * Install Python dict-method shims for plain-object dict literals on the
  * given `Object.prototype` (the vm context's own when available).
  *
- * NOTE: `get`/`set`/`value`/etc. must NEVER be defined here:
- * `Object.defineProperties` reads those fields (including inherited ones) off
- * every property descriptor, so an inherited `get` turns each
- * `{value: ...}` descriptor into an invalid mixed descriptor and every
+ * NOTE: `get`/`set`/`value`/`writable`/`enumerable`/`configurable` must NEVER
+ * be defined here: `Object.defineProperties` reads those fields (including
+ * inherited ones) off every property descriptor, so an inherited `get` turns
+ * each `{value: ...}` descriptor into an invalid mixed descriptor and every
  * subsequent `defineProperties` call throws (this broke the rapydscript
- * compiler itself).  Only `items`/`keys`/`values`/`__contains__` -- none of
- * which `ToPropertyDescriptor` reads -- are installed.
+ * compiler itself).  Only names none of which `ToPropertyDescriptor` reads
+ * (`items`/`keys`/`values`/`__contains__`/`update`/`clear`/`copy`/`pop`/
+ * `setdefault`/`set_default`) are installed.
  */
 export function installPythonDictShims(ObjectProto: Any): void {
   if (ObjectProto === undefined || ObjectProto === null) return;
@@ -422,7 +466,11 @@ export function installPythonDictShims(ObjectProto: Any): void {
   } catch {
     /* keep going: the `define` calls below still guard per-name */
   }
-  if ((ObjectProto as Any).__wanim_dict_patched__ === true) return;
+  // NOTE: no early return on `__wanim_dict_patched__`: the flag only marks
+  // that an older (read-side-only) revision ran.  `define` below is
+  // per-name idempotent, so re-running it installs methods added later
+  // (e.g. `update`) even in long-lived daemon processes whose prototype was
+  // patched before they existed.
   try {
     Object.defineProperty(ObjectProto, "__wanim_dict_patched__", {
       configurable: true,
@@ -460,6 +508,77 @@ export function installPythonDictShims(ObjectProto: Any): void {
     if (!isPlainDictObject(this)) return false;
     return Object.prototype.hasOwnProperty.call(this, key);
   });
+  // The write side of the dict API.  All names here avoid the
+  // `ToPropertyDescriptor` fields listed above.  The functions intentionally
+  // carry no `__argnames__`, so rapydscript's `ρσ_interpolate_kwargs` hands a
+  // `d.update(k=v, ...)` kwargs bag over as a single positional, which
+  // `dictUpdateEntriesOf` then merges like any other mapping.
+  define("update", function (this: Any): void {
+    const sources: Any[] = Array.prototype.slice.call(arguments);
+    const merged: Array<[Any, Any]> = [];
+    for (const source of sources) merged.push(...dictUpdateEntriesOf(source));
+    if (isRealMap(this)) {
+      for (const [key, value] of merged) (this as Map<Any, Any>).set(key, value);
+      return;
+    }
+    if (!isPlainDictObject(this)) {
+      throw new TypeError("dict.update() called on a non-dict object");
+    }
+    for (const [key, value] of merged) (this as Any)[key] = value;
+  });
+  define("clear", function (this: Any): void {
+    if (isRealMap(this)) {
+      (this as Map<Any, Any>).clear();
+      return;
+    }
+    if (!isPlainDictObject(this)) {
+      throw new TypeError("dict.clear() called on a non-dict object");
+    }
+    for (const key of Object.keys(this)) delete (this as Any)[key];
+  });
+  define("copy", function (this: Any): Any {
+    if (isRealMap(this)) return new Map(this as Map<Any, Any>);
+    if (!isPlainDictObject(this)) {
+      throw new TypeError("dict.copy() called on a non-dict object");
+    }
+    return { ...(this as Any) };
+  });
+  define("pop", function (this: Any, key: Any, defval?: Any): Any {
+    if (isRealMap(this)) {
+      const map = this as Map<Any, Any>;
+      if (map.has(key)) {
+        const value = map.get(key);
+        map.delete(key);
+        return value;
+      }
+      if (arguments.length > 1) return defval;
+      throw new Error(`KeyError: ${String(key)}`);
+    }
+    if (!isPlainDictObject(this)) {
+      throw new TypeError("dict.pop() called on a non-dict object");
+    }
+    if (Object.prototype.hasOwnProperty.call(this, key)) {
+      const value = (this as Any)[key];
+      delete (this as Any)[key];
+      return value;
+    }
+    if (arguments.length > 1) return defval;
+    throw new Error(`KeyError: ${String(key)}`);
+  });
+  const setDefault = function (this: Any, key: Any, defval?: Any): Any {
+    if (isRealMap(this)) {
+      const map = this as Map<Any, Any>;
+      if (!map.has(key)) map.set(key, defval);
+      return map.get(key);
+    }
+    if (!isPlainDictObject(this)) {
+      throw new TypeError("dict.setdefault() called on a non-dict object");
+    }
+    if (!Object.prototype.hasOwnProperty.call(this, key)) (this as Any)[key] = defval;
+    return (this as Any)[key];
+  };
+  define("setdefault", setDefault);
+  define("set_default", setDefault);
 }
 
 /**
