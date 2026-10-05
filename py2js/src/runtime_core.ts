@@ -2911,6 +2911,16 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       transpose: { count: 1, names: ["a", "axes"] },
       matrix_transpose: { count: 1, names: ["x"] },
       permute_dims: { count: 1, names: ["x", "axes"] },
+      // `append`/`insert`/`delete` take `axis` (often as a kwarg, e.g.
+      // `np.append(a, [row], axis=0)`): without `__argnames__` rapydscript's
+      // `ρσ_interpolate_kwargs` hands the kwargs bag as a trailing object and
+      // numpy-ts throws `TypeError: Cannot convert object to primitive
+      // value` (error 152).  Coercing also unwraps NDArray rows nested in
+      // plain lists (`[arr[-1]]`) via `deepUnwrapNd`, which numpy-ts'
+      // dtype inference otherwise rejects.
+      append: { count: 2, names: ["arr", "values", "axis"] },
+      insert: { count: 3, names: ["arr", "obj", "values", "axis"] },
+      delete: { count: 2, names: ["arr", "obj", "axis"] },
     };
     for (const [name, spec] of Object.entries(TOPLEVEL_ARRAY_WRAPS)) {
       try {
