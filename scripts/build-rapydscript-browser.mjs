@@ -12,7 +12,7 @@
 //   RAPYDSCRIPT_OUT_DIR   where to write rapydscript.js (default: <wanim>/dist)
 //   RAPYDSCRIPT_FORCE     "1" to re-clone from scratch
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,9 +51,35 @@ function applyPatch() {
     execFileSync("git", ["-C", cacheDir, "apply", "--check", PATCH], { stdio: "pipe" });
   } catch {
     // Already applied (checked out at the patched state).
+    verifyPatched();
     return;
   }
   git(["apply", PATCH]);
+  verifyPatched();
+}
+
+function verifyPatched() {
+  // `git apply --check` failing used to be read as "already applied", so a
+  // stale/broken patch silently produced a *pristine* compiler (no operator
+  // overloading, no auto-await, no baselib fixes) and every scene regressed
+  // at runtime. Fail loudly instead when the patch markers are missing.
+  const markers = [
+    ["src/output/operators.pyj", "op_overload_map"],
+    ["src/baselib-builtins.pyj", "int(True)"],
+  ];
+  const missing = markers.filter(([file, text]) => {
+    try {
+      return !readFileSync(join(cacheDir, file), "utf8").includes(text);
+    } catch {
+      return true;
+    }
+  });
+  if (missing.length > 0) {
+    throw new Error(
+      `wanim: rapydscript patch did not apply (${missing.map(([f]) => f).join(", ")}); ` +
+        `refusing to build a pristine compiler. Fix ${PATCH}.`,
+    );
+  }
 }
 
 function buildCompiler() {
