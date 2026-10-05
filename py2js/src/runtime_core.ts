@@ -3249,6 +3249,93 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* keep the raw numpy-ts clip on wrap failure */
     }
+    // `np.where` / `np.interp` / `np.convolve` on Python scalars (or plain
+    // lists) throw in numpy-ts, which requires NDArray storage:
+    // `np.where(True, 0.0, 1.0)` fails with
+    // `TypeError: Cannot read properties of undefined (reading 'length')`
+    // (error 263: nested `np.where` over a 0-d `np.asarray(t)` scalar, where
+    // the `x < -2` comparison scalarizes to a plain boolean), and
+    // `np.interp(t, xs, ys)` on a scalar `t` fails with
+    // `undefined is not iterable` (same scene, per-sample `axes.plot`
+    // callbacks).  `np.convolve` on plain lists likewise misbehaves, and its
+    // `mode=` kwarg needs `__argnames__` mapping (without it rapydscript's
+    // `ρσ_interpolate_kwargs` hands the kwargs bag as a trailing object and
+    // numpy-ts silently returns a wrong-shaped result).  Coerce the array
+    // operands (scalars included, via `coerceReductionArg` below -- a
+    // function declaration, so hoisted) before delegating and scalarize 0-d
+    // results back to Python numbers, mirroring numpy (scalar in, scalar
+    // out).  `mode` / `left` / `right` / `period` pass through untouched.
+    try {
+      const origWhere = (np as Any).where;
+      if (typeof origWhere === "function") {
+        const wrappedWhere = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(["condition", "x", "y"], positional, kwargs as Record<string, Any>);
+          }
+          if (positional.length <= 1) {
+            const cond = positional.length > 0 ? coerceReductionArg(positional[0]) : undefined;
+            return (origWhere as Any)(cond);
+          }
+          const cond = coerceReductionArg(positional[0]);
+          const x = positional[1] === null || positional[1] === undefined
+            ? positional[1]
+            : coerceReductionArg(positional[1]);
+          const y = positional[2] === null || positional[2] === undefined
+            ? positional[2]
+            : coerceReductionArg(positional[2]);
+          return scalarizeComplex((origWhere as Any)(cond, x, y));
+        };
+        (wrappedWhere as Any).__argnames__ = ["condition", "x", "y"];
+        facade.where = wrappedWhere;
+      }
+    } catch {
+      /* keep the raw numpy-ts where on wrap failure */
+    }
+    try {
+      const origInterp = (np as Any).interp;
+      if (typeof origInterp === "function") {
+        const wrappedInterp = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(
+              ["x", "xp", "fp", "left", "right", "period"],
+              positional,
+              kwargs as Record<string, Any>,
+            );
+          }
+          const x = positional.length > 0 ? coerceReductionArg(positional[0]) : undefined;
+          const xp = positional.length > 1 ? coerceReductionArg(positional[1]) : undefined;
+          const fp = positional.length > 2 ? coerceReductionArg(positional[2]) : undefined;
+          return scalarizeComplex((origInterp as Any)(x, xp, fp, ...positional.slice(3)));
+        };
+        (wrappedInterp as Any).__argnames__ = ["x", "xp", "fp", "left", "right", "period"];
+        facade.interp = wrappedInterp;
+      }
+    } catch {
+      /* keep the raw numpy-ts interp on wrap failure */
+    }
+    try {
+      const origConvolve = (np as Any).convolve;
+      if (typeof origConvolve === "function") {
+        const wrappedConvolve = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(["a", "v", "mode"], positional, kwargs as Record<string, Any>);
+          }
+          if (positional.length > 0) positional[0] = coerceReductionArg(positional[0]);
+          if (positional.length > 1) positional[1] = coerceReductionArg(positional[1]);
+          return (origConvolve as Any)(...positional);
+        };
+        (wrappedConvolve as Any).__argnames__ = ["a", "v", "mode"];
+        facade.convolve = wrappedConvolve;
+      }
+    } catch {
+      /* keep the raw numpy-ts convolve on wrap failure */
+    }
     // `normalizeNumpyDtype` (hoisted to `createRuntimeCore` scope above) maps
     // a positional/`dtype=` Python-type dtype into a numpy-ts dtype string.
     function callNumpyWithDtype(fn: (...a: Any[]) => Any, dtypeIndex: number, args: Any[]): Any {
