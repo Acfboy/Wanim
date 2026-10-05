@@ -459,17 +459,49 @@ export class VMobject extends Mobject {
     // (scale_stroke vs about_point/about_edge). TS callers pass them
     // positionally, so the second slot accepts either a scale_stroke flag
     // or an about_point (mirroring Mobject.scale's positional convention).
-    scale_stroke_or_about_point: boolean | readonly number[] | NDArray | null = false,
-    about_point?: readonly number[] | NDArray | null,
-    about_edge?: readonly number[] | NDArray | null,
+    scale_stroke_or_about_point: boolean | readonly number[] | NDArray | Record<string, unknown> | null = false,
+    about_point?: readonly number[] | NDArray | Record<string, unknown> | null,
+    about_edge?: readonly number[] | NDArray | Record<string, unknown> | null,
   ): this {
+    // NOTE (py2js kwargs bridge): a trailing kwargs bag such as
+    // `{about_point: ORIGIN}` (e.g. via `animate.scale(2,
+    // about_point=ORIGIN)` when the bridge cannot map it) must not land
+    // verbatim in the about-point slot (NaN poison). Unwrap any plain-object
+    // bag in any slot; the `__argnames__` pinned at the bottom of this file
+    // lets the bridge map the Python spellings in the common case.
+    const isBagLike = (value: unknown): value is Record<string, unknown> => {
+      if (value === null || value === undefined || typeof value !== "object") return false;
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) return false;
+      if (isNDArray(value)) return false;
+      if (typeof (value as { get_num_points?: unknown }).get_num_points === "function") return false;
+      return true;
+    };
+    const pullBag = (bag: Record<string, unknown>): { scaleStroke?: boolean; point?: unknown; edge?: unknown } => {
+      const out: { scaleStroke?: boolean; point?: unknown; edge?: unknown } = {};
+      if (typeof bag["scale_stroke"] === "boolean") out.scaleStroke = Boolean(bag["scale_stroke"]);
+      else if (typeof bag["scaleStroke"] === "boolean") out.scaleStroke = Boolean(bag["scaleStroke"]);
+      if (bag["about_point"] !== undefined) out.point = bag["about_point"];
+      else if (bag["aboutPoint"] !== undefined) out.point = bag["aboutPoint"];
+      if (bag["about_edge"] !== undefined) out.edge = bag["about_edge"];
+      else if (bag["aboutEdge"] !== undefined) out.edge = bag["aboutEdge"];
+      return out;
+    };
     let scale_stroke = false;
-    let resolved_about_point = about_point;
-    let resolved_about_edge = about_edge;
+    let resolved_about_point = (isBagLike(about_point) ? undefined : about_point) as readonly number[] | NDArray | null | undefined;
+    let resolved_about_edge = (isBagLike(about_edge) ? undefined : about_edge) as readonly number[] | NDArray | null | undefined;
+    for (const slot of [scale_stroke_or_about_point, about_point, about_edge]) {
+      if (isBagLike(slot)) {
+        const pulled = pullBag(slot);
+        if (pulled.scaleStroke !== undefined && typeof scale_stroke_or_about_point !== "boolean") scale_stroke = pulled.scaleStroke;
+        if (pulled.point !== undefined && resolved_about_point === undefined) resolved_about_point = pulled.point as never;
+        if (pulled.edge !== undefined && resolved_about_edge === undefined) resolved_about_edge = pulled.edge as never;
+      }
+    }
     if (typeof scale_stroke_or_about_point === "boolean") {
       scale_stroke = scale_stroke_or_about_point;
-    } else if (scale_stroke_or_about_point !== undefined && scale_stroke_or_about_point !== null) {
-      resolved_about_point = scale_stroke_or_about_point;
+    } else if (!isBagLike(scale_stroke_or_about_point) && scale_stroke_or_about_point !== undefined && scale_stroke_or_about_point !== null) {
+      if (resolved_about_point === undefined) resolved_about_point = scale_stroke_or_about_point as never;
+      else if (resolved_about_edge === undefined) resolved_about_edge = scale_stroke_or_about_point as never;
     }
     if (scale_stroke) {
       for (const mob of this.get_family()) {
@@ -2918,3 +2950,15 @@ export class DashedVMobject extends VMobject {
     }
   }
 }
+
+// Explicit Python parameter names for `VMobject.scale`, surviving bundling.
+// Python: `scale(scale_factor, scale_stroke=False, *, about_point=None,
+// about_edge=None)`. The TS second slot doubles as `about_point` for
+// positional callers, but the names must match Python so the py2js kwargs
+// bridge maps `about_point=`/`scale_stroke=` (see `wrapPrototypeMethods`).
+(VMobject.prototype.scale as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "scale_factor",
+  "scale_stroke",
+  "about_point",
+  "about_edge",
+];

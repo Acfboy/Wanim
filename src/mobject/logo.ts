@@ -95,10 +95,12 @@ export class ManimBanner extends VGroup {
   override scale(
     scale_factor: number,
     // NOTE: same positional convention as VMobject.scale: the second slot
-    // is either a scale_stroke flag or an about_point.
-    scale_stroke_or_about_point: boolean | readonly number[] | NDArray | null = false,
-    about_point?: readonly number[] | NDArray | null,
-    about_edge?: readonly number[] | NDArray | null,
+    // is either a scale_stroke flag or an about_point. `Record` slots carry
+    // a py2js kwargs bag (`{about_point: ...}`); forwarded to `super.scale`
+    // which unwraps it.
+    scale_stroke_or_about_point: boolean | readonly number[] | NDArray | Record<string, unknown> | null = false,
+    about_point?: readonly number[] | NDArray | Record<string, unknown> | null,
+    about_edge?: readonly number[] | NDArray | Record<string, unknown> | null,
   ): this {
     this.scale_factor *= scale_factor;
     let scale_stroke = false;

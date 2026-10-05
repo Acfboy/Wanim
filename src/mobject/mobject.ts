@@ -1488,13 +1488,42 @@ export class Mobject {
     return this;
   }
 
-  scale(scale_factor: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+  scale(scale_factor: number, about_point?: readonly number[] | NDArray | Record<string, unknown> | null, about_edge?: readonly number[] | NDArray | Record<string, unknown> | null): this {
+    // NOTE (py2js kwargs bridge): a trailing kwargs bag such as
+    // `{about_point: ORIGIN}` must not land verbatim in the point slot (NaN
+    // poison). The wrapped-method bridge usually maps it via `__argnames__`
+    // (pinned below), but `animate` paths and direct trailing bags are
+    // unwrapped here defensively.
+    const isBagLike = (value: unknown): value is Record<string, unknown> => {
+      if (value === null || value === undefined || typeof value !== "object") return false;
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) return false;
+      if (isNDArray(value)) return false;
+      if (value instanceof Mobject) return false;
+      return true;
+    };
+    let resolved_about_point = about_point as readonly number[] | NDArray | null | undefined;
+    let resolved_about_edge = about_edge as readonly number[] | NDArray | null | undefined;
+    for (const slot of [about_point, about_edge] as unknown[]) {
+      if (isBagLike(slot)) {
+        const bag = slot as Record<string, unknown>;
+        if (resolved_about_point === undefined && bag["about_point"] !== undefined) resolved_about_point = bag["about_point"] as never;
+        else if (resolved_about_point === undefined && bag["aboutPoint"] !== undefined) resolved_about_point = bag["aboutPoint"] as never;
+        if (resolved_about_edge === undefined && bag["about_edge"] !== undefined) resolved_about_edge = bag["about_edge"] as never;
+        else if (resolved_about_edge === undefined && bag["aboutEdge"] !== undefined) resolved_about_edge = bag["aboutEdge"] as never;
+        // A whole kwargs bag arrived in the `about_point` slot (unmapped
+        // bridge shape): it is only options, not a point.
+        if (slot === about_point && isBagLike(about_point)) resolved_about_point = (resolved_about_point ?? undefined) as never;
+        if (slot === about_edge && isBagLike(about_edge)) resolved_about_edge = (resolved_about_edge ?? undefined) as never;
+      }
+    }
+    if (isBagLike(resolved_about_point)) resolved_about_point = undefined;
+    if (isBagLike(resolved_about_edge)) resolved_about_edge = undefined;
     assertFinite(scale_factor);
-    if (about_point !== undefined && about_point !== null) assertFinite(vector(about_point, this.dim));
-    if (about_edge !== undefined && about_edge !== null) assertFinite(vector(about_edge, this.dim));
-    const center = about_point !== undefined && about_point !== null
-      ? vector(about_point, this.dim)
-      : this.get_critical_point(about_edge ?? ORIGIN);
+    if (resolved_about_point !== undefined && resolved_about_point !== null) assertFinite(vector(resolved_about_point, this.dim));
+    if (resolved_about_edge !== undefined && resolved_about_edge !== null) assertFinite(vector(resolved_about_edge, this.dim));
+    const center = resolved_about_point !== undefined && resolved_about_point !== null
+      ? vector(resolved_about_point, this.dim)
+      : this.get_critical_point(resolved_about_edge ?? ORIGIN);
     const dim = this.dim;
     for (const mobject of this.family_members_with_points()) {
       // Fast path: `(p - center) * k + center` in one flat typed-array pass,
@@ -3039,6 +3068,16 @@ for (const name of ["scale_to_fit_width", "scale_to_fit_height", "scale_to_fit_d
     "kwargs",
   ]);
 }
+// `Mobject.scale(scale_factor, *, about_point=None, about_edge=None)` already
+// spells its parameters like Python, but pin them explicitly so esbuild
+// renames cannot break the py2js kwargs bridge (same failure as `arrange`
+// above; `animate.scale(2, about_point=ORIGIN)` would otherwise leave the
+// kwargs bag in the point slot and throw non-finite, error 251).
+(Mobject.prototype.scale as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "scale_factor",
+  "about_point",
+  "about_edge",
+];
 
 export class Group extends Mobject {
   constructor(...args: Array<Mobject | Iterable<Mobject> | MobjectOptions>) {
@@ -3101,6 +3140,53 @@ export class _AnimationBuilder {
   cannot_pass_args = false;
   anim_args: Record<string, unknown> = {};
 
+  /**
+   * Pop a trailing py2js kwargs bag (`ρσ_desugar_kwargs`, a null-prototype
+   * object tagged with the `kwargs-object` symbol) off `args`.
+   *
+   * Mirrors Python, where `animate.foo(2, about_point=X)` stores
+   * `args=(2,)` and `kwargs={"about_point": X}` separately: rapydscript
+   * compiles the call to `update(2, kwargsBag)` (the `update` closure has no
+   * `__argnames__`, so `ρσ_interpolate_kwargs` cannot map it), and without
+   * this split the bag would ride as a positional argument into
+   * `Mobject.scale`'s `about_point` slot and poison geometry with NaN.
+   * Returns the bag (tag preserved so the wrapped-method bridge still
+   * recognises it) or null. Only tagged null-prototype bags are split —
+   * plain objects stay positional.
+   */
+  private static popTrailingKwargsBag(args: any[]): Record<string, any> | null {
+    if (args.length === 0) return null;
+    const last = args[args.length - 1];
+    if (last === null || typeof last !== "object") return null;
+    if (Object.getPrototypeOf(last) !== null) return null;
+    let tagged = false;
+    try {
+      for (const symbol of Object.getOwnPropertySymbols(last)) {
+        if (String(symbol).includes("kwargs-object")) {
+          tagged = true;
+          break;
+        }
+      }
+    } catch {
+      return null;
+    }
+    if (!tagged) {
+      try {
+        for (const key of Object.keys(last)) {
+          if (key.startsWith("kwargs-object-Symbol-")) {
+            tagged = true;
+            break;
+          }
+        }
+      } catch {
+        return null;
+      }
+    }
+    if (!tagged) return null;
+    args.pop();
+    return last as Record<string, any>;
+  }
+
   constructor(mobject: Mobject) {
     this.mobject = mobject;
     this.mobject.generate_target();
@@ -3151,7 +3237,8 @@ export class _AnimationBuilder {
     const self = this;
     const bound_method: FunctionLike = method;
     function update_target(...method_args: any[]): _AnimationBuilder {
-      self.apply_method_update(bound_method, has_overridden_animation, method_args, {});
+      const bag = _AnimationBuilder.popTrailingKwargsBag(method_args);
+      self.apply_method_update(bound_method, has_overridden_animation, method_args, bag ?? {});
       return ((self as unknown as { _callable_proxy?: _AnimationBuilder })._callable_proxy ?? self) as _AnimationBuilder;
     }
 
@@ -3177,7 +3264,18 @@ export class _AnimationBuilder {
     const method = (target as unknown as Record<string, unknown>)[method_name];
     if (typeof method !== "function") throw new Error(`${this.mobject.constructor.name} has no method '${method_name}'`);
     const override = get_animation_override(method as FunctionLike);
-    this.apply_method_update(method as FunctionLike, override !== undefined, method_args, method_kwargs);
+    const argsCopy = [...method_args];
+    const trailing = _AnimationBuilder.popTrailingKwargsBag(argsCopy);
+    let mergedKwargs = method_kwargs ?? {};
+    if (trailing !== null) {
+      if (Object.keys(mergedKwargs).length === 0) {
+        mergedKwargs = trailing;
+      } else {
+        for (const [key, value] of Object.entries(mergedKwargs)) (trailing as Record<string, unknown>)[key] = value;
+        mergedKwargs = trailing;
+      }
+    }
+    this.apply_method_update(method as FunctionLike, override !== undefined, argsCopy, mergedKwargs);
     return ((this as unknown as { _callable_proxy?: _AnimationBuilder })._callable_proxy ?? this) as this;
   }
 
@@ -3189,16 +3287,31 @@ export class _AnimationBuilder {
     method_kwargs: Record<string, any> = {},
   ): this {
     const target = this.mobject.target ?? this.mobject;
+    // Defensive: a trailing kwargs bag may still ride positionally (e.g. a
+    // direct `apply_method_update` call that bypassed the `update_target`
+    // split above). Merge it into `method_kwargs`, preserving its tag so the
+    // wrapped-method kwargs bridge (`wrapPrototypeMethods`) still maps it.
+    const argsCopy = [...method_args];
+    const trailing = _AnimationBuilder.popTrailingKwargsBag(argsCopy);
+    let mergedKwargs = method_kwargs ?? {};
+    if (trailing !== null) {
+      if (Object.keys(mergedKwargs).length === 0) {
+        mergedKwargs = trailing;
+      } else {
+        for (const [key, value] of Object.entries(mergedKwargs)) (trailing as Record<string, unknown>)[key] = value;
+        mergedKwargs = trailing;
+      }
+    }
     if (has_overridden_animation) {
       const override = get_animation_override(method);
       this.overridden_animation = (override as FunctionLike)(
         this.mobject,
-        ...method_args,
-        { anim_args: this.anim_args, ...method_kwargs },
+        ...argsCopy,
+        { anim_args: this.anim_args, ...mergedKwargs },
       );
     } else {
-      this.methods.push(new MethodWithArgs(method, method_args, method_kwargs));
-      method.apply(target, Object.keys(method_kwargs).length > 0 ? [...method_args, method_kwargs] : method_args);
+      this.methods.push(new MethodWithArgs(method, argsCopy, mergedKwargs));
+      method.apply(target, Object.keys(mergedKwargs).length > 0 ? [...argsCopy, mergedKwargs] : argsCopy);
     }
     this.is_chaining = true;
     this.cannot_pass_args = true;

@@ -512,29 +512,96 @@ export class Arrow extends Line {
 
   override scale(
     factor: number,
-    scaleTipsOrAboutPoint: boolean | readonly number[] | NDArray | null = false,
-    aboutPointOrAboutEdge: readonly number[] | NDArray | null = null,
-    aboutEdgeParam: readonly number[] | NDArray | null = null,
+    scaleTipsOrAboutPoint: boolean | readonly number[] | NDArray | Record<string, unknown> | null = false,
+    aboutPointOrAboutEdge: readonly number[] | NDArray | Record<string, unknown> | null = null,
+    aboutEdgeParam: readonly number[] | NDArray | Record<string, unknown> | null = null,
   ): this {
     // NOTE: mirrors Python `Arrow.scale(factor, scale_tips=False,
-    // **kwargs)`: scaling keeps stroke width and tip size fixed unless
-    // `scale_tips` is set. The second parameter doubles as `about_point`
-    // (Mobject.scale calling convention) when it is not a boolean, so both
-    // `scale(2)` / `scale(2, point)` and `scale(0, true, point)` work.
+    // **kwargs)` (`**kwargs` carries `about_point`/`about_edge`): scaling
+    // keeps stroke width and tip size fixed unless `scale_tips` is set. The
+    // second parameter doubles as `about_point` (Mobject.scale calling
+    // convention) when it is not a boolean, so both `scale(2)` /
+    // `scale(2, point)` and `scale(2, true, point)` work.
+    //
+    // NOTE (py2js kwargs bridge): Python callers spell the keywords
+    // `scale_tips`/`about_point`/`about_edge`, but the TS positional slots
+    // are `scaleTipsOrAboutPoint`/`aboutPointOrAboutEdge`/`aboutEdgeParam`,
+    // so the generic `__argnames__` bridge cannot map them and the kwargs
+    // bag (`{about_point: ORIGIN}`, e.g. via `animate.scale(2,
+    // about_point=ORIGIN)`) would land verbatim in the `about_point` slot
+    // and poison `Mobject.scale` with NaN ("non-finite point/vector value").
+    // Unwrap any such bag here (tagged null-prototype py2js bags as well as
+    // plain objects), and also tolerate the bridge-mapped hole shape
+    // `scale(2, undefined, about_point)` produced once `__argnames__` below
+    // is set to the Python spellings.
+    const isBagLike = (value: unknown): value is Record<string, unknown> => {
+      if (value === null || value === undefined || typeof value !== "object") return false;
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) return false;
+      if (typeof (value as { tolist?: unknown }).tolist === "function") return false;
+      if (typeof (value as { toArray?: unknown }).toArray === "function") return false;
+      if (value instanceof Mobject) return false;
+      if (typeof (value as { get_num_points?: unknown }).get_num_points === "function") return false;
+      return true;
+    };
+    const isPointLike = (value: unknown): boolean => {
+      if (value === null || value === undefined) return false;
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) return true;
+      const obj = value as { toArray?: unknown; tolist?: unknown };
+      return typeof obj.toArray === "function" || typeof obj.tolist === "function";
+    };
+    let resolvedFactor = factor;
     let scaleTips = false;
     let aboutPoint: readonly number[] | NDArray | null | undefined;
     let resolvedAboutEdge: readonly number[] | NDArray | null | undefined;
-    if (typeof scaleTipsOrAboutPoint === "boolean") {
-      scaleTips = scaleTipsOrAboutPoint;
-      aboutPoint = aboutPointOrAboutEdge ?? undefined;
-      resolvedAboutEdge = aboutEdgeParam ?? undefined;
-    } else {
-      aboutPoint = scaleTipsOrAboutPoint ?? undefined;
-      resolvedAboutEdge = aboutPointOrAboutEdge ?? undefined;
+    const pullBag = (bag: Record<string, unknown>): void => {
+      const record = bag as Record<string, unknown>;
+      if (typeof record["scale_tips"] === "boolean") scaleTips = Boolean(record["scale_tips"]);
+      else if (typeof record["scaleTips"] === "boolean") scaleTips = Boolean(record["scaleTips"]);
+      if (aboutPoint === undefined) {
+        if (record["about_point"] !== undefined) aboutPoint = record["about_point"] as never;
+        else if (record["aboutPoint"] !== undefined) aboutPoint = record["aboutPoint"] as never;
+      }
+      if (resolvedAboutEdge === undefined) {
+        if (record["about_edge"] !== undefined) resolvedAboutEdge = record["about_edge"] as never;
+        else if (record["aboutEdge"] !== undefined) resolvedAboutEdge = record["aboutEdge"] as never;
+      }
+      if ((resolvedFactor === undefined || resolvedFactor === null) && record["factor"] !== undefined) {
+        resolvedFactor = record["factor"] as never;
+      } else if ((resolvedFactor === undefined || resolvedFactor === null) && record["scale_factor"] !== undefined) {
+        resolvedFactor = record["scale_factor"] as never;
+      }
+    };
+    for (const slot of [scaleTipsOrAboutPoint, aboutPointOrAboutEdge, aboutEdgeParam]) {
+      if (isBagLike(slot)) pullBag(slot);
+    }
+    const secondIsBag = isBagLike(scaleTipsOrAboutPoint);
+    const thirdIsBag = isBagLike(aboutPointOrAboutEdge);
+    const fourthIsBag = isBagLike(aboutEdgeParam);
+    if (!secondIsBag) {
+      if (typeof scaleTipsOrAboutPoint === "boolean") {
+        scaleTips = scaleTipsOrAboutPoint;
+      } else if (scaleTipsOrAboutPoint !== undefined && scaleTipsOrAboutPoint !== null && (scaleTipsOrAboutPoint as unknown) !== false) {
+        if (isPointLike(scaleTipsOrAboutPoint) && aboutPoint === undefined) {
+          aboutPoint = scaleTipsOrAboutPoint as never;
+        }
+      }
+    }
+    if (!thirdIsBag && aboutPointOrAboutEdge !== undefined && aboutPointOrAboutEdge !== null) {
+      const secondWasPoint = !secondIsBag && isPointLike(scaleTipsOrAboutPoint);
+      if (secondWasPoint) {
+        if (resolvedAboutEdge === undefined) resolvedAboutEdge = aboutPointOrAboutEdge as never;
+      } else if (aboutPoint === undefined) {
+        aboutPoint = aboutPointOrAboutEdge as never;
+      } else if (resolvedAboutEdge === undefined) {
+        resolvedAboutEdge = aboutPointOrAboutEdge as never;
+      }
+    }
+    if (!fourthIsBag && aboutEdgeParam !== undefined && aboutEdgeParam !== null) {
+      if (resolvedAboutEdge === undefined) resolvedAboutEdge = aboutEdgeParam as never;
     }
     if (this.get_length() === 0) return this;
     if (scaleTips) {
-      super.scale(factor, aboutPoint, resolvedAboutEdge);
+      super.scale(resolvedFactor, aboutPoint, resolvedAboutEdge);
       this._set_stroke_width_from_length();
       return this;
     }
@@ -544,7 +611,7 @@ export class Arrow extends Line {
     if (hasTip || hasStartTip) {
       oldTips = this.pop_tips();
     }
-    super.scale(factor, aboutPoint, resolvedAboutEdge);
+    super.scale(resolvedFactor, aboutPoint, resolvedAboutEdge);
     this._set_stroke_width_from_length();
     if (hasTip && oldTips !== null) {
       this.add_tip(oldTips.submobjects[0] as ArrowTip, null, null, null, false);
@@ -882,3 +949,19 @@ export class Vector extends Arrow {
     return label;
   }
 }
+
+// Explicit Python parameter names for `Arrow.scale`, surviving bundling.
+// Python spells them `scale(factor, scale_tips=False, *, about_point=None,
+// about_edge=None)`; the TS positional slots are
+// `scaleTipsOrAboutPoint`/`aboutPointOrAboutEdge`/`aboutEdgeParam`, so without
+// this the py2js kwargs bridge cannot map `about_point=` (e.g.
+// `animate.scale(2, about_point=ORIGIN)`) and the kwargs bag lands verbatim in
+// the about-point slot, poisoning `Mobject.scale` with NaN. `runtime_core`
+// prefers this metadata over parsed names (see also the `__argnames__`
+// propagation in `wrapPrototypeMethods`).
+(Arrow.prototype.scale as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "factor",
+  "scale_tips",
+  "about_point",
+  "about_edge",
+];
