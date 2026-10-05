@@ -615,4 +615,62 @@ check("plain-object dict literals support update/clear/copy/pop/setdefault (erro
   assert.equal({}.update, Object.prototype.update);
 });
 
+check("np.where accepts scalar conditions (numpy-ts does not)", () => {
+  const np = ndCore.buildNumpy();
+  // Error 263: nested np.where over a 0-d np.asarray(t) scalar, where the
+  // `x < -2` comparison scalarizes to a plain boolean.
+  assert.equal(np.where(true, 0.0, 1.0), 0);
+  assert.equal(np.where(false, 0.0, 1.0), 1);
+  const cond0d = ndCore.pythonLt(np.asarray(-3.0), -2);
+  assert.equal(cond0d, true);
+  assert.equal(np.where(cond0d, 0.0, 1.0), 0);
+  // Array conditions keep working, with scalar or array branches.
+  assert.deepEqual(
+    np.where(np.asarray([1, 0, 0]), 0.0, 1.0).tolist(),
+    [0, 1, 1],
+  );
+  assert.deepEqual(
+    np.where(np.asarray([1, 0]), np.asarray([7, 8]), np.asarray([9, 10])).tolist(),
+    [7, 10],
+  );
+});
+
+check("nested np.where matches the kinked() scene helper", () => {
+  const np = ndCore.buildNumpy();
+  const kinked = (t) => {
+    const x = np.asarray(t);
+    return np.where(
+      ndCore.pythonLt(x, -2), 0.0,
+      np.where(ndCore.pythonLt(x, -1), ndCore.pythonSub(ndCore.pythonNeg(x), 2),
+        np.where(ndCore.pythonLt(x, 1), x,
+          np.where(ndCore.pythonLt(x, 2), ndCore.pythonAdd(ndCore.pythonNeg(x), 2), 0.0))),
+    );
+  };
+  assert.equal(kinked(-3), 0);
+  assert.equal(kinked(-1.5), -0.5);
+  assert.equal(kinked(0), 0);
+  assert.equal(kinked(1.5), 0.5);
+  assert.equal(kinked(3), 0);
+  assert.deepEqual(kinked(np.linspace(-3, 3, 5)).tolist(), [0, -0.5, 0, 0.5, 0]);
+});
+
+check("np.interp accepts scalar x and plain lists (numpy-ts does not)", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(np.interp(0.5, np.asarray([0, 1, 2]), np.asarray([10, 20, 30])), 15);
+  assert.equal(np.interp(0.5, [0, 1, 2], [10, 20, 30]), 15);
+  assert.deepEqual(
+    np.interp([0.5, 1.5], [0, 1, 2], [10, 20, 30]).tolist(),
+    [15, 25],
+  );
+});
+
+check("np.convolve accepts plain lists and mode positionally", () => {
+  const np = ndCore.buildNumpy();
+  assert.deepEqual(np.convolve([1, 2, 3], [0, 1, 0.5], "same").tolist(), [1, 2.5, 4]);
+  assert.deepEqual(
+    np.convolve(np.asarray([1, 2, 3]), np.asarray([0, 1, 0.5]), "same").tolist(),
+    [1, 2.5, 4],
+  );
+});
+
 console.log(`\n${passed} tests passed`);
