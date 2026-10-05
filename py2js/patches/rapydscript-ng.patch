@@ -207,7 +207,7 @@ index 341df63..62bc4ac 100644
  from ast import (
 -    AST_ClassCall, AST_New, has_calls, AST_Dot, AST_SymbolRef, is_node_type
 +    AST_ClassCall, AST_New, has_calls, AST_Dot, AST_SymbolRef, is_node_type,
-+    AST_GeneratorComprehension, AST_Seq
++    AST_Seq
  )
  from output.operators import print_getattr
  from output.statements import print_bracketed
@@ -253,20 +253,25 @@ index 341df63..62bc4ac 100644
                  if i is not dkeys.length - 1:
                      output.comma()
              output.print('}')
-@@ -461,7 +482,15 @@ def print_function_call(self, output):
+@@ -461,7 +482,20 @@ def print_function_call(self, output):
              if not is_first:
                  output.print('.concat(')
              if expr.is_array:
 -                expr.value.print(output)
-+                # A starred generator expression is iterable but not
-+                # array-like, so `.apply` would pass no arguments.  Materialize
-+                # it into an array first.
-+                if is_node_type(expr.value, AST_GeneratorComprehension):
-+                    output.print('Array.from(')
-+                    expr.value.print(output)
-+                    output.print(')')
-+                else:
-+                    expr.value.print(output)
++                # A starred call argument may be any Python iterable (a list,
++                # tuple, generator, map/filter/zip/enumerate result, dict,
++                # string, ...), but the `.apply`/`.concat` below need a true
++                # JS array: a bare iterator object (e.g. rapydscript's `map`,
++                # which returns an iterator with no `length`) would silently
++                # pass zero arguments (`self.play(*map(...))` failed with
++                # "Called Scene.play with no animations").  `ρσ_Iterable`
++                # materializes any iterable (dicts become their keys, like
++                # `tuple(x)`) into an array-like, and `Array.from` turns that
++                # (including strings) into a true array.  Plain arrays just
++                # pay one extra copy.
++                output.print('Array.from(ρσ_Iterable(')
++                expr.value.print(output)
++                output.print('))')
                  i += 1
              else:
                  output.print('[')
