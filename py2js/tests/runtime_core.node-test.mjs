@@ -552,4 +552,52 @@ check("numpy facade append/insert/delete accept axis kwarg and NDArray rows", ()
   assert.deepEqual(del.tolist(), [[0, 4, 0]]);
 });
 
+check("plain-object dict literals support update/clear/copy/pop/setdefault (error 167)", () => {
+  // The error-167 call shape: `state.update(t1=..., ...)` compiles to
+  // `ρσ_interpolate_kwargs.call(state, state.update, [kwbag])`, where the
+  // kwargs bag arrives as a single positional (no __argnames__ on update).
+  // Without the shim `state.update` is undefined and rapydscript throws
+  // "Cannot read properties of undefined (reading '__argnames__')".
+  const state = { t1: 1, w1: 0, t2: 2, w2: 0 };
+  assert.equal(typeof state.update, "function");
+  const kwbag = Object.create(null);
+  kwbag.t1 = 3;
+  kwbag.w1 = 0.5;
+  state.update(kwbag);
+  assert.deepEqual([state.t1, state.w1, state.t2, state.w2], [3, 0.5, 2, 0]);
+  // Positional mappings and pair lists merge too; no-arg is a no-op.
+  state.update({ t2: 4 });
+  state.update([["w2", 6]]);
+  state.update();
+  assert.deepEqual([state.t1, state.w1, state.t2, state.w2], [3, 0.5, 4, 6]);
+  // The shim stays non-enumerable: keys/spread/JSON see data only.
+  assert.deepEqual(Object.keys(state).sort(), ["t1", "t2", "w1", "w2"]);
+  assert.deepEqual({ ...state }.t1, 3);
+  assert.ok(!Object.prototype.propertyIsEnumerable.call(state, "update"));
+  // Companions.
+  assert.deepEqual(state.copy(), { t1: 3, w1: 0.5, t2: 4, w2: 6 });
+  assert.equal(state.setdefault("t1", 99), 3);
+  assert.equal(state.setdefault("new", 7), 7);
+  assert.equal(state.new, 7);
+  assert.equal(state.pop("new"), 7);
+  assert.ok(!("new" in state));
+  assert.equal(state.pop("missing", "fallback"), "fallback");
+  assert.throws(() => state.pop("missing"), /KeyError/);
+  state.clear();
+  assert.deepEqual(Object.keys(state), []);
+  // Class instances still throw instead of silently merging.
+  class Foo {}
+  assert.throws(() => ({}.update.call(new Foo(), { a: 1 })), /non-dict/);
+  // Real Maps delegate.
+  const m = new Map([["a", 1]]);
+  m.update({ b: 2 });
+  assert.deepEqual([...m.entries()], [["a", 1], ["b", 2]]);
+  // defineProperties with {value:} descriptors keeps working (an inherited
+  // `get`/`set`/`value` would poison it -- none of those are installed).
+  const target = {};
+  Object.defineProperties(target, { x: { value: 1, enumerable: false } });
+  assert.equal(target.x, 1);
+  assert.equal({}.update, Object.prototype.update);
+});
+
 console.log(`\n${passed} tests passed`);
