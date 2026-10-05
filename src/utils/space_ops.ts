@@ -830,3 +830,29 @@ export function regularVertices(
 ): [NDArray, number] {
   return regular_vertices(n, radius, start_angle);
 }
+
+export function spherical_to_cartesian(
+  spherical: number[] | readonly number[] | NDArray,
+): number[] {
+  const flat = toRows(spherical as VectorInput).rows[0] ?? [0, 0, 0];
+  const r = flat[0] ?? 0;
+  const theta = flat[1] ?? 0;
+  const phi = flat[2] ?? 0;
+  return [
+    r * Math.cos(theta) * Math.sin(phi),
+    r * Math.sin(theta) * Math.sin(phi),
+    r * Math.cos(phi),
+  ];
+}
+
+export function thick_diagonal(dim: number, thickness = 2): NDArray {
+  const rows: number[][] = [];
+  for (let r = 0; r < dim; r += 1) {
+    const row: number[] = [];
+    for (let c = 0; c < dim; c += 1) {
+      row.push(Math.abs(r - c) < thickness ? 1 : 0);
+    }
+    rows.push(row);
+  }
+  return array(rows) as NDArray;
+}
