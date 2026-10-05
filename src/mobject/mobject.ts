@@ -1620,25 +1620,46 @@ export class Mobject {
     return this.shift(shiftVector);
   }
 
-  align_on_border(direction: readonly number[] | NDArray, buff = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
+  align_on_border(direction: readonly number[] | NDArray, buff: number | Record<string, unknown> = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
+    // NOTE (py2js kwargs bridge, same as `scale` above): `animate.to_corner(
+    // DR, buff=0.4)` compiles the `update` closure without `__argnames__`,
+    // so the trailing kwargs bag can arrive verbatim as `buff` (an object,
+    // not a number) and `buff * value` poisons the shift with NaN
+    // ("non-finite point/vector value", error 253). Unwrap it defensively;
+    // the wrapped-method bridge usually maps it via `__argnames__` (pinned
+    // below), but `animate` paths bypass that mapping.
+    let resolvedBuff: unknown = buff;
+    if (
+      resolvedBuff !== null &&
+      typeof resolvedBuff === "object" &&
+      !Array.isArray(resolvedBuff) &&
+      !ArrayBuffer.isView(resolvedBuff) &&
+      !isNDArray(resolvedBuff) &&
+      !(resolvedBuff instanceof Mobject)
+    ) {
+      const bag = resolvedBuff as Record<string, unknown>;
+      if (bag["buff"] !== undefined) resolvedBuff = bag["buff"];
+      else resolvedBuff = DEFAULT_MOBJECT_TO_EDGE_BUFFER;
+    }
+    const buffNumber = Number(resolvedBuff);
     const directionValues = pointFrom(direction, this.dim).toArray() as number[];
     const sign = directionValues.map((value) => Math.sign(value));
     const frameRadii = [Number(config.get("frame_x_radius") ?? 7.111111111111111), Number(config.get("frame_y_radius") ?? 4), 0];
     const targetPoint = sign.map((value, index) => value * (frameRadii[index] ?? 0));
     const pointToAlign = this.get_critical_point(direction);
-    const directionScaled = directionValues.map((value) => buff * value);
+    const directionScaled = directionValues.map((value) => buffNumber * value);
     let shiftValue = targetPoint.map((value, index) => value - (pointToAlign[index] ?? 0) - (directionScaled[index] ?? 0));
     shiftValue = shiftValue.map((value, index) => value * Math.abs(sign[index] ?? 0));
     this.shift(shiftValue.slice(0, this.dim));
     return this;
   }
 
-  to_corner(corner: readonly number[] | NDArray = DL, buff = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
-    return this.align_on_border(corner, buff);
+  to_corner(corner: readonly number[] | NDArray = DL, buff: number | Record<string, unknown> = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
+    return this.align_on_border(corner, buff as number);
   }
 
-  to_edge(edge: readonly number[] | NDArray = LEFT, buff = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
-    return this.align_on_border(edge, buff);
+  to_edge(edge: readonly number[] | NDArray = LEFT, buff: number | Record<string, unknown> = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
+    return this.align_on_border(edge, buff as number);
   }
 
   rotate(angle: number, axis: readonly number[] | NDArray = [...OUT], about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
@@ -3077,6 +3098,24 @@ for (const name of ["scale_to_fit_width", "scale_to_fit_height", "scale_to_fit_d
   "scale_factor",
   "about_point",
   "about_edge",
+];
+// `align_on_border`/`to_corner`/`to_edge(direction, buff=)` take a `buff`
+// keyword (e.g. `animate.to_corner(DR, buff=0.4)`); pin the Python spellings
+// so the py2js kwargs bridge maps the trailing bag instead of leaving the
+// whole `{buff: ...}` object in the numeric `buff` slot (which poisons the
+// shift with NaN, error 253). `align_on_border` additionally unwraps the bag
+// defensively for `animate` paths that bypass the bridge (same as `scale`).
+(Mobject.prototype.align_on_border as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "direction",
+  "buff",
+];
+(Mobject.prototype.to_corner as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "corner",
+  "buff",
+];
+(Mobject.prototype.to_edge as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "edge",
+  "buff",
 ];
 
 export class Group extends Mobject {
