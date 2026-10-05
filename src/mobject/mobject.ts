@@ -107,26 +107,75 @@ export function get_animation_override(method: FunctionLike): FunctionLike | und
 
 function cloneValue(value: unknown, seen = new Map<object, unknown>()): unknown {
   if (value === null || value === undefined || typeof value !== "object") return value;
+  if (seen.has(value as object)) return seen.get(value as object);
   if (isNDArray(value)) return value.copy();
   if (value instanceof ManimColor) return new ManimColor(value);
   if (Array.isArray(value)) {
     const result = new Array(value.length);
+    seen.set(value, result);
     for (let index = 0; index < value.length; index += 1) result[index] = cloneValue(value[index], seen);
     return result;
   }
   if (value instanceof Set) {
     const result = new Set<unknown>();
+    seen.set(value, result);
     for (const item of value) result.add(cloneValue(item, seen));
     return result;
   }
   if (value instanceof Map) {
     const result = new Map<unknown, unknown>();
+    seen.set(value, result);
     for (const [key, item] of value) result.set(key, cloneValue(item, seen));
     return result;
   }
   if (value instanceof Mobject) return value.copy_with_seen(seen);
+  if (value instanceof Date) return new Date((value as Date).getTime());
+  if (ArrayBuffer.isView(value)) return (value as unknown as { slice(): unknown }).slice();
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) {
+    const object = value as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    seen.set(value, result);
+    const keys = Object.keys(object);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index] as string;
+      result[key] = cloneValue(object[key], seen);
+    }
+    return result;
+  }
+  const cloneable = value as {
+    __deepcopy__?: (memo?: Map<object, unknown>) => unknown;
+    copy?: () => unknown;
+    clone?: () => unknown;
+  };
+  if (typeof cloneable.__deepcopy__ === "function") {
+    const result = cloneable.__deepcopy__(seen);
+    seen.set(value, result);
+    return result;
+  }
+  if (typeof cloneable.copy === "function") {
+    try {
+      const result = cloneable.copy();
+      seen.set(value, result);
+      return result;
+    } catch {
+      // Fall through to prototype-preserving field copy below.
+    }
+  }
+  if (typeof cloneable.clone === "function") {
+    try {
+      const result = cloneable.clone();
+      seen.set(value, result);
+      return result;
+    } catch {
+      // Fall through to prototype-preserving field copy below.
+    }
+  }
+  // Generic class instance (e.g. _ScaleBase subclasses like LinearBase):
+  // preserve the prototype so methods survive Mobject.copy()/generate_target().
+  // Mirrors Python copy.deepcopy, which keeps the class.
   const object = value as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
+  const result: Record<string, unknown> = Object.create(proto);
   seen.set(value, result);
   const keys = Object.keys(object);
   for (let index = 0; index < keys.length; index += 1) {
