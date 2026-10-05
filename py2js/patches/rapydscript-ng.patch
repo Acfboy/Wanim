@@ -197,6 +197,36 @@ index e0ec495..ed23bcf 100644
  def ρσ_setitem(obj, key, val):
      if obj.__setitem__:
          obj.__setitem__(key, val)
+diff --git a/src/baselib-builtins.pyj b/src/baselib-builtins.pyj
+index fc6322b..adc15e3 100644
+--- a/src/baselib-builtins.pyj
++++ b/src/baselib-builtins.pyj
+@@ -19,6 +19,14 @@ def ρσ_print():
+
+
+ def ρσ_int(val, base):
++    # wanim: Python bool is a subclass of int, so int(True) is 1 and
++    # int(False) is 0 (e.g. `index = int((prime % 4) == 3)`).  Without this,
++    # parseInt(true) is NaN and every int() over a comparison raises
++    # ValueError.
++    if jstype(val) is 'boolean':
++        if base is not undefined:
++            raise TypeError("int() can't convert non-string with explicit base")
++        return 1 if val else 0
+     if jstype(val) is 'number':
+         ans = val | 0
+     else:
+@@ -30,6 +38,10 @@ def ρσ_int(val, base):
+
+
+ def ρσ_float(val):
++    # wanim: float(True) is 1.0, float(False) is 0.0 (same bool pitfall as
++    # ρσ_int above: parseFloat(true) is NaN).
++    if jstype(val) is 'boolean':
++        return 1 if val else 0
+     if jstype(val) is 'number':
+         ans = val
+     else:
 diff --git a/src/output/functions.pyj b/src/output/functions.pyj
 index 341df63..62bc4ac 100644
 --- a/src/output/functions.pyj
