@@ -73,6 +73,25 @@ diff --git a/src/baselib-internal.pyj b/src/baselib-internal.pyj
 index e0ec495..4f5667d 100644
 --- a/src/baselib-internal.pyj
 +++ b/src/baselib-internal.pyj
+@@ -8,5 +8,18 @@ def ρσ_eslice(arr, step, start, end):
+     if jstype(arr) is 'string' or v'arr instanceof String':
+         is_string = True
+         arr = arr.split('')
+ 
++    # wanim: Python objects with __getitem__ (e.g. Mobject/VGroup) handle
++    # extended slices themselves (mirrors ρσ_getslice below); forward the
++    # bounds as a slice-like object so `group[::2]` returns a Group instead
++    # of crashing on the JS-array `.slice` API. Attribute reads stay
++    # defensive: wanim Mobjects raise AttributeError on unknown attributes
++    # (Proxy get trap).
++    try:
++        g = arr.__getitem__
++    except:
++        g = undefined
++    if g:
++        return g.call(arr, v'{start: start, stop: end, step: step}')
++
+     if step < 0:
 @@ -122,6 +122,42 @@ def ρσ_Iterable(iterable):
      # with dicts in python
      return Object.keys(iterable)
