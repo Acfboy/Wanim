@@ -45,6 +45,27 @@ function isArrayLike(value: unknown): value is readonly number[] {
   return Array.isArray(value);
 }
 
+/**
+ * True when `value` is a non-array Python iterable that numpy should accept
+ * as an array-like.  rapydscript's `range()` returns such an object (a plain
+ * `{start, step, stop}` bag with `Symbol.iterator`, not a JS array), so
+ * `np.prod(range(1, k + 1))` -- valid numpy -- reaches the facade as a
+ * non-array and numpy-ts throws
+ * `Cannot read properties of undefined (reading 'length')`.
+ *
+ * Strings (which also have `Symbol.iterator`), Maps (which iterate entries)
+ * and NDArrays are excluded; wanim Mobjects are excluded by the callers via
+ * `isMobjectLike` (they are iterable containers, not numeric data).
+ */
+function isGenericIterable(value: unknown): value is Iterable<Any> {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return false;
+  if (typeof value !== "object" && typeof value !== "function") return false;
+  if (value instanceof Map) return false;
+  if (Array.isArray(value)) return false;
+  return typeof (value as Any)[Symbol.iterator] === "function";
+}
+
 /** Return a scalar for 0-d NDArray results, mirroring numpy scalars. */
 function scalarize(value: Any): Any {
   if (value !== null && value !== undefined && Array.isArray(value.shape) && value.shape.length === 0) {
@@ -590,6 +611,16 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   function asNd(value: Any): Any {
     if (isNdArray(value)) return value;
     if (Array.isArray(value) || typeof value === "number") return np.asarray(value);
+    // rapydscript `range()` objects (and other generic iterables) are valid
+    // numpy array-likes; materialize them so ufuncs/arithmetic accept them.
+    // Mobjects are iterable containers, not data: leave them untouched.
+    if (isGenericIterable(value) && !isMobjectLike(value)) {
+      try {
+        return np.asarray(deepUnwrapNd(value));
+      } catch {
+        return value;
+      }
+    }
     return value;
   }
 
@@ -627,6 +658,20 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         if (unwrapped !== value[i]) dirty = true;
       }
       return dirty ? out : value;
+    }
+    // Materialize rapydscript `range()` objects (and other generic iterables)
+    // nested anywhere in the input, so `np.array(range(3))` and
+    // `np.prod(range(1, k + 1))` see plain lists.  Mobjects are iterable
+    // containers, not data: leave them untouched.
+    if (isGenericIterable(value) && !isNdArray(value) && !isMobjectLike(value)) {
+      try {
+        const arr = [...(value as Iterable<Any>)];
+        const out = new Array(arr.length);
+        for (let i = 0; i < arr.length; i += 1) out[i] = deepUnwrapNd(arr[i]);
+        return out;
+      } catch {
+        return value;
+      }
     }
     return value;
   }
@@ -2514,6 +2559,13 @@ export function createRuntimeCore(deps: RuntimeDeps) {
               return value;
             }
           }
+          if (isGenericIterable(value) && !isMobjectLike(value)) {
+            try {
+              return (np as Any).asarray(deepUnwrapNd(value));
+            } catch {
+              return value;
+            }
+          }
           return value;
         };
         const wrappedClip = (...args: Any[]): Any => {
@@ -2573,9 +2625,17 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         }
         // `np.array([v1, v2])` where each element is an NDArray row (e.g.
         // stacking point vectors) confuses numpy-ts' dtype inference (NaNs).
-        // Unwrap nested NDArrays to plain lists first.
+        // Unwrap nested NDArrays to plain lists first.  A rapydscript
+        // `range()` object is also valid input (`np.array(range(3))`), so
+        // materialize generic iterables the same way.
         if (positional.length > 0 && Array.isArray(positional[0])) {
           positional = [deepUnwrapNd(positional[0]), ...positional.slice(1)];
+        } else if (positional.length > 0 && isGenericIterable(positional[0])) {
+          try {
+            positional = [deepUnwrapNd(positional[0]), ...positional.slice(1)];
+          } catch {
+            /* keep the original input on materialization failure */
+          }
         }
         return callNumpyWithDtype(fn, dtypeIndex, kwargs !== null
           ? [...positional, kwargs]
@@ -2627,6 +2687,16 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (typeof value === "number" || typeof value === "boolean") {
         try {
           return (np as Any).asarray(value);
+        } catch {
+          return value;
+        }
+      }
+      // rapydscript `range()` objects are valid numpy array-likes
+      // (`np.prod(range(1, k + 1))`); materialize generic iterables the same
+      // way plain lists are coerced above.
+      if (isGenericIterable(value) && !isMobjectLike(value)) {
+        try {
+          return (np as Any).asarray(deepUnwrapNd(value));
         } catch {
           return value;
         }
@@ -2691,6 +2761,14 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     function coerceArrayArg(value: Any): Any {
       if (isNdArray(value)) return value;
       if (Array.isArray(value)) {
+        try {
+          return (np as Any).asarray(deepUnwrapNd(value));
+        } catch {
+          return value;
+        }
+      }
+      // Same range-like handling as reductions: `np.dot(range(3), ...)` etc.
+      if (isGenericIterable(value) && !isMobjectLike(value)) {
         try {
           return (np as Any).asarray(deepUnwrapNd(value));
         } catch {
