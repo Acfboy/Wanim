@@ -5,6 +5,8 @@ import { Line, DashedLine, DoubleArrow, Arrow } from "../src/mobject/geometry/li
 import { VMobject, VGroup } from "../src/mobject/types/vectorized_mobject.js";
 import { StealthTip, ArrowCircleTip } from "../src/mobject/geometry/tips.js";
 import { Union, Difference, Intersection, Exclusion } from "../src/mobject/geometry/boolean_ops.js";
+import { pointRows } from "../src/utils/arrays.js";
+import { computeSubpathRanges } from "../src/renderer/canvas.js";
 import { MobjectTable } from "../src/mobject/table.js";
 import { SampleSpace } from "../src/mobject/graphing/probability.js";
 import { Axes, ComplexPlane } from "../src/mobject/graphing/coordinate_systems.js";
@@ -50,9 +52,29 @@ function expectVecClose(actual: number[] | NDArray, expected: number[], tol = 1e
 // Line3D([0,0,0],[2,2,2]): len sqrt(12), dir [1,1,1]/sqrt(3)
 // Torus R=3 r=1; Tetrahedron faces=4; create_faces single tri -> 1 face, 12 pts
 // MobjectTable 2x2: elements=4, rows=2, cols=2
-// Boolean ops need skia `pathops` (no TS equivalent): combinators throw
-// `TODO: boolean ops need the 'pathops' (skia) library`; only the <2-input
-// ValueError arity checks are ground-truth testable here.
+// Boolean ops are computed by the local polygon engine (no skia `pathops`
+// dependency); only the <2-input ValueError arity checks mirror Python
+// exactly, the rest is validated by area below and in boolean-ops.test.ts.
+
+/** Absolute area summed over a VMobject's subpaths (exact for polylines). */
+function booleanArea(mob: VMobject): number {
+  const rows = pointRows(mob.points, mob.dim).map(
+    (row) => [Number(row[0] ?? 0), Number(row[1] ?? 0)],
+  );
+  const ranges = computeSubpathRanges(rows, mob.n_points_per_cubic_curve, 1e-6);
+  let total = 0;
+  for (const [start, end] of ranges) {
+    const s = start as number;
+    const e = end as number;
+    if (e - s < 3) continue;
+    for (let i = s; i < e; i += 1) {
+      const a = rows[i] ?? [0, 0];
+      const b = rows[(i + 1 - s) % (e - s) + s] ?? [0, 0];
+      total += (a[0] ?? 0) * (b[1] ?? 0) - (b[0] ?? 0) * (a[1] ?? 0);
+    }
+  }
+  return Math.abs(total) / 2;
+}
 
 describe("Square", () => {
   it("side_length=2 gives width/height/side_length 2", () => {
@@ -318,15 +340,16 @@ describe("boolean ops", () => {
     expect(() => new Union(s)).toThrow(/At least 2 mobjects needed for Union/);
     expect(() => new Intersection(s)).toThrow(/At least 2 mobjects needed for Intersection/);
   });
-  it("full boolean geometry is a documented TODO (needs skia pathops)", () => {
-    // Python delegates to skia `pathops`; the port has no equivalent
-    // dependency, so the combinators throw until a local routine lands.
+  it("boolean combinators compute real geometry via the local engine", () => {
+    // The port implements boolean ops on flattened polygons (no skia
+    // `pathops` dependency). Two side-2 squares shifted by +-0.5 overlap in
+    // a 1x2 lens: union 6, difference 2, intersection 2, exclusion 4.
     const s1 = new Square().shift([-0.5, 0, 0]);
     const s2 = new Square().shift([0.5, 0, 0]);
-    expect(() => new Union(s1, s2)).toThrow(/pathops/);
-    expect(() => new Difference(s1, s2)).toThrow(/pathops/);
-    expect(() => new Intersection(s1, s2)).toThrow(/pathops/);
-    expect(() => new Exclusion(s1, s2)).toThrow(/pathops/);
+    expect(booleanArea(new Union(s1, s2))).toBeCloseTo(6, 0);
+    expect(booleanArea(new Difference(s1, s2))).toBeCloseTo(2, 0);
+    expect(booleanArea(new Intersection(s1, s2))).toBeCloseTo(2, 0);
+    expect(booleanArea(new Exclusion(s1, s2))).toBeCloseTo(4, 0);
   });
 });
 
