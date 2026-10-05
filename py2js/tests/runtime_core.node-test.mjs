@@ -519,4 +519,37 @@ check("numpy facade np.random distributions accept kwargs and array params", () 
   assert.ok(g.tolist().flat().every(Number.isFinite));
 });
 
+check("numpy facade append/insert/delete accept axis kwarg and NDArray rows", () => {
+  const np = ndCore.buildNumpy();
+  // Without __argnames__ rapydscript's ρσ_interpolate_kwargs hands the kwargs
+  // bag as a trailing object and numpy-ts throws
+  // "Cannot convert object to primitive value" (error 152).
+  assert.deepEqual(np.append.__argnames__, ["arr", "values", "axis"]);
+  assert.deepEqual(np.insert.__argnames__, ["arr", "obj", "values", "axis"]);
+  assert.deepEqual(np.delete.__argnames__, ["arr", "obj", "axis"]);
+  const place = (names, pos, kw) => {
+    const out = [...pos];
+    for (const k of Object.keys(kw)) {
+      const i = names.indexOf(k);
+      if (i >= 0) out[i] = kw[k];
+    }
+    return out;
+  };
+  // The error-152 call shape: `np.append(a, [a[-1]], axis=0)` where the
+  // values list nests an NDArray row (numpy-ts dtype inference rejects it
+  // unless unwrapped to a plain list first).
+  const a = np.array([[0, 4, 0]]);
+  const row = a[a.shape[0] - 1];
+  const grown = np.append(...place(np.append.__argnames__, [a, [row]], { axis: 0 }));
+  assert.deepEqual(grown.tolist(), [[0, 4, 0], [0, 4, 0]]);
+  // Positional form keeps working too.
+  assert.deepEqual(np.append(a, [row], 0).tolist(), [[0, 4, 0], [0, 4, 0]]);
+  // insert/delete share the same axis-kwarg shape (axis-insert itself is
+  // not implemented by numpy-ts standalone, so only the mapping is
+  // exercised for insert; delete with axis works end to end).
+  assert.deepEqual(np.insert([1, 2, 3], 1, 99).tolist(), [1, 99, 2, 3]);
+  const del = np.delete(...place(np.delete.__argnames__, [grown, 0], { axis: 0 }));
+  assert.deepEqual(del.tolist(), [[0, 4, 0]]);
+});
+
 console.log(`\n${passed} tests passed`);
