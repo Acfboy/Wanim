@@ -127,6 +127,21 @@ check("wanGetItem slices NDArray columns (pts[:, 1])", () => {
   assert.equal(ndCore.wanGetItem(pts, 0, 1).toArray(), 2);
 });
 
+check("wanGetItem supports None/newaxis on NDArrays (error 242)", () => {
+  ndCore.buildRuntime(); // applies the NDArray slice patch like the browser
+  const xs = npReal.linspace(-2, 1, 5);
+  const row = ndCore.wanGetItem(xs, null, ndCore.wanSlice(null, null));
+  assert.deepEqual(row.shape, [1, 5]);
+  const ys = npReal.linspace(-1.5, 1.5, 4);
+  const col2 = ndCore.wanGetItem(ys, ndCore.wanSlice(null, null), null);
+  assert.deepEqual(col2.shape, [4, 1]);
+  // Broadcasts like the Mandelbrot `xs[None, :] + 1j * ys[:, None]` grid.
+  const grid = npReal.asarray([[1, 2, 3], [4, 5, 6]]);
+  assert.deepEqual(ndCore.wanGetItem(grid, null, ":", ":").shape, [1, 2, 3]);
+  // Fully-indexed numerics still use numpy semantics after the patch.
+  assert.equal(ndCore.wanGetItem(grid, 0, 1).toArray(), 2);
+});
+
 check("wanGetItem descends nested plain lists numpy-style", () => {
   const grid = [[1, 2, 3], [4, 5, 6]];
   assert.deepEqual(ndCore.wanGetItem(grid, ":", 1), [2, 5]);

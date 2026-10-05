@@ -1018,13 +1018,17 @@ function subscriptObjStart(out: string): number | null {
       const word = out.slice(j + 1, i + 1);
       if (PYTHON_KEYWORDS.has(word)) {
         // `await foo(x)[a, b]` parses as `await (foo(x)[a, b])`, so the
-        // object starts after the keyword; every other keyword means this
-        // `[` is not a subscript (`in [1, 2]`, `return [..]`, ...).
+        // object starts after the keyword.  Any other keyword with no object
+        // yet (`in [1, 2]`, `return [..]`, ...) means this `[` is not a
+        // subscript; but a keyword *before* an already-found object
+        // (`if bounded[j, i]`, `if (foo)[a, b]`, `x in bar[a, b]`) still
+        // leaves a valid subscript whose object starts at `start`.
         if (start !== null && word === "await") {
           let k = i + 1;
           while (k < out.length && isHorizontalSpace(out[k]!)) k += 1;
           return k;
         }
+        if (start !== null) return start;
         return null;
       }
       start = j + 1;
@@ -1038,8 +1042,17 @@ function subscriptObjStart(out: string): number | null {
         continue;
       }
       // Two bare words in a row (`foo bar[x]`) or a group directly glued
-      // after a word (`(x)foo[y]`) cannot be an object chain.
-      if (isIdentCharAt(out, i) || isCloser(out[i]!)) return null;
+      // after a word (`(x)foo[y]`) cannot be an object chain.  A Python
+      // keyword before the object (`if bounded[x, y]`, `return a[x, y]`)
+      // is fine: the object still starts at `start`.
+      if (isCloser(out[i]!)) return null;
+      if (isIdentCharAt(out, i)) {
+        let k = i;
+        while (k >= 0 && IDENT_CHAR.test(out[k]!)) k -= 1;
+        const prev = out.slice(k + 1, i + 1);
+        if (PYTHON_KEYWORDS.has(prev)) return start;
+        return null;
+      }
       return start;
     }
     return start;
