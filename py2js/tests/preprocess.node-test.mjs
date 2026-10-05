@@ -12,6 +12,7 @@ import {
   desugarNumpySubscripts,
   desugarReversedBuiltin,
   desugarStarredDisplays,
+  desugarStarredGenerators,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
@@ -303,6 +304,34 @@ check("desugar keeps ternary elements and nested multi-for", () => {
 check("desugar leaves async-for alone", () => {
   const src = "x = [e async for a in A for b in B]\n";
   assert.equal(desugarMultiForComprehensions(src), src);
+});
+
+check("starred generators become starred list comprehensions", () => {
+  assert.equal(
+    desugarStarredGenerators("x = VGroup(*(Circle(c) for c in cols))\n"),
+    "x = VGroup(*[Circle(c) for c in cols])\n",
+  );
+  assert.equal(
+    desugarStarredGenerators(
+      "students = VGroup(*(\n    Circle(radius=0.3, color=c, fill_opacity=1)\n    for c in [RED, GREEN, YELLOW]\n))\n",
+    ),
+    "students = VGroup(*[\n    Circle(radius=0.3, color=c, fill_opacity=1)\n    for c in [RED, GREEN, YELLOW]\n])\n",
+  );
+  assert.equal(
+    desugarStarredGenerators("x = f(a, *(e for a in A for b in B))\n"),
+    "x = f(a, *[e for a in A for b in B])\n",
+  );
+});
+
+check("starred generators leave non-generators alone", () => {
+  const src =
+    "f(*args)\nf(a * (b))\nf(a, *b)\nf(*(a, b))\nx = (e for e in E)\nx = a * (e for e in E)\n";
+  assert.equal(desugarStarredGenerators(src), src);
+});
+
+check("starred generators ignore stars in strings and comments", () => {
+  const src = 'x = "*(e for e in E)"\n# f(*(e for e in E))\ny = f(*args)\n';
+  assert.equal(desugarStarredGenerators(src), src);
 });
 
 check("subscript desugar rewrites pts[:, 1]", () => {

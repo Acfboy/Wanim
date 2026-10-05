@@ -639,12 +639,19 @@ interface ComprehensionParts {
   clauses: DesugarClause[];
 }
 
-/** Parse `[begin, end)` as a multi-`for` comprehension head; null if not one. */
+/**
+ * Parse `[begin, end)` as a `for`-comprehension head; null if not one.
+ *
+ * `minClauses` is the minimum number of `for` clauses required (the
+ * multi-`for` desugar below uses 2; the starred-generator desugar further
+ * below uses 1 so single-`for` generator expressions are recognised too).
+ */
 function parseMultiForComprehension(
   source: string,
   open: string,
   begin: number,
   end: number,
+  minClauses = 2,
 ): ComprehensionParts | null {
   const occurrences = collectClauseKeywords(source, begin, end);
   // The element expression comes first and may itself contain depth-zero
@@ -730,7 +737,7 @@ function parseMultiForComprehension(
     clauseStart = iterEnd;
     index = cursor;
   }
-  if (clauses.length < 2) return null;
+  if (clauses.length < minClauses) return null;
   return {
     kind: open as "[" | "(" | "{",
     element,
@@ -820,6 +827,153 @@ export function desugarMultiForComprehensions(source: string): string {
   let out = source;
   for (let round = 0; round < 100; round += 1) {
     const rewritten = rewriteFirstMultiFor(out);
+    if (rewritten === null) return out;
+    out = rewritten;
+  }
+  return out;
+}
+
+// --- starred generator-expression desugar ----------------------------------
+//
+// rapydscript-ng parses a generator expression's element with
+// `expression(commas=True)`, whose sequence loop treats a newline before the
+// `for` as a sequence continuation and then chokes on the `for` keyword, so
+// valid Python such as
+//
+//   `VGroup(*(\n    Circle(c)\n    for c in [RED, GREEN, YELLOW]\n))`
+//
+// fails with "Unexpected token: keyword «for»" (single-line
+// `VGroup(*(Circle(c) for c in ...))` compiles fine).  List comprehensions do
+// not have this problem -- their element is parsed with `commas=False`.
+//
+// We rewrite a *call-argument unpacking* of a generator expression into an
+// unpacking of the equivalent list comprehension:
+//
+//   `f(*(E for x in xs))`  ->  `f(*([E for x in xs]))`
+//
+// Unpacking materialises every item as a positional argument either way, so
+// the rewrite is exactly equivalent (even for infinite generators both forms
+// diverge the same way); only the intermediate generator object -- never
+// observable through `*` -- disappears.  Multi-`for` generators are rewritten
+// as well; the multi-`for` desugar above then processes the resulting list
+// form on its own pass (this desugar therefore runs before it).
+//
+// Only `*` in argument position (previous significant character `(` or `,`,
+// i.e. `f(*...)` / `f(a, *...)`) is rewritten: a binary `a * (...)` must keep
+// its operand verbatim (`2 * gen` raises `TypeError` while `2 * [...]`
+// repeats the list, so rewriting there would silently change semantics).
+// `**` (power/kwargs) is never a match.  The parenthesised content must parse
+// as a 1+-clause generator via the same guards the multi-`for` desugar uses
+// (no top-level comma/colon, no `yield`/` *` head, no `async for`, ...), so
+// starred tuples (`f(*args)`, `f(*(a, b))`) and ordinary groups pass through
+// untouched.  Starred genexps in list/set displays (`[*(x for ...)]`,
+// `{*(x for ...)}`) are intentionally left alone (vanishingly rare in scenes;
+// the display desugars would need to run afterwards).
+//
+// Known limitations: a bare (non-starred) multi-line generator expression
+// (`x = (E\n for x in xs)`) still fails to compile -- write it single-line or
+// unpack/star it; like the other desugars this is a source-level heuristic
+// (a `*` inside an f-string `{...}` interpolation is not distinguished from
+// an unpacking star when preceded by `(` or `,`).
+
+/** Skip whitespace (including newlines) and `#` comments going forward. */
+function skipStarGap(source: string, pos: number): number {
+  let i = pos;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n" || ch === "\f" || ch === "\v") {
+      i += 1;
+      continue;
+    }
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 ? source.length : nl + 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") return i;
+    return i;
+  }
+  return i;
+}
+
+/** Previous significant character before `pos` (whitespace skipped). */
+function prevSignificantChar(source: string, pos: number): string | null {
+  let j = pos - 1;
+  while (j >= 0) {
+    const ch = source[j]!;
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n" || ch === "\f" || ch === "\v") {
+      j -= 1;
+      continue;
+    }
+    return ch;
+  }
+  return null;
+}
+
+/** Rewrite the first starred generator expression in `source`, or null. */
+function rewriteFirstStarredGenerator(source: string): string | null {
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "#") {
+      const nl = source.indexOf("\n", i);
+      i = nl === -1 ? source.length : nl + 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = readString(source, i);
+      continue;
+    }
+    if (ch !== "*") {
+      i += 1;
+      continue;
+    }
+    // `**` (power or kwargs unpacking) is never a starred generator.
+    if (source[i + 1] === "*" || (i > 0 && source[i - 1] === "*")) {
+      i += 1;
+      continue;
+    }
+    // Only argument-position unpacking (`f(*...)`, `f(a, *...)`); a binary
+    // `a * (...)` must keep its operand verbatim (see above).
+    const prev = prevSignificantChar(source, i);
+    if (prev !== "(" && prev !== ",") {
+      i += 1;
+      continue;
+    }
+    const open = skipStarGap(source, i + 1);
+    if (source[open] !== "(") {
+      i += 1;
+      continue;
+    }
+    const close = findMatchingBracket(source, open);
+    if (close === -1) {
+      i += 1;
+      continue;
+    }
+    // Same guards as the multi-`for` desugar, but single-`for` generators
+    // count too (`minClauses = 1`).
+    const parts = parseMultiForComprehension(source, "(", open + 1, close, 1);
+    if (parts === null || parts.kind !== "(" || parts.dictKey !== null) {
+      i += 1;
+      continue;
+    }
+    return `${source.slice(0, open)}[${source.slice(open + 1, close)}]${source.slice(close + 1)}`;
+  }
+  return null;
+}
+
+/**
+ * Rewrite every call-argument `*(E for ...)` into `*([E for ...])` (see
+ * above) so rapydscript-ng -- which rejects a newline between a generator's
+ * element and its `for` -- can compile it.  Runs to a fixpoint so nested
+ * starred generators are rewritten as well; each rewrite strictly reduces
+ * the number of starred-generator parens, so this terminates.
+ */
+export function desugarStarredGenerators(source: string): string {
+  if (!source.includes("*")) return source;
+  let out = source;
+  for (let round = 0; round < 100; round += 1) {
+    const rewritten = rewriteFirstStarredGenerator(out);
     if (rewritten === null) return out;
     out = rewritten;
   }

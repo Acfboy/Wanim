@@ -29,6 +29,7 @@ import {
   desugarNumpySubscripts,
   desugarReversedBuiltin,
   desugarStarredDisplays,
+  desugarStarredGenerators,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   preprocessImports,
@@ -55,6 +56,7 @@ export {
   desugarNumpySubscripts,
   desugarReversedBuiltin,
   desugarStarredDisplays,
+  desugarStarredGenerators,
   desugarTupleTrailingCommas,
   formatUnsupportedImportError,
   installPythonShims,
@@ -98,9 +100,10 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // rapydscript-ng only parses a single `for` clause per comprehension, a
   // single index/slice per `[...]`, `@` as a decorator, no `j`-suffixed
   // complex literals, a bare name per `except` handler, no trailing comma
-  // inside `(...)` tuples, no `*` spread inside list/tuple displays, and its
+  // inside `(...)` tuples, no `*` spread inside list/tuple displays, no newline
+  // between a generator expression's element and its `for`, and its
   // `reversed()` only accepts plain arrays/strings, and baselib `abs` is
-  // `Math.abs` (NaN on complex), so all nine are
+  // `Math.abs` (NaN on complex), so all ten are
   // desugared before compilation:
   // multi-`for` comprehensions into nested single-`for` ones (plus
   // `__wan_flatten1` calls), dotted/tuple `except` handlers
@@ -110,7 +113,9 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // into `__wan_matmul` calls, complex literals (`0j`) into
   // `__wan_complex(0, imag)` calls, tuple trailing commas (`(a, b,)`,
   // `(x,)`) into `(a, b)`/`[x]`, starred list/tuple displays (`[*a, b]`,
-  // `(*a, b)`) into `[].concat(__wan_spread(a), [b])` calls, bare
+  // `(*a, b)`) into `[].concat(__wan_spread(a), [b])` calls, starred
+  // generator unpackings (`f(*(x for x in xs))`) into unpackings of the
+  // equivalent list comprehension (`f(*([x for x in xs]))`), bare
   // `reversed(x)` calls into `__wan_reversed(x)` calls, and bare `abs(x)`
   // calls into `__wan_abs(x)` calls.  The tuple step runs
   // first so later passes never see the trailing comma; the starred-display
@@ -118,17 +123,20 @@ export async function compilePython(source: string): Promise<CompiledScene> {
   // complex step runs before the matmul step so it never sees the `j`
   // suffix; the matmul step runs before the subscript step so `@` operands
   // containing `[...]` (e.g. `A[:, 0] @ b`) still reach the subscript step
-  // intact.
+  // intact; the starred-generator step runs before the multi-`for` step so a
+  // multi-`for` generator reaches it as a list comprehension.
   const pre = preprocessImports(
     desugarDottedExcept(
       desugarMultiForComprehensions(
-        desugarNumpySubscripts(
-          desugarReversedBuiltin(
-            desugarAbsBuiltin(
-              desugarMatmul(
-                desugarComplexLiterals(
-                  desugarStarredDisplays(
-                    desugarTupleTrailingCommas(renameJsReservedWords(source)),
+        desugarStarredGenerators(
+          desugarNumpySubscripts(
+            desugarReversedBuiltin(
+              desugarAbsBuiltin(
+                desugarMatmul(
+                  desugarComplexLiterals(
+                    desugarStarredDisplays(
+                      desugarTupleTrailingCommas(renameJsReservedWords(source)),
+                    ),
                   ),
                 ),
               ),
