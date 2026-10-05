@@ -3430,6 +3430,22 @@ export function createAnimationBuilder(mobject: Mobject): _AnimationBuilder {
   return new _AnimationBuilder(mobject);
 }
 
+// The animate/updater builders shuttle rapydscript kwargs bags around as
+// *values*: `update_target` splits the method's kwargs bag off and hands it
+// to `apply_method_update` as the `method_kwargs` argument, which re-applies
+// it positionally so the wrapped-method kwargs bridge (`wrapPrototypeMethods`
+// in py2js) can map it onto the target method's slots. If the builders'
+// own prototype methods were wrapped, the bridge would mistake that trailing
+// bag for kwargs-to-map (e.g. `opacity=` has no slot on
+// `apply_method_update`, so it lands in an extras merge that drops the tag),
+// and the detagged bag would ride positionally into `color` and throw in
+// `ManimColor` (`circles.animate.set_fill(opacity=0.25)`).
+// These classes are internal machinery (never Python kwarg call targets),
+// so they opt out of prototype wrapping entirely.
+(
+  _AnimationBuilder as unknown as { __wanim_skip_kwargs_bridge__?: boolean }
+).__wanim_skip_kwargs_bridge__ = true;
+
 export class _UpdaterBuilder {
   _mobject: Mobject;
 
@@ -3466,6 +3482,10 @@ export class _UpdaterBuilder {
 export function createUpdaterBuilder(mobject: Mobject): _UpdaterBuilder {
   return new _UpdaterBuilder(mobject);
 }
+
+(
+  _UpdaterBuilder as unknown as { __wanim_skip_kwargs_bridge__?: boolean }
+).__wanim_skip_kwargs_bridge__ = true;
 
 export function override_animate(method: FunctionLike): (animationMethod: FunctionLike) => FunctionLike {
   function decorator(animationMethod: FunctionLike): FunctionLike {
