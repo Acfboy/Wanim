@@ -247,23 +247,29 @@ export function preprocessImports(source: string): PreprocessResult {
       line = joined.replace(/\n/g, " ");
     }
 
+    // Emitted replacement lines must keep the original statement's indentation:
+    // an `import` inside a function/method body (e.g. `import math` in
+    // `construct`) would otherwise dedent to column 0 and rapydscript fails
+    // with "Inconsistent indentation".
+    const indent = line.match(/^[ \t]*/)?.[0] ?? "";
+
     const numpyFrom = line.match(NUMPY_FROM);
     if (numpyFrom) {
       const spec = numpyFrom[2].trim();
       if (spec === "*") numpyNames.push("*");
       else numpyNames.push(...parseImportedNames(spec));
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       continue;
     }
     if (NUMPY_IMPORT.test(line)) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       continue;
     }
     if (MANIM_FROM.test(line) || MANIM_IMPORT.test(line)) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       continue;
     }
 
@@ -276,28 +282,28 @@ export function preprocessImports(source: string): PreprocessResult {
     const randomImport = line.match(RANDOM_IMPORT);
     if (randomImport) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       if (!randomAliasEmitted) {
-        out.push(`${randomAlias} = random`);
+        out.push(`${indent}${randomAlias} = random`);
         randomAliasEmitted = true;
       }
       const alias = randomImport[2];
-      if (alias !== undefined && alias !== "random") out.push(`${alias} = ${randomAlias}`);
+      if (alias !== undefined && alias !== "random") out.push(`${indent}${alias} = ${randomAlias}`);
       continue;
     }
     const randomFrom = line.match(RANDOM_FROM);
     if (randomFrom) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       if (!randomAliasEmitted) {
-        out.push(`${randomAlias} = random`);
+        out.push(`${indent}${randomAlias} = random`);
         randomAliasEmitted = true;
       }
       for (const [name, alias] of parseFromNames(randomFrom[1])) {
         if (name === "*") {
-          for (const pub of RANDOM_PUBLIC) out.push(`${pub} = ${randomAlias}.${pub}`);
+          for (const pub of RANDOM_PUBLIC) out.push(`${indent}${pub} = ${randomAlias}.${pub}`);
         } else {
-          out.push(`${alias} = ${randomAlias}.${name}`);
+          out.push(`${indent}${alias} = ${randomAlias}.${name}`);
         }
       }
       continue;
@@ -311,28 +317,28 @@ export function preprocessImports(source: string): PreprocessResult {
     const mathImport = line.match(MATH_IMPORT);
     if (mathImport) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       if (!mathAliasEmitted) {
-        out.push(`${mathAlias} = math`);
+        out.push(`${indent}${mathAlias} = math`);
         mathAliasEmitted = true;
       }
       const alias = mathImport[2];
-      if (alias !== undefined && alias !== "math") out.push(`${alias} = ${mathAlias}`);
+      if (alias !== undefined && alias !== "math") out.push(`${indent}${alias} = ${mathAlias}`);
       continue;
     }
     const mathFrom = line.match(MATH_FROM);
     if (mathFrom) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       if (!mathAliasEmitted) {
-        out.push(`${mathAlias} = math`);
+        out.push(`${indent}${mathAlias} = math`);
         mathAliasEmitted = true;
       }
       for (const [name, alias] of parseFromNames(mathFrom[1])) {
         if (name === "*") {
-          for (const pub of MATH_PUBLIC) out.push(`${pub} = ${mathAlias}.${pub}`);
+          for (const pub of MATH_PUBLIC) out.push(`${indent}${pub} = ${mathAlias}.${pub}`);
         } else {
-          out.push(`${alias} = ${mathAlias}.${name}`);
+          out.push(`${indent}${alias} = ${mathAlias}.${name}`);
         }
       }
       continue;
@@ -346,28 +352,28 @@ export function preprocessImports(source: string): PreprocessResult {
     const itertoolsImport = line.match(ITERTOOLS_IMPORT);
     if (itertoolsImport) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       if (!itertoolsAliasEmitted) {
-        out.push(`${itertoolsAlias} = itertools`);
+        out.push(`${indent}${itertoolsAlias} = itertools`);
         itertoolsAliasEmitted = true;
       }
       const alias = itertoolsImport[2];
-      if (alias !== undefined && alias !== "itertools") out.push(`${alias} = ${itertoolsAlias}`);
+      if (alias !== undefined && alias !== "itertools") out.push(`${indent}${alias} = ${itertoolsAlias}`);
       continue;
     }
     const itertoolsFrom = line.match(ITERTOOLS_FROM);
     if (itertoolsFrom) {
       stripped.push(line.trim());
-      out.push(`# [wanim] stripped: ${line.trim()}`);
+      out.push(`${indent}# [wanim] stripped: ${line.trim()}`);
       if (!itertoolsAliasEmitted) {
-        out.push(`${itertoolsAlias} = itertools`);
+        out.push(`${indent}${itertoolsAlias} = itertools`);
         itertoolsAliasEmitted = true;
       }
       for (const [name, alias] of parseFromNames(itertoolsFrom[1])) {
         if (name === "*") {
-          for (const pub of ITERTOOLS_PUBLIC) out.push(`${pub} = ${itertoolsAlias}.${pub}`);
+          for (const pub of ITERTOOLS_PUBLIC) out.push(`${indent}${pub} = ${itertoolsAlias}.${pub}`);
         } else {
-          out.push(`${alias} = ${itertoolsAlias}.${name}`);
+          out.push(`${indent}${alias} = ${itertoolsAlias}.${name}`);
         }
       }
       continue;
