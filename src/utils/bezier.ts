@@ -1,5 +1,5 @@
 import { add, array, multiply, roots as polyRoots, type NDArray } from "numpy-ts";
-import { isNDArray, nestedRows, numeric, pointRows } from "./arrays.js";
+import { _cContiguousRows, isNDArray, nestedRows, numeric, pointRows } from "./arrays.js";
 
 function rawRows(value: number[] | number[][] | NDArray): number[][] {
   return nestedRows(value).map((row) =>
@@ -166,6 +166,25 @@ export function interpolate(
       startArr.shape.length === endArr.shape.length &&
       startArr.shape.every((value, index) => value === endArr.shape[index]);
     if (sameShape) {
+      // Flat fast path: per-frame point interpolation runs for every face of
+      // every animated mobject, and three numpy-ts ops (plus their WASM
+      // temporaries) per face dominated `Rotate`/`Transform` playback.
+      const flatStart = _cContiguousRows(startArr);
+      const flatEnd = _cContiguousRows(endArr);
+      if (
+        flatStart !== null &&
+        flatEnd !== null &&
+        flatStart.rowDim === flatEnd.rowDim &&
+        flatStart.rowCount === flatEnd.rowCount
+      ) {
+        const inv = 1 - alpha;
+        const length = flatStart.rowCount * flatStart.rowDim;
+        const out = new Float64Array(length);
+        for (let index = 0; index < length; index += 1) {
+          out[index] = Number(flatStart.data[index] ?? 0) * inv + Number(flatEnd.data[index] ?? 0) * alpha;
+        }
+        return array(out).reshape(flatStart.rowCount, flatStart.rowDim) as NDArray;
+      }
       return add(multiply(startArr, 1 - alpha), multiply(endArr, alpha)) as NDArray;
     }
   }

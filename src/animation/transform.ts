@@ -25,6 +25,8 @@ export class Transform extends Animation {
   private _path_arc!: number;
   private _path_func!: PathFuncType;
   replace_mobject_with_target_in_scene: boolean;
+  /** Cached zipped families (rebuilt in `begin`); see get_all_families_zipped. */
+  private _families_zipped: Mobject[][] | null = null;
 
   constructor(mobject: Mobject, targetMobject?: Mobject | TransformOptions, options: TransformOptions = {}) {
     const actualOptions = targetMobject instanceof Mobject || targetMobject === undefined ? options : (targetMobject as TransformOptions);
@@ -99,6 +101,7 @@ export class Transform extends Animation {
     // Note, this potentially changes the structure
     // of both mobject and target_mobject
     this.mobject.align_data(this.target_copy);
+    this._families_zipped = null;
     super.begin();
   }
 
@@ -138,6 +141,10 @@ export class Transform extends Animation {
     // NOTE: mirrors `zip(*(mob.family_members_with_points() for mob in mobs))`
     // stopping at the SHORTEST family (like animation.ts), rather than
     // padding shorter families with the current mobject.
+    // The family structure does not change during an animation, so the zip is
+    // computed once per `begin` instead of once per frame (which walked every
+    // face of every family three times per frame).
+    if (this._families_zipped !== null) return this._families_zipped;
     const mobs = [
       this.mobject,
       this.starting_mobject,
@@ -146,7 +153,8 @@ export class Transform extends Animation {
     const families = mobs.map((mob) => (mob as Mobject).family_members_with_points());
     if (families.length === 0) return [];
     const length = Math.min(...families.map((family) => family.length));
-    return Array.from({ length }, (_, index) => families.map((family) => family[index] as Mobject));
+    this._families_zipped = Array.from({ length }, (_, index) => families.map((family) => family[index] as Mobject));
+    return this._families_zipped;
   }
 
   clean_up_from_scene(scene: any): void {
