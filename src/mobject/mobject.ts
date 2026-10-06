@@ -1182,6 +1182,19 @@ export class Mobject {
   get depth(): number { return this.length_over_dim(2); }
   set depth(value: number) { this.scale_to_fit_depth(value); }
 
+  // NOTE: Python `get_width()` / `get_height()` / `get_depth()` (mirrors of
+  // the `width` / `height` / `depth` properties).  They must exist as real
+  // prototype methods, not only via the Mobject Proxy `get_*` fallback:
+  // rapydscript subclasses of wanim classes (e.g. `class BitRow(VGroup)`)
+  // are plain objects (the native `__init__` does `Object.assign(this,
+  // new Ctor(...))`), so they never go through the Proxy `get` trap and
+  // `rows[0].get_height()` on such an instance fails with
+  // `TypeError: ...get_height is not a function` (error 349).  Same reason
+  // `set_width` / `set_height` / `set_depth` below are real methods.
+  get_width(): number { return this.width; }
+  get_height(): number { return this.height; }
+  get_depth(): number { return this.depth; }
+
   length_over_dim(dim: number): number {
     // Same extrema as `Math.max(...points.map(p => p[dim])) - Math.min(...)`,
     // but scanned straight from the C-contiguous backing stores: the old
