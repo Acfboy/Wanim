@@ -728,22 +728,17 @@ export class ThreeDCamera extends Camera {
     const keys = new Float64Array(count);
     for (let index = 0; index < count; index += 1) {
       const mob = displayed[index]!;
-      // Python `hasattr(mob, "shade_in_3d")`: the Mobject proxy raises
-      // AttributeError for missing attributes, so probe with `in`.
-      const shade = "shade_in_3d" in mob
-        ? Boolean((mob as { shade_in_3d?: boolean }).shade_in_3d)
-        : false;
+      // Direct field read: missing/undefined means "not a 3D mobject", exactly
+      // like the old `in` probe (which also paid operator overhead per face).
+      const shade = (mob as { shade_in_3d?: unknown }).shade_in_3d === true;
       keys[index] = shade ? zReferenceDotFlat(mob, rx, ry, rz) : Infinity;
     }
     const order = new Array<number>(count);
     for (let index = 0; index < count; index += 1) order[index] = index;
-    order.sort((a, b) => {
-      const ka = keys[a]!;
-      const kb = keys[b]!;
-      if (ka < kb) return -1;
-      if (ka > kb) return 1;
-      return a - b;
-    });
+    // Subtraction comparator: identical ordering to the branchy version
+    // (NaN and ±Infinity fall through `||` to the index tiebreak, matching
+    // the old `<`/`>`-both-false behaviour), but measurably faster.
+    order.sort((a, b) => keys[a]! - keys[b]! || a - b);
     const result = new Array<Mobject>(count);
     for (let index = 0; index < count; index += 1) result[index] = displayed[order[index]!]!;
     return result;
