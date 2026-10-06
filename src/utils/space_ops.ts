@@ -18,11 +18,19 @@ function toRows(value: VectorInput): { rows: number[][]; single: boolean } {
     const flat = (Array.isArray(raw) ? raw : [raw]) as unknown[];
     return { rows: [flat.map(numeric)], single: true };
   }
-  if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0])) {
-    return {
-      rows: (value as unknown[][]).map((row) => (Array.isArray(row) ? row : [row]).map(numeric)),
-      single: false,
-    };
+  if (Array.isArray(value) && value.length > 0) {
+    const first = (value as unknown[])[0];
+    if (Array.isArray(first) || isNDArray(first) || ArrayBuffer.isView(first)) {
+      return {
+        rows: (value as unknown[]).map((row) => {
+          if (isNDArray(row)) return ((row as NDArray).toArray() as unknown[]).map(numeric);
+          if (Array.isArray(row)) return (row as unknown[]).map(numeric);
+          if (ArrayBuffer.isView(row)) return Array.from(row as unknown as ArrayLike<unknown>).map(numeric);
+          return [numeric(row)];
+        }),
+        single: false,
+      };
+    }
   }
   return { rows: [[... (value as unknown[])].map(numeric)], single: true };
 }
