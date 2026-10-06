@@ -808,18 +808,50 @@ export class NumberLine extends VGroup {
     font_size: number | null = null,
     label_constructor: unknown = null,
     number_config: Record<string, unknown> = {},
-    ...extra: unknown[]
   ): this {
     // NOTE: 2019-era manim used the variadic form `add_numbers(*values)`
     // (e.g. `add_numbers(*np.arange(0, 1.2, 0.2))`, `add_numbers(*range(1, 12))`),
     // which py2js compiles to `add_numbers.apply(obj, values)`. Modern manim
-    // takes a single iterable instead. Accept both: when the first argument
-    // is a bare number or extra positionals are present, treat every numeric
-    // positional as a value and fall back to defaults for the options.
+    // takes a single iterable instead. There is deliberately no `...extra`
+    // rest parameter: the py2js kwargs bridge maps unknown keywords (e.g.
+    // `buff`, `num_decimal_places`) onto the trailing `number_config`
+    // options bag, but only when the last named parameter is an options bag
+    // and no rest parameter is present. A rest parameter diverts those
+    // keywords into a trailing plain object that lands in the wrong
+    // positional slot (previously `label_constructor`, or even `excluding`,
+    // whose spread then threw `TypeError: resolvedExcluding is not
+    // iterable`). Legacy variadic positionals are collected from `arguments`
+    // below instead.
+    const extra: unknown[] = Array.prototype.slice.call(arguments, 5) as unknown[];
     const isVariadic =
       typeof x_values === "number" ||
       typeof x_values === "bigint" ||
       extra.length > 0;
+    // A plain options/kwargs bag is never a valid value list or exclusion
+    // list: the cross-language bridge can hand one through any positional
+    // slot when parameter names are unavailable for keyword mapping. Such
+    // bags are folded back into the number config instead of crashing.
+    let absorbedConfig: Record<string, unknown> = {};
+    const absorbOptionsBag = (value: unknown): boolean => {
+      if (value === null || value === undefined) return false;
+      if (typeof value !== "object") return false;
+      if (Array.isArray(value) || isNDArray(value)) return false;
+      if (typeof (value as Iterable<number>)[Symbol.iterator] === "function") return false;
+      absorbedConfig = { ...(value as Record<string, unknown>), ...absorbedConfig };
+      return true;
+    };
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      !isNDArray(value) &&
+      typeof (value as Iterable<unknown>)[Symbol.iterator] !== "function";
+    const toNumberList = (value: unknown): number[] => {
+      if (typeof value === "number" || typeof value === "bigint") return [Number(value)];
+      if (isNDArray(value)) return ((value as NDArray).toArray() as unknown[]).map(Number);
+      if (Array.isArray(value)) return (value as unknown[]).map(Number);
+      return [...(value as Iterable<number>)].map(Number);
+    };
     let values: number[];
     if (isVariadic) {
       const raw: unknown[] = [x_values, excluding, font_size, label_constructor, number_config, ...extra];
@@ -863,30 +895,58 @@ export class NumberLine extends VGroup {
       }
     } else if (x_values === null || x_values === undefined) {
       values = (this.get_tick_range().toArray() as unknown[]).map(Number);
-    } else if (isNDArray(x_values)) {
-      values = ((x_values as NDArray).toArray() as unknown[]).map(Number);
+    } else if (absorbOptionsBag(x_values)) {
+      // NOTE: `x_values` itself arrived as an options bag (bridge artifact);
+      // fall back to the default tick range.
+      values = (this.get_tick_range().toArray() as unknown[]).map(Number);
     } else {
-      values = [...(x_values as Iterable<number>)].map(Number);
+      values = toNumberList(x_values);
     }
-    const resolvedExcluding = isVariadic
-      ? this.numbers_to_exclude
-      : ((excluding as Iterable<number> | null) ?? this.numbers_to_exclude);
-    const resolvedFontSize = isVariadic ? this.font_size : ((font_size as number | null) ?? this.font_size);
-    const resolvedConstructor = isVariadic ? this.label_constructor : ((label_constructor as unknown) ?? this.label_constructor);
-    // In variadic mode the `number_config` slot actually holds a numeric
-    // value, so ignore it and use the default empty config.
-    const resolvedNumberConfig = isVariadic ? {} : ((number_config as Record<string, unknown>) ?? {});
+    // NOTE: `excluding` may similarly arrive as an options bag (e.g.
+    // `{font_size: 16, buff: 0.25}` when keyword mapping is unavailable);
+    // recover it into the number config so the exclusion spread below cannot
+    // throw `TypeError: resolvedExcluding is not iterable`. In variadic mode
+    // the option slots hold numeric values instead, so defaults apply there
+    // (mirroring the old behavior).
+    let cleanExcluding: unknown = excluding;
+    if (!isVariadic && absorbOptionsBag(cleanExcluding)) cleanExcluding = null;
+    const baseExcluding = isVariadic
+      ? (this.numbers_to_exclude ?? [])
+      : ((cleanExcluding as Iterable<number> | number | null) ?? this.numbers_to_exclude ?? []);
+    const excludingList = toNumberList(baseExcluding);
+    const mergedConfig: Record<string, unknown> = isVariadic
+      ? {}
+      : {
+          ...absorbedConfig,
+          ...(isRecord(number_config) ? number_config : {}),
+        };
+    // NOTE: mirrors Python, where `add_numbers(..., **kwargs)` forwards the
+    // leftover keywords to `get_number_mobject` (so `buff=`/`direction=`
+    // bind there while the rest reaches `DecimalNumber`). Explicit slots win
+    // over bag entries.
+    const bagValue = (key: string): unknown => mergedConfig[key];
+    const resolvedFontSize = isVariadic
+      ? this.font_size
+      : (font_size ?? (bagValue("font_size") as number | null) ?? (bagValue("fontSize") as number | null) ?? this.font_size);
+    const resolvedConstructor = isVariadic
+      ? this.label_constructor
+      : (label_constructor ?? bagValue("label_constructor") ?? this.label_constructor);
+    const resolvedDirection = isVariadic
+      ? undefined
+      : ((bagValue("direction") as readonly number[] | NDArray | null | undefined) ?? undefined);
+    const resolvedBuff = isVariadic ? undefined : ((bagValue("buff") as number | null | undefined) ?? undefined);
+    for (const key of ["font_size", "fontSize", "label_constructor", "direction", "buff"]) delete mergedConfig[key];
     const numbers = new VGroup();
     for (const x of values) {
-      if ([...resolvedExcluding].includes(x)) continue;
+      if (excludingList.includes(x)) continue;
       numbers.add(
         this.get_number_mobject(
           x,
-          undefined,
-          undefined,
+          resolvedDirection,
+          resolvedBuff,
           resolvedFontSize,
           resolvedConstructor,
-          resolvedNumberConfig,
+          mergedConfig,
         ),
       );
     }
