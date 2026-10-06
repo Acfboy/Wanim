@@ -1060,6 +1060,338 @@ export function pythonPercentFormat(format: string, values: Any): string {
   return out;
 }
 
+// --- Python `format()` builtin --------------------------------------------
+//
+// rapydscript's baselib provides no `format` builtin, so a bare
+// `format(value, spec)` call (e.g. `format(n % 16, "04b")` for zero-padded
+// binary, error 342) fails with `ReferenceError: format is not defined`.
+// These helpers implement CPython's format-spec mini-language
+// (`[[fill]align][sign][#][0][width][,][.precision][type]`) for the int,
+// float/bool and str cases; other objects go through `__format__` when
+// present, fall back to `str(value)` for an empty spec, and raise otherwise.
+
+interface FormatSpec {
+  fill: string;
+  align: "<" | ">" | "=" | "^" | "";
+  sign: "+" | "-" | " " | "";
+  alt: boolean;
+  zero: boolean;
+  width: number | null;
+  grouping: "," | "_" | "";
+  precision: number | null;
+  type: string;
+}
+
+function parseFormatSpec(spec: string): FormatSpec {
+  const out: FormatSpec = {
+    fill: " ", align: "", sign: "", alt: false, zero: false,
+    width: null, grouping: "", precision: null, type: "",
+  };
+  let rest = spec;
+  if (rest.length >= 2 && "<>=^".includes(rest[1]!)) {
+    out.fill = rest[0]!;
+    out.align = rest[1]! as FormatSpec["align"];
+    rest = rest.slice(2);
+  } else if (rest.length >= 1 && "<>=^".includes(rest[0]!)) {
+    out.align = rest[0]! as FormatSpec["align"];
+    rest = rest.slice(1);
+  }
+  if (rest.length >= 1 && "+- ".includes(rest[0]!)) {
+    out.sign = rest[0]! as FormatSpec["sign"];
+    rest = rest.slice(1);
+  }
+  if (rest.startsWith("#")) {
+    out.alt = true;
+    rest = rest.slice(1);
+  }
+  if (rest.startsWith("0")) {
+    out.zero = true;
+    rest = rest.slice(1);
+  }
+  const widthMatch = /^(\d+)/.exec(rest);
+  if (widthMatch !== null) {
+    out.width = Number(widthMatch[1]);
+    rest = rest.slice(widthMatch[1]!.length);
+  }
+  if (rest.startsWith(",") || rest.startsWith("_")) {
+    out.grouping = rest[0]! as FormatSpec["grouping"];
+    rest = rest.slice(1);
+  }
+  if (rest.startsWith(".")) {
+    const precisionMatch = /^\.(\d+)/.exec(rest);
+    if (precisionMatch === null) throw new Error(`invalid format specifier '${spec}'`);
+    out.precision = Number(precisionMatch[1]);
+    rest = rest.slice(precisionMatch[0].length);
+  }
+  if (rest.length > 1) throw new Error(`invalid format specifier '${spec}'`);
+  out.type = rest;
+  return out;
+}
+
+function formatSignOf(negative: boolean, sign: FormatSpec["sign"]): string {
+  if (negative) return "-";
+  if (sign === "+") return "+";
+  if (sign === " ") return " ";
+  return "";
+}
+
+function groupFormatDigits(digits: string, sep: string, size: number): string {
+  if (digits.length <= size) return digits;
+  let out = "";
+  let count = 0;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    out = digits[i]! + out;
+    count += 1;
+    if (count === size && i > 0) {
+      out = sep + out;
+      count = 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * Apply width/fill/align padding. `head` (sign + base prefix) stays left of
+ * the padding only for the sign-aware `=` alignment; every other alignment
+ * pads around the joined body.
+ */
+function padFormatted(head: string, tail: string, spec: FormatSpec, numeric: boolean): string {
+  let align = spec.align;
+  let fill = spec.fill;
+  if (align === "") {
+    if (numeric) {
+      if (spec.zero) {
+        align = "=";
+        fill = "0";
+      } else {
+        align = ">";
+      }
+    } else {
+      // Strings never take sign-aware padding: `format("ab", "05")` is
+      // `"ab000"`, i.e. left alignment with a zero fill.
+      align = "<";
+      if (spec.zero && fill === " ") fill = "0";
+    }
+  } else if (align === "=" && !numeric) {
+    throw new Error("'=' alignment not allowed in string format specifier");
+  }
+  if (align === "=") fill = spec.zero && spec.fill === " " ? "0" : fill;
+  const body = head + tail;
+  if (spec.width === null || body.length >= spec.width) return body;
+  const pad = fill.repeat(spec.width - body.length);
+  switch (align) {
+    case "<":
+      return body + pad;
+    case "^": {
+      const left = Math.floor(pad.length / 2);
+      return pad.slice(0, left) + body + pad.slice(left);
+    }
+    case "=":
+      return head + pad + tail;
+    default:
+      return pad + body;
+  }
+}
+
+function formatIntDigits(n: number, type: string, alt: boolean): { head: string; digits: string } {
+  const abs = Math.abs(n);
+  switch (type) {
+    case "b":
+      return { head: alt ? "0b" : "", digits: abs.toString(2) };
+    case "o":
+      return { head: alt ? "0o" : "", digits: abs.toString(8) };
+    case "x":
+      return { head: alt ? "0x" : "", digits: abs.toString(16) };
+    case "X":
+      return { head: alt ? "0X" : "", digits: abs.toString(16).toUpperCase() };
+    default:
+      return { head: "", digits: abs.toString(10) };
+  }
+}
+
+function formatIntNumber(n: number, spec: FormatSpec, typeName: string): string {
+  if (spec.precision !== null) {
+    throw new Error("Precision not allowed in integer format specifier");
+  }
+  const type = spec.type;
+  if (type === "c") {
+    if (!Number.isInteger(n) || n < 0 || n > 0x10ffff) {
+      throw new Error(`chr() arg not in range(0x110000)`);
+    }
+    const text = String.fromCodePoint(n);
+    return padFormatted("", text, spec, false);
+  }
+  if (type !== "" && type !== "d" && type !== "n" && type !== "b" && type !== "o" && type !== "x" && type !== "X") {
+    throw new Error(`Unknown format code '${type}' for object of type '${typeName}'`);
+  }
+  const negative = n < 0;
+  const { head: prefix, digits: raw } = formatIntDigits(n, type, spec.alt);
+  let digits = raw;
+  if (type === "n" && spec.grouping !== "") {
+    throw new Error(`Cannot specify '${spec.grouping}' with 'n'.`);
+  }
+  if (spec.grouping === ",") {
+    if (type !== "" && type !== "d" && type !== "n") {
+      throw new Error(`Cannot specify ',' with '${type}'`);
+    }
+    digits = groupFormatDigits(digits, ",", 3);
+  } else if (spec.grouping === "_") {
+    digits = groupFormatDigits(digits, "_", type === "" || type === "d" || type === "n" ? 3 : 4);
+  }
+  return padFormatted(formatSignOf(negative, spec.sign) + prefix, digits, spec, true);
+}
+
+function formatFloatNumber(num: number, spec: FormatSpec): string {
+  const type = spec.type;
+  const intTypes = ["b", "c", "d", "o", "x", "X"];
+  if (intTypes.includes(type)) {
+    throw new Error(`Unknown format code '${type}' for object of type 'float'`);
+  }
+  if (!["", "e", "E", "f", "F", "g", "G", "n", "%"].includes(type)) {
+    throw new Error(`Unknown format code '${type}' for object of type 'float'`);
+  }
+  const negative = num < 0 || Object.is(num, -0);
+  const abs = Math.abs(num);
+  const sign = formatSignOf(negative, spec.sign);
+  if (!Number.isFinite(abs)) {
+    const upper = type === "E" || type === "F" || type === "G";
+    const text = Number.isNaN(abs) ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
+    return padFormatted(sign, text, spec, true);
+  }
+  if (type === "" || type === "n") {
+    if (type === "n" && spec.grouping !== "") {
+      throw new Error(`Cannot specify '${spec.grouping}' with 'n'.`);
+    }
+    let digits: string;
+    if (type === "n") {
+      digits = formatGeneral(abs, spec.precision ?? 6, spec.alt, false);
+    } else if (spec.precision !== null) {
+      // No presentation type with a precision behaves like 'g' (e.g.
+      // `format(3.14159, ".2")` is `"3.1"`).
+      digits = formatGeneral(abs, spec.precision, spec.alt, false);
+    } else {
+      digits = pyStr(abs);
+    }
+    if (type === "" && spec.grouping !== "" && !digits.includes("e")) {
+      const dot = digits.indexOf(".");
+      const intPart = dot < 0 ? digits : digits.slice(0, dot);
+      const fracPart = dot < 0 ? "" : digits.slice(dot);
+      digits = groupFormatDigits(intPart, spec.grouping, 3) + fracPart;
+    }
+    return padFormatted(sign, digits, spec, true);
+  }
+  const precision = spec.precision ?? 6;
+  let digits: string;
+  if (type === "f" || type === "F") {
+    digits = abs.toFixed(precision);
+    if (type === "F") digits = digits.toUpperCase().replace("INFINITY", "INF");
+  } else if (type === "e" || type === "E") {
+    digits = normalizeExponent(abs.toExponential(precision), type === "E");
+  } else if (type === "g" || type === "G") {
+    digits = formatGeneral(abs, precision, spec.alt, type === "G");
+  } else {
+    digits = `${(abs * 100).toFixed(precision)}%`;
+  }
+  if (spec.grouping === "," || spec.grouping === "_") {
+    const sep = spec.grouping;
+    const dot = digits.indexOf(".");
+    const head = dot < 0 ? digits.replace(/[%]$/, "") : digits.slice(0, dot);
+    const tail = dot < 0 ? (digits.endsWith("%") ? "%" : "") : digits.slice(dot);
+    // Exponent forms (`1e+06`) and non-decimal digits never take separators.
+    if (/^\d+$/.test(head)) digits = groupFormatDigits(head, sep, 3) + tail;
+  }
+  return padFormatted(sign, digits, spec, true);
+}
+
+/**
+ * CPython's `format(value, format_spec="")` builtin.
+ *
+ * Covers the format-spec mini-language for bools/ints (`"04b"`, `"#x"`,
+ * `"+d"`, ...), floats (`".2f"`, `".1%"`, `"e"`, `"g"`, ...) and strings
+ * (`"s"`, width/align/fill, `.precision` truncation).  Objects exposing
+ * `__format__` delegate to it; anything else stringifies for an empty spec
+ * and raises otherwise, like `object.__format__`.
+ */
+export function pythonFormat(value: Any, formatSpec?: Any): string {
+  const spec = formatSpec === undefined || formatSpec === null ? "" : formatSpec;
+  if (typeof spec !== "string") {
+    throw new TypeError(`format() argument 2 must be str, not ${typeof spec}`);
+  }
+  const parsed = parseFormatSpec(spec);
+  if (typeof value === "boolean") {
+    if (["", "s"].includes(parsed.type)) {
+      const text = value ? "True" : "False";
+      const truncated = parsed.precision !== null ? text.slice(0, parsed.precision) : text;
+      return padFormatted("", truncated, parsed, false);
+    }
+    return formatIntNumber(value ? 1 : 0, parsed, "bool");
+  }
+  if (typeof value === "bigint") {
+    if (parsed.precision !== null) {
+      throw new Error("Precision not allowed in integer format specifier");
+    }
+    if (parsed.type !== "" && !["b", "c", "d", "n", "o", "x", "X"].includes(parsed.type)) {
+      throw new Error(`Unknown format code '${parsed.type}' for object of type 'int'`);
+    }
+    // BigInts can exceed float precision; render via BigInt arithmetic.
+    const negative = value < 0n;
+    const abs = negative ? -value : value;
+    let digits: string;
+    let prefix = "";
+    switch (parsed.type) {
+      case "b": digits = abs.toString(2); prefix = parsed.alt ? "0b" : ""; break;
+      case "o": digits = abs.toString(8); prefix = parsed.alt ? "0o" : ""; break;
+      case "x": digits = abs.toString(16); prefix = parsed.alt ? "0x" : ""; break;
+      case "X": digits = abs.toString(16).toUpperCase(); prefix = parsed.alt ? "0X" : ""; break;
+      case "c": {
+        if (abs > 0x10ffffn) throw new Error(`chr() arg not in range(0x110000)`);
+        return padFormatted("", String.fromCodePoint(Number(abs)), parsed, false);
+      }
+      default: digits = abs.toString(10);
+    }
+    if (parsed.type === "n" && parsed.grouping !== "") {
+      throw new Error(`Cannot specify '${parsed.grouping}' with 'n'.`);
+    }
+    if (parsed.grouping === ",") {
+      if (parsed.type !== "" && parsed.type !== "d" && parsed.type !== "n") {
+        throw new Error(`Cannot specify ',' with '${parsed.type}'`);
+      }
+      digits = groupFormatDigits(digits, ",", 3);
+    } else if (parsed.grouping === "_") {
+      digits = groupFormatDigits(digits, "_", parsed.type === "" || parsed.type === "d" || parsed.type === "n" ? 3 : 4);
+    }
+    return padFormatted(formatSignOf(negative, parsed.sign) + prefix, digits, parsed, true);
+  }
+  if (typeof value === "number") {
+    if (Number.isInteger(value)) {
+      if (["", "b", "c", "d", "n", "o", "x", "X"].includes(parsed.type)) {
+        return formatIntNumber(value, parsed, "int");
+      }
+      return formatFloatNumber(value, parsed);
+    }
+    return formatFloatNumber(value, parsed);
+  }
+  if (typeof value === "string") {
+    if (parsed.type !== "" && parsed.type !== "s") {
+      throw new Error(`Unknown format code '${parsed.type}' for object of type 'str'`);
+    }
+    const truncated = parsed.precision !== null ? value.slice(0, parsed.precision) : value;
+    return padFormatted("", truncated, parsed, false);
+  }
+  let formatter: Any;
+  try {
+    formatter = (value as Any).__format__;
+  } catch {
+    formatter = undefined;
+  }
+  if (typeof formatter === "function") {
+    return formatter.call(value, spec);
+  }
+  if (spec === "") return pyStr(value);
+  throw new TypeError(`unsupported format string passed to __format__ of '${typeof value}'`);
+}
+(pythonFormat as Any).__argnames__ = ["value", "format_spec"];
+
 /** Build the runtime helpers bound to a specific wanim/numpy pair. */
 export function createRuntimeCore(deps: RuntimeDeps) {
   const { wanim, np, NDArray } = deps;
@@ -5398,6 +5730,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.round = pythonRound;
     globals.abs = pythonAbs;
     globals.__wan_abs = pythonAbs;
+    // CPython's `format(value[, spec])` builtin (error 342: `format(n, "04b")`
+    // for zero-padded binary). rapydscript's baselib provides no such
+    // builtin, so bare `format(...)` calls fail with `ReferenceError`.
+    globals.format = pythonFormat;
     globals.complex = pythonComplex;
     globals.__wan_complex = wanComplex;
     // `tuple()` has no rapydscript baselib equivalent (only `list` exists),
@@ -5474,6 +5810,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonGe,
     pythonRound,
     pythonAbs,
+    pythonFormat,
     pythonComplex,
     wanComplex,
     pythonTuple,
