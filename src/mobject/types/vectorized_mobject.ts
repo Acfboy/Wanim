@@ -1,4 +1,5 @@
 import { allclose, array, NDArray } from "numpy-ts";
+import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
 import { Mobject, assertFinitePoints, hasNonFinite, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows } from "../../utils/arrays.js";
@@ -290,9 +291,16 @@ export class VMobject extends Mobject {
   tolerance_for_point_equality = 1e-6;
   n_points_per_cubic_curve: number;
   _bezier_t_values: number[] = [];
-  fill_rgbas!: NDArray;
-  stroke_rgbas!: NDArray;
-  background_stroke_rgbas!: NDArray;
+  // Accessors so colour changes bump the geometry epoch (see mobject.points).
+  private _fill_rgbas?: NDArray;
+  get fill_rgbas(): NDArray { return this._fill_rgbas as NDArray; }
+  set fill_rgbas(value: NDArray) { this._fill_rgbas = value; bump_mobject_geometry_epoch(); }
+  private _stroke_rgbas?: NDArray;
+  get stroke_rgbas(): NDArray { return this._stroke_rgbas as NDArray; }
+  set stroke_rgbas(value: NDArray) { this._stroke_rgbas = value; bump_mobject_geometry_epoch(); }
+  private _background_stroke_rgbas?: NDArray;
+  get background_stroke_rgbas(): NDArray { return this._background_stroke_rgbas as NDArray; }
+  set background_stroke_rgbas(value: NDArray) { this._background_stroke_rgbas = value; bump_mobject_geometry_epoch(); }
 
   constructor(options: VMobjectOptions = {}) {
     super(options);
