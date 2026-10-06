@@ -3808,10 +3808,145 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       wrapNumpyCreation(name, 1);
     }
     wrapNumpyCreation("full_like", 2);
-    for (const name of ["arange", "linspace", "eye", "identity", "logspace", "geomspace"]) {
+    // numpy-ts `linspace` only accepts scalar start/stop (`(number, number)`)
+    // and has no `endpoint`/`retstep`/`axis` (its 4th positional is `dtype`,
+    // so `endpoint=False` is silently dropped).  Valid numpy instead accepts
+    // array-likes (`np.linspace([0,0,0],[1,1,0],3)` -> shape (3,3)) and the
+    // full `(start, stop, num, endpoint, retstep, dtype, axis)` signature.
+    // Without this, array start/stop returns `[NaN,NaN,NaN]` and downstream
+    // `Dot(point=pts[1])` receives `NaN`, so `Arc` throws
+    // "arc_center is not iterable" (error 305).  Implement numpy semantics
+    // in plain JS and hand back NDArrays.
+    try {
+      const origLinspace = (np as Any).linspace;
+      if (typeof origLinspace === "function") {
+        const linspaceArgnames = ["start", "stop", "num", "endpoint", "retstep", "dtype", "axis"];
+        const lerpRec = (a: Any, b: Any, t: number): Any => {
+          if (Array.isArray(a) && Array.isArray(b)) {
+            if (a.length === b.length) return a.map((av, i) => lerpRec(av, b[i], t));
+            if (a.length === 1) return b.map((bv) => lerpRec(a[0], bv, t));
+            if (b.length === 1) return a.map((av) => lerpRec(av, b[0], t));
+            // Mismatched shapes: fall back to elementwise over the longer
+            // side is wrong; let the NDArray path below throw/broadcast.
+            // Here just broadcast up to the longer length when one side is
+            // scalar-like after unwrapping (defensive; numpy would broadcast).
+            throw new Error("operands could not be broadcast together");
+          }
+          if (Array.isArray(a)) return a.map((av) => lerpRec(av, b, t));
+          if (Array.isArray(b)) return b.map((bv) => lerpRec(a, bv, t));
+          const an = Number(a);
+          const bn = Number(b);
+          return an + (bn - an) * t;
+        };
+        const stepRec = (a: Any, b: Any, div: number): Any => {
+          if (Array.isArray(a) && Array.isArray(b)) {
+            if (a.length === b.length) return a.map((av, i) => stepRec(av, b[i], div));
+            if (a.length === 1) return b.map((bv) => stepRec(a[0], bv, div));
+            if (b.length === 1) return a.map((av) => stepRec(av, b[0], div));
+            throw new Error("operands could not be broadcast together");
+          }
+          if (Array.isArray(a)) return a.map((av) => stepRec(av, b, div));
+          if (Array.isArray(b)) return b.map((bv) => stepRec(a, bv, div));
+          if (div === 0) return NaN;
+          return (Number(b) - Number(a)) / div;
+        };
+        const linspaceFn = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(linspaceArgnames, positional, kwargs as Record<string, Any>);
+          }
+          let start = positional.length > 0 ? positional[0] : undefined;
+          let stop = positional.length > 1 ? positional[1] : undefined;
+          let num = positional.length > 2 ? positional[2] : undefined;
+          let endpoint = positional.length > 3 ? positional[3] : undefined;
+          let retstep = positional.length > 4 ? positional[4] : undefined;
+          let dtype = positional.length > 5 ? positional[5] : undefined;
+          let axis = positional.length > 6 ? positional[6] : undefined;
+          if (start === undefined) start = 0;
+          if (stop === undefined) stop = 1;
+          if (num === undefined || num === null) num = 50;
+          if (endpoint === undefined || endpoint === null) endpoint = true;
+          if (retstep === undefined || retstep === null) retstep = false;
+          if (axis === undefined || axis === null) axis = 0;
+          const n = Math.floor(Number(num));
+          const ep = endpoint === false || endpoint === 0 ? false : Boolean(endpoint);
+          const wantStep = retstep === true || (typeof retstep === "number" && retstep !== 0)
+            ? true
+            : Boolean(retstep) && retstep !== false && retstep !== 0;
+          const startPlain = deepUnwrapNd(start);
+          const stopPlain = deepUnwrapNd(stop);
+          const normalized = normalizeNumpyDtype(dtype);
+          const makeArray = (nested: Any): Any => {
+            try {
+              return normalized !== undefined
+                ? (np as Any).asarray(nested, normalized)
+                : (np as Any).asarray(nested);
+            } catch {
+              return (np as Any).asarray(nested);
+            }
+          };
+          if (!Number.isFinite(n) || n <= 0) {
+            const empty = makeArray([]);
+            if (wantStep) return [empty, NaN];
+            return empty;
+          }
+          const div = ep ? n - 1 : n;
+          const samples: Any[] = new Array(n);
+          if (n === 1) {
+            samples[0] = lerpRec(startPlain, stopPlain, 0);
+          } else {
+            for (let i = 0; i < n; i += 1) {
+              const t = ep ? i / div : i / n;
+              samples[i] = lerpRec(startPlain, stopPlain, t);
+            }
+          }
+          let result: Any = makeArray(samples);
+          const axisNum = Number(axis);
+          if (axisNum !== 0 && samples.length > 0 && Array.isArray(samples[0])) {
+            try {
+              const mv = (np as Any).moveaxis;
+              if (typeof mv === "function") {
+                result = mv(result, 0, axisNum);
+              } else if (typeof result.transpose === "function" && result.shape?.length === 2) {
+                result = result.transpose();
+              }
+            } catch {
+              /* keep axis=0 layout on move failure */
+            }
+          }
+          if (wantStep) {
+            let step: Any;
+            try {
+              step = stepRec(startPlain, stopPlain, div === 0 ? 0 : div);
+            } catch {
+              step = NaN;
+            }
+            if (Array.isArray(step)) {
+              try {
+                step = normalized !== undefined
+                  ? (np as Any).asarray(step, normalized)
+                  : (np as Any).asarray(step);
+              } catch {
+                /* keep plain list on wrap failure */
+              }
+            } else {
+              step = Number(step);
+            }
+            return [result, step];
+          }
+          return result;
+        };
+        (linspaceFn as Any).__argnames__ = [...linspaceArgnames];
+        facade.linspace = linspaceFn;
+      }
+    } catch {
+      /* keep the raw numpy-ts linspace on wrap failure */
+    }
+    for (const name of ["arange", "eye", "identity", "logspace", "geomspace"]) {
       const fn = (np as Any)[name];
       if (typeof fn !== "function") continue;
-      // `arange`/`linspace`/`eye` take dtype last (index 3); `identity` takes it
+      // `arange`/`eye` take dtype last (index 3); `identity` takes it
       // at index 1.  Derive from the underlying arity instead of hardcoding.
       const dtypeIndex = name === "identity" ? 1 : 3;
       wrapNumpyCreation(name, dtypeIndex);
