@@ -436,6 +436,17 @@ function createMobjectProxy(target: Mobject): Mobject {
     get: (object, property, receiver) => {
       if (property === RAW_MOBJECT_TARGET) return object;
       if (property in object || typeof property === "symbol") return Reflect.get(object, property, receiver);
+      // NOTE (error 373): rapydscript's `ρσ_interpolate_kwargs` probes
+      // `f.__argnames__` (and `__handles_kwarg_interpolation__`) on any
+      // callee via a plain attribute read. Mobject instances are Proxies
+      // that raise AttributeError for unknown attributes, so passing a
+      // builder/Mobject through that probe threw
+      // `VGroup object has no attribute '__argnames__'` (e.g.
+      // `bunch.animate(run_time=1.5)` where `bunch.animate` is a callable
+      // builder Proxy). Dunders that are not real members must resolve to
+      // `undefined` (like a plain JS function without the metadata) instead
+      // of throwing, so the kwargs bridge takes its no-mapping path.
+      if (typeof property === "string" && property.startsWith("__")) return undefined;
       if (property === "toJSON") {
         const typed = object as unknown as {
           get_num_points?: () => number;
@@ -3370,6 +3381,23 @@ export class _AnimationBuilder {
     callableProxy = new Proxy(builder, {
       get: (target, property, receiver) => {
         if (property in target || typeof property === "symbol") return Reflect.get(target, property, receiver);
+        // NOTE (error 373): `bunch.animate(run_time=1.5)` compiles to
+        // `ρσ_interpolate_kwargs.call(bunch, bunch.animate, [bag])`, which
+        // reads `f.__argnames__` directly. Routing that probe through
+        // `__getattr__` threw `VGroup object has no attribute
+        // '__argnames__'`. Like the Mobject Proxy above, unknown dunders
+        // resolve to `undefined` so the kwargs bridge takes its no-mapping
+        // path (`f.apply(this, args)`). `then` does the same to keep the
+        // builder from looking like a Promise. `apply`/`bind` are restored
+        // from `Function.prototype` (lost via `setPrototypeOf` below) so
+        // that `f.apply` path can actually invoke the builder.
+        if (typeof property === "string") {
+          if (property === "apply" || property === "bind") {
+            const fn = (Function.prototype as unknown as Record<string, unknown>)[property];
+            return typeof fn === "function" ? (fn as Function).bind(target) : undefined;
+          }
+          if (property.startsWith("__") || property === "then") return undefined;
+        }
         // NOTE: mirrors Python, where any unknown attribute access on the
         // builder goes through `__getattr__` (which resolves the method on
         // the target mobject, checks overrides, and marks chaining state).
@@ -3535,6 +3563,11 @@ export class _UpdaterBuilder {
     const proxy = new Proxy(this, {
       get: (target, property, receiver) => {
         if (property in target || typeof property === "symbol") return Reflect.get(target, property, receiver);
+        // NOTE (error 373): same dunder-probe hazard as the Mobject and
+        // animation-builder Proxies (`ρσ_interpolate_kwargs` reads
+        // `f.__argnames__`); resolve unknown dunders to `undefined` instead
+        // of misrouting them into `add_updater`.
+        if (typeof property === "string" && (property.startsWith("__") || property === "then")) return undefined;
         return (...args: any[]) => {
           target.add_updater(String(property), ...args);
           return (target as unknown as { _proxy?: _UpdaterBuilder })._proxy ?? target;
