@@ -107,6 +107,23 @@ export class Transform extends Animation {
 
   override interpolate_mobject(alpha: number): void {
     const families = this.get_all_families_zipped();
+    // Fast path: with zero lag every face shares one sub-alpha
+    // (`get_sub_alpha` is index-independent when `lag_ratio === 0` and has no
+    // overrides in the codebase), so one `rate_func` evaluation replaces one
+    // per face per frame.
+    if (this.lag_ratio === 0 && families.length > 0) {
+      const subAlpha = this.get_sub_alpha(alpha, 0, families.length);
+      for (let index = 0; index < families.length; index += 1) {
+        const mobs = families[index] ?? [];
+        this.interpolate_submobject(
+          mobs[0] as Mobject,
+          mobs[1] as Mobject,
+          mobs[2] as Mobject,
+          subAlpha,
+        );
+      }
+      return;
+    }
     for (let index = 0; index < families.length; index += 1) {
       const mobs = families[index] ?? [];
       this.interpolate_submobject(

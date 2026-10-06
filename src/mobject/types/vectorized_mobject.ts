@@ -1,8 +1,8 @@
 import { allclose, array, NDArray } from "numpy-ts";
 import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
-import { Mobject, assertFinitePoints, hasNonFinite, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
+import { Mobject, _rawMobject, assertFinitePoints, hasNonFinite, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
-import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows } from "../../utils/arrays.js";
+import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows, _readFlatStore, _flatStoreSlots } from "../../utils/arrays.js";
 import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector, rotation_matrix } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
@@ -237,6 +237,137 @@ function lerp1d(a: number[], b: number[], alpha: number): number[] {
     out.push(Number(av) * (1 - alpha) + Number(bv) * alpha);
   }
   return out;
+}
+
+/**
+ * Attributes whose lerp is covered by the static-colour fast path
+ * (`sheen_direction` is handled separately — it genuinely changes every
+ * frame of a `Rotate`, so it is written in place instead).
+ */
+const STATIC_COLOR_ATTRS = [
+  "fill_rgbas",
+  "stroke_rgbas",
+  "background_stroke_rgbas",
+  "stroke_width",
+  "background_stroke_width",
+  "sheen_factor",
+] as const;
+
+interface StaticColorMemo {
+  refs: unknown[];
+  staticOk: boolean;
+}
+
+/**
+ * Per-face static-colour memo for `interpolate_color`.
+ *
+ * Floating-point lerp is not the identity (`lerp(a, a, t)` can round to
+ * `a ± 1ulp`), so per-element adoption of the lerped values almost never
+ * triggers for static colours.  Instead, the first frame verifies that the
+ * six value attributes are pairwise identical across starting/target/dest
+ * (no writes — the destination already holds the values), memoizes the
+ * outcome keyed by the eighteen array/scalar references, and later frames
+ * only re-check the references: starting/target/destination stores are
+ * stable across an animation, so a memo hit means the colours are known
+ * static with zero element comparisons and zero allocations.  Any reference
+ * change (a new animation's copies, an `alpha === 1` clone, a real morph
+ * allocating fresh arrays) re-verifies, and morphing colours always take
+ * the allocating slow path, whose fresh array identity is what invalidates
+ * the rgba-identity colour caches.
+ */
+const staticColorMemo = new WeakMap<object, StaticColorMemo>();
+
+function staticMemoRefs(
+  r1: Record<string, unknown>,
+  r2: Record<string, unknown>,
+  rs: Record<string, unknown>,
+): unknown[] {
+  const refs: unknown[] = [];
+  for (const attr of STATIC_COLOR_ATTRS) {
+    refs.push(r1[attr], r2[attr], rs[attr]);
+  }
+  return refs;
+}
+
+/** Full static-colour verification (no writes); see `staticColorMemo`. */
+function verifyStaticColors(
+  r1: Record<string, unknown>,
+  r2: Record<string, unknown>,
+  rs: Record<string, unknown>,
+): boolean {
+  for (const attr of STATIC_COLOR_ATTRS) {
+    const first = r1[attr];
+    const second = r2[attr];
+    const dest = rs[attr];
+    if (typeof first === "number" || typeof second === "number" || typeof dest === "number") {
+      // Mirrors the slow loop's numeric branch selection: any numeric side
+      // forces scalar lerp, which is static only for identical numbers.
+      if (typeof first !== "number" || typeof second !== "number" || typeof dest !== "number") {
+        return false;
+      }
+      if (!Object.is(first, second) || !Object.is(second, dest)) return false;
+      continue;
+    }
+    const slot = _flatStoreSlots;
+    if (
+      !_readFlatStore(first, slot[0]!) ||
+      !_readFlatStore(second, slot[1]!) ||
+      !_readFlatStore(dest, slot[2]!) ||
+      slot[0]!.rows !== slot[1]!.rows ||
+      slot[0]!.rows !== slot[2]!.rows ||
+      slot[0]!.cols !== slot[1]!.cols ||
+      slot[0]!.cols !== slot[2]!.cols
+    ) {
+      return false;
+    }
+    const firstData = slot[0]!.data!;
+    const secondData = slot[1]!.data!;
+    const destData = slot[2]!.data!;
+    const length = slot[0]!.rows * slot[0]!.cols;
+    for (let index = 0; index < length; index += 1) {
+      // `Object.is` keeps `-0`/`0` and NaN exactly like the allocating path.
+      if (!Object.is(firstData[index], secondData[index]) || !Object.is(secondData[index], destData[index])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** Flat numeric elements of a `sheen_direction`-style attribute, or null. */
+function flatSheenValues(value: unknown): ArrayLike<number> | null {
+  if (value instanceof Float64Array) return value;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (typeof value[index] !== "number") return null;
+    }
+    return value as number[];
+  }
+  return null;
+}
+
+/**
+ * In-place `sheen_direction` lerp in `lerp1d` flop order (bitwise identical
+ * to the allocating path for flat same-length numerics, which covers every
+ * real flow — `set_sheen_direction` and `rotate_sheen_direction` both store
+ * plain `number[]`).  The destination keeps its `number[]` type, which
+ * downstream code handles faster than the NDArray the allocating path
+ * produces.
+ */
+function writeSheenLerp(destValue: unknown, firstValue: unknown, secondValue: unknown, inv: number, alpha: number): boolean {
+  const dest = flatSheenValues(destValue);
+  const first = flatSheenValues(firstValue);
+  const second = flatSheenValues(secondValue);
+  if (dest === null || first === null || second === null) return false;
+  if (dest.length !== first.length || dest.length !== second.length) return false;
+  // The destination must be owned by this mobject: `copy()` deep-copies plain
+  // arrays, but a user-aliased array would corrupt the sharer when written in
+  // place, so shared destinations take the allocating slow path instead.
+  if (dest === first || dest === second) return false;
+  for (let index = 0; index < dest.length; index += 1) {
+    (dest as number[] | Float64Array)[index] = Number(first[index]) * inv + Number(second[index]) * alpha;
+  }
+  return true;
 }
 
 /** Element-wise lerp with NumPy-style broadcasting: flat vectors stay 1-D,
@@ -605,10 +736,17 @@ export class VMobject extends Mobject {
     about_point?: readonly number[] | NDArray | null,
     about_edge?: readonly number[] | NDArray | null,
   ): this {
+    // One shared family walk for both handle-scalings and the application
+    // itself (three full walks per frame otherwise).  Behaviour matches the
+    // three separate calls exactly, including the dropped about_point/edge
+    // (preserved) and the flat-path fallback order.
     const factor = this.pre_function_handle_to_anchor_scale_factor;
-    this.scale_handle_to_anchor_distances(factor);
-    super.apply_function(function_);
-    this.scale_handle_to_anchor_distances(1.0 / factor);
+    const members = this.family_members_with_points();
+    this.scale_handle_to_anchor_distances_members(members, factor);
+    if (!this.apply_function_to_members_flat(members, function_)) {
+      super.apply_function(function_);
+    }
+    this.scale_handle_to_anchor_distances_members(members, 1.0 / factor);
     if (this.make_smooth_after_applying_functions) {
       this.make_smooth();
     }
@@ -1783,7 +1921,18 @@ export class VMobject extends Mobject {
   }
 
   scale_handle_to_anchor_distances(factor: number): this {
-    for (const submob of this.family_members_with_points()) {
+    return this.scale_handle_to_anchor_distances_members(this.family_members_with_points(), factor);
+  }
+
+  /**
+   * `scale_handle_to_anchor_distances` over a precomputed member list, so
+   * `apply_function` can share one family walk across both scalings and the
+   * application.  Internal; the public signature is unchanged.
+   *
+   * @internal
+   */
+  scale_handle_to_anchor_distances_members(members: Mobject[], factor: number): this {
+    for (const submob of members) {
       const vmob = submob as VMobject;
       if (factor !== 1 && this.scale_handle_to_anchor_distances_flat(vmob, factor)) {
         continue;
@@ -1820,11 +1969,14 @@ export class VMobject extends Mobject {
     if (vmob.get_num_points() < nppcc) return true;
     const flat = _cContiguousRows((vmob as { points?: unknown }).points);
     if (flat === null || !(flat.data instanceof Float64Array)) return false;
-    const { data, rowDim, rowCount } = flat;
+    const data = flat.data;
+    const { rowDim, rowCount } = flat;
     const dim = vmob.dim;
     if (flat.rowDim < dim) return false;
+    // `data` is float64: elements are already numbers, so no `Number()`
+    // coercion is needed (it cost a call per element per frame).
     for (let index = 0; index < rowCount * rowDim; index += 1) {
-      if (!Number.isFinite(Number(data[index]))) return false;
+      if (!Number.isFinite(data[index]!)) return false;
     }
     for (let k = 0; k + nppcc <= rowCount; k += nppcc) {
       const a1 = k * rowDim;
@@ -1832,10 +1984,10 @@ export class VMobject extends Mobject {
       const h2 = (k + 2) * rowDim;
       const a2 = (k + 3) * rowDim;
       for (let c = 0; c < dim; c += 1) {
-        const a1c = Number(data[a1 + c] ?? 0);
-        const a2c = Number(data[a2 + c] ?? 0);
-        (data as Float64Array)[h1 + c] = a1c + (Number(data[h1 + c] ?? 0) - a1c) * factor;
-        (data as Float64Array)[h2 + c] = a2c + (Number(data[h2 + c] ?? 0) - a2c) * factor;
+        const a1c = data[a1 + c] ?? 0;
+        const a2c = data[a2 + c] ?? 0;
+        data[h1 + c] = a1c + ((data[h1 + c] ?? 0) - a1c) * factor;
+        data[h2 + c] = a2c + ((data[h2 + c] ?? 0) - a2c) * factor;
       }
     }
     vmob.bump_points_version();
@@ -2169,12 +2321,46 @@ export class VMobject extends Mobject {
   }
 
   interpolate_color(mobject1: VMobject, mobject2: VMobject, alpha: number): this {
+    // Raw targets: one proxy trap per mobject instead of one per attribute
+    // access below (24+ traps per face per frame otherwise; see `_rawMobject`).
+    // All seven attributes always exist on VMobjects, so raw access is exact.
+    const raw1 = _rawMobject(mobject1) as unknown as Record<string, unknown>;
+    const raw2 = _rawMobject(mobject2) as unknown as Record<string, unknown>;
+    const rawSelf = _rawMobject(this) as unknown as Record<string, unknown>;
+    // Static-colour fast path (see `staticColorMemo`): when the six value
+    // attributes are memo-verified static, the destination already holds
+    // them, so only `sheen_direction` needs its (bitwise-identical) in-place
+    // write.  Anything else — morphing colours, exotic dtypes, `alpha === 1`
+    // — falls through to the exact original loop below.
+    if (alpha !== 1) {
+      let staticOk = false;
+      const memo = staticColorMemo.get(rawSelf);
+      if (memo !== undefined) {
+        const refs = staticMemoRefs(raw1, raw2, rawSelf);
+        if (refs.length === memo.refs.length && refs.every((ref, i) => ref === memo.refs[i])) {
+          staticOk = memo.staticOk;
+        } else {
+          staticOk = verifyStaticColors(raw1, raw2, rawSelf);
+          memo.refs = refs;
+          memo.staticOk = staticOk;
+        }
+      } else {
+        staticOk = verifyStaticColors(raw1, raw2, rawSelf);
+        staticColorMemo.set(rawSelf, { refs: staticMemoRefs(raw1, raw2, rawSelf), staticOk });
+      }
+      if (staticOk) {
+        const inv = 1 - alpha;
+        if (writeSheenLerp(rawSelf["sheen_direction"], raw1["sheen_direction"], raw2["sheen_direction"], inv, alpha)) {
+          return this;
+        }
+      }
+    }
     const attributes = ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas", "stroke_width", "background_stroke_width", "sheen_direction", "sheen_factor"] as const;
     for (const attribute of attributes) {
-      const first = (mobject1 as unknown as Record<string, unknown>)[attribute];
-      const second = (mobject2 as unknown as Record<string, unknown>)[attribute];
+      const first = raw1[attribute];
+      const second = raw2[attribute];
       const result = typeof first === "number" || typeof second === "number" ? Number(first) * (1 - alpha) + Number(second) * alpha : interpolateArray(first, second, alpha);
-      (this as unknown as Record<string, unknown>)[attribute] = alpha === 1 ? cloneAttribute(second) : result;
+      rawSelf[attribute] = alpha === 1 ? cloneAttribute(second) : result;
     }
     return this;
   }

@@ -360,6 +360,7 @@ export class NumberLine extends VGroup {
   // per-call Proxy trap count down (Mobject instances are Proxies).
   private _endpointsCache: {
     points: unknown;
+    pointsVersion: number;
     tip: unknown;
     startTip: unknown;
     flat: number[];
@@ -368,11 +369,13 @@ export class NumberLine extends VGroup {
   private _ensure_endpoints_flat(): number[] {
     const cache = this._endpointsCache;
     const points = this.points;
+    const pointsVersion = this.points_version;
     const tip = this.tip;
     const startTip = this.start_tip;
     if (
       cache !== null &&
       cache.points === points &&
+      cache.pointsVersion === pointsVersion &&
       cache.tip === tip &&
       cache.startTip === startTip
     ) {
@@ -386,7 +389,7 @@ export class NumberLine extends VGroup {
       flat[i] = start[i] ?? 0;
       flat[dim + i] = end[i] ?? 0;
     }
-    this._endpointsCache = { points, tip, startTip, flat };
+    this._endpointsCache = { points, pointsVersion, tip, startTip, flat };
     return flat;
   }
 
