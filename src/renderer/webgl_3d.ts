@@ -37,7 +37,7 @@
 import { array } from "numpy-ts";
 import { _cContiguousRows } from "../utils/arrays.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
-import { ThreeDCamera, type MobjectBaseColors, type BaseColorInfo } from "../camera/three_d_camera.js";
+import { ThreeDCamera, _cornerNormalsFlat, type MobjectBaseColors, type BaseColorInfo } from "../camera/three_d_camera.js";
 import { computeSubpathRangesFlat } from "./canvas.js";
 import { mobject_geometry_epoch } from "../utils/render_epoch.js";
 
@@ -206,6 +206,14 @@ interface GeometryRecord {
   capStyle: string;
   lineMultiple: number;
   zoomBucket: number;
+  /**
+   * Vertex floats.  After `alloc_vertices` this is a *view* into the shared
+   * `vertexHeap` at `vertexOffset` (not a copy), so position updates rewrite
+   * the heap in place with zero copies and `upload_pending` ships exactly
+   * those bytes to the GPU.  The view is rebound whenever the heap moves
+   * (`ensure_vertex_capacity` growth, `compact_vertices`); a dead record's
+   * view may alias a live record's heap range and must not be read.
+   */
   vertexData: Float32Array;
   /** Triangle indices, already offset by `vertexOffset` (in vertices). */
   indexData: Uint32Array;
@@ -228,8 +236,11 @@ interface GeometryRecord {
   /** Corner rows used to recompute the face normals on a position update. */
   cornerStartRow: number;
   cornerEndRow: number;
-  /** Subpath ranges the record was built from (topology validation). */
-  rangeKey: string;
+  /**
+   * Subpath ranges the record was built from (topology validation, checked
+   * allocation-free by `ranges_match_cached`).
+   */
+  rangeList: Array<readonly [number, number]>;
   rowDim: number;
 }
 
@@ -402,23 +413,85 @@ function triangulatePolygon2D(poly: number[][]): number[] {
   return indices;
 }
 
-/** Subpath ranges serialized for topology comparison. */
-function ranges_key(
+/**
+ * Whether the current points still produce `cached` subpath ranges, without
+ * allocating: every cached range start (except 0) must be a split boundary
+ * and every other multiple-of-`nppcc` joint must be continuous, which is
+ * exactly what `computeSubpathRangesFlat` (2 dims) computes.  The cached
+ * ranges must also tile `[0, rowCount)` contiguously.
+ */
+function ranges_match_cached(
   data: ArrayLike<number>,
   rowDim: number,
   rowCount: number,
   nppcc: number,
   tolerance: number,
-): string {
-  const ranges = computeSubpathRangesFlat(data, rowDim, rowCount, nppcc, tolerance, 2);
-  return ranges.map((r) => `${r[0]}:${r[1]}`).join(",");
+  cached: ReadonlyArray<readonly [number, number]>,
+): boolean {
+  if (cached.length === 0) {
+    return computeSubpathRangesFlat(data, rowDim, rowCount, nppcc, tolerance, 2).length === 0;
+  }
+  if (cached[0]![0] !== 0) return false;
+  for (let i = 0; i < cached.length; i += 1) {
+    const start = cached[i]![0];
+    const end = cached[i]![1];
+    if (i > 0 && cached[i - 1]![1] !== start) return false;
+    if (i === cached.length - 1 && end !== rowCount) return false;
+  }
+  const rtol = 1.0e-5;
+  const atol = tolerance;
+  const isSplit = (boundary: number): boolean => {
+    const endBase = (boundary - 1) * rowDim;
+    const startBase = boundary * rowDim;
+    for (let dim = 0; dim < 2; dim += 1) {
+      const e = data[endBase + dim] ?? NaN;
+      const s = data[startBase + dim] ?? NaN;
+      const diff = Math.abs((e as number) - (s as number));
+      const close = (diff <= atol + rtol * Math.abs(s as number) && Number.isFinite(diff)) || e === s;
+      if (!close) return true;
+    }
+    return false;
+  };
+  let rangeIndex = 0;
+  let nextSplit = cached[0]![1] === rowCount ? -1 : cached[0]![1];
+  for (let boundary = nppcc; boundary < rowCount; boundary += nppcc) {
+    const split = isSplit(boundary);
+    if (boundary === nextSplit) {
+      if (!split) return false;
+      rangeIndex += 1;
+      nextSplit = rangeIndex < cached.length
+        ? (cached[rangeIndex]![1] === rowCount ? -1 : cached[rangeIndex]![1])
+        : -1;
+    } else if (split) {
+      return false;
+    }
+  }
+  return true;
 }
 
-/** Gauss-Jordan inversion of a 4x4 matrix in row-major order. */
+/**
+ * Scratch space for `fitAffine`/`invert4`: the fit runs per face per frame,
+ * and these temporaries were the bulk of its allocations.  Module state is
+ * safe: fitting is fully synchronous with no reentrancy.
+ */
+const fitScratchM = new Float64Array(16);
+const fitScratchRhs = new Float64Array(12);
+const fitScratchRow = new Float64Array(4);
+const fitScratchAugmented = new Float64Array(32);
+const fitScratchInv = new Float64Array(16);
+
+/**
+ * Gauss-Jordan inversion of a 4x4 matrix in row-major order.  The result
+ * lives in shared scratch space: consume it immediately, do not retain it.
+ */
 function invert4(m: Float64Array): Float64Array | null {
-  const a = new Float64Array(32);
+  const a = fitScratchAugmented;
+  // The whole augmented row must be rebuilt: the identity half keeps
+  // elimination residue from the previous fit, and stale values there would
+  // corrupt the inverse (the old per-call allocation was zero-initialised).
   for (let r = 0; r < 4; r += 1) {
     for (let c = 0; c < 4; c += 1) a[r * 8 + c] = m[r * 4 + c]!;
+    for (let c = 4; c < 8; c += 1) a[r * 8 + c] = 0;
     a[r * 8 + 4 + r] = 1;
   }
   for (let col = 0; col < 4; col += 1) {
@@ -443,7 +516,7 @@ function invert4(m: Float64Array): Float64Array | null {
       for (let c = 0; c < 8; c += 1) a[r * 8 + c] = a[r * 8 + c]! - f * a[col * 8 + c]!;
     }
   }
-  const inv = new Float64Array(16);
+  const inv = fitScratchInv;
   for (let r = 0; r < 4; r += 1) {
     for (let c = 0; c < 4; c += 1) inv[r * 4 + c] = a[r * 8 + 4 + c]!;
   }
@@ -467,9 +540,14 @@ function fitAffine(
   rowDim: number,
   rowCount: number,
 ): Float32Array | null {
-  const m = new Float64Array(16);
-  const rhs = new Float64Array(12);
-  const row = new Float64Array(4);
+  const m = fitScratchM;
+  const rhs = fitScratchRhs;
+  const row = fitScratchRow;
+  m.fill(0);
+  rhs.fill(0);
+  // `current` is float64 in every real flow (point stores are float64); the
+  // direct read avoids a `Number()` call per element per face per frame.
+  const currentF64 = current instanceof Float64Array ? current : null;
   for (let i = 0; i < rowCount; i += 1) {
     const x = base[i * 3]!;
     const y = base[i * 3 + 1]!;
@@ -479,12 +557,15 @@ function fitAffine(
     row[1] = y;
     row[2] = z;
     row[3] = 1;
+    const c0 = currentF64 !== null ? currentF64[c]! : Number(current[c]!);
+    const c1 = currentF64 !== null ? currentF64[c + 1]! : Number(current[c + 1]!);
+    const c2 = currentF64 !== null ? currentF64[c + 2]! : Number(current[c + 2]!);
     for (let a = 0; a < 4; a += 1) {
       const ra = row[a]!;
       for (let b = 0; b < 4; b += 1) m[a * 4 + b] += ra * row[b]!;
-      rhs[a * 3] += ra * Number(current[c]!);
-      rhs[a * 3 + 1] += ra * Number(current[c + 1]!);
-      rhs[a * 3 + 2] += ra * Number(current[c + 2]!);
+      rhs[a * 3] += ra * c0;
+      rhs[a * 3 + 1] += ra * c1;
+      rhs[a * 3 + 2] += ra * c2;
     }
   }
   const inv = invert4(m);
@@ -497,8 +578,55 @@ function fitAffine(
       out[b * 4 + a] = sum;
     }
   }
-  if (!model_matches(out, base, current, rowDim, rowCount)) return null;
+  // Verifying with a precomputed scale allows an exact early exit:
+  // `model_matches` cannot exit early (its threshold needs the full-data
+  // scale), but here the threshold is known up front, so the predicate is
+  // identical with strictly less work on failure.
+  if (!verifyFit(out, base, current, rowDim, rowCount)) return null;
   return out;
+}
+
+/**
+ * Exact counterpart of the `model_matches` check used to verify a fresh fit:
+ * the scale pass fixes the `model_residual_ok` threshold up front, so
+ * failing rows exit immediately.  Returns exactly what `model_matches`
+ * would (`maxErr <= tol` iff no row exceeds `tol`).
+ */
+function verifyFit(
+  model: Float32Array,
+  base: Float32Array,
+  current: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+): boolean {
+  const currentF64 = current instanceof Float64Array ? current : null;
+  let scale = 0;
+  const total = rowCount * rowDim;
+  if (currentF64 !== null) {
+    for (let i = 0; i < total; i += 1) {
+      const abs = Math.abs(currentF64[i]!);
+      if (abs > scale) scale = abs;
+    }
+  } else {
+    for (let i = 0; i < total; i += 1) {
+      const abs = Math.abs(Number(current[i]!));
+      if (abs > scale) scale = abs;
+    }
+  }
+  const tol = 1e-6 * (1 + scale);
+  for (let i = 0; i < rowCount; i += 1) {
+    const x = base[i * 3]!;
+    const y = base[i * 3 + 1]!;
+    const z = base[i * 3 + 2]!;
+    const c = i * rowDim;
+    for (let b = 0; b < 3; b += 1) {
+      const pred =
+        model[b * 4]! * x + model[b * 4 + 1]! * y + model[b * 4 + 2]! * z + model[b * 4 + 3]!;
+      const actual = currentF64 !== null ? currentF64[c + b]! : Number(current[c + b]!);
+      if (Math.abs(pred - actual) > tol) return false;
+    }
+  }
+  return true;
 }
 
 /** Whether `model` maps every base point onto the current points. */
@@ -511,6 +639,7 @@ function model_matches(
 ): boolean {
   let maxErr = 0;
   let scale = 0;
+  const currentF64 = current instanceof Float64Array ? current : null;
   for (let i = 0; i < rowCount; i += 1) {
     const x = base[i * 3]!;
     const y = base[i * 3 + 1]!;
@@ -519,7 +648,7 @@ function model_matches(
     for (let b = 0; b < 3; b += 1) {
       const pred =
         model[b * 4]! * x + model[b * 4 + 1]! * y + model[b * 4 + 2]! * z + model[b * 4 + 3]!;
-      const actual = Number(current[c + b]!);
+      const actual = currentF64 !== null ? currentF64[c + b]! : Number(current[c + b]!);
       const err = Math.abs(pred - actual);
       if (err > maxErr) maxErr = err;
       const abs = Math.abs(actual);
@@ -527,6 +656,66 @@ function model_matches(
     }
   }
   return model_residual_ok(maxErr, scale);
+}
+
+/**
+ * Cheap pre-check before a full `model_matches` verification: evaluate the
+ * candidate model on up to four spread rows and reject obvious non-matches
+ * without scanning every row.  A rejection only skips that candidate's full
+ * scan — the least-squares fit below still runs whenever nothing verifies,
+ * so incremental affine motion keeps fitting its new model exactly as
+ * before.  Exact-affine candidates (residual ~1e-15) always pass through to
+ * the full verification; waves fail on the first sample rows.
+ */
+function model_sample_rejects(
+  model: Float32Array,
+  base: Float32Array,
+  current: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+): boolean {
+  // No closures or index arrays here (a previous version allocated both per
+  // call — twice per face per frame — and it showed up in profiles).
+  const f64 = current instanceof Float64Array ? current : null;
+  for (let s = 0; s < 4; s += 1) {
+    let i: number;
+    if (rowCount < 4) {
+      if (s >= rowCount) break;
+      i = s;
+    } else {
+      i = s === 0 ? 0 : s === 1 ? (rowCount / 3) | 0 : s === 2 ? ((2 * rowCount) / 3) | 0 : rowCount - 1;
+    }
+    const x = base[i * 3]!;
+    const y = base[i * 3 + 1]!;
+    const z = base[i * 3 + 2]!;
+    const c = i * rowDim;
+    const a0 = f64 !== null ? f64[c]! : Number(current[c]!);
+    const a1 = f64 !== null ? f64[c + 1]! : Number(current[c + 1]!);
+    const a2 = f64 !== null ? f64[c + 2]! : Number(current[c + 2]!);
+    // NaN actuals are ignored for the scale (they can never exceed the
+    // tolerance anyway), exactly like the loop this replaces.
+    let localScale = 0;
+    if (a0 === a0) {
+      const m = Math.abs(a0);
+      if (m > localScale) localScale = m;
+    }
+    if (a1 === a1) {
+      const m = Math.abs(a1);
+      if (m > localScale) localScale = m;
+    }
+    if (a2 === a2) {
+      const m = Math.abs(a2);
+      if (m > localScale) localScale = m;
+    }
+    const tol = 1e-6 * (1 + localScale);
+    for (let b = 0; b < 3; b += 1) {
+      const actual = b === 0 ? a0 : b === 1 ? a1 : a2;
+      const pred =
+        model[b * 4]! * x + model[b * 4 + 1]! * y + model[b * 4 + 2]! * z + model[b * 4 + 3]!;
+      if (Math.abs(pred - actual) > tol) return true;
+    }
+  }
+  return false;
 }
 
 export class WebGLThreeDRenderer {
@@ -930,6 +1119,11 @@ export class WebGLThreeDRenderer {
     }
     this.vertexHeap.set(record.vertexData, offset);
     record.vertexOffset = offset;
+    // Re-point at the heap: later position updates rewrite the vertices
+    // through this view, landing directly in the upload heap with no copy.
+    // (`ensure_vertex_capacity` may grow the heap afterwards — it rebinds
+    // every live record, and this record is not yet in the map here.)
+    record.vertexData = this.vertexHeap.subarray(offset, offset + count);
     // Global indices: `indexData` is local to the record right after build.
     // Indices address vertices, so the float offset must be divided by the
     // vertex stride.
@@ -972,6 +1166,8 @@ export class WebGLThreeDRenderer {
         vertexBase,
       );
       record.vertexOffset = offset;
+      // The heap moved: rebind the record's view (see `vertexData`).
+      record.vertexData = heap.subarray(offset, offset + count);
       if (deltaVertices !== 0) {
         for (let index = 0; index < record.indexData.length; index += 1) {
           record.indexData[index] = record.indexData[index]! + deltaVertices;
@@ -1008,6 +1204,13 @@ export class WebGLThreeDRenderer {
       const modelHeap = new Float32Array(size / FLOATS_PER_VERTEX);
       modelHeap.set(this.modelIndexHeap);
       this.modelIndexHeap = modelHeap;
+      // The heap moved: rebind every live record's view (see `vertexData`).
+      for (const record of this.records.values()) {
+        const count = record.vertexCount * FLOATS_PER_VERTEX;
+        if (count > 0) {
+          record.vertexData = heap.subarray(record.vertexOffset, record.vertexOffset + count);
+        }
+      }
     }
     if (gl === null || this.vbo === null || this.modelVbo === null) return;
     if (floats <= this.vertexCapacity) return;
@@ -1076,14 +1279,41 @@ export class WebGLThreeDRenderer {
       if (pts === null || pts.rowDim < 3 || pts.rowCount !== existing.basePoints.length / 3) {
         // Layout itself changed; fall through to a full rebuild below.
       } else {
-        let model: Float32Array | null = existing.model;
-        if (model === null || !model_matches(model, existing.basePoints, pts.data, pts.rowDim, pts.rowCount)) {
-          if (this.lastFittedModel !== null && model_matches(this.lastFittedModel, existing.basePoints, pts.data, pts.rowDim, pts.rowCount)) {
-            model = this.lastFittedModel;
-          } else {
-            model = fitAffine(existing.basePoints, pts.data, pts.rowDim, pts.rowCount);
-            if (model !== null) this.lastFittedModel = model;
+        // Sample-gated verification: a candidate that fails a few sample
+        // rows cannot verify, so its full scan is skipped.  (A sample reject
+        // only skips verification scans — the fit below still runs whenever
+        // nothing verifies, so incremental affine motion such as per-frame
+        // `rotate()` keeps fitting its new model exactly as before.  In the
+        // hairline case where samples reject but the full scan would have
+        // passed, the record takes the fit/update path instead of reusing the
+        // old model; both describe the same geometry within the fit
+        // tolerance, i.e. far below a pixel.)
+        const base = existing.basePoints;
+        const data = pts.data;
+        const rowDim = pts.rowDim;
+        const rowCount = pts.rowCount;
+        const prevModel = existing.model;
+        let model: Float32Array | null = null;
+        if (
+          prevModel !== null &&
+          !model_sample_rejects(prevModel, base, data, rowDim, rowCount) &&
+          model_matches(prevModel, base, data, rowDim, rowCount)
+        ) {
+          model = prevModel;
+        }
+        if (model === null) {
+          const sharedModel = this.lastFittedModel;
+          if (
+            sharedModel !== null &&
+            !model_sample_rejects(sharedModel, base, data, rowDim, rowCount) &&
+            model_matches(sharedModel, base, data, rowDim, rowCount)
+          ) {
+            model = sharedModel;
           }
+        }
+        if (model === null) {
+          model = fitAffine(base, data, rowDim, rowCount);
+          if (model !== null) this.lastFittedModel = model;
         }
         if (model !== null && !existing.forceRebuild) {
           existing.model = model;
@@ -1102,9 +1332,9 @@ export class WebGLThreeDRenderer {
         pts !== null &&
         pts.rowDim === existing.rowDim &&
         pts.rowCount === existing.basePoints.length / 3 &&
-        ranges_key(pts.data, pts.rowDim, pts.rowCount, vm.n_points_per_cubic_curve, vm.tolerance_for_point_equality) === existing.rangeKey
+        ranges_match_cached(pts.data, pts.rowDim, pts.rowCount, vm.n_points_per_cubic_curve, vm.tolerance_for_point_equality, existing.rangeList)
       ) {
-        this.update_record_positions(existing, camera, vm, pts);
+        this.update_record_positions(existing, vm, pts);
         return existing;
       }
     }
@@ -1127,40 +1357,47 @@ export class WebGLThreeDRenderer {
    */
   private update_record_positions(
     record: GeometryRecord,
-    camera: ThreeDCamera,
     vm: VMobject,
     pts: { data: ArrayLike<number>; rowDim: number; rowCount: number },
   ): void {
-    const baseColors = camera.get_mobject_base_colors(vm);
-    const info = baseColors?.fill ?? baseColors?.stroke ?? baseColors?.bgStroke ?? null;
-    const n0 = info?.normal0 ?? ZERO_VEC;
-    const n1 = info?.normal1 ?? ZERO_VEC;
+    // Normals only: the full base-colour resolution (rgba row reads per
+    // source) is wasted here — the record reuses its baked colours and only
+    // the positions/normals move.  Same normals `get_mobject_base_colors`
+    // would report (shared across all three colour sources).
+    const normals = _cornerNormalsFlat(vm.points);
+    const n0 = normals?.normal0 ?? ZERO_VEC;
+    const n1 = normals?.normal1 ?? ZERO_VEC;
     const { data, rowDim } = pts;
+    // `data` is float64 in every real flow (point stores are float64); direct
+    // reads avoid a `Number()` call per component per vertex per frame.
+    const f64 = data instanceof Float64Array ? data : null;
+    const read = (index: number): number =>
+      f64 !== null ? f64[index]! : Number(data[index] ?? 0);
     const vertexData = record.vertexData;
     const vertexRows = record.vertexRows!;
     for (let v = 0; v < record.vertexCount; v += 1) {
       const base = v * FLOATS_PER_VERTEX;
       const rbase = v * 5;
       const rPos = vertexRows[rbase]! * rowDim;
-      vertexData[base] = Number(data[rPos] ?? 0);
-      vertexData[base + 1] = Number(data[rPos + 1] ?? 0);
-      vertexData[base + 2] = Number(data[rPos + 2] ?? 0);
+      vertexData[base] = read(rPos);
+      vertexData[base + 1] = read(rPos + 1);
+      vertexData[base + 2] = read(rPos + 2);
       const rPrev = vertexRows[rbase + 1]! * rowDim;
-      vertexData[base + 3] = Number(data[rPrev] ?? 0);
-      vertexData[base + 4] = Number(data[rPrev + 1] ?? 0);
-      vertexData[base + 5] = Number(data[rPrev + 2] ?? 0);
+      vertexData[base + 3] = read(rPrev);
+      vertexData[base + 4] = read(rPrev + 1);
+      vertexData[base + 5] = read(rPrev + 2);
       const rNext = vertexRows[rbase + 2]! * rowDim;
-      vertexData[base + 6] = Number(data[rNext] ?? 0);
-      vertexData[base + 7] = Number(data[rNext + 1] ?? 0);
-      vertexData[base + 8] = Number(data[rNext + 2] ?? 0);
+      vertexData[base + 6] = read(rNext);
+      vertexData[base + 7] = read(rNext + 1);
+      vertexData[base + 8] = read(rNext + 2);
       const rG0 = vertexRows[rbase + 3]! * rowDim;
-      vertexData[base + 9] = Number(data[rG0] ?? 0);
-      vertexData[base + 10] = Number(data[rG0 + 1] ?? 0);
-      vertexData[base + 11] = Number(data[rG0 + 2] ?? 0);
+      vertexData[base + 9] = read(rG0);
+      vertexData[base + 10] = read(rG0 + 1);
+      vertexData[base + 11] = read(rG0 + 2);
       const rG1 = vertexRows[rbase + 4]! * rowDim;
-      vertexData[base + 12] = Number(data[rG1] ?? 0);
-      vertexData[base + 13] = Number(data[rG1 + 1] ?? 0);
-      vertexData[base + 14] = Number(data[rG1 + 2] ?? 0);
+      vertexData[base + 12] = read(rG1);
+      vertexData[base + 13] = read(rG1 + 1);
+      vertexData[base + 14] = read(rG1 + 2);
       vertexData[base + 25] = n0[0] ?? 0;
       vertexData[base + 26] = n0[1] ?? 0;
       vertexData[base + 27] = n0[2] ?? 0;
@@ -1174,6 +1411,9 @@ export class WebGLThreeDRenderer {
     record.forceRebuild = false;
     const offset = record.vertexOffset;
     const count = record.vertexCount * FLOATS_PER_VERTEX;
+    // No heap copy here: `record.vertexData` is a view into the heap (see
+    // `alloc_vertices`), so the rewrite above already landed in the upload
+    // bytes; only the dirty range remains to be marked.
     if (offset < this.pendingVertexMin) this.pendingVertexMin = offset;
     if (offset + count > this.pendingVertexMax) this.pendingVertexMax = offset + count;
   }
@@ -1235,7 +1475,7 @@ export class WebGLThreeDRenderer {
         vertexRows: null,
         cornerStartRow: 0,
         cornerEndRow: 0,
-        rangeKey: "",
+        rangeList: [],
         rowDim: 3,
       };
     }
@@ -1402,7 +1642,7 @@ export class WebGLThreeDRenderer {
       vertexRows: subdivided ? null : vertexRows,
       cornerStartRow: startRow,
       cornerEndRow: endRow,
-      rangeKey: ranges.map((r) => `${r[0]}:${r[1]}`).join(","),
+      rangeList: ranges.map((r) => [r[0] ?? 0, r[1] ?? 0] as const),
       rowDim: pts.rowDim,
     };
   }

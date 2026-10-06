@@ -31,6 +31,7 @@ export interface FlatProjectedPoints {
  *  (the input fields let consumers validate cached geometry cheaply). */
 export interface MobjectColorInfos {
   points: unknown;
+  pointsVersion: number;
   fillSource: unknown;
   strokeSource: unknown;
   bgStrokeSource: unknown;
@@ -99,6 +100,25 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Fallback rgba source for VMobjects without an explicit array. */
 const TRANSPARENT_RGBA = array([[0, 0, 0, 0]]) as NDArray;
 
+/**
+ * Corner unit normals of a shaded 3D VMobject's point store, or null when the
+ * store is unusable.  Same corners/normals `get_mobject_base_colors` reports
+ * (shared by all three colour sources); the WebGL position-update path needs
+ * only these, without resolving any rgba rows.
+ *
+ * @internal
+ */
+export function _cornerNormalsFlat(points: unknown): { normal0: number[]; normal1: number[] } | null {
+  const pts = _cContiguousRows(points);
+  if (pts === null || pts.rowDim < 3 || pts.rowCount < 4) return null;
+  const n = pts.rowCount;
+  const endIndex = Math.floor((n - 1) / 6) * 3;
+  return {
+    normal0: vmobUnitNormalFlat(pts.data, pts.rowDim, n, 0),
+    normal1: vmobUnitNormalFlat(pts.data, pts.rowDim, n, endIndex),
+  };
+}
+
 /** Read row `index` of a C-contiguous rgba store into a fresh `[r, g, b, a]`. */
 function readRgbaRow(data: ArrayLike<number>, index: number): number[] {
   const base = index * 4;
@@ -111,35 +131,52 @@ function readRgbaRow(data: ArrayLike<number>, index: number): number[] {
 }
 
 /**
- * Depth-sort key: `dot(center, (rx, ry, rz))` where `center` is the midpoint
- * of the bounding box (`Mobject.get_center()`), read straight from the
- * backing store.  `get_center()` allocated a boundary array and a result
- * array per face; the 3D painter sort calls this once per face per frame.
+ * Midpoint of the bounding box over ALL point rows, read straight from the
+ * backing store (the `Mobject.get_center()` equivalent the depth sort needs;
+ * `get_center()` allocated a boundary array and a result array per face).
+ * Returns null when there are no rows (the caller falls back to
+ * `get_z_index_reference_point()`).
  */
 function zReferenceDotFlat(mob: Mobject, rx: number, ry: number, rz: number): number {
-  const pts = _cContiguousRows((mob as { points?: unknown }).points);
-  if (pts === null || pts.rowDim < 3 || pts.rowCount === 0) {
-    const center = mob.get_z_index_reference_point();
-    return (center[0] ?? 0) * rx + (center[1] ?? 0) * ry + (center[2] ?? 0) * rz;
+  const center = bboxCenterFlat((mob as { points?: unknown }).points);
+  if (center === null) {
+    const fallback = mob.get_z_index_reference_point();
+    return (fallback[0] ?? 0) * rx + (fallback[1] ?? 0) * ry + (fallback[2] ?? 0) * rz;
   }
+  return center[0]! * rx + center[1]! * ry + center[2]! * rz;
+}
+
+/**
+ * Bounding-box midpoint backing {@link zReferenceDotFlat}, exposed as a
+ * module function so the depth-sort cache can reuse it without recomputing
+ * the dot product (the camera moves every drag frame while the centers do
+ * not).
+ */
+function bboxCenterFlat(points: unknown): [number, number, number] | null {
+  const pts = _cContiguousRows(points);
+  if (pts === null || pts.rowDim < 3 || pts.rowCount === 0) return null;
   const { data, rowDim, rowCount } = pts;
+  const flat = data instanceof Float64Array ? data : null;
   let min0 = Infinity; let max0 = -Infinity;
   let min1 = Infinity; let max1 = -Infinity;
   let min2 = Infinity; let max2 = -Infinity;
   let nan0 = false; let nan1 = false; let nan2 = false;
   for (let row = 0; row < rowCount; row += 1) {
     const base = row * rowDim;
-    const v0 = Number(data[base]);
+    // Float64 elements are already numbers; the per-element `Number()` call
+    // showed up in profiles, so it is kept only for exotic stores.
+    const v0 = flat !== null ? flat[base]! : Number(data[base]);
     if (v0 !== v0) nan0 = true; else { if (v0 < min0) min0 = v0; if (v0 > max0) max0 = v0; }
-    const v1 = Number(data[base + 1]);
+    const v1 = flat !== null ? flat[base + 1]! : Number(data[base + 1]);
     if (v1 !== v1) nan1 = true; else { if (v1 < min1) min1 = v1; if (v1 > max1) max1 = v1; }
-    const v2 = Number(data[base + 2]);
+    const v2 = flat !== null ? flat[base + 2]! : Number(data[base + 2]);
     if (v2 !== v2) nan2 = true; else { if (v2 < min2) min2 = v2; if (v2 > max2) max2 = v2; }
   }
-  const c0 = nan0 ? NaN : (min0 + max0) / 2;
-  const c1 = nan1 ? NaN : (min1 + max1) / 2;
-  const c2 = nan2 ? NaN : (min2 + max2) / 2;
-  return c0 * rx + c1 * ry + c2 * rz;
+  return [
+    nan0 ? NaN : (min0 + max0) / 2,
+    nan1 ? NaN : (min1 + max1) / 2,
+    nan2 ? NaN : (min2 + max2) / 2,
+  ];
 }
 
 /**
@@ -279,6 +316,7 @@ export class ThreeDCamera extends Camera {
   /** Shading/gradient colour info keyed by (vmobject, rgba source). */
   private _colorInfoCache = new WeakMap<VMobject, Map<unknown, {
     points: unknown;
+    pointsVersion: number;
     light: unknown;
     shaded: boolean;
     info: DrawColorInfo;
@@ -286,6 +324,9 @@ export class ThreeDCamera extends Camera {
   }>>();
   /** All three colour infos of one mobject, keyed by the inputs they depend on. */
   private _mobjectColorCache = new WeakMap<VMobject, MobjectColorInfos>();
+  /** Depth-sort bounding-box centers, keyed by mobject and validated by
+   *  `points_version` (see `get_mobjects_to_display`). */
+  private _sortCenterCache = new WeakMap<Mobject, { version: number; center: [number, number, number] }>();
 
   // NOTE: `frame_center` is backed by a Point mobject (mirrors the Python
   // @property). The base Camera constructor assigns `frame_center` while
@@ -431,13 +472,14 @@ export class ThreeDCamera extends Camera {
     const lightPoints = this.light_source.points;
     const info = this.compute_shaded_color_info(vm, source, points, lightPoints);
     if (info !== null) {
-      this.store_color_entry(vm, source, { points, light: lightPoints, shaded: true, info });
+      this.store_color_entry(vm, source, { points, pointsVersion: vm.points_version, light: lightPoints, shaded: true, info });
     }
     return info;
   }
 
   private color_entries(vm: VMobject): Map<unknown, {
     points: unknown;
+    pointsVersion: number;
     light: unknown;
     shaded: boolean;
     info: DrawColorInfo;
@@ -454,6 +496,7 @@ export class ThreeDCamera extends Camera {
   /** Valid (non-stale) cache entry for `(vmobject, rgba source)`, if any. */
   private lookup_color_entry(vm: VMobject, source: NDArray): {
     points: unknown;
+    pointsVersion: number;
     light: unknown;
     shaded: boolean;
     info: DrawColorInfo;
@@ -461,13 +504,16 @@ export class ThreeDCamera extends Camera {
   } | undefined {
     const entry = this._colorInfoCache.get(vm)?.get(source);
     if (entry === undefined) return undefined;
-    if (entry.points !== vm.points) return undefined;
+    // Version (not reference): point stores are mutated in place by the
+    // rotate/apply/interpolate fast paths while keeping their identity.
+    if (entry.pointsVersion !== vm.points_version || entry.points !== vm.points) return undefined;
     if (entry.shaded && entry.light !== this.light_source.points) return undefined;
     return entry;
   }
 
   private store_color_entry(vm: VMobject, source: NDArray, entry: {
     points: unknown;
+    pointsVersion: number;
     light: unknown;
     shaded: boolean;
     info: DrawColorInfo;
@@ -537,9 +583,11 @@ export class ThreeDCamera extends Camera {
     const light = this.light_source.points;
     const shading = this.should_apply_shading;
     const cached = this._mobjectColorCache.get(vm);
+    const pointsVersion = vm.points_version;
     if (
       cached !== undefined &&
       cached.points === points &&
+      cached.pointsVersion === pointsVersion &&
       cached.fillSource === fillSource &&
       cached.strokeSource === strokeSource &&
       cached.bgStrokeSource === bgStrokeSource &&
@@ -550,6 +598,7 @@ export class ThreeDCamera extends Camera {
     }
     const entry = {
       points,
+      pointsVersion,
       fillSource,
       strokeSource,
       bgStrokeSource,
@@ -636,7 +685,7 @@ export class ThreeDCamera extends Camera {
         info = { colors: [row0, row1], gradient: true, start: startPoint, end: endPoint };
       }
     }
-    this.store_color_entry(vm, source, { points: vm.points, light: null, shaded: false, info });
+    this.store_color_entry(vm, source, { points: vm.points, pointsVersion: vm.points_version, light: null, shaded: false, info });
     return info;
   }
 
@@ -728,10 +777,33 @@ export class ThreeDCamera extends Camera {
     const keys = new Float64Array(count);
     for (let index = 0; index < count; index += 1) {
       const mob = displayed[index]!;
-      // Direct field read: missing/undefined means "not a 3D mobject", exactly
-      // like the old `in` probe (which also paid operator overhead per face).
-      const shade = (mob as { shade_in_3d?: unknown }).shade_in_3d === true;
-      keys[index] = shade ? zReferenceDotFlat(mob, rx, ry, rz) : Infinity;
+      // Python `hasattr(mob, "shade_in_3d")`: the Mobject proxy raises
+      // AttributeError for missing attributes, so probe with `in` (handled
+      // by the proxy's `has` trap, which is cheaper than the throwing `get`).
+      const shade = mob instanceof VMobject
+        ? (mob as VMobject).shade_in_3d === true
+        : "shade_in_3d" in mob
+          ? Boolean((mob as { shade_in_3d?: boolean }).shade_in_3d)
+          : false;
+      if (!shade) {
+        keys[index] = Infinity;
+        continue;
+      }
+      // Bounding-box centers are cached by points version: camera-only
+      // movement (the interactive drag case) re-sorts identical geometry, so
+      // the full row scan runs only when the points actually changed.
+      const version = (mob as Mobject).points_version;
+      const cached = this._sortCenterCache.get(mob);
+      let center: [number, number, number] | null;
+      if (cached !== undefined && cached.version === version) {
+        center = cached.center;
+      } else {
+        center = bboxCenterFlat((mob as { points?: unknown }).points);
+        if (center !== null) this._sortCenterCache.set(mob, { version, center });
+      }
+      keys[index] = center === null
+        ? zReferenceDotFlat(mob, rx, ry, rz)
+        : center[0]! * rx + center[1]! * ry + center[2]! * rz;
     }
     const order = new Array<number>(count);
     for (let index = 0; index < count; index += 1) order[index] = index;

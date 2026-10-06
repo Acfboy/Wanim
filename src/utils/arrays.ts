@@ -143,6 +143,31 @@ export function pointRows(value: unknown, dim = 3): number[][] {
  * views (whose `data` is larger than the logical array) fall back safely.
  */
 export function _cContiguousRows(value: unknown): { data: ArrayLike<number>; rowDim: number; rowCount: number } | null {
+  // Fast lane first: genuine numpy-ts NDArrays are Proxies whose backing
+  // `_storage` object holds the same `shape`/`data` references (verified)
+  // behind a single proxy hop, while every public `.shape`/`.data` access
+  // pays the proxy `get` trap and `.flags` additionally allocates a fresh
+  // object.  Duck-typed arrays (no `_storage`) fall through to the public
+  // accessors below, preserving the old acceptance exactly.
+  if (value !== null && typeof value === "object") {
+    const storage = (value as { _storage?: unknown })._storage as
+      | { isCContiguous?: unknown; data?: ArrayLike<number>; shape?: unknown }
+      | undefined;
+    if (storage !== undefined && storage !== null && typeof storage === "object") {
+      const contiguous = storage.isCContiguous;
+      if (contiguous === false) return null;
+      if (typeof contiguous === "boolean") {
+        const shape = storage.shape as readonly number[] | undefined;
+        const data = storage.data;
+        if (shape !== undefined && data !== undefined && shape.length === 2) {
+          const rowDim = shape[1] ?? 0;
+          const rowCount = shape[0] ?? 0;
+          if (data.length === rowCount * rowDim) return { data, rowDim, rowCount };
+        }
+        return null;
+      }
+    }
+  }
   if (!isNDArray(value)) return null;
   const array = value as NDArray & { data?: ArrayLike<number>; flags?: { C_CONTIGUOUS?: boolean } };
   const shape = array.shape;
@@ -153,6 +178,65 @@ export function _cContiguousRows(value: unknown): { data: ArrayLike<number>; row
   const rowCount = shape[0] ?? 0;
   if (data.length !== rowCount * rowDim) return null;
   return { data, rowDim, rowCount };
+}
+
+/**
+ * Reusable slots for allocation-free backing-store reads in per-frame hot
+ * loops (`Transform` interpolation runs thousands of faces per frame; the
+ * `{data, rowDim, rowCount}` object per {@link _cContiguousRows} call showed
+ * up as GC pressure).  Pass one slot per simultaneously-live store to
+ * {@link _readFlatStore} and copy the fields to locals immediately: the
+ * slots are shared module state and the next read overwrites them.  Safe
+ * because reads are synchronous with no user callbacks in between.
+ *
+ * @internal
+ */
+export interface FlatStoreSlot { data: Float64Array | null; rows: number; cols: number }
+
+/** @internal See {@link FlatStoreSlot}. */
+export const _flatStoreSlots: FlatStoreSlot[] = [
+  { data: null, rows: 0, cols: 0 },
+  { data: null, rows: 0, cols: 0 },
+  { data: null, rows: 0, cols: 0 },
+];
+
+/**
+ * Read a C-contiguous float64 2-D backing store into `slot` without
+ * allocating.  Returns false (leaving the slot untouched) for anything else.
+ * Accepts the same values as {@link _cContiguousRows} minus the duck-typed
+ * fallback (genuine numpy-ts stores only).
+ *
+ * @internal
+ */
+export function _readFlatStore(value: unknown, slot: FlatStoreSlot): boolean {
+  if (value !== null && typeof value === "object") {
+    const storage = (value as { _storage?: unknown })._storage as
+      | { isCContiguous?: unknown; data?: unknown; shape?: unknown }
+      | undefined;
+    if (storage !== undefined && storage !== null && typeof storage === "object") {
+      if (storage.isCContiguous === false) return false;
+      if (typeof storage.isCContiguous === "boolean") {
+        const shape = storage.shape;
+        const data = storage.data;
+        if (
+          data instanceof Float64Array &&
+          Array.isArray(shape) &&
+          shape.length === 2
+        ) {
+          const rows = shape[0] ?? 0;
+          const cols = shape[1] ?? 0;
+          if (data.length === rows * cols) {
+            slot.data = data;
+            slot.rows = rows;
+            slot.cols = cols;
+            return true;
+          }
+        }
+        return false;
+      }
+    }
+  }
+  return false;
 }
 
 export function pointFrom(value: unknown, dim = 3): Point3D {

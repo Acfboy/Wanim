@@ -7,7 +7,7 @@ import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
 import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
-import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString, _cContiguousRows } from "../utils/arrays.js";
+import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString, _cContiguousRows, _readFlatStore, _flatStoreSlots } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
 import { config } from "../_config/utils.js";
 
@@ -432,6 +432,22 @@ const RAW_MOBJECT_TARGET = Symbol("wanim.raw_mobject_target");
 function rawMobjectTarget(value: Mobject): Mobject {
   const raw = (value as unknown as { [RAW_MOBJECT_TARGET]?: Mobject })[RAW_MOBJECT_TARGET];
   return raw ?? value;
+}
+
+/**
+ * Internal escape hatch from the Mobject Proxy for per-frame hot paths.
+ *
+ * Reading/writing known-existing fields through the proxy pays the `get`/`set`
+ * (and `has`) traps on every access; with thousands of faces per frame that
+ * dominates `Transform` playback.  The raw target exposes the same values
+ * (accessors run with the target as receiver), so hot loops use this after a
+ * single trap.  Only for fields known to exist: unlike the proxy, raw reads
+ * of missing attributes return `undefined` instead of raising AttributeError.
+ *
+ * @internal
+ */
+export function _rawMobject(value: Mobject): Mobject {
+  return rawMobjectTarget(value);
 }
 
 function createMobjectProxy(target: Mobject): Mobject {
@@ -1814,21 +1830,22 @@ export class Mobject {
     for (const mobject of this.family_members_with_points()) {
       // Fast path: apply the 3x3 rotation row-wise on the flat backing store,
       // reproducing the old `sum_j (p_j - c_j) * R_ij + c_i` accumulation.
+      // In-place: each row is fully read before its own row is written and
+      // rows are independent, so no copy is needed; the version bump matches
+      // the old `points = out` setter exactly (one revision + one epoch).
       const flat = _cContiguousRows(mobject.points);
       if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && dim === 3 && isFloatPointData(flat.data)) {
         const { data, rowDim, rowCount } = flat;
-        const out = mobject.points.copy() as NDArray;
-        const outData = (out as NDArray & { data: Float64Array }).data;
         for (let row = 0; row < rowCount; row += 1) {
           const base = row * rowDim;
           const x = (data[base] ?? 0) - cx;
           const y = (data[base + 1] ?? 0) - cy;
           const z = (data[base + 2] ?? 0) - cz;
-          outData[base] = ((0 + x * r00) + y * r01) + z * r02 + cx;
-          outData[base + 1] = ((0 + x * r10) + y * r11) + z * r12 + cy;
-          outData[base + 2] = ((0 + x * r20) + y * r21) + z * r22 + cz;
+          data[base] = ((0 + x * r00) + y * r01) + z * r02 + cx;
+          data[base + 1] = ((0 + x * r10) + y * r11) + z * r12 + cy;
+          data[base + 2] = ((0 + x * r20) + y * r21) + z * r22 + cz;
         }
-        mobject.points = out;
+        mobject.bump_points_version();
       } else {
         const centerArray = array(center);
         const points = mobject.points as unknown as NDArray;
@@ -1909,44 +1926,7 @@ export class Mobject {
       // materialisation per point per submobject.  This is the per-frame cost
       // of `Surface` waves and other pointwise animations.
       const members = this.family_members_with_points();
-      let allFlat = true;
-      for (const member of members) {
-        if (_cContiguousRows((member as { points?: unknown }).points) === null) {
-          allFlat = false;
-          break;
-        }
-      }
-      if (allFlat) {
-        // In-place update: pointwise funcs read each row before writing it,
-        // so mutating the live backing store is exact and avoids a WASM
-        // allocation plus wrapper per submobject per frame.
-        for (const member of members) {
-          const dim = (member as { dim?: number }).dim ?? this.dim;
-          const flat = _cContiguousRows((member as { points?: unknown }).points)!;
-          const { data, rowDim, rowCount } = flat;
-          if (!(data instanceof Float64Array)) {
-            // Non-float64 backing (e.g. a WASM view of another dtype):
-            // allocate instead of mutating in place.
-            const out = new Float64Array(rowCount * rowDim);
-            for (let index = 0; index < rowCount; index += 1) {
-              const base = index * rowDim;
-              const point = new Array<number>(dim);
-              for (let c = 0; c < dim; c += 1) point[c] = Number(data[base + c] ?? 0);
-              writeFuncResult(out, base, rowDim, func(point), dim);
-            }
-            (member as { points?: unknown }).points = array(out).reshape(rowCount, rowDim) as NDArray;
-            continue;
-          }
-          for (let index = 0; index < rowCount; index += 1) {
-            const base = index * rowDim;
-            const point = new Array<number>(dim);
-            for (let c = 0; c < dim; c += 1) point[c] = Number(data[base + c] ?? 0);
-            writeFuncResult(data as Float64Array, base, rowDim, func(point), dim);
-          }
-          (member as Mobject).bump_points_version();
-        }
-        return this;
-      }
+      if (this.apply_function_to_members_flat(members, func)) return this;
     }
     let resolved_point: readonly number[] | NDArray | undefined = about_point ?? undefined;
     const resolved_edge: readonly number[] | NDArray | undefined = about_edge ?? undefined;
@@ -1964,6 +1944,60 @@ export class Mobject {
       resolved_edge,
     );
     return this;
+  }
+
+  /**
+   * Flat-backing core of the no-`about_point`/`about_edge` `apply_function`
+   * path.  Returns false when any member is not C-contiguous (the caller
+   * takes the numpy path instead).  `members` is passed in so
+   * `VMobject.apply_function` can share one family walk across its two
+   * handle-scalings and the application itself (three walks per frame
+   * otherwise).  Internal; the public signature is unchanged.
+   *
+   * @internal
+   */
+  apply_function_to_members_flat(members: Mobject[], func: (point: number[]) => number[] | NDArray): boolean {
+    const flats = new Array<{ member: Mobject; dim: number; data: ArrayLike<number>; rowDim: number; rowCount: number } | null>(members.length);
+    for (let m = 0; m < members.length; m += 1) {
+      const member = members[m]!;
+      const flat = _cContiguousRows((member as { points?: unknown }).points);
+      if (flat === null) return false;
+      flats[m] = { member, dim: (member as { dim?: number }).dim ?? this.dim, data: flat.data, rowDim: flat.rowDim, rowCount: flat.rowCount };
+    }
+    // In-place update: pointwise funcs read each row before writing it, so
+    // mutating the live backing store is exact and avoids a WASM allocation
+    // plus wrapper per submobject per frame.  One scratch point array is
+    // reused for every point (callers must not retain it across calls, same
+    // as numpy row views in Python).
+    let scratch: number[] | null = null;
+    let scratchDim = -1;
+    for (const entry of flats) {
+      const { member, dim, data, rowDim, rowCount } = entry!;
+      if (scratch === null || scratchDim !== dim) {
+        scratch = new Array<number>(dim);
+        scratchDim = dim;
+      }
+      const point = scratch;
+      if (!(data instanceof Float64Array)) {
+        // Non-float64 backing (e.g. a WASM view of another dtype):
+        // allocate instead of mutating in place.
+        const out = new Float64Array(rowCount * rowDim);
+        for (let index = 0; index < rowCount; index += 1) {
+          const base = index * rowDim;
+          for (let c = 0; c < dim; c += 1) point[c] = Number(data[base + c] ?? 0);
+          writeFuncResult(out, base, rowDim, func(point), dim);
+        }
+        (member as { points?: unknown }).points = array(out).reshape(rowCount, rowDim) as NDArray;
+        continue;
+      }
+      for (let index = 0; index < rowCount; index += 1) {
+        const base = index * rowDim;
+        for (let c = 0; c < dim; c += 1) point[c] = data[base + c] ?? 0;
+        writeFuncResult(data, base, rowDim, func(point), dim);
+      }
+      (member as Mobject).bump_points_version();
+    }
+    return true;
   }
 
   apply_matrix(matrix: number[][] | NDArray, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
@@ -1997,21 +2031,21 @@ export class Mobject {
     const cy = center[1] ?? 0;
     const cz = center[2] ?? 0;
     for (const mobject of this.family_members_with_points()) {
+      // In-place (see `rotate`): rows are independent, so the copy is pure
+      // overhead; the bump matches the old setter exactly.
       const flat = _cContiguousRows(mobject.points);
       if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && dim === 3 && isFloatPointData(flat.data)) {
         const { data, rowDim, rowCount } = flat;
-        const out = mobject.points.copy() as NDArray;
-        const outData = (out as NDArray & { data: Float64Array }).data;
         for (let row = 0; row < rowCount; row += 1) {
           const base = row * rowDim;
           const x = (data[base] ?? 0) - cx;
           const y = (data[base + 1] ?? 0) - cy;
           const z = (data[base + 2] ?? 0) - cz;
-          outData[base] = ((0 + x * m00) + y * m01) + z * m02 + cx;
-          outData[base + 1] = ((0 + x * m10) + y * m11) + z * m12 + cy;
-          outData[base + 2] = ((0 + x * m20) + y * m21) + z * m22 + cz;
+          data[base] = ((0 + x * m00) + y * m01) + z * m02 + cx;
+          data[base + 1] = ((0 + x * m10) + y * m11) + z * m12 + cy;
+          data[base + 2] = ((0 + x * m20) + y * m21) + z * m22 + cz;
         }
-        mobject.points = out;
+        mobject.bump_points_version();
       } else {
         const centerArray = array(center);
         const points = mobject.points as unknown as NDArray;
@@ -3163,6 +3197,48 @@ export class Mobject {
   }
 
   interpolate(mobject1: Mobject, mobject2: Mobject, alpha: number, path_func: PathFuncType | null = null): this {
+    // Fast path: the per-frame `Transform`/`Rotate` case is a scalar-alpha
+    // straight lerp between same-shape C-contiguous float64 stores.  Doing it
+    // in place in the existing backing store avoids two `_cContiguousRows`
+    // views, a fresh `Float64Array`, an `array().reshape()` round trip and a
+    // setter replacement per face per frame.  The flops run in the same order
+    // as `bezier.interpolate`'s flat path (`a * (1-alpha) + b * alpha`), so
+    // the result is bitwise identical; anything else falls through below.
+    if ((path_func === null || path_func === undefined) && typeof alpha === "number") {
+      // Raw targets: one proxy trap total instead of one per field access
+      // below (see `_rawMobject`).  Slot reads: no per-face view objects.
+      const raw1 = _rawMobject(mobject1);
+      const raw2 = _rawMobject(mobject2);
+      const rawSelf = _rawMobject(this);
+      const slot = _flatStoreSlots;
+      if (
+        _readFlatStore(raw1.points, slot[0]!) &&
+        _readFlatStore(raw2.points, slot[1]!) &&
+        _readFlatStore(rawSelf.points, slot[2]!) &&
+        slot[0]!.rows === slot[1]!.rows &&
+        slot[0]!.rows === slot[2]!.rows &&
+        slot[0]!.cols === slot[1]!.cols &&
+        slot[0]!.cols === slot[2]!.cols
+      ) {
+        const startData = slot[0]!.data!;
+        const endData = slot[1]!.data!;
+        const selfData = slot[2]!.data!;
+        // The destination must not alias either source (e.g. interpolating a
+        // mobject towards itself); aliasing would corrupt the read mid-loop.
+        // Duck-typed (non-`_storage`) stores fall through to the allocating
+        // path below, exactly as before.
+        if (selfData !== startData && selfData !== endData) {
+          const inv = 1 - alpha;
+          const length = slot[2]!.rows * slot[2]!.cols;
+          for (let index = 0; index < length; index += 1) {
+            selfData[index] = startData[index]! * inv + endData[index]! * alpha;
+          }
+          rawSelf.bump_points_version();
+          this.interpolate_color(mobject1, mobject2, alpha);
+          return this;
+        }
+      }
+    }
     const func = (path_func ?? straight_path()) as PathFuncType;
     this.points = func(mobject1.points, mobject2.points, alpha);
     this.interpolate_color(mobject1, mobject2, alpha);
