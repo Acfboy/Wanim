@@ -622,6 +622,8 @@ export class MathTex extends SingleStringMathTex {
 export interface TexOptions extends MathTexOptions {
   arg_separator?: string;
   tex_environment?: string | null;
+  /** manimlib-style alias of `tex_to_color_map`, used by 3b1b scenes. */
+  t2c?: Record<string, ParsableManimColor> | null;
 }
 
 export class Tex extends MathTex {
@@ -637,17 +639,31 @@ export class Tex extends MathTex {
       texStrings = args as string[];
     }
     const { arg_separator = "", tex_environment = "center", ...rest } = options;
-    const converted = texStrings.map((ts) => Tex._convert_tex_to_mathtex(ts));
+    const restRecord = rest as Record<string, unknown>;
+    // 3b1b scenes (manimlib-style toolchain) pass `t2c` to `Tex`; community
+    // manim rejects it, but wanim maps it so the scenes render with colours.
+    if (restRecord["t2c"] !== undefined && restRecord["t2c"] !== null && restRecord["tex_to_color_map"] === undefined) {
+      restRecord["tex_to_color_map"] = restRecord["t2c"];
+    }
+    delete restRecord["t2c"];
+    const converted = texStrings.map((ts) => Tex._recover_tex_string(ts));
     super(...converted, { ...rest, arg_separator, tex_environment } as MathTexOptions);
     this._original_tex_strings = texStrings;
   }
 
   override get_part_by_tex(tex: string, kwargs: Record<string, unknown> = {}): VGroup | null {
-    return super.get_part_by_tex(Tex._convert_tex_to_mathtex(tex), kwargs);
+    return super.get_part_by_tex(Tex._convert_tex_to_mathtex(tex), kwargs)
+      ?? super.get_part_by_tex(tex, kwargs);
   }
 
   override set_color_by_tex(tex: string, color: ParsableManimColor, kwargs: Record<string, unknown> = {}): this {
-    return super.set_color_by_tex(Tex._convert_tex_to_mathtex(tex), color, kwargs);
+    super.set_color_by_tex(Tex._convert_tex_to_mathtex(tex), color, kwargs);
+    // The string may have been kept raw by the MathJax fallback in the
+    // constructor; colour that form too (idempotent when identical).
+    if (Tex._convert_tex_to_mathtex(tex) !== tex) {
+      super.set_color_by_tex(tex, color, kwargs);
+    }
+    return this;
   }
 
   override set_opacity_by_tex(
@@ -656,7 +672,11 @@ export class Tex extends MathTex {
     remainingOpacity: number | null = null,
     kwargs: Record<string, unknown> = {},
   ): this {
-    return super.set_opacity_by_tex(Tex._convert_tex_to_mathtex(tex), opacity, remainingOpacity, kwargs);
+    super.set_opacity_by_tex(Tex._convert_tex_to_mathtex(tex), opacity, remainingOpacity, kwargs);
+    if (Tex._convert_tex_to_mathtex(tex) !== tex) {
+      super.set_opacity_by_tex(tex, opacity, remainingOpacity, kwargs);
+    }
+    return this;
   }
 
   override set_color_by_tex_to_color_map(
@@ -665,9 +685,41 @@ export class Tex extends MathTex {
   ): this {
     const converted: Record<string, ParsableManimColor> = {};
     for (const [texs, color] of Object.entries(texsToColorMap)) {
+      // Converted form (when the constructor kept the `\text{}` wrapping)
+      // plus the raw form (when it fell back to math mode below).
+      converted[texs] = color;
       converted[Tex._convert_tex_to_mathtex(texs)] = color;
     }
     return super.set_color_by_tex_to_color_map(converted, kwargs);
+  }
+
+  /**
+   * Convert a `Tex` (text-mode) string for the MathJax backend, falling back
+   * to the raw string when the `\text{}` wrapping breaks math content.
+   *
+   * Real LaTeX recovers from text-mode `^`/`_` (nonstop mode inserts `$`
+   * and still emits the glyphs/groups), but MathJax emits `<merror>` and
+   * drops the `\cssId` groups. The missing ids make
+   * `_break_up_by_substrings` fall back to the root `VGroup`, whose parts
+   * then trip `TransformMatchingTex`'s `isinstance(MathTexPart)` assert
+   * (e.g. 3b1b's `Tex(R"e^{a{t}}", t2c=...)`). If the wrapped form errors
+   * while the raw form renders, keep the raw form.
+   */
+  static _recover_tex_string(tex: string): string {
+    const converted = Tex._convert_tex_to_mathtex(tex);
+    if (converted === tex) return converted;
+    try {
+      if (Tex._is_mathjax_error(converted) && !Tex._is_mathjax_error(tex)) return tex;
+    } catch {
+      // Probe failures are non-fatal; keep the converted form.
+    }
+    return converted;
+  }
+
+  static _is_mathjax_error(expression: string): boolean {
+    const probe = expression.trim() === "" ? "\\quad" : expression;
+    const svg = texToSvgCached(probe);
+    return svg.includes("merror") || svg.includes("data-mjx-error");
   }
 
   static _convert_tex_to_mathtex(tex: string): string {
