@@ -4562,6 +4562,156 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* keep the raw numpy-ts searchsorted on wrap failure */
     }
+    // `np.histogram` family on Python call shapes (error 389).
+    //
+    // These have no facade wrapper, so a Python call with kwargs
+    // (`np.histogram(last_components, bins=40, range=[-0.6, 0.6])`) reaches the
+    // bare numpy-ts closure with the kwargs bag as the `bins` positional and
+    // numpy-ts throws `TypeError: Cannot convert object to primitive value`
+    // inside its `Number(bins)` coercion.  Map kwargs via `__argnames__`
+    // (like `searchsorted`/`convolve` above), coerce the data operands to
+    // NDArray storage, and keep `bins`/`range` as plain values: numpy-ts
+    // wants `range` as a `[min, max]` tuple, so coercing it to an NDArray
+    // (like the data args) would break it.  `None` maps to `undefined` so
+    // numpy-ts defaults apply.
+    try {
+      const HIST_WRAPS: Record<string, string[]> = {
+        histogram: ["a", "bins", "range", "density", "weights"],
+        histogram_bin_edges: ["a", "bins", "range", "weights"],
+        histogram2d: ["x", "y", "bins", "range", "density", "weights"],
+        histogramdd: ["sample", "bins", "range", "density", "weights"],
+        digitize: ["x", "bins", "right"],
+        bincount: ["x", "weights", "minlength"],
+      };
+      const coerceHistData = (value: Any): Any => {
+        if (value === undefined || value === null) return undefined;
+        try {
+          return coerceReductionArg(value);
+        } catch {
+          return value;
+        }
+      };
+      const unwrapHistParam = (value: Any): Any => {
+        if (value === undefined || value === null) return undefined;
+        try {
+          return deepUnwrapNd(value);
+        } catch {
+          return value;
+        }
+      };
+      // Core `histogram*`/`bincount`/`digitize` return `NDArrayCore`
+      // (no `.max`/`.mean`/... methods), while `asarray` returns the full
+      // `NDArray` which has them (error 389 follow-up: `counts.max is not a
+      // function`).  Promote core results to full NDArrays so Python
+      // `counts.max()` / `edges[0]` patterns keep working.
+      const toFullHistNd = (value: Any): Any => {
+        if (Array.isArray(value)) return value.map(toFullHistNd);
+        if (!isNdArray(value)) return value;
+        try {
+          if (typeof (value as Any).max === "function") return value;
+        } catch {
+          /* fall through to promotion */
+        }
+        try {
+          return (np as Any).asarray(value);
+        } catch {
+          return value;
+        }
+      };
+      for (const [name, argnames] of Object.entries(HIST_WRAPS)) {
+        try {
+          const origFn = (np as Any)[name];
+          if (typeof origFn !== "function") continue;
+          if ((facade as Any)[name] !== origFn) continue;
+          const wrapped = (...args: Any[]): Any => {
+            const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+            let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+            if (kwargs !== null) {
+              positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+            }
+            const get = (i: number): Any => (i < positional.length ? positional[i] : undefined);
+            const set = (i: number, v: Any): void => {
+              if (i < positional.length) positional[i] = v;
+              else if (v !== undefined) {
+                while (positional.length < i) positional.push(undefined);
+                positional.push(v);
+              }
+            };
+            const nullToUndef = (v: Any): Any => (v === null ? undefined : v);
+            if (name === "histogram" || name === "histogram_bin_edges") {
+              if (get(0) !== undefined) set(0, coerceHistData(get(0)));
+              if (get(1) !== undefined) set(1, nullToUndef(unwrapHistParam(get(1))));
+              else if (get(1) === null) set(1, undefined);
+              if (name === "histogram") {
+                if (get(2) !== undefined || get(2) === null) set(2, nullToUndef(unwrapHistParam(get(2))));
+                if (get(3) !== undefined || get(3) === null) set(3, nullToUndef(get(3)));
+                if (get(4) !== undefined || get(4) === null) {
+                  const w = get(4);
+                  set(4, w === null || w === undefined ? undefined : coerceHistData(w));
+                }
+              } else {
+                if (get(2) !== undefined || get(2) === null) set(2, nullToUndef(unwrapHistParam(get(2))));
+                if (get(3) !== undefined || get(3) === null) {
+                  const w = get(3);
+                  set(3, w === null || w === undefined ? undefined : coerceHistData(w));
+                }
+              }
+            } else if (name === "histogram2d") {
+              if (get(0) !== undefined) set(0, coerceHistData(get(0)));
+              if (get(1) !== undefined) set(1, coerceHistData(get(1)));
+              if (get(2) !== undefined || get(2) === null) set(2, nullToUndef(unwrapHistParam(get(2))));
+              if (get(3) !== undefined || get(3) === null) set(3, nullToUndef(unwrapHistParam(get(3))));
+              if (get(4) !== undefined || get(4) === null) set(4, nullToUndef(get(4)));
+              if (get(5) !== undefined || get(5) === null) {
+                const w = get(5);
+                set(5, w === null || w === undefined ? undefined : coerceHistData(w));
+              }
+            } else if (name === "histogramdd") {
+              if (get(0) !== undefined) set(0, coerceHistData(get(0)));
+              if (get(1) !== undefined || get(1) === null) set(1, nullToUndef(unwrapHistParam(get(1))));
+              if (get(2) !== undefined || get(2) === null) set(2, nullToUndef(unwrapHistParam(get(2))));
+              if (get(3) !== undefined || get(3) === null) set(3, nullToUndef(get(3)));
+              if (get(4) !== undefined || get(4) === null) {
+                const w = get(4);
+                set(4, w === null || w === undefined ? undefined : coerceHistData(w));
+              }
+            } else if (name === "digitize") {
+              if (get(0) !== undefined) set(0, coerceHistData(get(0)));
+              if (get(1) !== undefined) set(1, coerceHistData(get(1)));
+              if (get(2) !== undefined || get(2) === null) set(2, nullToUndef(get(2)));
+            } else if (name === "bincount") {
+              if (get(0) !== undefined) set(0, coerceHistData(get(0)));
+              if (get(1) !== undefined || get(1) === null) {
+                const w = get(1);
+                set(1, w === null || w === undefined ? undefined : coerceHistData(w));
+              }
+              if (get(2) !== undefined || get(2) === null) {
+                const m = get(2);
+                set(2, m === null || m === undefined ? undefined : Number(m));
+              }
+            }
+            // Drop trailing `undefined` slots so numpy-ts sees the arity it
+            // expects (e.g. `histogram(a, bins, range)` instead of a 5-arg
+            // call with `undefined` density/weights).
+            while (positional.length > 0 && positional[positional.length - 1] === undefined) {
+              positional.pop();
+            }
+            const result = (origFn as Any)(...positional);
+            try {
+              return toFullHistNd(result);
+            } catch {
+              return result;
+            }
+          };
+          (wrapped as Any).__argnames__ = [...argnames];
+          (facade as Any)[name] = wrapped;
+        } catch {
+          /* keep the raw numpy-ts fn on wrap failure */
+        }
+      }
+    } catch {
+      /* histogram wrapping is best-effort; raw numpy-ts paths stay usable */
+    }
     // `normalizeNumpyDtype` (hoisted to `createRuntimeCore` scope above) maps
     // a positional/`dtype=` Python-type dtype into a numpy-ts dtype string.
     function callNumpyWithDtype(fn: (...a: Any[]) => Any, dtypeIndex: number, args: Any[]): Any {
