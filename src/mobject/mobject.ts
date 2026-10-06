@@ -606,6 +606,22 @@ export function normalizeMatchKwargs(
   return { stretch: stretchFlag, about_point: (point ?? null) as never, about_edge: (edge ?? null) as never };
 }
 
+/** Write a pointwise `apply_function` result into a flat row. */
+function writeFuncResult(
+  out: Float64Array,
+  base: number,
+  rowDim: number,
+  result: number[] | NDArray,
+  dim: number,
+): void {
+  if (isNDArray(result)) {
+    const row = pointRows(result, dim)[0] ?? [];
+    for (let c = 0; c < rowDim; c += 1) out[base + c] = Number(row[c] ?? 0);
+  } else {
+    for (let c = 0; c < rowDim; c += 1) out[base + c] = Number((result as number[])[c] ?? 0);
+  }
+}
+
 export class Mobject {
   name: string;
   dim: number;
@@ -636,9 +652,18 @@ export class Mobject {
   // epoch; the WebGL backend uses it to skip per-face cache validation on
   // frames where nothing changed.
   private _points!: NDArray;
+  private _points_version = 0;
   get points(): NDArray { return this._points; }
   set points(value: NDArray) {
     this._points = value;
+    this._points_version += 1;
+    bump_mobject_geometry_epoch();
+  }
+  /** Revision of `points`, bumped on every replacement or in-place mutation. */
+  get points_version(): number { return this._points_version; }
+  /** Mark the backing store as mutated without replacing the array. */
+  bump_points_version(): void {
+    this._points_version += 1;
     bump_mobject_geometry_epoch();
   }
   saved_state: Mobject | null = null;
@@ -1877,6 +1902,52 @@ export class Mobject {
   }
 
   apply_function(func: (point: number[]) => number[] | NDArray, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
+    if ((about_point === null || about_point === undefined) && (about_edge === null || about_edge === undefined)) {
+      // Fast path: with no about_point/about_edge the center is ORIGIN, whose
+      // subtract/add are identities.  Run `func` straight over each member's
+      // flat backing store, avoiding three numpy round-trips and a row
+      // materialisation per point per submobject.  This is the per-frame cost
+      // of `Surface` waves and other pointwise animations.
+      const members = this.family_members_with_points();
+      let allFlat = true;
+      for (const member of members) {
+        if (_cContiguousRows((member as { points?: unknown }).points) === null) {
+          allFlat = false;
+          break;
+        }
+      }
+      if (allFlat) {
+        // In-place update: pointwise funcs read each row before writing it,
+        // so mutating the live backing store is exact and avoids a WASM
+        // allocation plus wrapper per submobject per frame.
+        for (const member of members) {
+          const dim = (member as { dim?: number }).dim ?? this.dim;
+          const flat = _cContiguousRows((member as { points?: unknown }).points)!;
+          const { data, rowDim, rowCount } = flat;
+          if (!(data instanceof Float64Array)) {
+            // Non-float64 backing (e.g. a WASM view of another dtype):
+            // allocate instead of mutating in place.
+            const out = new Float64Array(rowCount * rowDim);
+            for (let index = 0; index < rowCount; index += 1) {
+              const base = index * rowDim;
+              const point = new Array<number>(dim);
+              for (let c = 0; c < dim; c += 1) point[c] = Number(data[base + c] ?? 0);
+              writeFuncResult(out, base, rowDim, func(point), dim);
+            }
+            (member as { points?: unknown }).points = array(out).reshape(rowCount, rowDim) as NDArray;
+            continue;
+          }
+          for (let index = 0; index < rowCount; index += 1) {
+            const base = index * rowDim;
+            const point = new Array<number>(dim);
+            for (let c = 0; c < dim; c += 1) point[c] = Number(data[base + c] ?? 0);
+            writeFuncResult(data as Float64Array, base, rowDim, func(point), dim);
+          }
+          (member as Mobject).bump_points_version();
+        }
+        return this;
+      }
+    }
     let resolved_point: readonly number[] | NDArray | undefined = about_point ?? undefined;
     const resolved_edge: readonly number[] | NDArray | undefined = about_edge ?? undefined;
     if (resolved_point === undefined && resolved_edge === undefined) {

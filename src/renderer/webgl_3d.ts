@@ -195,6 +195,7 @@ void main() {
 
 interface GeometryRecord {
   points: unknown;
+  pointsVersion: number;
   fillSource: unknown;
   strokeSource: unknown;
   bgStrokeSource: unknown;
@@ -218,6 +219,18 @@ interface GeometryRecord {
   modelSlot: number;
   /** Set when the model-slot budget overflowed; forces a geometry rebuild. */
   forceRebuild: boolean;
+  /**
+   * Per-vertex source point rows (pos, prev, next, grad0, grad1) for
+   * topology-stable position updates, or null when the face was subdivided
+   * (curved) and must be rebuilt on any change.
+   */
+  vertexRows: Int32Array | null;
+  /** Corner rows used to recompute the face normals on a position update. */
+  cornerStartRow: number;
+  cornerEndRow: number;
+  /** Subpath ranges the record was built from (topology validation). */
+  rangeKey: string;
+  rowDim: number;
 }
 
 export interface WebGLThreeDRendererOptions {
@@ -233,10 +246,12 @@ function isColorTransparent(info: BaseColorInfo): boolean {
 
 function flattenCubic(
   out: number[][],
+  outRows: number[],
   p0: number[],
   p1: number[],
   p2: number[],
   p3: number[],
+  p3Row: number,
   tolerance: number,
 ): void {
   // Straight segments (the overwhelmingly common case for surfaces) collapse
@@ -259,17 +274,19 @@ function flattenCubic(
   const d2 = cross(p2);
   if (d1 * d1 <= tolerance * tolerance * Math.max(chord2, 1e-30) && d2 * d2 <= tolerance * tolerance * Math.max(chord2, 1e-30)) {
     out.push(p3);
+    outRows.push(p3Row);
     return;
   }
-  // de Casteljau split at 0.5.
+  // de Casteljau split at 0.5.  Subdivided midpoints have no source row (-1);
+  // only the segment end keeps its row.
   const m01 = mid(p0, p1);
   const m12 = mid(p1, p2);
   const m23 = mid(p2, p3);
   const m012 = mid(m01, m12);
   const m123 = mid(m12, m23);
   const m = mid(m012, m123);
-  flattenCubic(out, p0, m01, m012, m, tolerance);
-  flattenCubic(out, m, m123, m23, p3, tolerance);
+  flattenCubic(out, outRows, p0, m01, m012, m, -1, tolerance);
+  flattenCubic(out, outRows, m, m123, m23, p3, p3Row, tolerance);
 }
 
 function mid(a: number[], b: number[]): number[] {
@@ -383,6 +400,18 @@ function triangulatePolygon2D(poly: number[][]): number[] {
   }
   if (remaining.length === 3) indices.push(remaining[0]!, remaining[1]!, remaining[2]!);
   return indices;
+}
+
+/** Subpath ranges serialized for topology comparison. */
+function ranges_key(
+  data: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+  nppcc: number,
+  tolerance: number,
+): string {
+  const ranges = computeSubpathRangesFlat(data, rowDim, rowCount, nppcc, tolerance, 2);
+  return ranges.map((r) => `${r[0]}:${r[1]}`).join(",");
 }
 
 /** Gauss-Jordan inversion of a 4x4 matrix in row-major order. */
@@ -1040,11 +1069,13 @@ export class WebGLThreeDRenderer {
       existing.lineMultiple === lineMultiple &&
       existing.zoomBucket === zoomBucket
     ) {
-      if (existing.points === points && !existing.forceRebuild) return existing;
+      if (existing.pointsVersion === vm.points_version && !existing.forceRebuild) return existing;
       // Geometry moved: an affine transform of the uploaded points needs no
       // rebuild at all — the shader applies it.
       const pts = _cContiguousRows(points);
-      if (pts !== null && pts.rowDim >= 3 && pts.rowCount === existing.basePoints.length / 3) {
+      if (pts === null || pts.rowDim < 3 || pts.rowCount !== existing.basePoints.length / 3) {
+        // Layout itself changed; fall through to a full rebuild below.
+      } else {
         let model: Float32Array | null = existing.model;
         if (model === null || !model_matches(model, existing.basePoints, pts.data, pts.rowDim, pts.rowCount)) {
           if (this.lastFittedModel !== null && model_matches(this.lastFittedModel, existing.basePoints, pts.data, pts.rowDim, pts.rowCount)) {
@@ -1057,8 +1088,24 @@ export class WebGLThreeDRenderer {
         if (model !== null && !existing.forceRebuild) {
           existing.model = model;
           existing.points = points;
+          existing.pointsVersion = vm.points_version;
           return existing;
         }
+      }
+      // Topology-stable position update: same point layout, so the
+      // triangulation, stroke plan and colors are reused; only the uploaded
+      // positions and normals move.  This is the `Surface` wave / ValueTracker
+      // case: every frame would otherwise pay a full rebuild.
+      if (
+        existing.vertexRows !== null &&
+        !existing.forceRebuild &&
+        pts !== null &&
+        pts.rowDim === existing.rowDim &&
+        pts.rowCount === existing.basePoints.length / 3 &&
+        ranges_key(pts.data, pts.rowDim, pts.rowCount, vm.n_points_per_cubic_curve, vm.tolerance_for_point_equality) === existing.rangeKey
+      ) {
+        this.update_record_positions(existing, camera, vm, pts);
+        return existing;
       }
     }
     const baseColors = camera.get_mobject_base_colors(vm);
@@ -1069,6 +1116,66 @@ export class WebGLThreeDRenderer {
     this.alloc_vertices(record);
     this.records.set(vm, record);
     return record;
+  }
+
+  /**
+   * Rewrite a record's positions and normals in place from the current points.
+   * Only valid when the point layout (row count, subpath ranges) is unchanged
+   * and no subdivision happened at build time (see `vertexRows`).  Colors,
+   * triangulation and stroke plan are reused; shading follows automatically
+   * because the shader evaluates it from the updated normals.
+   */
+  private update_record_positions(
+    record: GeometryRecord,
+    camera: ThreeDCamera,
+    vm: VMobject,
+    pts: { data: ArrayLike<number>; rowDim: number; rowCount: number },
+  ): void {
+    const baseColors = camera.get_mobject_base_colors(vm);
+    const info = baseColors?.fill ?? baseColors?.stroke ?? baseColors?.bgStroke ?? null;
+    const n0 = info?.normal0 ?? ZERO_VEC;
+    const n1 = info?.normal1 ?? ZERO_VEC;
+    const { data, rowDim } = pts;
+    const vertexData = record.vertexData;
+    const vertexRows = record.vertexRows!;
+    for (let v = 0; v < record.vertexCount; v += 1) {
+      const base = v * FLOATS_PER_VERTEX;
+      const rbase = v * 5;
+      const rPos = vertexRows[rbase]! * rowDim;
+      vertexData[base] = Number(data[rPos] ?? 0);
+      vertexData[base + 1] = Number(data[rPos + 1] ?? 0);
+      vertexData[base + 2] = Number(data[rPos + 2] ?? 0);
+      const rPrev = vertexRows[rbase + 1]! * rowDim;
+      vertexData[base + 3] = Number(data[rPrev] ?? 0);
+      vertexData[base + 4] = Number(data[rPrev + 1] ?? 0);
+      vertexData[base + 5] = Number(data[rPrev + 2] ?? 0);
+      const rNext = vertexRows[rbase + 2]! * rowDim;
+      vertexData[base + 6] = Number(data[rNext] ?? 0);
+      vertexData[base + 7] = Number(data[rNext + 1] ?? 0);
+      vertexData[base + 8] = Number(data[rNext + 2] ?? 0);
+      const rG0 = vertexRows[rbase + 3]! * rowDim;
+      vertexData[base + 9] = Number(data[rG0] ?? 0);
+      vertexData[base + 10] = Number(data[rG0 + 1] ?? 0);
+      vertexData[base + 11] = Number(data[rG0 + 2] ?? 0);
+      const rG1 = vertexRows[rbase + 4]! * rowDim;
+      vertexData[base + 12] = Number(data[rG1] ?? 0);
+      vertexData[base + 13] = Number(data[rG1 + 1] ?? 0);
+      vertexData[base + 14] = Number(data[rG1 + 2] ?? 0);
+      vertexData[base + 25] = n0[0] ?? 0;
+      vertexData[base + 26] = n0[1] ?? 0;
+      vertexData[base + 27] = n0[2] ?? 0;
+      vertexData[base + 28] = n1[0] ?? 0;
+      vertexData[base + 29] = n1[1] ?? 0;
+      vertexData[base + 30] = n1[2] ?? 0;
+    }
+    record.points = vm.points;
+    record.pointsVersion = vm.points_version;
+    record.model = null;
+    record.forceRebuild = false;
+    const offset = record.vertexOffset;
+    const count = record.vertexCount * FLOATS_PER_VERTEX;
+    if (offset < this.pendingVertexMin) this.pendingVertexMin = offset;
+    if (offset + count > this.pendingVertexMax) this.pendingVertexMax = offset + count;
   }
 
   private build_record(
@@ -1101,6 +1208,7 @@ export class WebGLThreeDRenderer {
     }
     const base = {
       points: vm.points,
+      pointsVersion: vm.points_version,
       fillSource,
       strokeSource,
       bgStrokeSource,
@@ -1124,6 +1232,11 @@ export class WebGLThreeDRenderer {
         indexData: new Uint32Array(0),
         vertexCount: 0,
         vertexOffset: 0,
+        vertexRows: null,
+        cornerStartRow: 0,
+        cornerEndRow: 0,
+        rangeKey: "",
+        rowDim: 3,
       };
     }
     // Flattening tolerance: a quarter device pixel at the current zoom.
@@ -1137,24 +1250,27 @@ export class WebGLThreeDRenderer {
       2,
     );
     if (ranges.length === 0) return null;
-    const subpaths: number[][][] = [];
+    const subpaths: Array<{ poly: number[][]; rows: number[] }> = [];
     for (const [start, end] of ranges) {
-      const polyline = this.flatten_subpath(pts.data, pts.rowDim, start!, end!, tolerance);
-      if (polyline.length >= 2) subpaths.push(polyline);
+      const flat = this.flatten_subpath(pts.data, pts.rowDim, start!, end!, tolerance);
+      if (flat.poly.length >= 2) subpaths.push(flat);
     }
     if (subpaths.length === 0) return null;
     if (drawFill && subpaths.length > 1) return null;
 
     const fillIndices: number[] = [];
     let fillPolygon: number[][] | null = null;
+    let fillPolyRows: number[] | null = null;
     if (drawFill) {
-      const poly = subpaths[0]!;
+      const { poly, rows } = subpaths[0]!;
       const closed = pointsEqual(poly[0]!, poly[poly.length - 1]!, vm.tolerance_for_point_equality);
       const body = closed ? poly.slice(0, -1) : poly;
+      const bodyRows = closed ? rows.slice(0, -1) : rows;
       if (body.length >= 3) {
         const tris = triangulatePolygon(body);
         if (tris.length > 0) {
           fillPolygon = body;
+          fillPolyRows = bodyRows;
           fillIndices.push(...tris);
         }
       }
@@ -1170,7 +1286,7 @@ export class WebGLThreeDRenderer {
     // face each frame, and growing JS number arrays then copying dominated the
     // rebuild.
     let strokeSegments = 0;
-    for (const poly of subpaths) {
+    for (const { poly } of subpaths) {
       const n = poly.length;
       if (n < 2) continue;
       const closed = pointsEqual(poly[0]!, poly[n - 1]!, 1e-6);
@@ -1192,6 +1308,11 @@ export class WebGLThreeDRenderer {
     let vertexCursor = 0;
     let indexCursor = 0;
 
+    // Per-vertex source rows (pos, prev, next, grad0, grad1) for
+    // topology-stable position updates.  Any -1 (a subdivided midpoint) marks
+    // the whole record as rebuild-only.
+    const vertexRows = new Int32Array(totalVerts * 5);
+    let subdivided = false;
     const addVertex = (
       p: number[],
       prev: number[],
@@ -1199,9 +1320,21 @@ export class WebGLThreeDRenderer {
       side: number,
       vertexHalfWidth: number,
       info: BaseColorInfo | null,
+      pRow = -1,
+      prevRow = -1,
+      nextRow = -1,
+      g0Row = -1,
+      g1Row = -1,
     ): number => {
       const index = vertexCursor;
       const offset = index * FLOATS_PER_VERTEX;
+      const rowBase = index * 5;
+      vertexRows[rowBase] = pRow;
+      vertexRows[rowBase + 1] = prevRow;
+      vertexRows[rowBase + 2] = nextRow;
+      vertexRows[rowBase + 3] = g0Row;
+      vertexRows[rowBase + 4] = g1Row;
+      if (pRow < 0 || prevRow < 0 || nextRow < 0 || g0Row < 0 || g1Row < 0) subdivided = true;
       const c0 = info?.colors[0] ?? ZERO_RGBA;
       const c1 = info?.colors[1] ?? c0;
       const n0 = info?.normal0 ?? ZERO_VEC;
@@ -1243,16 +1376,21 @@ export class WebGLThreeDRenderer {
     };
 
     // Cairo order per mobject: background stroke, fill, foreground stroke.
+    const startRow = 0;
+    const endRow = Math.floor((pts.rowCount - 1) / 6) * 3;
     if (drawBgStroke) {
-      indexCursor = this.append_stroke_geometry(subpaths, addVertex, indexData, indexCursor, bgStrokeInfo, bgHalfWidth);
+      indexCursor = this.append_stroke_geometry(subpaths, addVertex, indexData, indexCursor, bgStrokeInfo, bgHalfWidth, startRow, endRow);
     }
-    if (drawFill && fillPolygon !== null && fillIndices.length > 0) {
+    if (drawFill && fillPolygon !== null && fillPolyRows !== null && fillIndices.length > 0) {
       const vertexBase = vertexCursor;
-      for (const p of fillPolygon) addVertex(p, p, p, 0, 0, fillInfo);
+      for (let k = 0; k < fillPolygon.length; k += 1) {
+        const row = fillPolyRows[k]!;
+        addVertex(fillPolygon[k]!, fillPolygon[k]!, fillPolygon[k]!, 0, 0, fillInfo, row, row, row, startRow, endRow);
+      }
       for (const tri of fillIndices) indexData[indexCursor++] = vertexBase + tri;
     }
     if (drawStroke) {
-      indexCursor = this.append_stroke_geometry(subpaths, addVertex, indexData, indexCursor, strokeInfo, halfWidth);
+      indexCursor = this.append_stroke_geometry(subpaths, addVertex, indexData, indexCursor, strokeInfo, halfWidth, startRow, endRow);
     }
 
     return {
@@ -1261,11 +1399,16 @@ export class WebGLThreeDRenderer {
       indexData,
       vertexCount: vertexCursor,
       vertexOffset: 0,
+      vertexRows: subdivided ? null : vertexRows,
+      cornerStartRow: startRow,
+      cornerEndRow: endRow,
+      rangeKey: ranges.map((r) => `${r[0]}:${r[1]}`).join(","),
+      rowDim: pts.rowDim,
     };
   }
 
   private append_stroke_geometry(
-    subpaths: number[][][],
+    subpaths: Array<{ poly: number[][]; rows: number[] }>,
     addVertex: (
       p: number[],
       prev: number[],
@@ -1273,14 +1416,21 @@ export class WebGLThreeDRenderer {
       side: number,
       halfWidth: number,
       info: BaseColorInfo | null,
+      pRow?: number,
+      prevRow?: number,
+      nextRow?: number,
+      g0Row?: number,
+      g1Row?: number,
     ) => number,
     indexData: Uint32Array,
     indexCursor: number,
     info: BaseColorInfo | null,
     halfWidth: number,
+    startRow: number,
+    endRow: number,
   ): number {
     let cursor = indexCursor;
-    for (const poly of subpaths) {
+    for (const { poly, rows } of subpaths) {
       const n = poly.length;
       if (n < 2) continue;
       const closed = pointsEqual(poly[0]!, poly[n - 1]!, 1e-6);
@@ -1289,6 +1439,11 @@ export class WebGLThreeDRenderer {
         if (index < 0) return closed ? poly[count - 1]! : poly[0]!;
         if (index >= count) return closed ? poly[index - count]! : poly[count - 1]!;
         return poly[index]!;
+      };
+      const rowAt = (index: number): number => {
+        if (index < 0) return closed ? rows[count - 1]! : rows[0]!;
+        if (index >= count) return closed ? rows[index - count]! : rows[count - 1]!;
+        return rows[index]!;
       };
       // A closed subpath has `count` segments (the last one wraps back to the
       // first point); an open one has `count - 1`.
@@ -1300,10 +1455,16 @@ export class WebGLThreeDRenderer {
         const next0 = pointAt(i + 1);
         const prev1 = pointAt(i);
         const next1 = pointAt(i + 2);
-        const a = addVertex(p0, prev0, next0, 1, halfWidth, info);
-        const b = addVertex(p0, prev0, next0, -1, halfWidth, info);
-        const c = addVertex(p1, prev1, next1, 1, halfWidth, info);
-        const d = addVertex(p1, prev1, next1, -1, halfWidth, info);
+        const r0 = rowAt(i);
+        const r1 = rowAt(i + 1);
+        const rp0 = rowAt(i - 1);
+        const rn0 = rowAt(i + 1);
+        const rp1 = rowAt(i);
+        const rn1 = rowAt(i + 2);
+        const a = addVertex(p0, prev0, next0, 1, halfWidth, info, r0, rp0, rn0, startRow, endRow);
+        const b = addVertex(p0, prev0, next0, -1, halfWidth, info, r0, rp0, rn0, startRow, endRow);
+        const c = addVertex(p1, prev1, next1, 1, halfWidth, info, r1, rp1, rn1, startRow, endRow);
+        const d = addVertex(p1, prev1, next1, -1, halfWidth, info, r1, rp1, rn1, startRow, endRow);
         indexData[cursor++] = a;
         indexData[cursor++] = b;
         indexData[cursor++] = c;
@@ -1321,28 +1482,35 @@ export class WebGLThreeDRenderer {
     start: number,
     end: number,
     tolerance: number,
-  ): number[][] {
+  ): { poly: number[][]; rows: number[] } {
     const pointAt = (index: number): number[] => {
       const base = index * rowDim;
       return [Number(data[base] ?? 0), Number(data[base + 1] ?? 0), Number(data[base + 2] ?? 0)];
     };
-    const polyline: number[][] = [];
+    const poly: number[][] = [];
+    const rows: number[] = [];
     if (end - start < 4) {
-      for (let i = start; i < end; i += 1) polyline.push(pointAt(i));
-      return polyline;
+      for (let i = start; i < end; i += 1) {
+        poly.push(pointAt(i));
+        rows.push(i);
+      }
+      return { poly, rows };
     }
-    polyline.push(pointAt(start));
+    poly.push(pointAt(start));
+    rows.push(start);
     for (let i = start; i + 3 < end; i += 4) {
       flattenCubic(
-        polyline,
+        poly,
+        rows,
         pointAt(i),
         pointAt(i + 1),
         pointAt(i + 2),
         pointAt(i + 3),
+        i + 3,
         tolerance,
       );
     }
-    return polyline;
+    return { poly, rows };
   }
 }
 

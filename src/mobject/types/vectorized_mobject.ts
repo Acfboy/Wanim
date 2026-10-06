@@ -1785,6 +1785,9 @@ export class VMobject extends Mobject {
   scale_handle_to_anchor_distances(factor: number): this {
     for (const submob of this.family_members_with_points()) {
       const vmob = submob as VMobject;
+      if (factor !== 1 && this.scale_handle_to_anchor_distances_flat(vmob, factor)) {
+        continue;
+      }
       if (vmob.get_num_points() < this.n_points_per_cubic_curve) {
         continue;
       }
@@ -1808,6 +1811,35 @@ export class VMobject extends Mobject {
       vmob.set_anchors_and_handles(a1, newH1, newH2, a2);
     }
     return this;
+  }
+
+  scale_handle_to_anchor_distances_flat(vmob: VMobject, factor: number): boolean {
+    // In-place version of the handle scaling below: anchors stay, handles
+    // move toward them.  Returns false when the slow path must be used.
+    const nppcc = this.n_points_per_cubic_curve;
+    if (vmob.get_num_points() < nppcc) return true;
+    const flat = _cContiguousRows((vmob as { points?: unknown }).points);
+    if (flat === null || !(flat.data instanceof Float64Array)) return false;
+    const { data, rowDim, rowCount } = flat;
+    const dim = vmob.dim;
+    if (flat.rowDim < dim) return false;
+    for (let index = 0; index < rowCount * rowDim; index += 1) {
+      if (!Number.isFinite(Number(data[index]))) return false;
+    }
+    for (let k = 0; k + nppcc <= rowCount; k += nppcc) {
+      const a1 = k * rowDim;
+      const h1 = (k + 1) * rowDim;
+      const h2 = (k + 2) * rowDim;
+      const a2 = (k + 3) * rowDim;
+      for (let c = 0; c < dim; c += 1) {
+        const a1c = Number(data[a1 + c] ?? 0);
+        const a2c = Number(data[a2 + c] ?? 0);
+        (data as Float64Array)[h1 + c] = a1c + (Number(data[h1 + c] ?? 0) - a1c) * factor;
+        (data as Float64Array)[h2 + c] = a2c + (Number(data[h2 + c] ?? 0) - a2c) * factor;
+      }
+    }
+    vmob.bump_points_version();
+    return true;
   }
 
   scaleHandleToAnchorDistances(factor: number): this {
