@@ -469,8 +469,8 @@ index b38e56f..90c0769 100644
              # make sure to locally scope loop variables
 +            # NOTE (wanim): declare the flattened targets (`x, y, z, w`,
 +            # not `[[x, y], [z, w]]`): a bare `var [[..]]` without an
-+            # initializer is a SyntaxError, while the unpack below uses
-+            # ρσ_flatten so flat declarators match.
++            # initializer is a SyntaxError, while the unpack below assigns
++            # to the same flat names (via ρσ_unpack or structural indexing).
              if is_node_type(self.init, AST_Array):
                  body_out.comma()
                  body_out.print('ρσ_unpack')
@@ -479,15 +479,27 @@ index b38e56f..90c0769 100644
                      body_out.comma()
                      i.print(body_out)
              else:
-@@ -325,7 +419,7 @@ def print_list_comprehension(self, output):
+@@ -323,14 +417,14 @@ def print_list_comprehension(self, output):
+                 body_out.indent()
+                 itervar = 'ρσ_Index'
                  if is_node_type(self.init, AST_Array):
-                     flat = self.init.flatten()
-                     body_out.assign('ρσ_unpack')
+-                    flat = self.init.flatten()
+-                    body_out.assign('ρσ_unpack')
 -                    if flat.length > self.init.elements.length:
+-                        body_out.print('ρσ_flatten(' + itervar + ')')
 +                    if needs_deep_flatten(self.init):
-                         body_out.print('ρσ_flatten(' + itervar + ')')
++                        emit_nested_unpack(self.init, itervar, body_out)
                      else:
++                        flat = self.init.flatten()
++                        body_out.assign('ρσ_unpack')
                          body_out.print(itervar)
+-                    body_out.end_statement()
+-                    unpack_tuple(flat, body_out)
++                        body_out.end_statement()
++                        unpack_tuple(flat, body_out)
+                 else:
+                     body_out.assign(self.init)
+                     body_out.print(itervar)
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
 index a16673a..144b0b6 100644
 --- a/src/output/operators.pyj
