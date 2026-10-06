@@ -93,7 +93,7 @@ export class ManimBanner extends VGroup {
   }
 
   override scale(
-    scale_factor: number,
+    scale_factor: number | readonly number[] | NDArray,
     // NOTE: same positional convention as VMobject.scale: the second slot
     // is either a scale_stroke flag or an about_point. `Record` slots carry
     // a py2js kwargs bag (`{about_point: ...}`); forwarded to `super.scale`
@@ -102,7 +102,19 @@ export class ManimBanner extends VGroup {
     about_point?: readonly number[] | NDArray | Record<string, unknown> | null,
     about_edge?: readonly number[] | NDArray | Record<string, unknown> | null,
   ): this {
-    this.scale_factor *= scale_factor;
+    if (typeof scale_factor === "number" || typeof scale_factor === "bigint") {
+      this.scale_factor *= Number(scale_factor);
+    } else {
+      const raw: number[] = Array.isArray(scale_factor)
+        ? [...scale_factor].map(Number)
+        : ArrayBuffer.isView(scale_factor)
+          ? Array.from(scale_factor as unknown as ArrayLike<unknown>).map(Number)
+          : (((scale_factor as unknown as { toArray?: () => unknown }).toArray?.() as unknown) as unknown[] ?? []).flat(Infinity).map(Number);
+      const mean = raw.length > 0
+        ? raw.reduce((acc, value) => acc + Math.abs(value), 0) / raw.length
+        : 1;
+      this.scale_factor *= mean;
+    }
     let scale_stroke = false;
     let resolved_about_point = about_point;
     let resolved_about_edge = about_edge;
