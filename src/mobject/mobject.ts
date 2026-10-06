@@ -5,6 +5,7 @@ import { BLACK, ManimColor, WHITE, color_gradient, interpolate_color, type Parsa
 import { angle_between_vectors, cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
+import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
 import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString, _cContiguousRows } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
@@ -631,7 +632,15 @@ export class Mobject {
   protected _color!: ManimColor;
   get color(): ManimColor { return this._color; }
   set color(value: ManimColor) { this._color = value; }
-  points: NDArray;
+  // `points` is an accessor so every replacement bumps the global geometry
+  // epoch; the WebGL backend uses it to skip per-face cache validation on
+  // frames where nothing changed.
+  private _points!: NDArray;
+  get points(): NDArray { return this._points; }
+  set points(value: NDArray) {
+    this._points = value;
+    bump_mobject_geometry_epoch();
+  }
   saved_state: Mobject | null = null;
   original_id: string;
   background_rectangle: Mobject | null = null;

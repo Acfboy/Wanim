@@ -26,7 +26,22 @@ export interface FlatProjectedPoints {
   rowCount: number;
 }
 
-/** The colour/gradient description a VMobject's rgba array resolves to, with
+/** The three colour infos of one VMobject plus the inputs they depend on
+ *  (the input fields let consumers validate cached geometry cheaply). */
+export interface MobjectColorInfos {
+  points: unknown;
+  fillSource: unknown;
+  strokeSource: unknown;
+  bgStrokeSource: unknown;
+  light: unknown;
+  shading: boolean;
+  fill: DrawColorInfo | null;
+  stroke: DrawColorInfo | null;
+  bgStroke: DrawColorInfo | null;
+}
+
+/**
+ * The colour/gradient description a VMobject's rgba array resolves to, with
  *  the exact semantics of `set_cairo_context_color`: one colour is flat, more
  *  than one becomes a linear gradient between the object's gradient endpoints. */
 export interface DrawColorInfo {
@@ -61,6 +76,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
+
+/** Fallback rgba source for VMobjects without an explicit array. */
+const TRANSPARENT_RGBA = array([[0, 0, 0, 0]]) as NDArray;
 
 /** Read row `index` of a C-contiguous rgba store into a fresh `[r, g, b, a]`. */
 function readRgbaRow(data: ArrayLike<number>, index: number): number[] {
@@ -229,6 +247,7 @@ export class ThreeDCamera extends Camera {
   rotation_matrix: NDArray = array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]) as NDArray;
   /** Cache key (phi/theta/gamma) and flat rows backing {@link rotation_matrix}. */
   private _rotation_key = "";
+  /** Flat rows of {@link rotation_matrix}, refreshed with it. */
   private _rotation_rows: [number[], number[], number[]] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   /** Shading/gradient colour info keyed by (vmobject, rgba source). */
   private _colorInfoCache = new WeakMap<VMobject, Map<unknown, {
@@ -238,6 +257,8 @@ export class ThreeDCamera extends Camera {
     info: DrawColorInfo;
     result?: NDArray;
   }>>();
+  /** All three colour infos of one mobject, keyed by the inputs they depend on. */
+  private _mobjectColorCache = new WeakMap<VMobject, MobjectColorInfos>();
 
   // NOTE: `frame_center` is backed by a Point mobject (mirrors the Python
   // @property). The base Camera constructor assigns `frame_center` while
@@ -474,6 +495,47 @@ export class ThreeDCamera extends Camera {
    * Returns `null` for shapes the WebGL backend cannot express (more than two
    * stops, non-contiguous data), which then fall back to Canvas2D.
    */
+  /**
+   * All three colour infos (fill / stroke / background stroke) of a mobject in
+   * one cache lookup.  The WebGL record validation runs this for every face on
+   * every frame, so it reads the rgba sources straight from their fields and
+   * only recomputes what actually changed.
+   */
+  get_mobject_color_infos(vmobject: VMobject): MobjectColorInfos {
+    const vm = vmobject as VMobject;
+    const points = vm.points;
+    const fillSource = vm.fill_rgbas ?? TRANSPARENT_RGBA;
+    const strokeSource = vm.stroke_rgbas ?? TRANSPARENT_RGBA;
+    const bgStrokeSource = vm.background_stroke_rgbas ?? TRANSPARENT_RGBA;
+    const light = this.light_source.points;
+    const shading = this.should_apply_shading;
+    const cached = this._mobjectColorCache.get(vm);
+    if (
+      cached !== undefined &&
+      cached.points === points &&
+      cached.fillSource === fillSource &&
+      cached.strokeSource === strokeSource &&
+      cached.bgStrokeSource === bgStrokeSource &&
+      cached.light === light &&
+      cached.shading === shading
+    ) {
+      return cached;
+    }
+    const entry = {
+      points,
+      fillSource,
+      strokeSource,
+      bgStrokeSource,
+      light,
+      shading,
+      fill: this.get_draw_color_info(vm, fillSource),
+      stroke: this.get_draw_color_info(vm, strokeSource),
+      bgStroke: this.get_draw_color_info(vm, bgStrokeSource),
+    };
+    this._mobjectColorCache.set(vm, entry);
+    return entry;
+  }
+
   get_draw_color_info(vmobject: VMobject, source: NDArray): DrawColorInfo | null {
     const vm = vmobject as VMobject;
     if (this.should_apply_shading && vm.shade_in_3d && vm.get_num_points() > 0) {

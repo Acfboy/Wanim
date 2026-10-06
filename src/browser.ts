@@ -64,6 +64,8 @@ export interface BrowserRenderOptions {
   realtime?: boolean;
   /** Target logical frame rate in realtime mode (default 30). */
   fps?: number;
+  /** Use the WebGL2 backend for 3D geometry when available (default true). */
+  useWebGL?: boolean;
   /** Abort a realtime run; the scene stops at the next frame boundary. */
   signal?: AbortSignal;
   onProgress?: (info: { frames: number; plays: number; elapsedMs: number }) => void;
@@ -126,6 +128,7 @@ export async function render_scene_to_canvas(
     recordFrames: options.recordFrames ?? false,
     abortSignal: options.signal,
     onFrame: options.onProgress,
+    useWebGL: options.useWebGL,
   });
   const scene = construct_scene(sceneClass, renderer as never);
   // Interactive scenes need a DOM host to receive pointer events and to place

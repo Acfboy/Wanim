@@ -31,6 +31,8 @@ import {
   serialize_frame,
   type JSONCairoRendererOptions,
 } from "./json_renderer.js";
+import { WebGLThreeDRenderer } from "./webgl_3d.js";
+import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { is_thenable } from "../utils/scheduler.js";
 
 export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
@@ -47,6 +49,12 @@ export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
   abortSignal?: AbortSignal;
   /** Called after each recorded/rendered frame, for progress UI. */
   onFrame?: (info: CanvasRenderProgress) => void;
+  /**
+   * Use the WebGL2 backend for `shade_in_3d` geometry when available (default
+   * true).  Unsupported mobjects fall back to Canvas2D automatically; set to
+   * false to force the pure Canvas2D path (pixel-parity comparisons, tests).
+   */
+  useWebGL?: boolean;
 }
 
 export interface CanvasRenderProgress {
@@ -98,6 +106,9 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
   onFrame: ((info: CanvasRenderProgress) => void) | null;
   /** Abort signal of the owning run (see {@link CanvasSceneRendererOptions}). */
   abortSignal: AbortSignal | null;
+  /** Whether the WebGL2 3D backend may be used (see options). */
+  useWebGL: boolean;
+  private _webgl: WebGLThreeDRenderer | null | undefined = undefined;
   private _pendingRecord: MJSONFrame | null = null;
   private _startedAt = 0;
   private _started = false;
@@ -110,10 +121,21 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this.recordFrames = options.recordFrames ?? false;
     this.abortSignal = options.abortSignal ?? null;
     this.onFrame = options.onFrame ?? null;
+    this.useWebGL = options.useWebGL ?? true;
     // Count scene construction (Tex/MathJax, mobject setup) as part of the
     // run; the renderer is created immediately before the Scene.
     this._startedAt = performance.now();
     this._started = true;
+  }
+
+  /** Lazily created WebGL2 backend (null when unavailable/disabled). */
+  private webgl(): WebGLThreeDRenderer | null {
+    if (!this.useWebGL) return null;
+    if (this._webgl === undefined) {
+      this._webgl = new WebGLThreeDRenderer();
+      if (!this._webgl.available()) this._webgl = null;
+    }
+    return this._webgl;
   }
 
   override play(scene: Scene, ...args: Array<unknown>): void | Promise<void> {
@@ -159,10 +181,12 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
         background_color: camera.background_color.to_hex(),
         background_opacity: camera.background_opacity,
       });
-      clearCanvas(this.ctx, camera, background);
-      setCanvasTransform(this.ctx, camera);
-      for (const mobject of displayed) {
-        if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);
+      if (!this.draw_webgl_3d(camera, displayed, background)) {
+        clearCanvas(this.ctx, camera, background);
+        setCanvasTransform(this.ctx, camera);
+        for (const mobject of displayed) {
+          if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);
+        }
       }
       this.stats.drawMs += performance.now() - t1;
     }
@@ -173,6 +197,67 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
       this.stats.serializeMs += performance.now() - t2;
       this._pendingRecord = record;
     }
+  }
+
+  /**
+   * Draw a ThreeDCamera frame through the WebGL2 backend when possible.
+   *
+   * The sorted display list puts every `shade_in_3d` mobject before the plain
+   * 2D ones (their depth key is `Infinity`), which lets the GPU batch be drawn
+   * first and the remaining mobjects be replayed on top with Canvas2D without
+   * changing cairo's painter order.  Returns false when the frame cannot be
+   * handled this way (non-3D camera, no WebGL, unsupported mobjects mixed in),
+   * leaving the caller to draw everything with Canvas2D.
+   */
+  private draw_webgl_3d(
+    camera: MutableCamera,
+    displayed: Mobject[],
+    background: string,
+  ): boolean {
+    if (!(camera instanceof ThreeDCamera)) return false;
+    const gl = this.webgl();
+    if (gl === null) return false;
+    // Prepare the longest prefix of GPU-renderable mobjects.  Preparing a
+    // record validates (and caches) its geometry/colour inputs; the sorted
+    // display list puts all `shade_in_3d` mobjects first, so the prefix is
+    // exactly the GPU batch.
+    const records: ReturnType<WebGLThreeDRenderer["prepare"]>[] = [];
+    let split = 0;
+    while (split < displayed.length) {
+      const mobject = displayed[split];
+      if (!(mobject instanceof VMobject)) break;
+      const record = gl.prepare(mobject, camera);
+      if (record === null) break;
+      records.push(record);
+      split += 1;
+    }
+    if (split === 0) return false;
+    // A GPU-renderable mobject after the prefix would be reordered by batching
+    // it first; fall back to Canvas2D in that (unusual) case.
+    for (let index = split; index < displayed.length; index += 1) {
+      const mobject = displayed[index];
+      if (mobject instanceof VMobject && mobject.shade_in_3d === true) return false;
+    }
+    gl.begin(camera);
+    for (const record of records) {
+      if (record !== null) gl.push(record);
+    }
+    gl.flush(camera);
+    if (gl.canvas === null) return false;
+    clearCanvas(this.ctx, camera, background);
+    this.ctx.drawImage(
+      gl.canvas as CanvasImageSource,
+      0,
+      0,
+      camera.pixel_width,
+      camera.pixel_height,
+    );
+    setCanvasTransform(this.ctx, camera);
+    for (let index = split; index < displayed.length; index += 1) {
+      const mobject = displayed[index];
+      if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);
+    }
+    return true;
   }
 
   /** Count repeats without the (expensive) structural dedup of the JSON renderer. */

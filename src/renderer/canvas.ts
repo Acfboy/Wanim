@@ -303,7 +303,7 @@ function pointsToRows(value: NDArray): number[][] {
 
 /** Flat-range counterpart of {@link computeSubpathRanges}: walks the backing
  * store directly so the draw path never materialises point rows. */
-function computeSubpathRangesFlat(
+export function computeSubpathRangesFlat(
   data: ArrayLike<number>,
   rowDim: number,
   rowCount: number,
@@ -581,27 +581,36 @@ function colorInfoStyle(
   return gradient;
 }
 
-/** Resolve fill/stroke colours: the camera's flat colour info when available,
- *  otherwise the rgba-array path. */
-function resolveStyle(
-  ctx: CanvasRenderingContext2D,
-  camera: CanvasCamera,
-  vmobject: VMobject,
-  source: NDArray,
-): string | CanvasGradient {
-  const info = camera.get_draw_color_info?.(vmobject, source) ?? null;
-  if (info !== null) return colorInfoStyle(ctx, camera, info);
-  return resolveColorStyle(ctx, camera, source, vmobject);
+/** True when every colour stop is fully transparent. */
+function colorInfoIsTransparent(info: { colors: number[][]; gradient: boolean }): boolean {
+  if (info.colors.length === 0) return true;
+  if (info.colors.length === 1) return (info.colors[0]![3] ?? 0) === 0;
+  return (info.colors[0]![3] ?? 0) === 0 && (info.colors[1]![3] ?? 0) === 0;
 }
 
 export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
+  // Prefer the resolved colour info: it applies shading exactly once (the
+  // rgba-array path feeds `get_fill_rgbas`, whose shading would otherwise be
+  // applied a second time).
+  const info = camera.get_draw_color_info?.(vmobject, vmobject.get_fill_rgbas()) ?? null;
+  if (info !== null) {
+    if (colorInfoIsTransparent(info)) return;
+    const style = colorInfoStyle(ctx, camera, info);
+    const state = styleState(ctx);
+    if (state.fill !== style) {
+      ctx.fillStyle = style;
+      state.fill = style;
+    }
+    ctx.fill();
+    return;
+  }
   const source = camera.get_fill_rgbas !== undefined
     ? camera.get_fill_rgbas(vmobject)
     : vmobject.get_fill_rgbas();
   // A fully transparent fill is a no-op for the rasterizer; skipping it avoids
   // a style parse + path fill per stroke-only mobject (lines, arrows, ...).
   if (flatAlphaIsZero(source)) return;
-  const style = resolveStyle(ctx, camera, vmobject, source);
+  const style = resolveColorStyle(ctx, camera, source, vmobject) as string | CanvasGradient;
   const state = styleState(ctx);
   if (state.fill !== style) {
     ctx.fillStyle = style;
@@ -619,10 +628,18 @@ export function applyCanvasStroke(
 ): void {
   const width = vmobject.get_stroke_width(background);
   if (width === 0) return;
-  const source = camera.get_stroke_rgbas !== undefined
-    ? camera.get_stroke_rgbas(vmobject, background)
-    : vmobject.get_stroke_rgbas(background);
-  const style = resolveStyle(ctx, camera, vmobject, source);
+  const rawSource = vmobject.get_stroke_rgbas(background);
+  const info = camera.get_draw_color_info?.(vmobject, rawSource) ?? null;
+  let style: string | CanvasGradient;
+  if (info !== null) {
+    if (colorInfoIsTransparent(info)) return;
+    style = colorInfoStyle(ctx, camera, info);
+  } else {
+    const source = camera.get_stroke_rgbas !== undefined
+      ? camera.get_stroke_rgbas(vmobject, background)
+      : rawSource;
+    style = resolveColorStyle(ctx, camera, source, vmobject) as string | CanvasGradient;
+  }
   const state = styleState(ctx);
   if (state.stroke !== style) {
     ctx.strokeStyle = style;
