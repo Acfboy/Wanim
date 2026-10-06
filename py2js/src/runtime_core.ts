@@ -5100,6 +5100,149 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         /* ignore */
       }
     }
+    // --- comparison helpers on plain Python lists/scalars ------------------
+    //
+    // numpy-ts' comparison ops require NDArray storage: `np.allclose`,
+    // `np.isclose`, `np.equal`/`not_equal`/`greater*`/`less*`,
+    // `np.logical_*` and `np.array_equiv` on plain JS arrays (which is how
+    // e.g. `mobject.get_center()` arrives as `number[]`, or a Python list
+    // literal arrives) throw
+    // `TypeError: Cannot read properties of undefined (reading 'length')`
+    // (error 379: `np.allclose(jumper.get_center(), pivot.get_center())`).
+    // CPython accepts any array-like (and scalars).  Coerce the leading
+    // operands via `coerceReductionArg` (plain list/scalar/range -> NDArray;
+    // NDArray passes through) before delegating, and map kwargs via
+    // `__argnames__` so rapydscript's `ρσ_interpolate_kwargs` does not hand
+    // the kwargs bag as a trailing positional.  `allclose`/`array_equal`/
+    // `array_equiv` return plain booleans like numpy; the elementwise ops
+    // keep NDArray results (0-d scalarizes to a plain boolean, mirroring
+    // numpy scalar-in/scalar-out).
+    try {
+      const fillNaNWith = (plain: Any, sentinel: number): Any => {
+        if (Array.isArray(plain)) return plain.map((elt) => fillNaNWith(elt, sentinel));
+        return typeof plain === "number" && Number.isNaN(plain) ? sentinel : plain;
+      };
+      const wrapCloseComparison = (name: "allclose" | "isclose", origFn: (...a: Any[]) => Any): (...a: Any[]) => Any => {
+        const wrapped = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(["a", "b", "rtol", "atol", "equal_nan"], positional, kwargs as Record<string, Any>);
+          }
+          const a = positional.length > 0 ? positional[0] : undefined;
+          const b = positional.length > 1 ? positional[1] : undefined;
+          const rtol = positional.length > 2 ? positional[2] : undefined;
+          const atol = positional.length > 3 ? positional[3] : undefined;
+          const equalNan = positional.length > 4 ? positional[4] : undefined;
+          const truthyEqualNan = equalNan === true || (typeof equalNan === "number" && equalNan !== 0);
+          let aCoerced = coerceReductionArg(a);
+          let bCoerced = coerceReductionArg(b);
+          // numpy-ts has no `equal_nan` parameter: emulate `equal_nan=True`
+          // by filling NaN with a shared sentinel on both sides (NaN in the
+          // same positions then compares equal, exactly numpy's semantics).
+          if (truthyEqualNan) {
+            try {
+              const aPlain = deepUnwrapNd(a);
+              const bPlain = deepUnwrapNd(b);
+              const filledA = fillNaNWith(aPlain, 0);
+              const filledB = fillNaNWith(bPlain, 0);
+              aCoerced = coerceReductionArg(filledA);
+              bCoerced = coerceReductionArg(filledB);
+            } catch {
+              /* fall through with the plain coercion on unwrap failure */
+            }
+          }
+          const callArgs: Any[] = [aCoerced, bCoerced];
+          if (rtol !== undefined && rtol !== null) callArgs.push(rtol);
+          else if (atol !== undefined && atol !== null) callArgs.push(undefined);
+          if (atol !== undefined && atol !== null) callArgs.push(atol);
+          const result = (origFn as Any)(...callArgs);
+          // `allclose` is a plain boolean in numpy; `isclose` keeps the
+          // elementwise array (0-d scalarizes, mirroring numpy).
+          if (name === "allclose") return Boolean(result);
+          return scalarize(result);
+        };
+        (wrapped as Any).__argnames__ = ["a", "b", "rtol", "atol", "equal_nan"];
+        return wrapped;
+      };
+      const wrapBoolBinaryComparison = (origFn: (...a: Any[]) => Any, argnames: string[]): (...a: Any[]) => Any => {
+        const wrapped = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(argnames, positional, kwargs as Record<string, Any>);
+          }
+          if (positional.length > 0) positional[0] = coerceReductionArg(positional[0]);
+          if (positional.length > 1) positional[1] = coerceReductionArg(positional[1]);
+          const result = (origFn as Any)(...positional);
+          // `array_equal`/`array_equiv` are plain booleans; elementwise ops
+          // scalarize 0-d results like the reduction wrappers.
+          if (argnames.length === 2 && (argnames[0] === "a1" || argnames[0] === "a")) {
+            if (typeof result === "boolean") return result;
+          }
+          return scalarize(result);
+        };
+        (wrapped as Any).__argnames__ = [...argnames];
+        return wrapped;
+      };
+      const closeNames: Record<string, string[]> = {
+        allclose: ["a", "b", "rtol", "atol", "equal_nan"],
+        isclose: ["a", "b", "rtol", "atol", "equal_nan"],
+      };
+      for (const [name, argnames] of Object.entries(closeNames)) {
+        try {
+          const origFn = (np as Any)[name];
+          if (typeof origFn !== "function") continue;
+          if ((facade as Any)[name] !== origFn) continue;
+          (facade as Any)[name] = wrapCloseComparison(name as "allclose" | "isclose", origFn);
+        } catch {
+          /* keep the raw comparison fn on wrap failure */
+        }
+      }
+      const boolBinaryNames: Record<string, string[]> = {
+        array_equal: ["a1", "a2"],
+        array_equiv: ["a1", "a2"],
+        equal: ["x1", "x2"],
+        not_equal: ["x1", "x2"],
+        greater: ["x1", "x2"],
+        greater_equal: ["x1", "x2"],
+        less: ["x1", "x2"],
+        less_equal: ["x1", "x2"],
+        logical_and: ["x1", "x2"],
+        logical_or: ["x1", "x2"],
+        logical_xor: ["x1", "x2"],
+      };
+      for (const [name, argnames] of Object.entries(boolBinaryNames)) {
+        try {
+          const origFn = (np as Any)[name];
+          if (typeof origFn !== "function") continue;
+          if ((facade as Any)[name] !== origFn) continue;
+          (facade as Any)[name] = wrapBoolBinaryComparison(origFn, argnames);
+        } catch {
+          /* keep the raw comparison fn on wrap failure */
+        }
+      }
+      try {
+        const origNot = (np as Any).logical_not;
+        if (typeof origNot === "function" && (facade as Any).logical_not === origNot) {
+          const wrappedNot = (...args: Any[]): Any => {
+            const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+            let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+            if (kwargs !== null) {
+              positional = placeKwargs(["x"], positional, kwargs as Record<string, Any>);
+            }
+            if (positional.length > 0) positional[0] = coerceReductionArg(positional[0]);
+            return scalarize((origNot as Any)(...positional));
+          };
+          (wrappedNot as Any).__argnames__ = ["x"];
+          (facade as Any).logical_not = wrappedNot;
+        }
+      } catch {
+        /* keep the raw logical_not on wrap failure */
+      }
+    } catch {
+      /* comparison wrapping is best-effort; raw numpy-ts paths stay usable */
+    }
     // --- np.random shuffle/permutation/choice on plain Python lists --------
     //
     // numpy-ts' random ops require NDArray storage: `Generator.shuffle` /
