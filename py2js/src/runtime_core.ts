@@ -1079,7 +1079,34 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function isNdArray(value: unknown): value is NumpyTS.NDArray {
-    return value instanceof (NDArray as Any);
+    if (value === null || value === undefined) return false;
+    try {
+      if (value instanceof (NDArray as Any)) return true;
+    } catch {
+      /* cross-realm prototype chain may throw: fall through to duck-typing */
+    }
+    // Duck-typing fallback: the browser runs translated scenes in an iframe
+    // whose `NDArray` (via a second copy of `numpy-ts.browser.js` or a
+    // different realm's `Map`/prototype) fails `instanceof`, even though the
+    // value is a genuine NDArray (error 311: `d` had `shape=[10]`,
+    // `dtype=float64` and `_storage/_base/_raw` keys but `instanceof` was
+    // false, so `1j*4*d` fell through to `complexMul` and threw
+    // `'complex' and 'object'`).  Genuine NDArrays expose `shape` (array),
+    // `dtype` (string) and `tolist` (function); Mobjects are excluded
+    // defensively (their Proxy throws on `.shape`, caught below) and plain
+    // arrays never have all three.
+    try {
+      const v = value as Any;
+      if (Array.isArray(v.shape) && typeof v.dtype === "string" && typeof v.tolist === "function") {
+        return true;
+      }
+      if (Array.isArray(v.shape) && v._storage !== undefined && v._raw !== undefined) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
   }
 
   function asNd(value: Any): Any {
@@ -1903,7 +1930,97 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
   (pythonSum as Any).__argnames__ = ["iterable", "start"];
 
+  /**
+   * True when an NDArray operand carries complex dtype (numpy-ts stores it as
+   * the string `"complex64"`/`"complex128"`).  `isComplexLike` deliberately
+   * excludes NDArrays, so `complexArray * 2` (complex NDArray vs real scalar)
+   * would otherwise fall through to the buggy numpy-ts multiply path below.
+   */
+  function isComplexDtypeNd(value: Any): boolean {
+    if (!isNdArray(value)) return false;
+    try {
+      const dtype = (value as Any).dtype;
+      return typeof dtype === "string" && dtype.toLowerCase().includes("complex");
+    } catch {
+      return false;
+    }
+  }
+
+  function needsComplexArrayOp(a: Any, b: Any): boolean {
+    if (!isNdArray(a) && !isNdArray(b)) return false;
+    return isComplexLike(a) || isComplexLike(b) || isComplexDtypeNd(a) || isComplexDtypeNd(b);
+  }
+
+  function ndToPlainForComplex(value: Any): Any {
+    if (isNdArray(value)) {
+      try {
+        const plain = (value as Any).tolist?.();
+        return plain;
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  function complexScalarOp(op: string, x: Any, y: Any): Any {
+    if (op === "add") return complexAdd(x, y);
+    if (op === "sub") return complexSub(x, y);
+    if (op === "mul") return complexMul(x, y);
+    if (op === "div") return complexDiv(x, y);
+    return complexPow(x, y);
+  }
+
+  function broadcastComplexOp(op: string, a: Any, b: Any): Any {
+    const aArr = Array.isArray(a);
+    const bArr = Array.isArray(b);
+    if (aArr && bArr) {
+      if (a.length !== b.length) {
+        throw new Error("operands could not be broadcast together");
+      }
+      return a.map((av: Any, i: number) => broadcastComplexOp(op, av, (b as Any[])[i]));
+    }
+    if (aArr) return (a as Any[]).map((av: Any) => broadcastComplexOp(op, av, b));
+    if (bArr) return (b as Any[]).map((bv: Any) => broadcastComplexOp(op, a, bv));
+    return complexScalarOp(op, a, b);
+  }
+
+  /**
+   * Elementwise complex arithmetic involving at least one NDArray.
+   *
+   * numpy-ts' `multiply` (and friends) mis-broadcast a 0-d complex scalar
+   * against a vector (`np.multiply(asarray({re:0,im:4}), asarray([0.5,1]))`
+   * yields `NaN`s -- error 311: `1j * 4.0 * d` where `d` is shape-`[n]`),
+   * so the `complexMul` scalar path above cannot serve it either (it throws
+   * `unsupported operand ... 'complex' and 'object'`).  Unwrap NDArrays via
+   * `tolist()`, apply the scalar complex op with NumPy-style scalar
+   * broadcasting in plain JS, and wrap back with `asarray` (which infers
+   * `complex128` from `{re, im}` elements).  Returns `undefined` when the
+   * shapes do not broadcast, letting the caller fall through.
+   */
+  function tryComplexArrayOp(op: string, a: Any, b: Any): Any | undefined {
+    try {
+      const plainA = ndToPlainForComplex(a);
+      const plainB = ndToPlainForComplex(b);
+      if (!Array.isArray(plainA) && !Array.isArray(plainB)) {
+        return complexScalarOp(op, plainA, plainB);
+      }
+      const nested = broadcastComplexOp(op, plainA, plainB);
+      try {
+        return (np as Any).asarray(nested);
+      } catch {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
   function pythonAdd(a: Any, b: Any): Any {
+    if (needsComplexArrayOp(a, b)) {
+      const r = tryComplexArrayOp("add", a, b);
+      if (r !== undefined) return r;
+    }
     if (isComplexLike(a) || isComplexLike(b)) return complexAdd(a, b);
     if (a !== null && a !== undefined && typeof a.__add__ === "function") return a.__add__(b);
     if (b !== null && b !== undefined && typeof b.__radd__ === "function") return b.__radd__(a);
@@ -1937,6 +2054,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonSub(a: Any, b: Any): Any {
+    if (needsComplexArrayOp(a, b)) {
+      const r = tryComplexArrayOp("sub", a, b);
+      if (r !== undefined) return r;
+    }
     if (isComplexLike(a) || isComplexLike(b)) return complexSub(a, b);
     if (a !== null && a !== undefined && typeof a.__sub__ === "function") return a.__sub__(b);
     if (b !== null && b !== undefined && typeof b.__rsub__ === "function") return b.__rsub__(a);
@@ -1953,6 +2074,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonMul(a: Any, b: Any): Any {
+    if (needsComplexArrayOp(a, b)) {
+      const r = tryComplexArrayOp("mul", a, b);
+      if (r !== undefined) return r;
+    }
     if (isComplexLike(a) || isComplexLike(b)) return complexMul(a, b);
     if (a !== null && a !== undefined && typeof a.__mul__ === "function") return a.__mul__(b);
     if (b !== null && b !== undefined && typeof b.__rmul__ === "function") return b.__rmul__(a);
@@ -1983,6 +2108,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonDiv(a: Any, b: Any): Any {
+    if (needsComplexArrayOp(a, b)) {
+      const r = tryComplexArrayOp("div", a, b);
+      if (r !== undefined) return r;
+    }
     if (isComplexLike(a) || isComplexLike(b)) return complexDiv(a, b);
     if (a !== null && a !== undefined && typeof a.__truediv__ === "function") return a.__truediv__(b);
     if (b !== null && b !== undefined && typeof b.__rtruediv__ === "function") return b.__rtruediv__(a);
@@ -2033,6 +2162,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonPow(a: Any, b: Any): Any {
+    if (needsComplexArrayOp(a, b)) {
+      const r = tryComplexArrayOp("pow", a, b);
+      if (r !== undefined) return r;
+    }
     if (isComplexLike(a) || isComplexLike(b)) return complexPow(a, b);
     if (a !== null && a !== undefined && typeof a.__pow__ === "function") return a.__pow__(b);
     if (typeof a === "number" && typeof b === "number") return a ** b;
@@ -3285,6 +3418,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       "add", "subtract", "multiply", "divide", "true_divide", "floor_divide",
       "heaviside",
     ];
+    const BINARY_COMPLEX_OP: Record<string, string> = {
+      add: "add", subtract: "sub", multiply: "mul", divide: "div",
+      true_divide: "div", power: "pow", pow: "pow", float_power: "pow",
+    };
     for (const name of binaryUfuncs) {
       const fn = (np as Any)[name];
       if (typeof fn !== "function") continue;
@@ -3292,6 +3429,15 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         const clean = rest.length > 0 && detectKwargs(rest[rest.length - 1]) !== null
           ? rest.slice(0, -1)
           : rest;
+        // numpy-ts mis-broadcasts 0-d complex against vectors for at least
+        // `multiply` (NaNs, error 311); route complex-involving pairs through
+        // the manual broadcast used by the `ρσ_op_*` operators when there is
+        // no extra `out=`-style arg to forward.
+        const complexOp = BINARY_COMPLEX_OP[name];
+        if (complexOp !== undefined && clean.length === 0 && needsComplexArrayOp(a, b)) {
+          const manual = tryComplexArrayOp(complexOp, a, b);
+          if (manual !== undefined) return scalarizeComplex(manual);
+        }
         return scalarizeComplex((fn as Any)(asNd(a), asNd(b), ...clean));
       };
     }
