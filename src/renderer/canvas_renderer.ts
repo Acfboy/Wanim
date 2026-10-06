@@ -128,6 +128,12 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this._started = true;
   }
 
+  /** Release the WebGL backend (see WebGLThreeDRenderer.dispose). */
+  dispose(): void {
+    this._webgl?.dispose();
+    this._webgl = null;
+  }
+
   /** Lazily created WebGL2 backend (null when unavailable/disabled). */
   private webgl(): WebGLThreeDRenderer | null {
     if (!this.useWebGL) return null;

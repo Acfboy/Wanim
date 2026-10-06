@@ -583,6 +583,27 @@ export class WebGLThreeDRenderer {
     return this.gl !== null && this.program !== null && this.vbo !== null && this.ebo !== null && this.vao !== null && this.modelVbo !== null;
   }
 
+  /**
+   * Release the WebGL context.  Each scene run creates a renderer, and the
+   * browser only keeps a handful of live WebGL contexts, so embedders that
+   * re-run scenes must dispose the previous one.
+   */
+  dispose(): void {
+    const gl = this.gl;
+    if (gl !== null) {
+      const lose = gl.getExtension("WEBGL_lose_context");
+      lose?.loseContext();
+    }
+    this.gl = null;
+    this.program = null;
+    this.vao = null;
+    this.vbo = null;
+    this.ebo = null;
+    this.modelVbo = null;
+    this.records.clear();
+    this.frameRecords.length = 0;
+  }
+
   private init(gl: WebGL2RenderingContext): void {
     const compile = (type: number, source: string): WebGLShader | null => {
       const shader = gl.createShader(type);
