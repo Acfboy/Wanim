@@ -736,4 +736,21 @@ check("np.convolve accepts plain lists and mode positionally", () => {
   );
 });
 
+check("NDArray single-dim getitem serves boolean masks and fancy indices (error 333)", () => {
+  ndCore.buildRuntime(); // applies the NDArray prototype patch
+  const pts = npReal.asarray([[10, 11, 12], [20, 21, 22], [30, 31, 32]]);
+  // `rng_points[norms < 4]`: an elementwise comparison mask filters rows.
+  const mask = ndCore.pythonLt(npReal.asarray([1, 5, 2]), 4);
+  assert.deepEqual(pts.__getitem__(mask).tolist(), [[10, 11, 12], [30, 31, 32]]);
+  // Plain boolean lists filter the same way; integer lists pick rows.
+  assert.deepEqual(pts.__getitem__([true, false, true]).tolist(), [[10, 11, 12], [30, 31, 32]]);
+  assert.deepEqual(pts.__getitem__([2, 0]).tolist(), [[30, 31, 32], [10, 11, 12]]);
+  assert.deepEqual(pts.__getitem__(npReal.asarray([0, 2])).tolist(), [[10, 11, 12], [30, 31, 32]]);
+  // Scalars keep the Proxy behavior (row views, negative indices).
+  assert.deepEqual(pts.__getitem__(0).tolist(), [10, 11, 12]);
+  assert.deepEqual(pts.__getitem__(-1).tolist(), [30, 31, 32]);
+  // 1-D masks filter elements.
+  assert.deepEqual(npReal.asarray([5, 6, 7]).__getitem__([true, false, true]).tolist(), [5, 7]);
+});
+
 console.log(`\n${passed} tests passed`);
