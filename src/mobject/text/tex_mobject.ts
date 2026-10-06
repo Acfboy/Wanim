@@ -717,7 +717,23 @@ export class Tex extends MathTex {
   }
 
   static _is_mathjax_error(expression: string): boolean {
-    const probe = expression.trim() === "" ? "\\quad" : expression;
+    // Probe the expression the way SingleStringMathTex will actually render
+    // it (after _modify_special_strings): unbalanced \left/\right become
+    // \big, stray braces are balanced, etc. Probing the raw string
+    // misclassifies fragments like `e^{st} \left(` or `\right) = 0`, where
+    // both the converted and raw forms error pre-modify but the raw form
+    // renders fine post-modify (real LaTeX likewise recovers via nonstop
+    // mode / the \big substitution).
+    let probe: string;
+    try {
+      const tmp = Object.create(
+        SingleStringMathTex.prototype,
+      ) as SingleStringMathTex;
+      probe = tmp._get_modified_expression(expression);
+    } catch {
+      probe = expression;
+    }
+    if (probe.trim() === "") probe = "\\quad";
     const svg = texToSvgCached(probe);
     return svg.includes("merror") || svg.includes("data-mjx-error");
   }
