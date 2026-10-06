@@ -753,4 +753,88 @@ check("NDArray single-dim getitem serves boolean masks and fancy indices (error 
   assert.deepEqual(npReal.asarray([5, 6, 7]).__getitem__([true, false, true]).tolist(), [5, 7]);
 });
 
+check("pythonFormat covers the int mini-language (error 342)", () => {
+  const f = core.pythonFormat;
+  assert.equal(f(5, "04b"), "0101");
+  assert.equal(f(2, "04b"), "0010");
+  assert.equal(f(0, "04b"), "0000");
+  assert.equal(f(15, "04b"), "1111");
+  assert.equal(f(-5, "08b"), "-0000101");
+  assert.equal(f(255, "#x"), "0xff");
+  assert.equal(f(255, "#X"), "0XFF");
+  assert.equal(f(8, "#o"), "0o10");
+  assert.equal(f(5, "#b"), "0b101");
+  assert.equal(f(0, "#x"), "0x0");
+  assert.equal(f(5, "#d"), "5");
+  assert.equal(f(5, "+d"), "+5");
+  assert.equal(f(5, " d"), " 5");
+  assert.equal(f(5, ""), "5");
+  assert.equal(f(5), "5");
+  assert.equal(f(1000000, ",d"), "1,000,000");
+  assert.equal(f(1000000, ","), "1,000,000");
+  assert.equal(f(1000000, "_d"), "1_000_000");
+  assert.equal(f(255, "_b"), "1111_1111");
+  assert.equal(f(0x12345678, "_x"), "1234_5678");
+  assert.equal(f(65, "c"), "A");
+  assert.equal(f(true, "d"), "1");
+  assert.equal(f(true, ""), "True");
+  assert.equal(f(false, "s"), "False");
+  assert.equal(f(5, ">5"), "    5");
+  assert.equal(f(5, "<5"), "5    ");
+  assert.equal(f(5, "^5"), "  5  ");
+  assert.equal(f(-5, "=8d"), "-      5");
+  assert.equal(f(-5, "=08d"), "-0000005");
+  assert.equal(f(5, "0=8d"), "00000005");
+  assert.equal(f(5, "0>8d"), "00000005");
+  assert.equal(f(10n, "04b"), "1010");
+  // NOTE: JS cannot tell `3.0` from `3`, so integer-valued numbers always
+  // take the int path (CPython would reject `format(3.0, "d")`); only
+  // genuinely fractional values raise for int-only codes.
+  assert.equal(f(3.0, "d"), "3");
+  assert.throws(() => f(3.5, "d"), /Unknown format code/);
+  assert.throws(() => f(5, ".2d"), /Precision not allowed/);
+  assert.throws(() => f(5, "s"), /Unknown format code/);
+  assert.throws(() => f(1000000, ",n"), /Cannot specify/);
+  assert.throws(() => f(255, ",b"), /Cannot specify/);
+});
+
+check("pythonFormat covers floats and strings", () => {
+  const f = core.pythonFormat;
+  assert.equal(f(3.14159, ".2f"), "3.14");
+  assert.equal(f(2.675, ".2f"), "2.67");
+  assert.equal(f(0.5, "%"), "50.000000%");
+  assert.equal(f(0.5, ".1%"), "50.0%");
+  assert.equal(f(12345.678, "e"), "1.234568e+04");
+  assert.equal(f(12345.678, ".2E"), "1.23E+04");
+  assert.equal(f(12345.678, "g"), "12345.7");
+  assert.equal(f(2.0, "g"), "2");
+  assert.equal(f(2.5, "#g"), "2.50000");
+  assert.equal(f(2.5, ""), "2.5");
+  assert.equal(f(-2.5, ""), "-2.5");
+  assert.equal(f(100.0, ""), "100"); // JS numbers lose `.0`, like str()
+  assert.equal(f(3.14159, ".2"), "3.1");
+  assert.equal(f(3.14159, ".4"), "3.142");
+  assert.equal(f(2.5, "n"), "2.5");
+  assert.equal(f(1000000.5, "n"), "1e+06");
+  assert.equal(f(1234.567, ","), "1,234.567");
+  assert.equal(f(1234.5, ",.2f"), "1,234.50");
+  assert.equal(f(1e6, ",g"), "1e+06");
+  assert.equal(f(Infinity, ".2f"), "inf");
+  assert.equal(f(-Infinity, "+.0f"), "-inf");
+  assert.equal(f(NaN, "f"), "nan");
+  assert.equal(f("ab", ""), "ab");
+  assert.equal(f("hello", ".2"), "he");
+  assert.equal(f("ab", "^5"), " ab  ");
+  assert.equal(f("ab", "*>5"), "***ab");
+  assert.equal(f("x", "04"), "x000");
+  assert.throws(() => f("ab", "=5"), /=/);
+  assert.throws(() => f("ab", "d"), /Unknown format code/);
+});
+
+check("format is exposed to compiled scenes as a global", () => {
+  const runtime = core.buildRuntime();
+  assert.equal(typeof runtime.globals.format, "function");
+  assert.equal(runtime.globals.format(9, "04b"), "1001");
+});
+
 console.log(`\n${passed} tests passed`);
