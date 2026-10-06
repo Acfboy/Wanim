@@ -736,6 +736,24 @@ check("np.convolve accepts plain lists and mode positionally", () => {
   );
 });
 
+check("np.searchsorted accepts scalar v and side (error 376)", () => {
+  const np = ndCore.buildNumpy();
+  const edges = np.cumsum([0, 0.1, 0.5, 0.2, 0.05, 0.15]);
+  // Scalar v mirrors numpy (scalar in, scalar out); numpy-ts requires NDArray
+  // inputs and returns a broken 0-size array for a plain number.
+  assert.equal(np.searchsorted(edges, 0.314, "right"), 2);
+  assert.equal(np.searchsorted(edges, 0.1, "right"), 2);
+  assert.equal(np.searchsorted(edges, 0.1, "left"), 1);
+  assert.equal(np.searchsorted([0, 0.1, 0.6, 0.8, 0.85, 1], 0.999, "right"), 5);
+  // Array v keeps the NDArray result.
+  assert.deepEqual(
+    np.searchsorted(edges, [0.314, 0.5], "right").tolist(),
+    [2, 2],
+  );
+  // `side=` arrives as a kwargs bag through rapydscript; it needs argnames.
+  assert.deepEqual(np.searchsorted.__argnames__, ["a", "v", "side", "sorter"]);
+});
+
 check("NDArray single-dim getitem serves boolean masks and fancy indices (error 333)", () => {
   ndCore.buildRuntime(); // applies the NDArray prototype patch
   const pts = npReal.asarray([[10, 11, 12], [20, 21, 22], [30, 31, 32]]);

@@ -4412,6 +4412,107 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* keep the raw numpy-ts convolve on wrap failure */
     }
+    // `np.searchsorted` on Python scalars (or plain lists) misbehaves in
+    // numpy-ts, which requires NDArray inputs: `np.searchsorted(edges, 0.314,
+    // side="right")` with a plain-number `v` returns a broken 0-size array
+    // (shape `[undefined]`) instead of the index, so `int(... - 1)` throws
+    // `ValueError` (error 376).  Like `where`/`interp`/`convolve` above, coerce
+    // the operands and map the `side=` kwarg via `__argnames__` (without it
+    // rapydscript hands the kwargs bag as a trailing object and numpy-ts sees
+    // `{side: "right"}` as the `side` argument).  Scalar `v` (plain number or
+    // 0-d array) yields a plain Python number, mirroring numpy (scalar in,
+    // scalar out); array `v` keeps the NDArray result.
+    try {
+      const origSearchsorted = (np as Any).searchsorted;
+      if (typeof origSearchsorted === "function") {
+        const wrappedSearchsorted = (...args: Any[]): Any => {
+          const kwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
+          let positional = kwargs !== null ? args.slice(0, -1) : args.slice();
+          if (kwargs !== null) {
+            positional = placeKwargs(["a", "v", "side", "sorter"], positional, kwargs as Record<string, Any>);
+          }
+          const a = positional.length > 0 ? positional[0] : undefined;
+          const v = positional.length > 1 ? positional[1] : undefined;
+          let side = positional.length > 2 ? positional[2] : undefined;
+          const sorter = positional.length > 3 ? positional[3] : undefined;
+          if (side === undefined || side === null) side = "left";
+          const sideStr = String(side);
+          let vIsScalar = false;
+          if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") {
+            vIsScalar = true;
+          } else if (isNdArray(v)) {
+            try {
+              const shape = (v as Any).shape;
+              if (Array.isArray(shape) && shape.length === 0) vIsScalar = true;
+            } catch {
+              /* not scalar */
+            }
+          }
+          if (sorter !== undefined && sorter !== null) {
+            // numpy-ts has no `sorter` support: plain-JS binary search over the
+            // sorter-permuted values (numpy returns positions in sorted order).
+            const aPlain = deepUnwrapNd(a);
+            const sorterPlain = deepUnwrapNd(sorter);
+            const aList: Any[] = Array.isArray(aPlain) ? aPlain : [aPlain];
+            const order: Any[] = Array.isArray(sorterPlain) ? sorterPlain : [sorterPlain];
+            const sorted: number[] = order.map((idx) => Number(aList[Number(idx)]));
+            const searchOne = (val: Any): number => {
+              const num = Number(val);
+              if (Number.isNaN(num)) return sorted.length;
+              let lo = 0;
+              let hi = sorted.length;
+              if (sideStr === "right") {
+                while (lo < hi) {
+                  const mid = (lo + hi) >> 1;
+                  if (num < sorted[mid]) hi = mid;
+                  else lo = mid + 1;
+                }
+              } else {
+                while (lo < hi) {
+                  const mid = (lo + hi) >> 1;
+                  if (sorted[mid] < num) lo = mid + 1;
+                  else hi = mid;
+                }
+              }
+              return lo;
+            };
+            if (vIsScalar) return searchOne(v);
+            const vPlain = deepUnwrapNd(v);
+            const vList: Any[] = Array.isArray(vPlain) ? vPlain : [vPlain];
+            const out = vList.map(searchOne);
+            try {
+              return (np as Any).asarray(out, "int64");
+            } catch {
+              return (np as Any).asarray(out);
+            }
+          }
+          const aCoerced = coerceReductionArg(a);
+          const vCoerced = coerceReductionArg(v);
+          const result = (origSearchsorted as Any)(aCoerced, vCoerced, sideStr);
+          if (vIsScalar) {
+            try {
+              const plain = (result as Any).tolist?.();
+              if (Array.isArray(plain) && plain.length === 1) return Number(plain[0]);
+            } catch {
+              /* fall through to scalarize */
+            }
+            const s = scalarize(result);
+            if (s !== result) return Number(s);
+            try {
+              const arr = [...(result as Any)];
+              if (Array.isArray(arr) && arr.length === 1) return Number(arr[0]);
+            } catch {
+              /* return the raw result */
+            }
+          }
+          return result;
+        };
+        (wrappedSearchsorted as Any).__argnames__ = ["a", "v", "side", "sorter"];
+        facade.searchsorted = wrappedSearchsorted;
+      }
+    } catch {
+      /* keep the raw numpy-ts searchsorted on wrap failure */
+    }
     // `normalizeNumpyDtype` (hoisted to `createRuntimeCore` scope above) maps
     // a positional/`dtype=` Python-type dtype into a numpy-ts dtype string.
     function callNumpyWithDtype(fn: (...a: Any[]) => Any, dtypeIndex: number, args: Any[]): Any {
