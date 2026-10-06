@@ -1360,14 +1360,91 @@ function skipToAssignValue(source: string, pos: number): number {
 }
 
 /**
+ * Rewrite a single-dimension slice *store* that rapydscript-ng cannot
+ * compile (`a[::k] op= v`, `a[i:j] op= v`) into `__wan_setitem` calls.
+ *
+ * rapydscript-ng compiles an extended (stepped) slice read into a
+ * `ρσ_eslice(...)` *call*, so a store through one has no valid left-hand
+ * side: `a[::17] *= 0.3` becomes `ρσ_eslice(a, 17) *= 0.3`, i.e.
+ * `ReferenceError: Invalid left-hand side in assignment` (error 339), and a
+ * plain `a[::k] = v` silently drops the step through the `ρσ_splice` path
+ * (which only takes start/stop). An augmented store on a plain slice
+ * (`a[i:j] += v`) fails the same way via the `ρσ_getslice` call path.
+ *
+ * Only those broken stores are rewritten here:
+ *
+ *   `a[::k] *= v`  -> `__wan_setitem(a, __wan_slice(None, None, k), (__wan_getitem(a, __wan_slice(None, None, k)) * (v)))`
+ *   `a[::k] = v`   -> `__wan_setitem(a, __wan_slice(None, None, k), (v))`
+ *   `a[i:j] += v`  -> `__wan_setitem(a, __wan_slice(i, j), (__wan_getitem(a, __wan_slice(i, j)) + (v)))`
+ *
+ * Reads (`a[::k]`, `a[i:j]`), plain `a[i:j] = v` (served by the existing
+ * `ρσ_splice` path, including the numpy-aware `pythonSplice` override), and
+ * non-slice stores (`a[i] op= v`, served by `AST_ItemAccess`) pass through
+ * untouched by returning null. Anything that does not parse cleanly also
+ * passes through untouched. `open`/`close` are the positions of the
+ * surrounding brackets in `source`; `out` is the already-emitted prefix
+ * (used to locate the subscripted object, as in `desugarNumpySubscripts`).
+ */
+function tryDesugarSingleDimSliceStore(
+  source: string,
+  out: string,
+  open: number,
+  close: number,
+): { out: string; next: number } | null {
+  const inner = source.slice(open + 1, close);
+  const trimmed = inner.trim();
+  if (trimmed === "") return null;
+  // A bare lambda's `:` is not a slice (`a[lambda x: x] op= v` is nonsense,
+  // but leave it to the compiler rather than misreading the colon).
+  if (/^lambda(?![\p{L}\p{N}_])/u.test(trimmed)) return null;
+  const slices = splitDepthZero(trimmed, ":");
+  if (slices.length < 2 || slices.length > 3) return null;
+  const assign = parseAssignOpAfter(source, close);
+  if (assign === null) return null;
+  const hasStep = slices.length === 3;
+  // Plain stores on step-less slices already work via `ρσ_splice`.
+  if (assign.op === "=" && !hasStep) return null;
+  const dim = rewriteSubscriptDim(trimmed);
+  if (dim === null) return null;
+  const objStart = subscriptObjStart(out);
+  if (objStart === null) return null;
+  const valueStart = skipToAssignValue(source, assign.opEnd);
+  const valueEnd = findAssignValueEnd(source, valueStart);
+  const rawValue = source.slice(valueStart, valueEnd).trim();
+  if (rawValue === "") return null;
+  const obj = out.slice(objStart).trim();
+  if (obj === "") return null;
+  const value = desugarNumpySubscripts(rawValue);
+  const prefix = out.slice(0, objStart);
+  if (assign.op === "=") {
+    return {
+      out: `${prefix}${WANIM_SETITEM_HELPER}(${obj}, ${dim}, (${value}))`,
+      next: valueEnd,
+    };
+  }
+  const binOp = assign.op.slice(0, -1);
+  const current = `${WANIM_GETITEM_HELPER}(${obj}, ${dim})`;
+  const rhs =
+    binOp === "@"
+      ? `${WANIM_MATMUL_HELPER}(${current}, (${value}))`
+      : `(${current} ${binOp} (${value}))`;
+  return {
+    out: `${prefix}${WANIM_SETITEM_HELPER}(${obj}, ${dim}, ${rhs})`,
+    next: valueEnd,
+  };
+}
+
+/**
  * Rewrite numpy multi-dim subscripts (`a[:, 1]`, `a[1:2, 0]`) into
  * `__wan_getitem`/`__wan_slice` runtime calls (see above) so rapydscript-ng
  * -- which only parses a single index/slice per `[...]` -- can compile them.
  * Multi-dim subscript *stores* (`a[:, 1] = v`, `a[:, 1] += v`) become
  * `__wan_setitem` calls instead: a bare `__wan_getitem(...) = ...` is not
  * valid JavaScript (`Invalid left-hand side in assignment`), so the store
- * must be detected here. Anything that does not parse cleanly passes through
- * untouched.
+ * must be detected here. Single-dimension slice stores that rapydscript-ng
+ * likewise cannot compile (`a[::k] op= v`, `a[i:j] op= v`) are rewritten via
+ * `tryDesugarSingleDimSliceStore` above. Anything that does not parse cleanly
+ * passes through untouched.
  */
 export function desugarNumpySubscripts(source: string): string {
   // The helper names are reserved for the runtime (see `runtime_core.ts`); if
@@ -1413,6 +1490,16 @@ export function desugarNumpySubscripts(source: string): string {
     }
     const dims = splitDepthZero(source.slice(i + 1, close), ",");
     if (dims.length < 2) {
+      // Single-dimension subscript: reads and plain `a[i] = v` / `a[i:j] = v`
+      // stores are handled by rapydscript-ng itself, but stepped-slice stores
+      // and augmented slice stores are not (see
+      // `tryDesugarSingleDimSliceStore` above).
+      const single = tryDesugarSingleDimSliceStore(source, out, i, close);
+      if (single !== null) {
+        out = single.out;
+        i = single.next;
+        continue;
+      }
       out += ch;
       i += 1;
       continue;

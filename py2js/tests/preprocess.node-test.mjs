@@ -412,6 +412,30 @@ check("subscript desugar leaves strings and comments alone", () => {
   assert.equal(desugarNumpySubscripts(src), src);
 });
 
+check("subscript desugar rewrites single-dim slice stores (error 339)", () => {
+  // `intensity[::17] *= 0.3` compiled to `ρσ_eslice(intensity, 17) *= 0.3`
+  // (Invalid left-hand side in assignment); stepped and augmented
+  // single-dim slice stores now go through `__wan_setitem`.
+  assert.equal(
+    desugarNumpySubscripts("intensity[::17] *= 0.3\n"),
+    "__wan_setitem(intensity, __wan_slice(None, None, 17), (__wan_getitem(intensity, __wan_slice(None, None, 17)) * (0.3)))\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("a[::-1] = v\n"),
+    "__wan_setitem(a, __wan_slice(None, None, -1), (v))\n",
+  );
+  assert.equal(
+    desugarNumpySubscripts("a[1:2] += v\n"),
+    "__wan_setitem(a, __wan_slice(1, 2), (__wan_getitem(a, __wan_slice(1, 2)) + (v)))\n",
+  );
+  // Paths rapydscript-ng already handles stay untouched: reads, plain
+  // step-less slice stores (via `ρσ_splice`) and plain index stores (via
+  // `AST_ItemAccess`).
+  assert.equal(desugarNumpySubscripts("x = a[::2]\n"), "x = a[::2]\n");
+  assert.equal(desugarNumpySubscripts("a[1:2] = v\n"), "a[1:2] = v\n");
+  assert.equal(desugarNumpySubscripts("a[0] *= 2\n"), "a[0] *= 2\n");
+});
+
 check("matmul desugar rewrites rot @ center", () => {
   assert.equal(
     desugarMatmul("new_center = rot @ old_center\n"),
