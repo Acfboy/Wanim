@@ -1,4 +1,5 @@
 import { array, type NDArray } from "numpy-ts";
+import { _cContiguousRows } from "./arrays.js";
 import { OUT, PI } from "../constants.js";
 import { interpolate } from "./bezier.js";
 import { cross, normalize, rotation_matrix } from "./space_ops.js";
@@ -82,6 +83,52 @@ export function path_along_circles(
     end_points: NDArray,
     alpha: number,
   ): NDArray {
+    // Flat fast path: `Rotate` uses this path function for every face of the
+    // animated mobject on every frame.  The row-materialising implementation
+    // below allocated several nested JS arrays and re-decomposed the rotation
+    // matrices per face.
+    const flatStart = _cContiguousRows(start_points);
+    const flatEnd = _cContiguousRows(end_points);
+    if (
+      flatStart !== null &&
+      flatEnd !== null &&
+      flatStart.rowDim === flatEnd.rowDim &&
+      flatStart.rowCount === flatEnd.rowCount &&
+      flatStart.rowDim >= 3
+    ) {
+      const count = flatStart.rowCount;
+      const dim = flatStart.rowDim;
+      const centers = broadcast(centerSeed, count);
+      const negRot = (rotation_matrix(-arc_angle, unit_axis) as NDArray).toArray() as unknown as number[][];
+      const rot = (rotation_matrix(alpha * arc_angle, unit_axis) as NDArray).toArray() as unknown as number[][];
+      const out = new Float64Array(count * dim);
+      for (let index = 0; index < count; index += 1) {
+        const center = centers[index] ?? [];
+        const base = index * dim;
+        // detransformed = center + negRot * (end - center)
+        const ex = Number(flatEnd.data[base] ?? 0) - (center[0] ?? 0);
+        const ey = Number(flatEnd.data[base + 1] ?? 0) - (center[1] ?? 0);
+        const ez = Number(flatEnd.data[base + 2] ?? 0) - (center[2] ?? 0);
+        const d0 = (negRot[0]?.[0] ?? 0) * ex + (negRot[0]?.[1] ?? 0) * ey + (negRot[0]?.[2] ?? 0) * ez + (center[0] ?? 0);
+        const d1 = (negRot[1]?.[0] ?? 0) * ex + (negRot[1]?.[1] ?? 0) * ey + (negRot[1]?.[2] ?? 0) * ez + (center[1] ?? 0);
+        const d2 = (negRot[2]?.[0] ?? 0) * ex + (negRot[2]?.[1] ?? 0) * ey + (negRot[2]?.[2] ?? 0) * ez + (center[2] ?? 0);
+        // blended = lerp(start, detransformed, alpha)
+        const sx = Number(flatStart.data[base] ?? 0);
+        const sy = Number(flatStart.data[base + 1] ?? 0);
+        const sz = Number(flatStart.data[base + 2] ?? 0);
+        const bx = sx * (1 - alpha) + d0 * alpha - (center[0] ?? 0);
+        const by = sy * (1 - alpha) + d1 * alpha - (center[1] ?? 0);
+        const bz = sz * (1 - alpha) + d2 * alpha - (center[2] ?? 0);
+        // result = center + rot * blended
+        out[base] = (rot[0]?.[0] ?? 0) * bx + (rot[0]?.[1] ?? 0) * by + (rot[0]?.[2] ?? 0) * bz + (center[0] ?? 0);
+        out[base + 1] = (rot[1]?.[0] ?? 0) * bx + (rot[1]?.[1] ?? 0) * by + (rot[1]?.[2] ?? 0) * bz + (center[1] ?? 0);
+        out[base + 2] = (rot[2]?.[0] ?? 0) * bx + (rot[2]?.[1] ?? 0) * by + (rot[2]?.[2] ?? 0) * bz + (center[2] ?? 0);
+        // Components beyond xyz are zeroed by the rotation in the row path
+        // (`applyRotation` returns a 3-vector, and `center` has no 4th dim).
+        for (let k = 3; k < dim; k += 1) out[base + k] = 0;
+      }
+      return array(out).reshape(count, dim) as NDArray;
+    }
     const startRows = asRows(start_points);
     const endRows = asRows(end_points);
     const count = Math.max(startRows.length, endRows.length);

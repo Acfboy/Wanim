@@ -10,33 +10,41 @@
  *    shader applies exactly `ThreeDCamera.project_points` (rotation matrix,
  *    linear/exponential perspective, zoom) and then the same world->device
  *    transform as `setCanvasTransform`.
+ *  - `modified_rgbas` shading is evaluated in the vertex shader from the
+ *    per-face corner positions/normals, so moving the light source or toggling
+ *    `should_apply_shading` is a uniform change, not a geometry rebuild.
  *  - Fills are triangulated on the CPU (ear clipping) and stroked with
  *    screen-space miter joins computed in the vertex shader, so stroke width
  *    matches `cairo_line_width_multiple` behaviour at any depth.
- *  - Colours come from `ThreeDCamera.get_draw_color_info`, which reproduces
- *    `modified_rgbas` + `set_cairo_context_color`: a flat colour for uniform
- *    rows, otherwise a two-stop linear gradient between the VMobject's gradient
- *    endpoints, evaluated per fragment exactly like `cairo.LinearGradient`.
+ *  - Colours come from the VMobject's raw rgba rows and reproduce
+ *    `set_cairo_context_color`: a flat colour for uniform rows, otherwise a
+ *    two-stop linear gradient between the VMobject's gradient endpoints,
+ *    evaluated per fragment exactly like `cairo.LinearGradient`.
  *  - Painter's order matches cairo: the sorted display list is replayed in
  *    order (per mobject: background stroke, fill, foreground stroke), with the
  *    triangles of every mobject appended to one element buffer and drawn in a
  *    single `drawElements` call (WebGL preserves primitive order).
+ *  - Animated mobjects whose new points are an affine image of the uploaded
+ *    ones keep their geometry: the affine transform is fitted on the CPU and
+ *    applied by the shader, so `Rotate`/`shift`/`scale` animations do not
+ *    re-upload a single vertex.
  *
  * Mobjects this backend cannot express (multiple fill subpaths, >2 colour
  * stops, fixed-in-frame/fixed-orientation members, background images) return
- * `null` from {@link WebGLThreeDRenderer.ensure_record} and are drawn by the
+ * `null` from {@link WebGLThreeDRenderer.prepare} and are drawn by the
  * Canvas2D fallback instead.
  */
-import type { NDArray } from "numpy-ts";
+import { array } from "numpy-ts";
 import { _cContiguousRows } from "../utils/arrays.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
-import { ThreeDCamera, type DrawColorInfo, type MobjectColorInfos } from "../camera/three_d_camera.js";
+import { ThreeDCamera, type MobjectBaseColors, type BaseColorInfo } from "../camera/three_d_camera.js";
 import { computeSubpathRangesFlat } from "./canvas.js";
 import { mobject_geometry_epoch } from "../utils/render_epoch.js";
 
-/** Interleaved vertex layout (floats): position(3) prev(3) next(3)
- *  grad0(3) grad1(3) side(1) halfWidth(1) color0(4) color1(4) */
-const FLOATS_PER_VERTEX = 25;
+/** Interleaved vertex layout (floats): position(3) prev(3) next(3) grad0(3)
+ *  grad1(3) side(1) halfWidth(1) color0(4) color1(4) normal0(3) normal1(3)
+ *  modelIndex(1). */
+const FLOATS_PER_VERTEX = 32;
 const POSITION_OFFSET = 0;
 const PREV_OFFSET = 3;
 const NEXT_OFFSET = 6;
@@ -46,6 +54,15 @@ const SIDE_OFFSET = 15;
 const HALF_WIDTH_OFFSET = 16;
 const COLOR0_OFFSET = 17;
 const COLOR1_OFFSET = 21;
+const NORMAL0_OFFSET = 25;
+const NORMAL1_OFFSET = 28;
+const MODEL_INDEX_OFFSET = 31;
+
+/** Number of distinct affine models a frame can carry in the uniform array. */
+const MODEL_SLOTS = 64;
+
+const ZERO_RGBA = [0, 0, 0, 0];
+const ZERO_VEC = [0, 0, 0];
 
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -58,6 +75,9 @@ layout(location = 5) in float a_side;
 layout(location = 8) in float a_half_width;
 layout(location = 6) in vec4 a_color0;
 layout(location = 7) in vec4 a_color1;
+layout(location = 9) in vec3 a_normal0;
+layout(location = 10) in vec3 a_normal1;
+layout(location = 11) in float a_model_index;
 
 uniform mat3 u_rot;          // rotation matrix rows as columns
 uniform vec3 u_center;
@@ -66,10 +86,39 @@ uniform float u_zoom;
 uniform bool u_exponential;
 uniform vec4 u_screen;       // widthMult, heightMult, addX, addY
 uniform vec2 u_viewport;     // pixel width / height
+uniform vec3 u_light;
+uniform bool u_shading;
+uniform vec4 u_models[${MODEL_SLOTS * 3}]; // per-model rows: [a b c t]
 
 out float v_t;
 out vec4 v_color0;
 out vec4 v_color1;
+
+vec3 apply_model(vec3 p) {
+  int base = int(a_model_index) * 3;
+  vec4 r0 = u_models[base];
+  vec4 r1 = u_models[base + 1];
+  vec4 r2 = u_models[base + 2];
+  return vec3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
+}
+
+vec3 apply_model_dir(vec3 v) {
+  int base = int(a_model_index) * 3;
+  vec4 r0 = u_models[base];
+  vec4 r1 = u_models[base + 1];
+  vec4 r2 = u_models[base + 2];
+  return vec3(dot(r0.xyz, v), dot(r1.xyz, v), dot(r2.xyz, v));
+}
+
+float shade(vec3 point, vec3 normal) {
+  vec3 diff = u_light - point;
+  float d = length(diff);
+  vec3 to_sun = d > 0.0 ? diff / d : vec3(0.0);
+  float c = dot(normalize(normal), to_sun);
+  float light = 0.5 * c * c * c;
+  if (light < 0.0) light *= 0.5;
+  return light;
+}
 
 vec2 project(vec3 world) {
   vec3 p = world - u_center;
@@ -86,11 +135,12 @@ vec2 project(vec3 world) {
 }
 
 void main() {
-  vec2 cur = project(a_position);
+  vec3 world = apply_model(a_position);
+  vec2 cur = project(world);
   vec2 pos = cur;
   if (a_side != 0.0) {
-    vec2 prev = project(a_prev);
-    vec2 next = project(a_next);
+    vec2 prev = project(apply_model(a_prev));
+    vec2 next = project(apply_model(a_next));
     vec2 d1 = cur - prev;
     vec2 d2 = next - cur;
     float l1 = length(d1);
@@ -110,13 +160,19 @@ void main() {
     }
     pos = cur + dir * (a_half_width * a_side);
   }
-  vec2 g0 = project(a_grad0);
-  vec2 g1 = project(a_grad1);
+  vec2 g0 = project(apply_model(a_grad0));
+  vec2 g1 = project(apply_model(a_grad1));
   vec2 seg = g1 - g0;
   float len2 = dot(seg, seg);
   v_t = len2 > 0.0 ? dot(pos - g0, seg) / len2 : 0.0;
-  v_color0 = a_color0;
-  v_color1 = a_color1;
+  vec4 c0 = a_color0;
+  vec4 c1 = a_color1;
+  if (u_shading) {
+    c0.rgb += shade(apply_model(a_grad0), apply_model_dir(a_normal0));
+    c1.rgb += shade(apply_model(a_grad1), apply_model_dir(a_normal1));
+  }
+  v_color0 = c0;
+  v_color1 = c1;
   gl_Position = vec4(
     pos.x / u_viewport.x * 2.0 - 1.0,
     1.0 - pos.y / u_viewport.y * 2.0,
@@ -139,8 +195,10 @@ void main() {
 
 interface GeometryRecord {
   points: unknown;
-  /** The camera's combined fill/stroke/bg-stroke colour infos. */
-  colorInfo: MobjectColorInfos;
+  fillSource: unknown;
+  strokeSource: unknown;
+  bgStrokeSource: unknown;
+  baseColors: MobjectBaseColors;
   strokeWidthRaw: unknown;
   bgStrokeWidthRaw: unknown;
   jointType: string;
@@ -148,18 +206,25 @@ interface GeometryRecord {
   lineMultiple: number;
   zoomBucket: number;
   vertexData: Float32Array;
-  /** Triangle indices, already offset by `vertexOffset`. */
+  /** Triangle indices, already offset by `vertexOffset` (in vertices). */
   indexData: Uint32Array;
   vertexCount: number;
   /** Start of this record's vertices inside the shared vertex heap (floats). */
   vertexOffset: number;
+  /** Copy of the points the vertex data was built from (affine fitting). */
+  basePoints: Float32Array;
+  /** Base->current affine model, or null when the geometry is up to date. */
+  model: Float32Array | null;
+  modelSlot: number;
+  /** Set when the model-slot budget overflowed; forces a geometry rebuild. */
+  forceRebuild: boolean;
 }
 
 export interface WebGLThreeDRendererOptions {
   antialias?: boolean;
 }
 
-function isColorTransparent(info: DrawColorInfo): boolean {
+function isColorTransparent(info: BaseColorInfo): boolean {
   if (info.gradient && info.colors.length >= 2) {
     return (info.colors[0]?.[3] ?? 0) === 0 && (info.colors[1]?.[3] ?? 0) === 0;
   }
@@ -231,8 +296,8 @@ function pointsEqual(a: number[], b: number[], atol: number): boolean {
  *
  * The polygon is projected onto its dominant plane (chosen from the Newell
  * normal) before clipping: a cube face parallel to the world XY plane has zero
- * area there, so the previous world-XY projection produced no triangles and
- * dropped the face entirely.
+ * area there, so a world-XY projection would produce no triangles and drop the
+ * face entirely.
  */
 function triangulatePolygon(poly: number[][]): number[] {
   const n = poly.length;
@@ -320,6 +385,121 @@ function triangulatePolygon2D(poly: number[][]): number[] {
   return indices;
 }
 
+/** Gauss-Jordan inversion of a 4x4 matrix in row-major order. */
+function invert4(m: Float64Array): Float64Array | null {
+  const a = new Float64Array(32);
+  for (let r = 0; r < 4; r += 1) {
+    for (let c = 0; c < 4; c += 1) a[r * 8 + c] = m[r * 4 + c]!;
+    a[r * 8 + 4 + r] = 1;
+  }
+  for (let col = 0; col < 4; col += 1) {
+    let pivot = col;
+    for (let r = col + 1; r < 4; r += 1) {
+      if (Math.abs(a[r * 8 + col]!) > Math.abs(a[pivot * 8 + col]!)) pivot = r;
+    }
+    if (Math.abs(a[pivot * 8 + col]!) < 1e-12) return null;
+    if (pivot !== col) {
+      for (let c = 0; c < 8; c += 1) {
+        const t = a[col * 8 + c]!;
+        a[col * 8 + c] = a[pivot * 8 + c]!;
+        a[pivot * 8 + c] = t;
+      }
+    }
+    const d = a[col * 8 + col]!;
+    for (let c = 0; c < 8; c += 1) a[col * 8 + c] = a[col * 8 + c]! / d;
+    for (let r = 0; r < 4; r += 1) {
+      if (r === col) continue;
+      const f = a[r * 8 + col]!;
+      if (f === 0) continue;
+      for (let c = 0; c < 8; c += 1) a[r * 8 + c] = a[r * 8 + c]! - f * a[col * 8 + c]!;
+    }
+  }
+  const inv = new Float64Array(16);
+  for (let r = 0; r < 4; r += 1) {
+    for (let c = 0; c < 4; c += 1) inv[r * 4 + c] = a[r * 8 + 4 + c]!;
+  }
+  return inv;
+}
+
+/** Maximum residual (relative to the point scale) allowed for an affine fit. */
+function model_residual_ok(maxErr: number, scale: number): boolean {
+  return maxErr <= 1e-6 * (1 + scale);
+}
+
+/**
+ * Fit the 3x4 affine map `current ≈ A · [base; 1]` by least squares.  Returns
+ * the 12 coefficients in row-major order (`A[row][col]`, translation in the
+ * last column), or null when the fit is singular or not affine within
+ * tolerance (in which case the caller rebuilds the geometry).
+ */
+function fitAffine(
+  base: Float32Array,
+  current: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+): Float32Array | null {
+  const m = new Float64Array(16);
+  const rhs = new Float64Array(12);
+  const row = new Float64Array(4);
+  for (let i = 0; i < rowCount; i += 1) {
+    const x = base[i * 3]!;
+    const y = base[i * 3 + 1]!;
+    const z = base[i * 3 + 2]!;
+    const c = i * rowDim;
+    row[0] = x;
+    row[1] = y;
+    row[2] = z;
+    row[3] = 1;
+    for (let a = 0; a < 4; a += 1) {
+      const ra = row[a]!;
+      for (let b = 0; b < 4; b += 1) m[a * 4 + b] += ra * row[b]!;
+      rhs[a * 3] += ra * Number(current[c]!);
+      rhs[a * 3 + 1] += ra * Number(current[c + 1]!);
+      rhs[a * 3 + 2] += ra * Number(current[c + 2]!);
+    }
+  }
+  const inv = invert4(m);
+  if (inv === null) return null;
+  const out = new Float32Array(12);
+  for (let a = 0; a < 4; a += 1) {
+    for (let b = 0; b < 3; b += 1) {
+      let sum = 0;
+      for (let k = 0; k < 4; k += 1) sum += inv[a * 4 + k]! * rhs[k * 3 + b]!;
+      out[b * 4 + a] = sum;
+    }
+  }
+  if (!model_matches(out, base, current, rowDim, rowCount)) return null;
+  return out;
+}
+
+/** Whether `model` maps every base point onto the current points. */
+function model_matches(
+  model: Float32Array,
+  base: Float32Array,
+  current: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+): boolean {
+  let maxErr = 0;
+  let scale = 0;
+  for (let i = 0; i < rowCount; i += 1) {
+    const x = base[i * 3]!;
+    const y = base[i * 3 + 1]!;
+    const z = base[i * 3 + 2]!;
+    const c = i * rowDim;
+    for (let b = 0; b < 3; b += 1) {
+      const pred =
+        model[b * 4]! * x + model[b * 4 + 1]! * y + model[b * 4 + 2]! * z + model[b * 4 + 3]!;
+      const actual = Number(current[c + b]!);
+      const err = Math.abs(pred - actual);
+      if (err > maxErr) maxErr = err;
+      const abs = Math.abs(actual);
+      if (abs > scale) scale = abs;
+    }
+  }
+  return model_residual_ok(maxErr, scale);
+}
+
 export class WebGLThreeDRenderer {
   readonly canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
   private gl: WebGL2RenderingContext | null = null;
@@ -327,6 +507,7 @@ export class WebGLThreeDRenderer {
   private vao: WebGLVertexArrayObject | null = null;
   private vbo: WebGLBuffer | null = null;
   private ebo: WebGLBuffer | null = null;
+  private modelVbo: WebGLBuffer | null = null;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private records = new Map<VMobject, GeometryRecord>();
   /** CPU staging copy of the shared vertex heap (offsets survive growth). */
@@ -336,10 +517,17 @@ export class WebGLThreeDRenderer {
   private vertexCapacity = 0;
   /** Freed ranges inside the heap, `{ offset, size }` in floats. */
   private freeRanges: Array<{ offset: number; size: number }> = [];
+  /** Per-vertex model index, parallel to the vertex heap (one float/vertex). */
+  private modelIndexHeap = new Float32Array(4096);
   private indexScratch = new Uint32Array(8192);
   private indexCount = 0;
   /** GPU element buffer capacity, in indices. */
   private indexCapacity = 0;
+  /** Dirty ranges uploaded once per frame. */
+  private pendingVertexMin = Infinity;
+  private pendingVertexMax = -Infinity;
+  private pendingModelMin = Infinity;
+  private pendingModelMax = -Infinity;
   private width = 0;
   private height = 0;
   /**
@@ -352,12 +540,16 @@ export class WebGLThreeDRenderer {
     epoch: -1,
     lineMultiple: NaN,
     zoomBucket: NaN,
-    shading: false,
     fif: -1,
     fio: -1,
     frameHeight: NaN,
     pixelHeight: NaN,
   };
+  private frameRecords: GeometryRecord[] = [];
+  private frameModelSlots = new Map<Float32Array, number>();
+  private modelArray = new Float32Array(MODEL_SLOTS * 12);
+  /** Last fitted affine transform, reused by the other faces of its group. */
+  private lastFittedModel: Float32Array | null = null;
 
   constructor(options: WebGLThreeDRendererOptions = {}) {
     try {
@@ -388,7 +580,7 @@ export class WebGLThreeDRenderer {
   }
 
   available(): boolean {
-    return this.gl !== null && this.program !== null && this.vbo !== null && this.ebo !== null && this.vao !== null;
+    return this.gl !== null && this.program !== null && this.vbo !== null && this.ebo !== null && this.vao !== null && this.modelVbo !== null;
   }
 
   private init(gl: WebGL2RenderingContext): void {
@@ -418,35 +610,42 @@ export class WebGLThreeDRenderer {
     }
     this.program = program;
     gl.useProgram(program);
-    for (const name of ["u_rot", "u_center", "u_focal", "u_zoom", "u_exponential", "u_screen", "u_viewport"]) {
+    for (const name of ["u_rot", "u_center", "u_focal", "u_zoom", "u_exponential", "u_screen", "u_viewport", "u_light", "u_shading", "u_models"]) {
       this.uniforms[name] = gl.getUniformLocation(program, name);
     }
     const vao = gl.createVertexArray();
     const vbo = gl.createBuffer();
     const ebo = gl.createBuffer();
-    if (vao === null || vbo === null || ebo === null) return;
+    const modelVbo = gl.createBuffer();
+    if (vao === null || vbo === null || ebo === null || modelVbo === null) return;
     this.vao = vao;
     this.vbo = vbo;
     this.ebo = ebo;
+    this.modelVbo = modelVbo;
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     const stride = FLOATS_PER_VERTEX * 4;
-    const attribs: Array<[number, number, number, number]> = [
-      // location, size, offsetFloats, divisor(0)
-      [0, 3, POSITION_OFFSET, 0],
-      [1, 3, PREV_OFFSET, 0],
-      [2, 3, NEXT_OFFSET, 0],
-      [3, 3, GRAD0_OFFSET, 0],
-      [4, 3, GRAD1_OFFSET, 0],
-      [5, 1, SIDE_OFFSET, 0],
-      [8, 1, HALF_WIDTH_OFFSET, 0],
-      [6, 4, COLOR0_OFFSET, 0],
-      [7, 4, COLOR1_OFFSET, 0],
+    const attribs: Array<[number, number, number]> = [
+      // location, size, offsetFloats
+      [0, 3, POSITION_OFFSET],
+      [1, 3, PREV_OFFSET],
+      [2, 3, NEXT_OFFSET],
+      [3, 3, GRAD0_OFFSET],
+      [4, 3, GRAD1_OFFSET],
+      [5, 1, SIDE_OFFSET],
+      [8, 1, HALF_WIDTH_OFFSET],
+      [6, 4, COLOR0_OFFSET],
+      [7, 4, COLOR1_OFFSET],
+      [9, 3, NORMAL0_OFFSET],
+      [10, 3, NORMAL1_OFFSET],
     ];
     for (const [location, size, offsetFloats] of attribs) {
       gl.enableVertexAttribArray(location);
       gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offsetFloats * 4);
     }
+    gl.bindBuffer(gl.ARRAY_BUFFER, modelVbo);
+    gl.enableVertexAttribArray(11);
+    gl.vertexAttribPointer(11, 1, gl.FLOAT, false, 4, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
     gl.bindVertexArray(null);
     gl.disable(gl.DEPTH_TEST);
@@ -468,12 +667,16 @@ export class WebGLThreeDRenderer {
       this.canvas.height = height;
     }
     this.indexCount = 0;
+    this.frameRecords.length = 0;
+    this.frameModelSlots.clear();
+    // NOTE: dirty vertex/model ranges are *not* reset here — `prepare` builds
+    // (and dirties) records before `begin`, and only `upload_pending` (called
+    // from `flush`) may clear them.
     const state = this.camera_state(camera);
     this.recordsValid =
       state.epoch === this.frameState.epoch &&
       state.lineMultiple === this.frameState.lineMultiple &&
       state.zoomBucket === this.frameState.zoomBucket &&
-      state.shading === this.frameState.shading &&
       state.fif === this.frameState.fif &&
       state.fio === this.frameState.fio &&
       state.frameHeight === this.frameState.frameHeight &&
@@ -491,7 +694,6 @@ export class WebGLThreeDRenderer {
       epoch: mobject_geometry_epoch(),
       lineMultiple: camera.cairo_line_width_multiple,
       zoomBucket: Math.round(Math.log2(Math.max(1, zoom)) * 2),
-      shading: camera.should_apply_shading,
       fif: camera.fixed_in_frame_mobjects.size,
       fio: camera.fixed_orientation_mobjects.size,
       frameHeight: camera.frame_height,
@@ -519,13 +721,15 @@ export class WebGLThreeDRenderer {
     this.ensure_index_capacity(needed);
     this.indexScratch.set(record.indexData, this.indexCount);
     this.indexCount = needed;
+    this.frameRecords.push(record);
   }
 
-  /** Draw the accumulated batch (one `drawElements`, painter order preserved). */
+  /** Draw the accumulated batch (painter order preserved). */
   flush(camera: ThreeDCamera): void {
     const gl = this.gl;
     if (gl === null || this.program === null || this.vao === null || this.vbo === null || this.ebo === null) return;
     if (this.indexCount === 0) return;
+    this.assign_model_slots(gl);
     const pixelWidth = camera.pixel_width;
     const pixelHeight = camera.pixel_height;
     const frameWidth = camera.frame_width;
@@ -534,6 +738,11 @@ export class WebGLThreeDRenderer {
     const heightMult = pixelHeight / frameHeight;
     const frameCenter = camera.frame_center;
     const [r0, r1, r2] = camera.get_rotation_rows();
+    const lightRows = _cContiguousRows(camera.light_source.points);
+    const light: [number, number, number] = lightRows !== null && lightRows.rowCount > 0
+      ? [Number(lightRows.data[0] ?? 0), Number(lightRows.data[1] ?? 0), Number(lightRows.data[2] ?? 0)]
+      : this.light_source;
+    this.light_source = light;
     gl.useProgram(this.program);
     gl.uniformMatrix3fv(this.uniforms["u_rot"] ?? null, false, new Float32Array([
       r0[0] ?? 0, r0[1] ?? 0, r0[2] ?? 0,
@@ -557,6 +766,10 @@ export class WebGLThreeDRenderer {
       pixelHeight / 2 + (frameCenter[1] ?? 0) * heightMult,
     );
     gl.uniform2f(this.uniforms["u_viewport"] ?? null, pixelWidth, pixelHeight);
+    gl.uniform3f(this.uniforms["u_light"] ?? null, light[0], light[1], light[2]);
+    gl.uniform1i(this.uniforms["u_shading"] ?? null, camera.should_apply_shading ? 1 : 0);
+    gl.uniform4fv(this.uniforms["u_models"] ?? null, this.modelArray);
+    this.upload_pending();
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ebo);
     gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, this.indexScratch.subarray(0, this.indexCount));
@@ -564,9 +777,81 @@ export class WebGLThreeDRenderer {
     gl.bindVertexArray(null);
   }
 
+  private light_source: [number, number, number] = [0, 0, 0];
+
+  /**
+   * Assign this frame's model slots and write the per-vertex model indices.
+   * Slots are per-frame and shared by records whose fitted transform object is
+   * identical (all faces of one animated group).
+   */
+  private assign_model_slots(gl: WebGL2RenderingContext): void {
+    this.modelArray.fill(0);
+    this.modelArray[0] = 1;
+    this.modelArray[5] = 1;
+    this.modelArray[10] = 1;
+    this.frameModelSlots.clear();
+    let slotCount = 1;
+    for (const record of this.frameRecords) {
+      const model = record.model;
+      if (model === null) {
+        if (record.modelSlot !== 0) this.write_model_slot(record, 0);
+        continue;
+      }
+      let slot = this.frameModelSlots.get(model);
+      if (slot === undefined) {
+        if (slotCount >= MODEL_SLOTS) {
+          // More simultaneously animated groups than the uniform array can
+          // hold: force a geometry rebuild for this record next frame.
+          record.model = null;
+          record.forceRebuild = true;
+          if (record.modelSlot !== 0) this.write_model_slot(record, 0);
+          continue;
+        }
+        slot = slotCount;
+        slotCount += 1;
+        this.frameModelSlots.set(model, slot);
+        const base = slot * 12;
+        for (let index = 0; index < 12; index += 1) this.modelArray[base + index] = model[index]!;
+      }
+      if (record.modelSlot !== slot) this.write_model_slot(record, slot);
+    }
+  }
+
+  private write_model_slot(record: GeometryRecord, slot: number): void {
+    record.modelSlot = slot;
+    const base = record.vertexOffset / FLOATS_PER_VERTEX;
+    this.modelIndexHeap.fill(slot, base, base + record.vertexCount);
+    if (base < this.pendingModelMin) this.pendingModelMin = base;
+    if (base + record.vertexCount > this.pendingModelMax) this.pendingModelMax = base + record.vertexCount;
+  }
+
+  private upload_pending(): void {
+    const gl = this.gl;
+    if (gl === null || this.vbo === null) return;
+    if (this.pendingVertexMin < this.pendingVertexMax) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+      gl.bufferSubData(
+        gl.ARRAY_BUFFER,
+        this.pendingVertexMin * 4,
+        this.vertexHeap.subarray(this.pendingVertexMin, this.pendingVertexMax),
+      );
+      this.pendingVertexMin = Infinity;
+      this.pendingVertexMax = -Infinity;
+    }
+    if (this.modelVbo !== null && this.pendingModelMin < this.pendingModelMax) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.modelVbo);
+      gl.bufferSubData(
+        gl.ARRAY_BUFFER,
+        this.pendingModelMin * 4,
+        this.modelIndexHeap.subarray(this.pendingModelMin, this.pendingModelMax),
+      );
+      this.pendingModelMin = Infinity;
+      this.pendingModelMax = -Infinity;
+    }
+  }
+
   /** Upload a record's vertices into the shared heap (once per shape change). */
   private alloc_vertices(record: GeometryRecord): void {
-    const gl = this.gl;
     const count = record.vertexData.length;
     if (count === 0) {
       record.vertexOffset = 0;
@@ -593,9 +878,6 @@ export class WebGLThreeDRenderer {
       this.vertexHeapUsed += count;
       this.ensure_vertex_capacity(this.vertexHeapUsed);
     }
-    if (offset + count > this.vertexHeap.length) {
-      console.error("alloc OOB", { offset, count, heap: this.vertexHeap.length, used: this.vertexHeapUsed, free: this.freeRanges.slice(0, 5), vc: record.vertexCount });
-    }
     this.vertexHeap.set(record.vertexData, offset);
     record.vertexOffset = offset;
     // Global indices: `indexData` is local to the record right after build.
@@ -606,10 +888,14 @@ export class WebGLThreeDRenderer {
     if (indexData.length > 0) {
       for (let index = 0; index < indexData.length; index += 1) indexData[index] = indexData[index]! + vertexBase;
     }
-    if (gl !== null && this.vbo !== null) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
-      gl.bufferSubData(gl.ARRAY_BUFFER, offset * 4, record.vertexData);
-    }
+    // Default model index 0 (identity); `assign_model_slots` rewrites it when
+    // an affine model is active.
+    this.modelIndexHeap.fill(0, vertexBase, vertexBase + record.vertexCount);
+    record.modelSlot = 0;
+    if (offset < this.pendingVertexMin) this.pendingVertexMin = offset;
+    if (offset + count > this.pendingVertexMax) this.pendingVertexMax = offset + count;
+    if (vertexBase < this.pendingModelMin) this.pendingModelMin = vertexBase;
+    if (vertexBase + record.vertexCount > this.pendingModelMax) this.pendingModelMax = vertexBase + record.vertexCount;
   }
 
   private free_vertices(record: GeometryRecord): void {
@@ -624,11 +910,17 @@ export class WebGLThreeDRenderer {
       .filter((record) => record.vertexCount > 0)
       .sort((a, b) => a.vertexOffset - b.vertexOffset);
     const heap = new Float32Array(Math.max(this.vertexHeap.length, 4096 * FLOATS_PER_VERTEX));
+    const modelHeap = new Float32Array(heap.length / FLOATS_PER_VERTEX);
     let offset = 0;
     for (const record of live) {
       const count = record.vertexCount * FLOATS_PER_VERTEX;
-      const deltaVertices = (offset - record.vertexOffset) / FLOATS_PER_VERTEX;
+      const vertexBase = offset / FLOATS_PER_VERTEX;
+      const deltaVertices = vertexBase - record.vertexOffset / FLOATS_PER_VERTEX;
       heap.set(this.vertexHeap.subarray(record.vertexOffset, record.vertexOffset + count), offset);
+      modelHeap.set(
+        this.modelIndexHeap.subarray(record.vertexOffset / FLOATS_PER_VERTEX, record.vertexOffset / FLOATS_PER_VERTEX + record.vertexCount),
+        vertexBase,
+      );
       record.vertexOffset = offset;
       if (deltaVertices !== 0) {
         for (let index = 0; index < record.indexData.length; index += 1) {
@@ -638,12 +930,21 @@ export class WebGLThreeDRenderer {
       offset += count;
     }
     this.vertexHeap = heap;
+    this.modelIndexHeap = modelHeap;
     this.vertexHeapUsed = offset;
     this.freeRanges = [];
     if (gl !== null && this.vbo !== null) {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, heap, 0, offset);
     }
+    if (gl !== null && this.modelVbo !== null) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.modelVbo);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, modelHeap, 0, offset / FLOATS_PER_VERTEX);
+    }
+    this.pendingVertexMin = Infinity;
+    this.pendingVertexMax = -Infinity;
+    this.pendingModelMin = Infinity;
+    this.pendingModelMax = -Infinity;
   }
 
   private ensure_vertex_capacity(floats: number): void {
@@ -654,8 +955,11 @@ export class WebGLThreeDRenderer {
       const heap = new Float32Array(size);
       heap.set(this.vertexHeap);
       this.vertexHeap = heap;
+      const modelHeap = new Float32Array(size / FLOATS_PER_VERTEX);
+      modelHeap.set(this.modelIndexHeap);
+      this.modelIndexHeap = modelHeap;
     }
-    if (gl === null || this.vbo === null) return;
+    if (gl === null || this.vbo === null || this.modelVbo === null) return;
     if (floats <= this.vertexCapacity) return;
     let capacity = Math.max(this.vertexCapacity * 2, floats, 4096 * FLOATS_PER_VERTEX);
     if (capacity < this.vertexHeap.length) capacity = this.vertexHeap.length;
@@ -663,6 +967,14 @@ export class WebGLThreeDRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, capacity * 4, gl.DYNAMIC_DRAW);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.vertexHeap, 0, this.vertexHeapUsed);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.modelVbo);
+    const modelCapacity = capacity / FLOATS_PER_VERTEX;
+    gl.bufferData(gl.ARRAY_BUFFER, modelCapacity * 4, gl.DYNAMIC_DRAW);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.modelIndexHeap, 0, this.vertexHeapUsed / FLOATS_PER_VERTEX);
+    this.pendingVertexMin = Infinity;
+    this.pendingVertexMax = -Infinity;
+    this.pendingModelMin = Infinity;
+    this.pendingModelMax = -Infinity;
   }
 
   private ensure_index_capacity(indices: number): void {
@@ -688,17 +1000,18 @@ export class WebGLThreeDRenderer {
     if (vm.background_image !== null && vm.background_image !== undefined) return null;
     const points = vm.points;
     if (points === undefined || points === null || (points.shape?.[0] ?? 0) === 0) return null;
-    // One combined lookup validates points/rgba sources/light for all three
-    // colour slots; the remaining fields are read directly.
-    const colorInfo = camera.get_mobject_color_infos(vm);
+    const fillSource = vm.fill_rgbas ?? ZERO_RGBA_SOURCE;
+    const strokeSource = vm.stroke_rgbas ?? ZERO_RGBA_SOURCE;
+    const bgStrokeSource = vm.background_stroke_rgbas ?? ZERO_RGBA_SOURCE;
     const zoom = camera.get_zoom();
     const zoomBucket = Math.round(Math.log2(Math.max(1, zoom)) * 2);
     const lineMultiple = camera.cairo_line_width_multiple;
     const existing = this.records.get(vm);
     if (
       existing !== undefined &&
-      existing.points === points &&
-      existing.colorInfo === colorInfo &&
+      existing.fillSource === fillSource &&
+      existing.strokeSource === strokeSource &&
+      existing.bgStrokeSource === bgStrokeSource &&
       existing.strokeWidthRaw === vm.stroke_width &&
       existing.bgStrokeWidthRaw === vm.background_stroke_width &&
       existing.jointType === vm.joint_type &&
@@ -706,9 +1019,30 @@ export class WebGLThreeDRenderer {
       existing.lineMultiple === lineMultiple &&
       existing.zoomBucket === zoomBucket
     ) {
-      return existing;
+      if (existing.points === points && !existing.forceRebuild) return existing;
+      // Geometry moved: an affine transform of the uploaded points needs no
+      // rebuild at all — the shader applies it.
+      const pts = _cContiguousRows(points);
+      if (pts !== null && pts.rowDim >= 3 && pts.rowCount === existing.basePoints.length / 3) {
+        let model: Float32Array | null = existing.model;
+        if (model === null || !model_matches(model, existing.basePoints, pts.data, pts.rowDim, pts.rowCount)) {
+          if (this.lastFittedModel !== null && model_matches(this.lastFittedModel, existing.basePoints, pts.data, pts.rowDim, pts.rowCount)) {
+            model = this.lastFittedModel;
+          } else {
+            model = fitAffine(existing.basePoints, pts.data, pts.rowDim, pts.rowCount);
+            if (model !== null) this.lastFittedModel = model;
+          }
+        }
+        if (model !== null && !existing.forceRebuild) {
+          existing.model = model;
+          existing.points = points;
+          return existing;
+        }
+      }
     }
-    const record = this.build_record(vm, camera, colorInfo, zoom, zoomBucket, lineMultiple);
+    const baseColors = camera.get_mobject_base_colors(vm);
+    if (baseColors === null) return null;
+    const record = this.build_record(vm, camera, baseColors, fillSource, strokeSource, bgStrokeSource, zoom, zoomBucket, lineMultiple);
     if (record === null) return null;
     if (existing !== undefined) this.free_vertices(existing);
     this.alloc_vertices(record);
@@ -719,30 +1053,47 @@ export class WebGLThreeDRenderer {
   private build_record(
     vm: VMobject,
     camera: ThreeDCamera,
-    colorInfo: GeometryRecord["colorInfo"],
+    baseColors: MobjectBaseColors,
+    fillSource: unknown,
+    strokeSource: unknown,
+    bgStrokeSource: unknown,
     zoom: number,
     zoomBucket: number,
     lineMultiple: number,
   ): GeometryRecord | null {
     const pts = _cContiguousRows(vm.points);
     if (pts === null || pts.rowDim < 3 || pts.rowCount < 4) return null;
-    const fillInfo = colorInfo.fill;
-    const strokeInfo = colorInfo.stroke;
-    const bgStrokeInfo = colorInfo.bgStroke;
+    const fillInfo = baseColors.fill;
+    const strokeInfo = baseColors.stroke;
+    const bgStrokeInfo = baseColors.bgStroke;
     const strokeWidth = vm.get_stroke_width(false);
     const bgStrokeWidth = vm.get_stroke_width(true);
     const drawFill = fillInfo !== null && !isColorTransparent(fillInfo);
     const drawStroke = strokeWidth > 0 && strokeInfo !== null && !isColorTransparent(strokeInfo);
     const drawBgStroke = bgStrokeWidth > 0 && bgStrokeInfo !== null && !isColorTransparent(bgStrokeInfo);
+    const basePoints = new Float32Array(pts.rowCount * 3);
+    for (let index = 0; index < pts.rowCount; index += 1) {
+      const base = index * pts.rowDim;
+      basePoints[index * 3] = Number(pts.data[base] ?? 0);
+      basePoints[index * 3 + 1] = Number(pts.data[base + 1] ?? 0);
+      basePoints[index * 3 + 2] = Number(pts.data[base + 2] ?? 0);
+    }
     const base = {
       points: vm.points,
-      colorInfo,
+      fillSource,
+      strokeSource,
+      bgStrokeSource,
+      baseColors,
       strokeWidthRaw: vm.stroke_width,
       bgStrokeWidthRaw: vm.background_stroke_width,
       jointType: vm.joint_type,
       capStyle: vm.cap_style,
       lineMultiple,
       zoomBucket,
+      basePoints,
+      model: null,
+      modelSlot: 0,
+      forceRebuild: false,
     };
     if (!drawFill && !drawStroke && !drawBgStroke) {
       // Nothing visible: an empty record still lets the mobject be "handled".
@@ -794,51 +1145,100 @@ export class WebGLThreeDRenderer {
     const halfWidth = (strokeWidth * lineMultiple * deviceScale) / 2;
     const bgHalfWidth = (bgStrokeWidth * lineMultiple * deviceScale) / 2;
 
-    const vertices: number[] = [];
-    const indices: number[] = [];
+    // Preallocate the exact vertex/index storage: animations rebuild every
+    // face each frame, and growing JS number arrays then copying dominated the
+    // rebuild.
+    let strokeSegments = 0;
+    for (const poly of subpaths) {
+      const n = poly.length;
+      if (n < 2) continue;
+      const closed = pointsEqual(poly[0]!, poly[n - 1]!, 1e-6);
+      const count = closed ? n - 1 : n;
+      strokeSegments += closed ? count : count - 1;
+    }
+    const strokeVerts = strokeSegments * 4;
+    const fillVerts = fillPolygon !== null ? fillPolygon.length : 0;
+    const totalVerts =
+      (drawBgStroke ? strokeVerts : 0) +
+      (drawFill && fillPolygon !== null ? fillVerts : 0) +
+      (drawStroke ? strokeVerts : 0);
+    const totalIndices =
+      (drawBgStroke ? strokeSegments * 6 : 0) +
+      (fillPolygon !== null ? fillIndices.length : 0) +
+      (drawStroke ? strokeSegments * 6 : 0);
+    const vertexData = new Float32Array(totalVerts * FLOATS_PER_VERTEX);
+    const indexData = new Uint32Array(totalIndices);
+    let vertexCursor = 0;
+    let indexCursor = 0;
+
     const addVertex = (
       p: number[],
       prev: number[],
       next: number[],
       side: number,
       vertexHalfWidth: number,
-      info: DrawColorInfo | null,
+      info: BaseColorInfo | null,
     ): number => {
-      const index = vertices.length / FLOATS_PER_VERTEX;
-      const c0 = info?.colors[0] ?? [0, 0, 0, 0];
+      const index = vertexCursor;
+      const offset = index * FLOATS_PER_VERTEX;
+      const c0 = info?.colors[0] ?? ZERO_RGBA;
       const c1 = info?.colors[1] ?? c0;
-      vertices.push(
-        p[0] ?? 0, p[1] ?? 0, p[2] ?? 0,
-        prev[0] ?? 0, prev[1] ?? 0, prev[2] ?? 0,
-        next[0] ?? 0, next[1] ?? 0, next[2] ?? 0,
-        info?.start[0] ?? 0, info?.start[1] ?? 0, info?.start[2] ?? 0,
-        info?.end[0] ?? 0, info?.end[1] ?? 0, info?.end[2] ?? 0,
-        side,
-        vertexHalfWidth,
-        c0[0] ?? 0, c0[1] ?? 0, c0[2] ?? 0, c0[3] ?? 0,
-        c1[0] ?? 0, c1[1] ?? 0, c1[2] ?? 0, c1[3] ?? 0,
-      );
+      const n0 = info?.normal0 ?? ZERO_VEC;
+      const n1 = info?.normal1 ?? ZERO_VEC;
+      vertexData[offset] = p[0] ?? 0;
+      vertexData[offset + 1] = p[1] ?? 0;
+      vertexData[offset + 2] = p[2] ?? 0;
+      vertexData[offset + 3] = prev[0] ?? 0;
+      vertexData[offset + 4] = prev[1] ?? 0;
+      vertexData[offset + 5] = prev[2] ?? 0;
+      vertexData[offset + 6] = next[0] ?? 0;
+      vertexData[offset + 7] = next[1] ?? 0;
+      vertexData[offset + 8] = next[2] ?? 0;
+      vertexData[offset + 9] = info?.start[0] ?? 0;
+      vertexData[offset + 10] = info?.start[1] ?? 0;
+      vertexData[offset + 11] = info?.start[2] ?? 0;
+      vertexData[offset + 12] = info?.end[0] ?? 0;
+      vertexData[offset + 13] = info?.end[1] ?? 0;
+      vertexData[offset + 14] = info?.end[2] ?? 0;
+      vertexData[offset + 15] = side;
+      vertexData[offset + 16] = vertexHalfWidth;
+      vertexData[offset + 17] = c0[0] ?? 0;
+      vertexData[offset + 18] = c0[1] ?? 0;
+      vertexData[offset + 19] = c0[2] ?? 0;
+      vertexData[offset + 20] = c0[3] ?? 0;
+      vertexData[offset + 21] = c1[0] ?? 0;
+      vertexData[offset + 22] = c1[1] ?? 0;
+      vertexData[offset + 23] = c1[2] ?? 0;
+      vertexData[offset + 24] = c1[3] ?? 0;
+      vertexData[offset + 25] = n0[0] ?? 0;
+      vertexData[offset + 26] = n0[1] ?? 0;
+      vertexData[offset + 27] = n0[2] ?? 0;
+      vertexData[offset + 28] = n1[0] ?? 0;
+      vertexData[offset + 29] = n1[1] ?? 0;
+      vertexData[offset + 30] = n1[2] ?? 0;
+      vertexData[offset + 31] = 0;
+      vertexCursor += 1;
       return index;
     };
 
     // Cairo order per mobject: background stroke, fill, foreground stroke.
     if (drawBgStroke) {
-      this.append_stroke_geometry(subpaths, addVertex, indices, bgStrokeInfo, bgHalfWidth);
+      indexCursor = this.append_stroke_geometry(subpaths, addVertex, indexData, indexCursor, bgStrokeInfo, bgHalfWidth);
     }
-    if (fillPolygon !== null && fillIndices.length > 0) {
-      const vertexBase = vertices.length / FLOATS_PER_VERTEX;
+    if (drawFill && fillPolygon !== null && fillIndices.length > 0) {
+      const vertexBase = vertexCursor;
       for (const p of fillPolygon) addVertex(p, p, p, 0, 0, fillInfo);
-      for (const tri of fillIndices) indices.push(vertexBase + tri);
+      for (const tri of fillIndices) indexData[indexCursor++] = vertexBase + tri;
     }
     if (drawStroke) {
-      this.append_stroke_geometry(subpaths, addVertex, indices, strokeInfo, halfWidth);
+      indexCursor = this.append_stroke_geometry(subpaths, addVertex, indexData, indexCursor, strokeInfo, halfWidth);
     }
 
     return {
       ...base,
-      vertexData: new Float32Array(vertices),
-      indexData: new Uint32Array(indices),
-      vertexCount: vertices.length / FLOATS_PER_VERTEX,
+      vertexData,
+      indexData,
+      vertexCount: vertexCursor,
       vertexOffset: 0,
     };
   }
@@ -851,12 +1251,14 @@ export class WebGLThreeDRenderer {
       next: number[],
       side: number,
       halfWidth: number,
-      info: DrawColorInfo | null,
+      info: BaseColorInfo | null,
     ) => number,
-    indices: number[],
-    info: DrawColorInfo | null,
+    indexData: Uint32Array,
+    indexCursor: number,
+    info: BaseColorInfo | null,
     halfWidth: number,
-  ): void {
+  ): number {
+    let cursor = indexCursor;
     for (const poly of subpaths) {
       const n = poly.length;
       if (n < 2) continue;
@@ -881,9 +1283,15 @@ export class WebGLThreeDRenderer {
         const b = addVertex(p0, prev0, next0, -1, halfWidth, info);
         const c = addVertex(p1, prev1, next1, 1, halfWidth, info);
         const d = addVertex(p1, prev1, next1, -1, halfWidth, info);
-        indices.push(a, b, c, b, d, c);
+        indexData[cursor++] = a;
+        indexData[cursor++] = b;
+        indexData[cursor++] = c;
+        indexData[cursor++] = b;
+        indexData[cursor++] = d;
+        indexData[cursor++] = c;
       }
     }
+    return cursor;
   }
 
   private flatten_subpath(
@@ -916,3 +1324,6 @@ export class WebGLThreeDRenderer {
     return polyline;
   }
 }
+
+/** Shared fallback rgba source for VMobjects without an explicit array. */
+const ZERO_RGBA_SOURCE = array([[0, 0, 0, 0]]);

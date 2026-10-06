@@ -243,6 +243,39 @@ function lerp1d(a: number[], b: number[], alpha: number): number[] {
  * while a single rgba row broadcasts against a full point-aligned array
  * (Python: `(N,4)` with `(1,4)`). */
 function interpolateArray(first: unknown, second: unknown, alpha: number): NDArray {
+  // Flat fast path: `Transform` lerps every face's rgba arrays each frame, and
+  // the row-materialising path below allocated a nested JS array per face.
+  const flatFirst = _cContiguousRows(first);
+  const flatSecond = _cContiguousRows(second);
+  if (
+    flatFirst !== null &&
+    flatSecond !== null &&
+    flatFirst.rowDim === flatSecond.rowDim &&
+    flatFirst.rowCount === flatSecond.rowCount
+  ) {
+    const length = flatFirst.rowCount * flatFirst.rowDim;
+    // Equal sources (the common `Rotate`/`Transform` case: the starting and
+    // target copies share colours) reuse the existing array.  Allocating a
+    // fresh, identical array here made the WebGL backend rebuild every face
+    // each frame just because the rgba reference changed.
+    let equal = first === second;
+    if (!equal) {
+      equal = true;
+      for (let index = 0; index < length; index += 1) {
+        if (Number(flatFirst.data[index] ?? 0) !== Number(flatSecond.data[index] ?? 0)) {
+          equal = false;
+          break;
+        }
+      }
+    }
+    if (equal) return first as NDArray;
+    const inv = 1 - alpha;
+    const out = new Float64Array(length);
+    for (let index = 0; index < length; index += 1) {
+      out[index] = Number(flatFirst.data[index] ?? 0) * inv + Number(flatSecond.data[index] ?? 0) * alpha;
+    }
+    return array(out).reshape(flatFirst.rowCount, flatFirst.rowDim) as NDArray;
+  }
   const firstRank = rankOf(first);
   const secondRank = rankOf(second);
   if (firstRank === 0 && secondRank === 0) {

@@ -40,6 +40,24 @@ export interface MobjectColorInfos {
   bgStroke: DrawColorInfo | null;
 }
 
+/** Unshaded colour stops plus the corner normals the shader needs to apply
+ *  `modified_rgbas` shading on the GPU. */
+export interface BaseColorInfo {
+  colors: number[][];
+  gradient: boolean;
+  start: number[];
+  end: number[];
+  normal0: number[];
+  normal1: number[];
+}
+
+/** Per-source base colour descriptions for the WebGL backend. */
+export interface MobjectBaseColors {
+  fill: BaseColorInfo | null;
+  stroke: BaseColorInfo | null;
+  bgStroke: BaseColorInfo | null;
+}
+
 /**
  * The colour/gradient description a VMobject's rgba array resolves to, with
  *  the exact semantics of `set_cairo_context_color`: one colour is flat, more
@@ -92,15 +110,16 @@ function readRgbaRow(data: ArrayLike<number>, index: number): number[] {
 }
 
 /**
- * The depth-sort reference point (`Mobject.get_center()`, i.e. the midpoint of
- * the bounding box) read straight from the backing store.  `get_center()`
- * allocates a boundary array and a result array per face; the 3D painter sort
- * calls this once per face per frame.
+ * Depth-sort key: `dot(center, (rx, ry, rz))` where `center` is the midpoint
+ * of the bounding box (`Mobject.get_center()`), read straight from the
+ * backing store.  `get_center()` allocated a boundary array and a result
+ * array per face; the 3D painter sort calls this once per face per frame.
  */
-function zReferencePointFlat(mob: Mobject): number[] {
+function zReferenceDotFlat(mob: Mobject, rx: number, ry: number, rz: number): number {
   const pts = _cContiguousRows((mob as { points?: unknown }).points);
   if (pts === null || pts.rowDim < 3 || pts.rowCount === 0) {
-    return mob.get_z_index_reference_point();
+    const center = mob.get_z_index_reference_point();
+    return (center[0] ?? 0) * rx + (center[1] ?? 0) * ry + (center[2] ?? 0) * rz;
   }
   const { data, rowDim, rowCount } = pts;
   let min0 = Infinity; let max0 = -Infinity;
@@ -116,11 +135,10 @@ function zReferencePointFlat(mob: Mobject): number[] {
     const v2 = Number(data[base + 2]);
     if (v2 !== v2) nan2 = true; else { if (v2 < min2) min2 = v2; if (v2 > max2) max2 = v2; }
   }
-  return [
-    nan0 ? NaN : (min0 + max0) / 2,
-    nan1 ? NaN : (min1 + max1) / 2,
-    nan2 ? NaN : (min2 + max2) / 2,
-  ];
+  const c0 = nan0 ? NaN : (min0 + max0) / 2;
+  const c1 = nan1 ? NaN : (min1 + max1) / 2;
+  const c2 = nan2 ? NaN : (min2 + max2) / 2;
+  return c0 * rx + c1 * ry + c2 * rz;
 }
 
 /**
@@ -536,6 +554,55 @@ export class ThreeDCamera extends Camera {
     return entry;
   }
 
+  /**
+   * Base (unshaded) colours and corner normals for the WebGL backend.  The
+   * shader applies `modified_rgbas` shading per corner, so moving the light
+   * source or toggling `should_apply_shading` never invalidates cached
+   * geometry.
+   */
+  get_mobject_base_colors(vmobject: VMobject): MobjectBaseColors | null {
+    const vm = vmobject as VMobject;
+    if (vm.shade_in_3d !== true) return null;
+    const pts = _cContiguousRows(vm.points);
+    if (pts === null || pts.rowDim < 3 || pts.rowCount < 4) return null;
+    const n = pts.rowCount;
+    const rowDim = pts.rowDim;
+    const startCorner = [Number(pts.data[0]), Number(pts.data[1]), Number(pts.data[2])];
+    const endIndex = Math.floor((n - 1) / 6) * 3;
+    const endCorner = [
+      Number(pts.data[endIndex * rowDim]),
+      Number(pts.data[endIndex * rowDim + 1]),
+      Number(pts.data[endIndex * rowDim + 2]),
+    ];
+    const normal0 = vmobUnitNormalFlat(pts.data, rowDim, n, 0);
+    const normal1 = vmobUnitNormalFlat(pts.data, rowDim, n, endIndex);
+    const resolve = (source: NDArray): BaseColorInfo | null => {
+      const src = _cContiguousRows(source);
+      if (src === null || src.rowDim < 4 || src.rowCount === 0) return null;
+      const row0 = readRgbaRow(src.data, 0);
+      if (src.rowCount === 1) {
+        return { colors: [row0], gradient: false, start: startCorner, end: endCorner, normal0, normal1 };
+      }
+      if (src.rowCount > 2) return null;
+      const row1 = readRgbaRow(src.data, 1);
+      const equal =
+        row0[0] === row1[0] && row0[1] === row1[1] && row0[2] === row1[2] && row0[3] === row1[3];
+      return {
+        colors: equal ? [row0] : [row0, row1],
+        gradient: !equal,
+        start: startCorner,
+        end: endCorner,
+        normal0,
+        normal1,
+      };
+    };
+    return {
+      fill: resolve(vm.fill_rgbas ?? TRANSPARENT_RGBA),
+      stroke: resolve(vm.stroke_rgbas ?? TRANSPARENT_RGBA),
+      bgStroke: resolve(vm.background_stroke_rgbas ?? TRANSPARENT_RGBA),
+    };
+  }
+
   get_draw_color_info(vmobject: VMobject, source: NDArray): DrawColorInfo | null {
     const vm = vmobject as VMobject;
     if (this.should_apply_shading && vm.shade_in_3d && vm.get_num_points() > 0) {
@@ -617,32 +684,36 @@ export class ThreeDCamera extends Camera {
       include_submobjects,
       excluded_mobjects,
     );
-    const rotRows = this._rotation_rows;
-    const row = rotRows[2] ?? [0, 0, 1];
+    const row = this._rotation_rows[2] ?? [0, 0, 1];
     const rx = row[0] ?? 0;
     const ry = row[1] ?? 0;
     const rz = row[2] ?? 0;
-    const zKey = (mob: Mobject): number => {
+    const count = displayed.length;
+    // Depth keys in a typed array and an index sort: the previous
+    // decorate-sort-undecorate allocated one `{mob, key, index}` object per
+    // face (thousands per frame on a surface).
+    const keys = new Float64Array(count);
+    for (let index = 0; index < count; index += 1) {
+      const mob = displayed[index]!;
       // Python `hasattr(mob, "shade_in_3d")`: the Mobject proxy raises
       // AttributeError for missing attributes, so probe with `in`.
       const shade = "shade_in_3d" in mob
         ? Boolean((mob as { shade_in_3d?: boolean }).shade_in_3d)
         : false;
-      if (!shade) return Infinity;
-      // Assign a number to a three dimensional mobject based on how close it
-      // is to the camera: np.dot(point, rot_matrix.T)[2] == dot(point, row 2).
-      // The reference point (mean of the points) is read straight from the
-      // backing store; `get_z_index_reference_point()` materialised every row.
-      const center = zReferencePointFlat(mob);
-      return (center[0] ?? 0) * rx + (center[1] ?? 0) * ry + (center[2] ?? 0) * rz;
-    };
-    // Compute each depth key exactly once per mobject (Python's
-    // `sorted(key=z_key)` is decorate-sort-undecorate).  Calling `zKey` from
-    // inside the comparator instead would recompute the centre O(n log n)
-    // times, which dominated 3D frame generation.
-    const keyed = displayed.map((mob, index) => ({ mob, key: zKey(mob), index }));
-    keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index));
-    return keyed.map((entry) => entry.mob);
+      keys[index] = shade ? zReferenceDotFlat(mob, rx, ry, rz) : Infinity;
+    }
+    const order = new Array<number>(count);
+    for (let index = 0; index < count; index += 1) order[index] = index;
+    order.sort((a, b) => {
+      const ka = keys[a]!;
+      const kb = keys[b]!;
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
+      return a - b;
+    });
+    const result = new Array<Mobject>(count);
+    for (let index = 0; index < count; index += 1) result[index] = displayed[order[index]!]!;
+    return result;
   }
 
   get_phi(): number {
