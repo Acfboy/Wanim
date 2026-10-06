@@ -1561,6 +1561,155 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     };
     defineComparisonDunder("__eq__", "equal");
     defineComparisonDunder("__ne__", "not_equal");
+    // Single-dim fancy getitem for the `ρσ_getitem` path.
+    //
+    // rapydscript compiles a single `[...]` subscript directly to
+    // `ρσ_getitem(obj, key)`, which only understands numeric indices
+    // (`obj[key]`) plus an optional `__getitem__` dunder.  A boolean-mask
+    // row filter (`pts[mask]`, error 333: `rng_points[norms < 4]`) or an
+    // integer-array fancy index (`a[[0, 2]]`) therefore fell through to
+    // `obj[maskKey]` -- the NDArray coerces to `"[object Object]"` and the
+    // result is `undefined`, so the subsequent `for p in rows` fails with
+    // `TypeError: undefined is not iterable`.  Multi-dim subscripts never
+    // reach this path (`desugarNumpySubscripts` routes them to
+    // `__wan_getitem`, which keeps numpy semantics).
+    //
+    // Defining `__getitem__` here makes the existing baselib branch
+    // (`g.call(obj, key)`) serve numpy row selection without touching the
+    // compiler: numeric/boolean scalars keep the exact Proxy behavior
+    // (including negative indices), `None` adds a leading axis
+    // (`expand_dims`, mirroring `wanGetItem`), slice bags
+    // (`{start, stop, step}`, which `ρσ_eslice` forwards for e.g.
+    // `arr[::-1]`) and `"a:b"` strings delegate to numpy slicing, boolean
+    // NDArray/plain-array keys filter rows along axis 0 (`compress`), and
+    // integer NDArray/plain-array keys pick rows (`iindex`/`take`).
+    function ndSingleGetItem(recv: Any, key: Any): Any {
+      const recvShape = (recv as Any)?.shape as readonly number[] | undefined;
+      const ndim = Array.isArray(recvShape) ? recvShape.length : 0;
+      const rowLength = Array.isArray(recvShape) && recvShape.length > 0
+        ? (recvShape[0] as number)
+        : 0;
+      // `None` (numpy `newaxis`): `a[None]` gains a leading size-1 axis.
+      if (key === null || key === undefined) {
+        try {
+          return (np as Any).expand_dims(recv, 0);
+        } catch {
+          return recv;
+        }
+      }
+      // Slice bags (`ρσ_eslice` forwards `{start, stop, step}` when an
+      // `__getitem__` dunder exists) and numpy `"start:stop[:step]"` strings.
+      if (typeof key === "object" && !isNdArray(key) && !Array.isArray(key)) {
+        try {
+          if ("start" in (key as Any) || "stop" in (key as Any) || "step" in (key as Any)) {
+            const bound = (v: Any): string =>
+              v === null || v === undefined ? "" : String(Math.trunc(Number(v)));
+            const step = (key as Any).step;
+            const spec = `${bound((key as Any).start)}:${bound((key as Any).stop)}${
+              step === null || step === undefined ? "" : `:${bound(step)}`
+            }`;
+            return (recv as Any).slice(spec);
+          }
+        } catch {
+          /* fall through to the Proxy fallback below */
+        }
+      }
+      if (typeof key === "string") {
+        if (key.includes(":")) return (recv as Any).slice(key);
+        return (recv as Any)[key as Any];
+      }
+      if (typeof key === "number" || typeof key === "boolean") {
+        return (recv as Any)[key as Any];
+      }
+      // Row filter along axis 0 for boolean keys (numpy-ts `compress`
+      // accepts both NDArray and plain-array masks).
+      const selectMaskRows = (mask: Any): Any => {
+        const compress = (recv as Any).compress;
+        if (typeof compress === "function") {
+          try {
+            return ndim <= 1 ? compress.call(recv, mask) : compress.call(recv, mask, 0);
+          } catch {
+            /* fall through to the manual fallback */
+          }
+        }
+        let maskList: Any[];
+        try {
+          maskList = isNdArray(mask) ? (mask as Any).tolist() : (mask as Any[]).slice();
+        } catch {
+          maskList = [...(mask as Iterable<Any>)];
+        }
+        const picked: Any[] = [];
+        for (let i = 0; i < maskList.length; i += 1) {
+          if (maskList[i]) picked.push((recv as Any)[i]);
+        }
+        try {
+          if (ndim <= 1) return (np as Any).asarray(picked);
+          return (np as Any).stack(picked, 0);
+        } catch {
+          return (np as Any).asarray(picked.map((row) => deepUnwrapNd(row)));
+        }
+      };
+      // Row picking along axis 0 for integer keys.
+      const selectFancyRows = (indices: Any): Any => {
+        const picker = (recv as Any).iindex ?? (recv as Any).take;
+        if (typeof picker === "function") {
+          try {
+            return ndim <= 1 && picker === (recv as Any).take && picker.length < 2
+              ? picker.call(recv, indices)
+              : picker.call(recv, indices, 0);
+          } catch {
+            /* fall through to the manual fallback */
+          }
+        }
+        let indexList: Any[];
+        try {
+          indexList = isNdArray(indices) ? (indices as Any).tolist() : (indices as Any[]).slice();
+        } catch {
+          indexList = [...(indices as Iterable<Any>)];
+        }
+        const picked = indexList.map((k) => {
+          const n = typeof k === "boolean" ? (k ? 1 : 0) : Math.trunc(Number(k));
+          return (recv as Any)[n < 0 ? n + rowLength : n];
+        });
+        try {
+          if (ndim <= 1) return (np as Any).asarray(picked);
+          return (np as Any).stack(picked, 0);
+        } catch {
+          return (np as Any).asarray(picked.map((row) => deepUnwrapNd(row)));
+        }
+      };
+      if (isNdArray(key)) {
+        const kshape = (key as Any).shape as readonly number[];
+        if (kshape.length === 0) {
+          const scalar = scalarize(key);
+          if (typeof scalar === "boolean") return (recv as Any)[scalar ? 1 : 0];
+          return (recv as Any)[scalar as Any];
+        }
+        const dtype = (key as Any).dtype;
+        if (dtype === "bool" || dtype === "boolean") return selectMaskRows(key);
+        return selectFancyRows(key);
+      }
+      if (Array.isArray(key)) {
+        if (key.length > 0 && key.every((v) => typeof v === "boolean")) {
+          return selectMaskRows(key);
+        }
+        return selectFancyRows(key);
+      }
+      return (recv as Any)[key as Any];
+    }
+    try {
+      if (typeof (proto as Any).__getitem__ !== "function") {
+        Object.defineProperty(proto, "__getitem__", {
+          configurable: true,
+          writable: true,
+          value: function (this: Any, key: Any): Any {
+            return ndSingleGetItem(this, key);
+          },
+        });
+      }
+    } catch {
+      /* keep the baselib behavior: fancy single-dim getitems stay undefined */
+    }
   }
 
   /**
