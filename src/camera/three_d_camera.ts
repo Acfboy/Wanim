@@ -4,6 +4,7 @@ import { BLACK, get_shaded_rgb } from "../utils/color/core.js";
 import { DEGREES, ORIGIN, RIGHT } from "../constants.js";
 import { _cContiguousRows, isNDArray, pointRows } from "../utils/arrays.js";
 import { extract_mobject_family_members } from "../utils/family.js";
+import { mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { rotation_about_z, rotation_matrix } from "../utils/space_ops.js";
 import { Mobject } from "../mobject/mobject.js";
 import { Point } from "../mobject/types/point_cloud_mobject.js";
@@ -265,6 +266,14 @@ export class ThreeDCamera extends Camera {
   rotation_matrix: NDArray = array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]) as NDArray;
   /** Cache key (phi/theta/gamma) and flat rows backing {@link rotation_matrix}. */
   private _rotation_key = "";
+  /** Unsorted display-list cache keyed by (mobjects, structure epoch). */
+  private _displayedCache: {
+    epoch: number;
+    source: Iterable<Mobject>;
+    includeSubmobjects: boolean;
+    excluded: Iterable<Mobject> | null | undefined;
+    result: Mobject[];
+  } | null = null;
   /** Flat rows of {@link rotation_matrix}, refreshed with it. */
   private _rotation_rows: [number[], number[], number[]] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   /** Shading/gradient colour info keyed by (vmobject, rgba source). */
@@ -679,11 +688,35 @@ export class ThreeDCamera extends Camera {
     include_submobjects = true,
     excluded_mobjects?: Iterable<Mobject> | null,
   ): Mobject[] {
-    const displayed = super.get_mobjects_to_display(
-      mobjects,
-      include_submobjects,
-      excluded_mobjects,
-    );
+    // The family extraction (walking every submobject of every mobject) only
+    // changes when the scene structure changes; the geometry epoch is bumped
+    // by every structural mutation, so the unsorted list can be cached while
+    // the depth sort still runs per frame (camera movement reorders it).
+    const epoch = mobject_geometry_epoch();
+    const cache = this._displayedCache;
+    let displayed: Mobject[];
+    if (
+      cache !== null &&
+      cache.epoch === epoch &&
+      cache.source === mobjects &&
+      cache.includeSubmobjects === include_submobjects &&
+      cache.excluded === excluded_mobjects
+    ) {
+      displayed = cache.result;
+    } else {
+      displayed = super.get_mobjects_to_display(
+        mobjects,
+        include_submobjects,
+        excluded_mobjects,
+      );
+      this._displayedCache = {
+        epoch,
+        source: mobjects,
+        includeSubmobjects: include_submobjects,
+        excluded: excluded_mobjects,
+        result: displayed,
+      };
+    }
     const row = this._rotation_rows[2] ?? [0, 0, 1];
     const rx = row[0] ?? 0;
     const ry = row[1] ?? 0;

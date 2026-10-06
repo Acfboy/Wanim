@@ -902,12 +902,14 @@ export class Mobject {
     }
     this.submobjects = this.submobjects.filter((mobject) => !unique.includes(mobject));
     this.submobjects.push(...unique);
+    bump_mobject_geometry_epoch();
     return this;
   }
 
   insert(index: number, mobject: Mobject): this {
     this._assert_valid_submobjects([mobject]);
     this.submobjects.splice(index, 0, mobject);
+    bump_mobject_geometry_epoch();
     return this;
   }
 
@@ -922,6 +924,7 @@ export class Mobject {
     this.remove(...values);
     const unique = remove_list_redundancies(values);
     this.submobjects = [...unique, ...this.submobjects];
+    bump_mobject_geometry_epoch();
     return this;
   }
 
@@ -934,6 +937,7 @@ export class Mobject {
       const index = this.submobjects.indexOf(mobject);
       if (index >= 0) this.submobjects.splice(index, 1);
     }
+    bump_mobject_geometry_epoch();
     return this;
   }
 
@@ -963,7 +967,18 @@ export class Mobject {
   }
 
   family_members_with_points(): Mobject[] {
-    return this.get_family().filter((mobject) => mobject.get_num_points() > 0);
+    // Read the backing store directly: the filter ran for every node of every
+    // family (three families per `Transform` frame, ~10k nodes for a sphere),
+    // and the `get_num_points()` call overhead dominated the walk.
+    const family = this.get_family();
+    const result: Mobject[] = [];
+    for (const mobject of family) {
+      const points = (mobject as { points?: NDArray | null }).points;
+      if (points !== undefined && points !== null && (points.shape?.[0] ?? 0) > 0) {
+        result.push(mobject);
+      }
+    }
+    return result;
   }
 
   familyMembersWithPoints(): Mobject[] {

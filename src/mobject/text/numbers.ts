@@ -8,6 +8,7 @@
 // get/set/increment_value, the ValueTracker wiring of Variable) is ported
 // faithfully; a custom `mob_class` factory can still be passed.
 import type { NDArray } from "numpy-ts";
+import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
 import {
   DEFAULT_FONT_SIZE,
   LEFT,
@@ -654,6 +655,7 @@ export class DecimalNumber extends VMobject {
     }
     this._parts = parts;
     this.submobjects = parts.map((part) => part.mob);
+    bump_mobject_geometry_epoch();
     // Record where each glyph actually landed: `set_value` repositions the
     // group afterwards and syncs again, but a directly-built number (the
     // constructor) is complete here.
