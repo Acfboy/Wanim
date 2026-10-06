@@ -88,6 +88,32 @@ export class ParametricFunction extends VMobject {
     return this.function(t);
   }
 
+  /** Append each maximal run of finite samples as its own subpath.
+   *  Python keeps inf/nan samples verbatim (no validation), so a singular
+   *  sample such as log(0) = -inf poisons the bounding box and wanim's
+   *  fail-fast `shift`/`serialize` then throws during `arrange` (error 385).
+   *  Splitting on non-finite samples keeps layout/serialization finite while
+   *  preserving the visible curve; direct NaN/Infinity inputs still fail fast
+   *  in `set_points`/`set_anchors_and_handles`. */
+  private appendFiniteRunsAsSubpaths(point_list: number[][]): void {
+    let run: number[][] = [];
+    const flush = (): void => {
+      if (run.length === 0) return;
+      this.start_new_path(run[0]);
+      if (run.length > 1) this.add_points_as_corners(run.slice(1));
+      run = [];
+    };
+    for (const point of point_list) {
+      const finite = Array.isArray(point) && point.every((value) => Number.isFinite(Number(value)));
+      if (!finite) {
+        flush();
+        continue;
+      }
+      run.push(point);
+    }
+    flush();
+  }
+
   override generate_points(): this {
     // Guard: the base Mobject constructor invokes generate_points() before
     // this class assigns t_min/t_max/t_step (TS requires super() first,
@@ -168,8 +194,7 @@ export class ParametricFunction extends VMobject {
         // FunctionGraph) is used instead.
         point_list = t_values.map(getPoint);
       }
-      this.start_new_path(point_list[0]);
-      this.add_points_as_corners(point_list.slice(1));
+      this.appendFiniteRunsAsSubpaths(point_list);
     }
     if (this.use_smoothing) {
       // NOTE: VMobject.make_smooth is translated in a later batch; smooth here once available.
