@@ -159,6 +159,7 @@ export async function render_scene_to_canvas(
       set_render_scheduler(previousScheduler);
     }
     interactiveHost?.dispose();
+    renderer.dispose();
   }
   return {
     stats: renderer.stats,
