@@ -273,6 +273,17 @@ export async function runPythonOnCanvas(
   const sandbox = createSandbox(runtime);
   try {
     sandbox.win.eval(js);
+    // The compiled module defines its own baselib `ρσ_splice` (plain-array
+    // `Array.prototype.splice`), which throws on NDArray slice-stores once
+    // the getter-only `length` is installed (error 325: `row[:n] = -np.inf`).
+    // Overwrite it with the numpy-aware runtime version (plain arrays keep
+    // baselib behavior inside `pythonSplice`).
+    try {
+      const splice = (runtime.globals as Any)?.["ρσ_splice"];
+      if (typeof splice === "function") sandbox.win["ρσ_splice"] = splice;
+    } catch {
+      /* keep the baselib version: single-dim NDArray stores keep failing loudly */
+    }
     const scenes = discoverScenes(sandbox.win, sandbox.injected);
     const names = Object.keys(scenes);
     if (names.length === 0) throw new Error("No Scene subclass found in the code.");
@@ -345,6 +356,13 @@ export async function benchInteractiveScene(
   const sandbox = createSandbox(runtime);
   try {
     sandbox.win.eval(js);
+    // Same `ρσ_splice` overwrite as in `runPythonOnCanvas` (error 325).
+    try {
+      const splice = (runtime.globals as Any)?.["ρσ_splice"];
+      if (typeof splice === "function") sandbox.win["ρσ_splice"] = splice;
+    } catch {
+      /* keep the baselib version */
+    }
     const scenes = discoverScenes(sandbox.win, sandbox.injected);
     const candidates = Object.entries(scenes).filter(([, ctor]) =>
       isInteractiveSceneClass(ctor),

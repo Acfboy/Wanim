@@ -3004,6 +3004,53 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
+   * Python single-dim slice-store `arr[start:end] = val` for the `ρσ_splice`
+   * path (error 325).
+   *
+   * rapydscript compiles `row[:n] = v` (a single `start:stop` slice store,
+   * which `desugarNumpySubscripts` deliberately leaves untouched) into
+   * `ρσ_splice(row, v, start, end)`, whose baselib assumes plain JS arrays:
+   * `Array.prototype.splice.apply(arr, ...)` tries to set `length`, and once
+   * `patchNDArrayForPython` installs the getter-only `length` (`shape[0]`)
+   * the Proxy `set` trap returns falsish, throwing
+   * `TypeError: 'set' on proxy: trap returned falsish for property 'length'`
+   * (e.g. `row[:n] = -np.inf` over `rng.normal(0, 1, (N, N))` rows).
+   * NDArray targets therefore delegate to `wanSetItemNd` (numpy broadcast
+   * semantics: scalar fills the slice, sequences must match its length);
+   * every other target keeps exact baselib behavior.
+   */
+  function pythonSplice(arr: Any, val: Any, start?: Any, end?: Any): void {
+    if (isNdArray(arr)) {
+      const shape = (arr as Any).shape as readonly number[];
+      if (!Array.isArray(shape) || shape.length === 0) {
+        throw new TypeError("slice assignment on a 0-d array is not supported");
+      }
+      const len = shape[0] as number;
+      // Baselib parity: `start = start || 0`, `end ?? length`, negatives wrap.
+      const rawStart: Any = start || 0;
+      const rawEnd: Any = end === undefined ? len : end;
+      let si = Math.trunc(Number(rawStart));
+      let ei = Math.trunc(Number(rawEnd));
+      if (!Number.isFinite(si)) si = 0;
+      if (!Number.isFinite(ei)) ei = len;
+      if (si < 0) si += len;
+      if (ei < 0) ei += len;
+      si = Math.max(0, Math.min(len, si));
+      ei = Math.max(0, Math.min(len, ei));
+      const spec = `${si}:${ei}`;
+      const rest = new Array<string>(shape.length - 1).fill(":");
+      wanSetItemNd(arr, [spec, ...rest], val);
+      return;
+    }
+    let s: Any = start || 0;
+    if (s < 0) s += (arr as Any).length;
+    let e: Any = end === undefined ? (arr as Any).length : end;
+    if (e < 0) e += (arr as Any).length;
+    (Array.prototype.splice as Any).apply(arr, [s, e - s].concat(val));
+  }
+  (pythonSplice as Any).__argnames__ = ["arr", "val", "start", "end"];
+
+  /**
    * Python `dict.get(key[, default])` target of the `desugarDictGet`
    * preprocess step (see `preprocess.ts`).
    *
@@ -5236,6 +5283,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // name; see `preprocess.ts`). Plain-object dict literals have no `.get`
     // and `Object.prototype` must never gain one.
     globals.__wan_dict_get = wanDictGet;
+    // Single-dim slice-store `arr[start:end] = val` compiles to `ρσ_splice`
+    // (see `pythonSplice`); the compiled module also defines its own
+    // baselib `ρσ_splice`, so `browser.ts` overwrites the iframe's copy with
+    // this one after `eval` (error 325: NDArray rows threw on `length`).
+    globals.ρσ_splice = pythonSplice;
     // CPython's `__import__` for dynamic imports such as
     // `__import__("numpy").cos(x)`. rapydscript's baselib provides no such
     // builtin, so bare `__import__` calls fail with `ReferenceError`.
@@ -5281,6 +5333,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     wanFlatten1,
     wanGetItem,
     wanSetItem,
+    pythonSplice,
     wanDictGet,
     wanSlice: wanSliceDim,
     wanMatmul,
