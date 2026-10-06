@@ -3660,12 +3660,20 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    * yields a bound method carrying `__self__`/`__func__`, which `ApplyMethod`
    * and the updater helpers rely on.  The patched compiler emits `ρσ_getdot`
    * for non-callee reads (when `operator_overloading` is on); this rebuilds
-   * the CPython shape for data-property methods on a Mobject receiver and
-   * returns everything else unchanged:
+   * the CPython shape for prototype-inherited methods on any instance
+   * (Mobjects, Scenes, user-defined rapydscript classes) and returns
+   * everything else unchanged:
    *   - non-function values;
-   *   - functions whose receiver is not a Mobject (`np.linalg.norm`);
+   *   - own data properties (module namespaces such as `np.linalg.norm`,
+   *     or instance-held closures): in Python these are plain attributes,
+   *     not bound methods;
    *   - accessor properties, whose getter result (`mobject.animate`, a
    *     callable Proxy) must not be re-bound into a plain wrapper.
+   *
+   * (Error 370: passing `self.biased_angle` as an `angle_func` callback
+   * returned the unbound prototype function because the receiver is a Scene,
+   * not a Mobject, so the callback's `this` became the global object and
+   * `self._rand_uniform` was `undefined`.)
    */
   function isMobjectLike(value: unknown): boolean {
     const Mobject = wanim.Mobject as (new (...args: Any[]) => Any) | undefined;
@@ -3700,9 +3708,21 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       }
     }
     if (typeof value !== "function") return value;
-    if (!isMobjectLike(obj)) return value;
+    if (obj === null || obj === undefined) return value;
+    if (typeof obj !== "object" && typeof obj !== "function") return value;
     if (isAccessorProperty(obj, name)) return value;
     if ((value as Any).__self__ === obj) return value;
+    // Own data properties are plain attributes, not bound methods: module
+    // namespaces (`np.linalg.norm` lives directly on the `linalg` object)
+    // and instance-held closures (`self.cb = lambda: ...`) must keep their
+    // existing `this`.  Only prototype-inherited methods bind, matching
+    // CPython (where `type(obj).__dict__[name]` being a function yields a
+    // bound method, while an instance `__dict__` entry does not).
+    try {
+      if (Object.prototype.hasOwnProperty.call(obj, name)) return value;
+    } catch {
+      /* hostile Proxy: fall through to bind (the property read above succeeded) */
+    }
     const bound = function (this: Any, ...args: Any[]): Any {
       return (value as Any).apply(obj, args);
     } as Any;
