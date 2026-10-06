@@ -2100,6 +2100,29 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           },
         });
       }
+      // Value equality for `==`/`!=` (error 386: `lamb != 0` with a complex
+      // `lamb` compared object identity, kept the zero lattice point, and
+      // later `1 / lamb ** 2` threw `ZeroDivisionError`).  `ρσ_equals`
+      // prefers `__eq__`, so these give numpy-ts `Complex` the same Python
+      // semantics as `makeComplex` values (see `complexEquals`).
+      if (typeof (proto as Any).__eq__ !== "function") {
+        Object.defineProperty(proto, "__eq__", {
+          configurable: true,
+          writable: true,
+          value: function (this: Any, other: Any): boolean {
+            return complexEquals(this, other);
+          },
+        });
+      }
+      if (typeof (proto as Any).__ne__ !== "function") {
+        Object.defineProperty(proto, "__ne__", {
+          configurable: true,
+          writable: true,
+          value: function (this: Any, other: Any): boolean {
+            return !complexEquals(this, other);
+          },
+        });
+      }
     } catch {
       /* keep bare {re, im} semantics when the Complex class is unavailable */
     }
@@ -2769,8 +2792,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   //     carry no methods) interoperate with real numbers and
   //     method-carrying complex values alike.
   //
-  // Known limitations (documented in ): `==`/`!=` on
-  // complex values compare object identity, not value equality.
+  // `==`/`!=` on method-carrying complex values (`makeComplex` results and
+  // patched numpy-ts `Complex` instances) compare by value via
+  // `__eq__`/`__ne__` (see `complexEquals`); plain `{ re, im }` points without
+  // methods still fall back to object identity in `ρσ_equals`.
 
   /**
    * True when `value` is a complex number: either a value created by
@@ -2863,6 +2888,28 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return makeComplex(-re, -im);
   }
 
+  /**
+   * Value equality for complex numbers (the `ρσ_equals`/`ρσ_not_equals` path).
+   *
+   * rapydscript's `ρσ_equals` prefers `a.__eq__` when present, so defining
+   * `__eq__`/`__ne__` on complex values gives `==`/`!=` Python semantics
+   * without touching the `==` codegen (same pattern as the NDArray
+   * `__eq__`/`__ne__` above).  Both sides go through `complexParts`, so
+   * `complex` vs `complex`, `complex` vs real number/`bool`, and 0-d NDArray
+   * scalars all compare by value; anything non-numeric (strings, `None`,
+   * lists, ...) is simply unequal like CPython.  `NaN` parts compare with
+   * `===`, so `complex(nan) == complex(nan)` is `False` like CPython.
+   */
+  function complexEquals(a: Any, b: Any): boolean {
+    try {
+      const [ar, ai] = complexParts(a, "==");
+      const [br, bi] = complexParts(b, "==");
+      return ar === br && ai === bi;
+    } catch {
+      return false;
+    }
+  }
+
   /** Create an immutable complex value (see above for the representation). */
   function makeComplex(re: number, im: number): Any {
     const obj: Record<string, Any> = {
@@ -2883,6 +2930,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     obj.__pow__ = (other: Any) => complexPow(obj, other);
     obj.__rpow__ = (other: Any) => complexPow(other, obj);
     obj.__neg__ = () => makeComplex(-re, -im);
+    obj.__eq__ = (other: Any) => complexEquals(obj, other);
+    obj.__ne__ = (other: Any) => !complexEquals(obj, other);
     obj.conjugate = () => makeComplex(re, -im);
     return obj;
   }
