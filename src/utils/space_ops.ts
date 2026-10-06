@@ -476,23 +476,27 @@ export function line_intersection(
 }
 
 export function find_intersection(
-  p0s: number[][] | NDArray,
-  v0s: number[][] | NDArray,
-  p1s: number[][] | NDArray,
-  v1s: number[][] | NDArray,
+  p0s: number[] | number[][] | NDArray,
+  v0s: number[] | number[][] | NDArray,
+  p1s: number[] | number[][] | NDArray,
+  v1s: number[] | number[][] | NDArray,
   threshold = 1e-5,
-): number[][] {
-  const p0rows = toRows(p0s).rows;
-  const v0rows = toRows(v0s).rows;
-  const p1rows = toRows(p1s).rows;
-  const v1rows = toRows(v1s).rows;
+): number[] | number[][] {
+  const p0info = toRows(p0s as VectorInput);
+  const v0info = toRows(v0s as VectorInput);
+  const p1info = toRows(p1s as VectorInput);
+  const v1info = toRows(v1s as VectorInput);
+  const p0rows = p0info.rows;
+  const v0rows = v0info.rows;
+  const p1rows = p1info.rows;
+  const v1rows = v1info.rows;
   const counts = [p0rows.length, v0rows.length, p1rows.length, v1rows.length];
   if (!counts.every((count) => count === counts[0])) {
     throw valueError(
       `zip() argument 2 is longer than argument 1 (strict zip lengths: ${counts.join(", ")})`,
     );
   }
-  return p0rows.map((p0, index) => {
+  const results = p0rows.map((p0, index) => {
     const v0 = v0rows[index] ?? [];
     const p1 = p1rows[index] ?? [];
     const v1 = v1rows[index] ?? [];
@@ -506,6 +510,14 @@ export function find_intersection(
       .reduce((sum, value, i) => sum + value * (normal[i] ?? 0), 0) / denom;
     return p0.map((value, i) => value + along * (v0[i] ?? 0));
   });
+  // Single-line form (all inputs are flat 1-D vectors, e.g. manimgl-style
+  // `find_intersection(p0, v0, p1, v1)`): return the single point flat so it
+  // can be used directly as a corner. Explicitly batched `[[...]]` inputs
+  // keep the batched `[[...]]` return shape.
+  if (p0info.single && v0info.single && p1info.single && v1info.single) {
+    return results[0] ?? [0, 0, 0];
+  }
+  return results;
 }
 
 export function shoelace_direction(x_y: number[][] | NDArray): string {
