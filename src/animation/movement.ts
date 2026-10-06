@@ -40,7 +40,10 @@ export class Homotopy extends Animation {
   }
 
   interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): this {
-    submobject.points = startingSubmobject.points;
+    // Copy, not share: `apply_function` below may mutate the array in place,
+    // which would otherwise corrupt the animation's starting snapshot.
+    const sp = startingSubmobject.points;
+    submobject.points = isNDArray(sp) ? sp.copy() : sp;
     submobject.apply_function(this.function_at_time_t(alpha), this.apply_function_kwargs.about_point as number[] | undefined, this.apply_function_kwargs.about_edge as number[] | undefined);
     return this;
   }
