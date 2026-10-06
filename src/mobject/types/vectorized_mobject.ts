@@ -912,6 +912,48 @@ export class VMobject extends Mobject {
     // Python signature: set_stroke(color, width, opacity, background=False,
     // family=True). The 4th positional argument is unambiguously `background`;
     // pass `{ family }` (or the 5th positional) to control propagation.
+    // Defensive: when the py2js kwargs bridge cannot map `background=` (e.g.
+    // stale/missing `__argnames__`), the trailing kwargs bag `{background: ...}`
+    // lands verbatim in the `color` slot and `new ManimColor(bag)` throws
+    // `... not Object`. Unwrap such a bag here so
+    // `tower.set_stroke(background=True)` is a (background) no-op like Python.
+    if (
+      color !== null &&
+      color !== undefined &&
+      typeof color === "object" &&
+      !Array.isArray(color) &&
+      !(color instanceof ManimColor) &&
+      !isNDArray(color)
+    ) {
+      const bag = color as unknown as Record<string, unknown>;
+      const looksLikeKwargsBag =
+        typeof bag === "object" &&
+        ("background" in bag || "family" in bag || "color" in bag || "width" in bag || "opacity" in bag);
+      if (looksLikeKwargsBag) {
+        const bagColor = (bag as { color?: unknown }).color;
+        const bagWidth = (bag as { width?: unknown }).width;
+        const bagOpacity = (bag as { opacity?: unknown }).opacity;
+        const bagBackground = (bag as { background?: unknown }).background;
+        const bagFamily = (bag as { family?: unknown }).family;
+        if (bagColor !== undefined) {
+          color = bagColor as ParsableManimColor | Iterable<ManimColor> | null;
+        } else {
+          color = undefined;
+        }
+        if (bagWidth !== undefined && width === undefined) width = bagWidth as number;
+        if (bagOpacity !== undefined && opacity === undefined) opacity = bagOpacity as number;
+        if (bagBackground !== undefined) {
+          backgroundOrOptions = (bagFamily !== undefined
+            ? { background: Boolean(bagBackground), family: Boolean(bagFamily) }
+            : Boolean(bagBackground)) as boolean | { background?: boolean; family?: boolean };
+          if (bagFamily !== undefined) familyMaybe = Boolean(bagFamily);
+        } else if (bagFamily !== undefined && typeof backgroundOrOptions !== "object") {
+          familyMaybe = Boolean(bagFamily);
+        } else if (bagFamily !== undefined && typeof backgroundOrOptions === "object" && backgroundOrOptions !== null) {
+          (backgroundOrOptions as { family?: boolean }).family = Boolean(bagFamily);
+        }
+      }
+    }
     let background = false;
     let family = familyMaybe;
     if (typeof backgroundOrOptions === "object" && backgroundOrOptions !== null) {
@@ -2984,4 +3026,20 @@ export class DashedVMobject extends VMobject {
   "scale_stroke",
   "about_point",
   "about_edge",
+];
+
+// Explicit Python parameter names for `VMobject.set_stroke`, surviving
+// bundling. Python: `set_stroke(color=None, width=None, opacity=None,
+// background=False, family=True)`. The TS 4th slot is named
+// `backgroundOrOptions` (it also accepts `{background, family}`), which the
+// generic kwargs bridge cannot map `background=` onto -- the bag then lands
+// verbatim in `color` and `new ManimColor(bag)` throws `... not Object`
+// (e.g. `tower.set_stroke(background=True)`). Pinning the Python spellings
+// lets `wrapPrototypeMethods` place `background=`/`family=` correctly.
+(VMobject.prototype.set_stroke as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "color",
+  "width",
+  "opacity",
+  "background",
+  "family",
 ];
