@@ -5,6 +5,7 @@
 // `\cssId` output and SVGMobject's `split_by_id` support.
 
 import { BLACK, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
+import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
 import { config } from "../../_config/utils.js";
 import {
   DEFAULT_FONT_SIZE,
@@ -546,6 +547,7 @@ export class MathTex extends SingleStringMathTex {
       if (root) newSubmobjects.push(root);
     }
     this.submobjects = newSubmobjects;
+    bump_mobject_geometry_epoch();
     return this;
   }
 

@@ -4,6 +4,7 @@
 // converted to VMobject points by SVGMobject (svg_string support).
 
 import { array, type NDArray } from "numpy-ts";
+import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
 import { DEFAULT_FONT_SIZE, NORMAL } from "../../constants.js";
 import { ManimColor, WHITE, color_gradient, type ParsableManimColor } from "../../utils/color/core.js";
 
@@ -261,6 +262,7 @@ export class Text extends SVGMobject {
     this.text = text;
     if (this.disable_ligatures) {
       this.submobjects = [...this._gen_chars().submobjects];
+    bump_mobject_geometry_epoch();
     }
     this.chars = new VGroup(...(this.submobjects as VMobject[]));
     this.text = text_without_tabs.replace(/ /g, "").replace(/\n/g, "");

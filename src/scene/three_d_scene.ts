@@ -1,4 +1,5 @@
 import { config } from "../_config/utils.js";
+import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { DEGREES, RendererType } from "../constants.js";
 import type { Animation } from "../animation/animation.js";
 import { Transform } from "../animation/transform.js";
@@ -421,6 +422,7 @@ export class SpecialThreeDScene extends ThreeDScene {
         }
         (new_pieces as unknown as { match_style: (other: unknown) => void }).match_style(axis.pieces);
         axis.pieces.submobjects = new_pieces.submobjects;
+        bump_mobject_geometry_epoch();
       }
       // NOTE: Python reads `axis.tick_marks`, but manim 0.21.0 NumberLine has
       // no such attribute (only the `ticks` field / `get_tick_marks()`), so

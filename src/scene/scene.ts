@@ -1,4 +1,5 @@
 import { platform } from "node:os";
+import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { array, matmul, transpose, type NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
 import { DEFAULT_WAIT_TIME, OUT, RendererType, SHIFT_VALUE } from "../constants.js";
@@ -457,6 +458,7 @@ export class Scene {
     ];
     this.restructure_mobjects(new_and_foreground_mobjects);
     this.mobjects.push(...new_and_foreground_mobjects);
+    bump_mobject_geometry_epoch();
     if (this.moving_mobjects.length > 0) {
       this.restructure_mobjects(
         new_and_foreground_mobjects,
@@ -495,6 +497,7 @@ export class Scene {
         meshes_to_remove.add(mobject_or_mesh);
       }
       this.mobjects = this.get_restructured_mobject_list(this.mobjects, mobjects_to_remove);
+      bump_mobject_geometry_epoch();
 
       function lambda_function(mesh: Mobject): boolean {
         return !meshes_to_remove.has(mesh);
