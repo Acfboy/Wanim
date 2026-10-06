@@ -21,7 +21,15 @@ function toRows(value: unknown, width: number): number[][] {
   if (isNDArray(value)) return pointRows(value, width);
   if (Array.isArray(value)) {
     if (value.length === 0) return [];
-    if (Array.isArray(value[0])) return (value as unknown[][]).map((row) => (row as unknown[]).map(Number));
+    const first = value[0] as unknown;
+    if (Array.isArray(first) || isNDArray(first) || ArrayBuffer.isView(first)) {
+      return (value as unknown[]).map((row) => {
+        if (isNDArray(row)) return ((row as NDArray).toArray() as unknown[]).map(Number);
+        if (Array.isArray(row)) return (row as unknown[]).map(Number);
+        if (ArrayBuffer.isView(row)) return Array.from(row as unknown as ArrayLike<unknown>).map(Number);
+        return [Number(row)];
+      });
+    }
     return [[...(value as unknown[]).map(Number)]];
   }
   return pointRows(value, width);
