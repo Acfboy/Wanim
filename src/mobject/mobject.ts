@@ -339,11 +339,13 @@ function isFloatPointData(data: unknown): data is Float64Array | number[] {
   return data instanceof Float64Array || Array.isArray(data);
 }
 
-/** Select min/max/center from a pre-scanned column, mirroring the tail of
- *  {@link Mobject.get_extremum_along_dim} (NaN anywhere poisons the result). */
-function extremumValue(min: number, max: number, nan: boolean, count: number, key: number): number {
-  if (count === 0) return 0;
-  if (nan) return NaN;
+/** Select min/max/center from a pre-scanned column. Non-finite samples
+ *  (NaN/Infinity from singular evaluations such as log(0)) are skipped so a
+ *  single singular sample does not poison layout the way `np.min`/`np.max`
+ *  do in Python; direct NaN/Infinity inputs still fail fast in
+ *  shift/scale/move_to/set_points and the serializer. */
+function extremumValue(min: number, max: number, finiteCount: number, key: number): number {
+  if (finiteCount === 0) return 0;
   if (key < 0) return min;
   if (key === 0) return (min + max) / 2;
   return max;
@@ -1089,27 +1091,26 @@ export class Mobject {
     const dim = this.dim;
     // Fast path: one flat pass over a C-contiguous boundary collects the
     // extrema for all three axes at once, instead of three `pointRows`/
-    // `_cContiguousRows` passes. NaN poisons min/max exactly like
-    // `get_extremum_along_dim`.
+    // `_cContiguousRows` passes. Non-finite samples (singularities such as
+    // log(0) = -inf) are skipped so they do not poison layout (error 385).
     const flat = _cContiguousRows(boundary);
     if (flat !== null && flat.rowDim >= 3 && flat.rowCount > 0 && dim === 3) {
       const { data, rowDim, rowCount } = flat;
-      let min0 = Infinity; let max0 = -Infinity;
-      let min1 = Infinity; let max1 = -Infinity;
-      let min2 = Infinity; let max2 = -Infinity;
-      let nan0 = false; let nan1 = false; let nan2 = false;
+      let min0 = Infinity; let max0 = -Infinity; let finite0 = 0;
+      let min1 = Infinity; let max1 = -Infinity; let finite1 = 0;
+      let min2 = Infinity; let max2 = -Infinity; let finite2 = 0;
       for (let row = 0; row < rowCount; row += 1) {
         const base = row * rowDim;
         const v0 = Number(data[base]);
-        if (v0 !== v0) nan0 = true; else { if (v0 < min0) min0 = v0; if (v0 > max0) max0 = v0; }
+        if (Number.isFinite(v0)) { finite0 += 1; if (v0 < min0) min0 = v0; if (v0 > max0) max0 = v0; }
         const v1 = Number(data[base + 1]);
-        if (v1 !== v1) nan1 = true; else { if (v1 < min1) min1 = v1; if (v1 > max1) max1 = v1; }
+        if (Number.isFinite(v1)) { finite1 += 1; if (v1 < min1) min1 = v1; if (v1 > max1) max1 = v1; }
         const v2 = Number(data[base + 2]);
-        if (v2 !== v2) nan2 = true; else { if (v2 < min2) min2 = v2; if (v2 > max2) max2 = v2; }
+        if (Number.isFinite(v2)) { finite2 += 1; if (v2 < min2) min2 = v2; if (v2 > max2) max2 = v2; }
       }
-      result[0] = extremumValue(min0, max0, nan0, rowCount, Number(directionValues[0] ?? 0));
-      result[1] = extremumValue(min1, max1, nan1, rowCount, Number(directionValues[1] ?? 0));
-      result[2] = extremumValue(min2, max2, nan2, rowCount, Number(directionValues[2] ?? 0));
+      result[0] = extremumValue(min0, max0, finite0, Number(directionValues[0] ?? 0));
+      result[1] = extremumValue(min1, max1, finite1, Number(directionValues[1] ?? 0));
+      result[2] = extremumValue(min2, max2, finite2, Number(directionValues[2] ?? 0));
       return result;
     }
     for (let dim = 0; dim < this.dim; dim += 1) {
@@ -1143,44 +1144,36 @@ export class Mobject {
       : points;
     let min = Infinity;
     let max = -Infinity;
-    let count = 0;
+    let finiteCount = 0;
     // Fast path: read the requested column straight out of a C-contiguous
     // NDArray instead of materialising every row via `pointRows`.
+    // Non-finite samples are skipped (see get_critical_point, error 385).
     const flat = _cContiguousRows(source);
     if (flat !== null) {
       const { data, rowDim, rowCount } = flat;
-      count = rowCount;
       if (dim < rowDim) {
         for (let row = 0; row < rowCount; row += 1) {
           const value = Number(data[row * rowDim + dim]);
-          if (value !== value) {
-            min = NaN;
-            max = NaN;
-          } else {
-            if (value < min) min = value;
-            if (value > max) max = value;
-          }
-        }
-      } else {
-        // Column missing: `pointRows` pads short rows with zeros.
-        min = rowCount > 0 ? 0 : Infinity;
-        max = rowCount > 0 ? 0 : -Infinity;
-      }
-    } else {
-      const rows = pointRows(source, this.dim);
-      count = rows.length;
-      for (let row = 0; row < count; row += 1) {
-        const value = (rows[row] as number[])[dim] ?? 0;
-        if (value !== value) {
-          min = NaN;
-          max = NaN;
-        } else {
+          if (!Number.isFinite(value)) continue;
+          finiteCount += 1;
           if (value < min) min = value;
           if (value > max) max = value;
         }
+      } else {
+        // Column missing: `pointRows` pads short rows with zeros.
+        if (rowCount > 0) { min = 0; max = 0; finiteCount = rowCount; }
+      }
+    } else {
+      const rows = pointRows(source, this.dim);
+      for (let row = 0; row < rows.length; row += 1) {
+        const value = (rows[row] as number[])[dim] ?? 0;
+        if (!Number.isFinite(value)) continue;
+        finiteCount += 1;
+        if (value < min) min = value;
+        if (value > max) max = value;
       }
     }
-    if (count === 0) return 0;
+    if (finiteCount === 0) return 0;
     if (key < 0) return min;
     if (key === 0) return (min + max) / 2;
     return max;
@@ -1211,48 +1204,45 @@ export class Mobject {
     // but scanned straight from the C-contiguous backing stores: the old
     // version materialised every point row and spread them into `Math.max`,
     // which dominated `height`/`width`/`font_size` (and therefore every
-    // `DecimalNumber.set_value`).  A NaN in the column poisons the result
-    // exactly like `Math.max`/`Math.min` do.
+    // `DecimalNumber.set_value`).  Non-finite samples are skipped so a
+    // singular sample does not poison measurement (error 385).
     let min = Infinity;
     let max = -Infinity;
-    let count = 0;
-    let sawNaN = false;
+    let finiteCount = 0;
     const dimIndex = dim;
     for (const mobject of this.family_members_with_points()) {
       const points = (mobject as { points?: unknown }).points;
       const flat = _cContiguousRows(points);
       if (flat !== null) {
         const { data, rowDim, rowCount } = flat;
-        count += rowCount;
         if (dimIndex < rowDim) {
           for (let row = 0; row < rowCount; row += 1) {
             const value = Number(data[row * rowDim + dimIndex]);
-            if (value !== value) sawNaN = true;
-            else {
-              if (value < min) min = value;
-              if (value > max) max = value;
-            }
-          }
-        } else {
-          // `pointRows` pads short rows with zeros.
-          if (min > 0) min = 0;
-          if (max < 0) max = 0;
-        }
-      } else {
-        const rows = pointRows(points as never, this.dim);
-        count += rows.length;
-        for (const point of rows) {
-          const value = point[dimIndex] ?? 0;
-          if (value !== value) sawNaN = true;
-          else {
+            if (!Number.isFinite(value)) continue;
+            finiteCount += 1;
             if (value < min) min = value;
             if (value > max) max = value;
           }
+        } else {
+          // `pointRows` pads short rows with zeros.
+          if (rowCount > 0) {
+            if (min > 0) min = 0;
+            if (max < 0) max = 0;
+            finiteCount += rowCount;
+          }
+        }
+      } else {
+        const rows = pointRows(points as never, this.dim);
+        for (const point of rows) {
+          const value = point[dimIndex] ?? 0;
+          if (!Number.isFinite(value)) continue;
+          finiteCount += 1;
+          if (value < min) min = value;
+          if (value > max) max = value;
         }
       }
     }
-    if (count === 0) return 0;
-    if (sawNaN) return NaN;
+    if (finiteCount === 0) return 0;
     return max - min;
   }
 

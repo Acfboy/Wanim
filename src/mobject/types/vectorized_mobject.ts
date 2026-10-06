@@ -1925,15 +1925,14 @@ export class VMobject extends Mobject {
     }
     const directionValues = direction as readonly number[];
     const nppcc = this.n_points_per_cubic_curve;
-    let min0 = Infinity; let max0 = -Infinity; let nan0 = false;
-    let min1 = Infinity; let max1 = -Infinity; let nan1 = false;
-    let min2 = Infinity; let max2 = -Infinity; let nan2 = false;
-    let count = 0;
+    let min0 = Infinity; let max0 = -Infinity; let finite0 = 0;
+    let min1 = Infinity; let max1 = -Infinity; let finite1 = 0;
+    let min2 = Infinity; let max2 = -Infinity; let finite2 = 0;
     const consider = (x: number, y: number, z: number): void => {
-      count += 1;
-      if (x !== x) nan0 = true; else { if (x < min0) min0 = x; if (x > max0) max0 = x; }
-      if (y !== y) nan1 = true; else { if (y < min1) min1 = y; if (y > max1) max1 = y; }
-      if (z !== z) nan2 = true; else { if (z < min2) min2 = z; if (z > max2) max2 = z; }
+      // Skip non-finite anchor samples (singularities such as log(0), error 385).
+      if (Number.isFinite(x)) { finite0 += 1; if (x < min0) min0 = x; if (x > max0) max0 = x; }
+      if (Number.isFinite(y)) { finite1 += 1; if (y < min1) min1 = y; if (y > max1) max1 = y; }
+      if (Number.isFinite(z)) { finite2 += 1; if (z < min2) min2 = z; if (z > max2) max2 = z; }
     };
     for (const mobject of this.get_family()) {
       const store = (mobject as { points?: unknown }).points as
@@ -1976,14 +1975,14 @@ export class VMobject extends Mobject {
         consider(numeric(anchor[0] ?? 0), numeric(anchor[1] ?? 0), numeric(anchor[2] ?? 0));
       }
     }
-    if (count === 0) return Array.from({ length: dim }, () => 0);
+    if (finite0 === 0 && finite1 === 0 && finite2 === 0) return Array.from({ length: dim }, () => 0);
     const pick = (
-      min: number, max: number, nan: boolean, key: number,
-    ): number => (nan ? NaN : key < 0 ? min : key > 0 ? max : (min + max) / 2);
+      min: number, max: number, finiteCount: number, key: number,
+    ): number => (finiteCount === 0 ? 0 : key < 0 ? min : key > 0 ? max : (min + max) / 2);
     const result = new Array<number>(dim);
-    result[0] = pick(min0, max0, nan0, Number(directionValues[0] ?? 0));
-    result[1] = pick(min1, max1, nan1, Number(directionValues[1] ?? 0));
-    result[2] = pick(min2, max2, nan2, Number(directionValues[2] ?? 0));
+    result[0] = pick(min0, max0, finite0, Number(directionValues[0] ?? 0));
+    result[1] = pick(min1, max1, finite1, Number(directionValues[1] ?? 0));
+    result[2] = pick(min2, max2, finite2, Number(directionValues[2] ?? 0));
     return result;
   }
 
