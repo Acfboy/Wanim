@@ -511,7 +511,7 @@ export class Arrow extends Line {
   }
 
   override scale(
-    factor: number,
+    factor: number | readonly number[] | NDArray,
     scaleTipsOrAboutPoint: boolean | readonly number[] | NDArray | Record<string, unknown> | null = false,
     aboutPointOrAboutEdge: readonly number[] | NDArray | Record<string, unknown> | null = null,
     aboutEdgeParam: readonly number[] | NDArray | Record<string, unknown> | null = null,

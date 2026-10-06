@@ -1488,7 +1488,7 @@ export class Mobject {
     return this;
   }
 
-  scale(scale_factor: number, about_point?: readonly number[] | NDArray | Record<string, unknown> | null, about_edge?: readonly number[] | NDArray | Record<string, unknown> | null): this {
+  scale(scale_factor: number | readonly number[] | NDArray, about_point?: readonly number[] | NDArray | Record<string, unknown> | null, about_edge?: readonly number[] | NDArray | Record<string, unknown> | null): this {
     // NOTE (py2js kwargs bridge): a trailing kwargs bag such as
     // `{about_point: ORIGIN}` must not land verbatim in the point slot (NaN
     // poison). The wrapped-method bridge usually maps it via `__argnames__`
@@ -1525,25 +1525,93 @@ export class Mobject {
       ? vector(resolved_about_point, this.dim)
       : this.get_critical_point(resolved_about_edge ?? ORIGIN);
     const dim = this.dim;
+    // NOTE: Python `scale` does `scale_factor * points` with numpy
+    // broadcasting, so a vector factor like `[2.0, 0.7, 1.0]` scales each
+    // dimension independently (used by 3b1b's `orbit.scale([2.0, 0.7, 1.0])`).
+    // The previous scalar-only fast path computed `number * JSArray` -> NaN,
+    // poisoning every point ("non-finite point/vector value", error 336).
+    let uniformFactor: number | null = null;
+    let vectorFactors: number[] | null = null;
+    let factorForNumpy: number | NDArray | null = null;
+    if (typeof scale_factor === "number" || typeof scale_factor === "bigint") {
+      uniformFactor = Number(scale_factor);
+      factorForNumpy = uniformFactor;
+    } else {
+      let rawLen: number | null = null;
+      let singleValue: number | null = null;
+      if (Array.isArray(scale_factor)) {
+        rawLen = scale_factor.length;
+        if (rawLen === 1) singleValue = Number(scale_factor[0]);
+      } else if (ArrayBuffer.isView(scale_factor)) {
+        const flatArr = Array.from(scale_factor as unknown as ArrayLike<unknown>);
+        rawLen = flatArr.length;
+        if (rawLen === 1) singleValue = Number(flatArr[0]);
+      } else if (isNDArray(scale_factor)) {
+        const shape = (scale_factor as NDArray).shape;
+        const count = shape.length === 0 ? 1 : shape.reduce((acc, size) => acc * size, 1);
+        rawLen = count;
+        if (count === 1) {
+          const flat = (scale_factor as NDArray).toArray() as unknown;
+          singleValue = Number(Array.isArray(flat) ? (flat as unknown[])[0] ?? flat : flat);
+        }
+      }
+      if (singleValue !== null && rawLen === 1) {
+        uniformFactor = singleValue;
+        factorForNumpy = uniformFactor;
+      } else if (rawLen !== null && rawLen === dim) {
+        const row = pointRows(scale_factor, dim)[0] ?? Array.from({ length: dim }, () => 1);
+        vectorFactors = Array.from({ length: dim }, (_, index) => Number(row[index] ?? 1));
+        factorForNumpy = array([...vectorFactors]) as NDArray;
+      } else if (rawLen === null) {
+        const row = pointRows(scale_factor, dim)[0] ?? Array.from({ length: dim }, () => 1);
+        vectorFactors = Array.from({ length: dim }, (_, index) => Number(row[index] ?? 1));
+        factorForNumpy = array([...vectorFactors]) as NDArray;
+      } else {
+        // Length mismatch: let numpy broadcasting raise, mirroring Python's
+        // ValueError, instead of silently padding/collapsing dimensions.
+        if (Array.isArray(scale_factor)) factorForNumpy = array([...scale_factor]) as NDArray;
+        else if (ArrayBuffer.isView(scale_factor)) factorForNumpy = array(Array.from(scale_factor as unknown as ArrayLike<number>)) as NDArray;
+        else if (isNDArray(scale_factor)) factorForNumpy = scale_factor as NDArray;
+        else factorForNumpy = array(pointRows(scale_factor, dim)[0] ?? []) as NDArray;
+      }
+    }
+    if (vectorFactors !== null) assertFinite(vectorFactors);
     for (const mobject of this.family_members_with_points()) {
       // Fast path: `(p - center) * k + center` in one flat typed-array pass,
       // matching `apply_points_function_about_point`'s numpy op order.
       const flat = _cContiguousRows(mobject.points);
       if (flat !== null && flat.rowDim === dim && flat.rowCount > 0 && isFloatPointData(flat.data)) {
-        const { data, rowDim, rowCount } = flat;
-        const out = mobject.points.copy() as NDArray;
-        const outData = (out as NDArray & { data: Float64Array }).data;
-        for (let row = 0; row < rowCount; row += 1) {
-          const base = row * rowDim;
-          for (let d = 0; d < dim; d += 1) {
-            outData[base + d] = ((data[base + d] ?? 0) - (center[d] ?? 0)) * scale_factor + (center[d] ?? 0);
+        if (vectorFactors === null && factorForNumpy !== null && typeof factorForNumpy !== "number") {
+          // Mismatched vector length: fall through to the numpy path so the
+          // broadcasting error surfaces instead of silently mis-scaling.
+        } else {
+          const { data, rowDim, rowCount } = flat;
+          const out = mobject.points.copy() as NDArray;
+          const outData = (out as NDArray & { data: Float64Array }).data;
+          if (uniformFactor !== null) {
+            for (let row = 0; row < rowCount; row += 1) {
+              const base = row * rowDim;
+              for (let d = 0; d < dim; d += 1) {
+                outData[base + d] = ((data[base + d] ?? 0) - (center[d] ?? 0)) * uniformFactor + (center[d] ?? 0);
+              }
+            }
+          } else if (vectorFactors !== null) {
+            for (let row = 0; row < rowCount; row += 1) {
+              const base = row * rowDim;
+              for (let d = 0; d < dim; d += 1) {
+                outData[base + d] = ((data[base + d] ?? 0) - (center[d] ?? 0)) * (vectorFactors[d] ?? 1) + (center[d] ?? 0);
+              }
+            }
           }
+          mobject.points = out;
+          continue;
         }
-        mobject.points = out;
-      } else {
+      }
+      {
         const centerArray = array(center);
         const points = mobject.points as unknown as NDArray;
-        mobject.points = add(multiply(subtract(points, centerArray) as NDArray, scale_factor) as NDArray, centerArray) as NDArray;
+        const factor = uniformFactor !== null ? uniformFactor : (factorForNumpy ?? 1);
+        mobject.points = add(multiply(subtract(points, centerArray) as NDArray, factor as never) as NDArray, centerArray) as NDArray;
       }
     }
     return this;

@@ -567,7 +567,7 @@ export class Table extends VGroup {
   }
 
   override scale(
-    scale_factor: number,
+    scale_factor: number | readonly number[] | import("numpy-ts").NDArray,
     // NOTE: same positional convention as VMobject.scale (see note there):
     // second slot is either a scale_stroke flag or an about_point. `Record`
     // slots carry a py2js kwargs bag; forwarded to `super.scale` which
@@ -577,9 +577,25 @@ export class Table extends VGroup {
     about_edge?: readonly number[] | import("numpy-ts").NDArray | Record<string, unknown> | null,
   ): this {
     // h_buff and v_buff must be adjusted so that Table.get_cell
-    // can construct an accurate polygon for a cell.
-    this.h_buff *= scale_factor;
-    this.v_buff *= scale_factor;
+    // can construct an accurate polygon for a cell. A vector factor scales
+    // each buffer by its own axis (mirroring the per-dimension geometry).
+    if (typeof scale_factor === "number" || typeof scale_factor === "bigint") {
+      this.h_buff *= Number(scale_factor);
+      this.v_buff *= Number(scale_factor);
+    } else {
+      const raw: number[] = Array.isArray(scale_factor)
+        ? [...scale_factor].map(Number)
+        : ArrayBuffer.isView(scale_factor)
+          ? Array.from(scale_factor as unknown as ArrayLike<unknown>).map(Number)
+          : (((scale_factor as unknown as { toArray?: () => unknown }).toArray?.() as unknown) as unknown[] ?? []).flat(Infinity).map(Number);
+      if (raw.length === 1) {
+        this.h_buff *= raw[0] ?? 1;
+        this.v_buff *= raw[0] ?? 1;
+      } else {
+        this.h_buff *= raw[0] ?? 1;
+        this.v_buff *= raw[1] ?? 1;
+      }
+    }
     let scale_stroke = false;
     let resolved_about_point = about_point;
     if (typeof scale_stroke_or_about_point === "boolean") {

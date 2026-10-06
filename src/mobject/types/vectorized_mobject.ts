@@ -454,7 +454,7 @@ export class VMobject extends Mobject {
   }
 
   override scale(
-    scale_factor: number,
+    scale_factor: number | readonly number[] | NDArray,
     // NOTE: Python distinguishes these keyword-only args
     // (scale_stroke vs about_point/about_edge). TS callers pass them
     // positionally, so the second slot accepts either a scale_stroke flag
@@ -504,17 +504,41 @@ export class VMobject extends Mobject {
       else if (resolved_about_edge === undefined) resolved_about_edge = scale_stroke_or_about_point as never;
     }
     if (scale_stroke) {
+      // NOTE: a vector factor (e.g. `scale([2, 0.7, 1])`) has no single
+      // scalar for stroke width; use the mean of the absolute per-axis
+      // factors as the scalar equivalent (uniform factors are exact).
+      let strokeFactor: number;
+      if (typeof scale_factor === "number" || typeof scale_factor === "bigint") {
+        strokeFactor = Math.abs(Number(scale_factor));
+      } else {
+        const rows = pointRows(scale_factor, this.dim);
+        const vec = rows[0] ?? [1];
+        let rawLen: number | null = null;
+        if (Array.isArray(scale_factor)) rawLen = scale_factor.length;
+        else if (ArrayBuffer.isView(scale_factor)) rawLen = (scale_factor as unknown as ArrayLike<unknown>).length;
+        else if (isNDArray(scale_factor)) {
+          const shape = (scale_factor as NDArray).shape;
+          rawLen = shape.length === 0 ? 1 : shape.reduce((acc, size) => acc * size, 1);
+        }
+        if (rawLen === 1) {
+          strokeFactor = Math.abs(Number(vec[0] ?? 1));
+        } else {
+          const count = rawLen ?? vec.length;
+          const total = vec.slice(0, count).reduce((acc, value) => acc + Math.abs(Number(value ?? 0)), 0);
+          strokeFactor = count > 0 ? total / count : 1;
+        }
+      }
       for (const mob of this.get_family()) {
         if (mob instanceof VMobject) {
           mob.set_stroke(
             undefined,
-            Math.abs(scale_factor) * mob.get_stroke_width(),
+            strokeFactor * mob.get_stroke_width(),
             undefined,
             false,
             false,
           );
           mob.set_background_stroke({
-            width: Math.abs(scale_factor) * mob.get_stroke_width(true),
+            width: strokeFactor * mob.get_stroke_width(true),
             family: false,
           });
         }
