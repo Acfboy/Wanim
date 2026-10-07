@@ -194,10 +194,20 @@ export class Line extends TipableVMobject {
     // attached tip makes `get_start`/`get_end` diverge from the point span
     // (e.g. the second tip of a DoubleArrow), otherwise Mobject's scale
     // factor would use the tipped endpoints.
+    // NOTE: Arrows (and subclasses) recompute stroke width from length inside
+    // `Arrow.scale`, which `Mobject.put_start_and_end_on` reaches via the
+    // scale+rotate+shift round trip. Taking the direct re-span fast path here
+    // would skip that side effect and diverge from Python (e.g. Arrow.scale(1)
+    // during FadeIn's faded-copy creation shrinks 1.75 -> 1.3125 there).
+    // Delegate to super for those so the width update happens.
+    const hasArrowWidthRule =
+      (this as unknown as { _set_stroke_width_from_length?: unknown })
+        ._set_stroke_width_from_length !== undefined;
     if (
       this.path_arc === 0
       && !this.has_tip()
       && !this.has_start_tip()
+      && !hasArrowWidthRule
       && this.points.shape[0] === this.n_points_per_cubic_curve
     ) {
       const startRow = pointRows(start, this.dim)[0] ?? [0, 0, 0];
