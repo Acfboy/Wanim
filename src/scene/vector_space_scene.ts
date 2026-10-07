@@ -579,7 +579,7 @@ function numberPlaneFromKwargs(kwargs: Record<string, unknown>): NumberPlane {
  * `ManimColor` colliding with the default `stroke_color` recurses forever.
  * Colour values in style configs are therefore flattened to hex strings here
  * (they are re-parsed by `set_style`), which avoids the collision while
- * producing identical final colours. See .
+ * producing identical final colours.
  */
 function sanitizeStyleColors(style: unknown): unknown {
   if (style === null || style === undefined || typeof style !== "object") return style;

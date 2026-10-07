@@ -5897,7 +5897,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           // Legacy `np.random.RandomState(seed)` (e.g.
           // `rng = np.random.RandomState(1)` then `rng.uniform(-np.pi, np.pi)`):
           // numpy-ts only ships the new `Generator` API (`default_rng`) and has
-          // no `RandomState` class, so anycourseware using the legacy constructor
+          // no `RandomState` class, so any courseware using the legacy constructor
           // fails with `RandomState is not a function`.
           //
           // A `RandomState` owns an independent MT19937 stream seeded exactly

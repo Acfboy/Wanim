@@ -29,9 +29,8 @@
 //   FileNotFoundError 'latex' (TS: IndexError "range object index out of
 //   range" on every path -- even with explicit r/a values -- because
 //   get_x_axis() itself indexes the not-yet-Mobject-integrated empty axes.
-//   Pre-existing Axes-integration gap, documented in
-//   ; both implementations throw, only the error
-//   category differs until Axes integration lands)
+//   Pre-existing Axes-integration gap; both implementations throw, only
+//   the error category differs until Axes integration lands)
 // - NumberLine(x_range=[-3,3,1]).add_labels({-2: sq, 0: sq}) with
 //   font_size=36 squares -> centers [-2,-1.25,0], [0,-1.25,0];
 //   tick_range [-3,-2,-1,-0,1,2,3]
@@ -46,7 +45,7 @@
 //   needs the DecimalNumber class itself, which is text-scope; the stub is
 //   kept and the gap noted here instead of locked in as a test.
 //
-// Vitest OOM rule (see ): never let vitest
+// Vitest OOM rule: never let vitest
 // pretty-print a Mobject -- identity/type checks use `===` inside
 // expect(...).toBe(true); only numbers/strings/booleans go to expect().
 import { describe, expect, it } from "vitest";

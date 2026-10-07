@@ -590,7 +590,7 @@ describe("LinearTransformationScene transforms (math ground truth)", () => {
     const scene = new LinearTransformationScene();
     scene.setup();
     // NOTE limitation: TS NumberPlane/CoordinateSystem is not Mobject-based
-    // yet (see ), so the setup-installed plane in
+    // yet, so the setup-installed plane in
     // transformable_mobjects fails ApplyPointwiseFunction's
     // isinstance(Mobject) check. Python's plane IS a Mobject and applies
     // fine. Test with a real Mobject transformable instead.

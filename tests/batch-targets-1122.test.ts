@@ -390,7 +390,7 @@ describe("prepare_animation", () => {
 // NOTE deviations: the TS port has no cairo renderer yet, so `renderer` is
 // null (camera_class defaults to an empty class), `animations` starts as []
 // instead of None, and the seed only mirrors config.seed without reseeding
-// the global RNG (see ).
+// the global RNG.
 // ---------------------------------------------------------------------------
 describe("Scene.__init__", () => {
   it("starts with empty mobject lists and stored flags", () => {

@@ -211,7 +211,7 @@ describe("Mobject iteration protocol", () => {
     // __iter__ (self-with-points first, then submobjects).  Notably
     // rapydscript's `ρσ_in` probes `typeof arr.__contains__`, which raised
     // AttributeError through the Mobject proxy before this method existed
-    // (`m not in numbers` on a VGroup).
+    // (observed as `m not in numbers` on a VGroup).
     const a = square();
     const b = square();
     const g = new VGroup(a, b);
@@ -326,7 +326,7 @@ describe("Mobject.get_image", () => {
   it("throws a clearly-marked TODO without a raster camera backend", () => {
     // Python raises NameError at runtime (Camera is not imported in
     // mobject.py); the TS port raises a TODO error instead — cairo rendering
-    // is a later roadmap step (see  convention).
+    // is a later roadmap step.
     expect(() => square().get_image()).toThrow(/TODO.*Camera/i);
   });
 

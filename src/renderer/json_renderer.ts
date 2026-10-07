@@ -12,8 +12,7 @@
  * A mobject record is `{p, f, s, bs, sw, bsw, jt, cs, z, bi}`.
  *
  * NOTE: ThreeDCamera is not ported to wanim yet, so the `s3d/fif/fo` and 3D
- * camera keys are only emitted when the camera exposes the required methods
- * (see ).
+ * camera keys are only emitted when the camera exposes the required methods.
  */
 import { writeFileSync } from "node:fs";
 import type { NDArray } from "numpy-ts";
@@ -272,7 +271,7 @@ export function serialize_vmobject(vmobject: VMobject, camera?: unknown): Record
   }
   record.bi = backgroundImage;
   if (isThreeDCamera(camera)) {
-    // TODO: unreachable until ThreeDCamera lands (see ).
+    // TODO: unreachable until ThreeDCamera lands.
     record.s3d = Boolean((vmobject as { shade_in_3d?: boolean }).shade_in_3d);
     record.fif = memberOf(camera.fixed_in_frame_mobjects, vmobject);
     const centerFunc = camera.fixed_orientation_mobjects.get(vmobject) ?? null;

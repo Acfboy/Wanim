@@ -3,7 +3,7 @@
  * controls, and whose story is split into a `blueprint` (interactive) phase and
  * a `construct` (animated) phase.
  *
- * The design goal (see ``) is a *minimal* extension of the
+ * The design goal is a *minimal* extension of the
  * manim API:
  *
  *  - {@link blueprint} is to reactions what `construct` is to updaters: while a
@@ -189,7 +189,7 @@ export class InteractiveScene extends Scene {
     const result = phase.run.call(this);
     if (is_thenable(result)) await result;
     // The run may have been aborted while the phase ran (e.g. the user pressed
-    // 运行 again); do not enter the interaction loop of a dead run.
+    // the run button again); do not enter the interaction loop of a dead run.
     if (this.is_aborted()) return "abort";
     if (!host.live) {
       // Headless: draw one frame for the phase and move on, so Node runs and
@@ -224,7 +224,7 @@ export class InteractiveScene extends Scene {
     const dt = frameRate > 0 ? 1 / frameRate : 1 / 30;
     // Blueprint phases drive mobjects through reactions; construct phases use
     // the ordinary updater machinery (matching `add_reaction` /
-    // `add_updater` semantics in ).
+    // `add_updater` semantics).
     if (this._phaseKind === "blueprint") this.apply_reactions();
     else this.update_mobjects(dt);
     this.update_self(dt);

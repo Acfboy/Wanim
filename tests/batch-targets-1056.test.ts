@@ -3,7 +3,7 @@
 // Every numeric expectation below was captured from the ORIGINAL Python manim
 // (original manim 0.21.0) with the inputs used here, EXCEPT
 // the ImplicitFunction block: the real `isosurfaces.plot_isoline` backend has
-// no TS port yet (see ), so that block uses an injected stub
+// no TS port yet, so that block uses an injected stub
 // isoline computer and only asserts the init_points-after-clear regeneration
 // path, not Python ground-truth point values. Each other block cites the
 // probe in a "Python:" comment. TS is asserted against those
@@ -490,8 +490,8 @@ describe("ParametricFunction.init_points", () => {
 // manim.mobject.graphing.functions.ImplicitFunction.init_points
 // Python (manim 0.21.0, circle x^2+y^2-1 over [-2,2]^2, use_smoothing=False):
 //   2976 points, first row [-0.64328457, -0.765625, 0] (probed 2026-09-26;
-//   the real `isosurfaces.plot_isoline` backend has no TS port yet, see
-//   ). TS has no `isosurfaces` port: a stub isoline computer
+//   the real `isosurfaces.plot_isoline` backend has no TS port yet). TS has
+//   no `isosurfaces` port: a stub isoline computer
 //   stands in, and the init_points-after-clear regeneration path is what is
 //   asserted here (NOT the Python point values above).
 // ---------------------------------------------------------------------------

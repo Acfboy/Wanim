@@ -504,8 +504,7 @@ export class VMobject extends Mobject {
     // color (broadcast over every point) and one row per stop only for a real
     // gradient.  Earlier ports expanded these to one row *per point*, which
     // made every style read/write and per-frame color interpolation O(points)
-    // instead of O(1); that dominated the render loop (see
-    // ).
+    // instead of O(1); that dominated the render loop.
     const fillColor = new ManimColor(options.fill_color ?? options.color ?? WHITE);
     const strokeColor = options.fill_color === undefined && options.stroke_color === undefined
       ? fillColor

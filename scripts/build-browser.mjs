@@ -88,7 +88,7 @@ await build({
 });
 
 // Ship numpy-ts next to the bundle so the relative import resolves for the
-// demo, other consumers alike (all of which serve `dist/`).
+// demo and other local consumers serving `dist/`.
 const numpySource = resolve(root, "node_modules", "numpy-ts", "dist", "numpy-ts.browser.js");
 if (existsSync(numpySource)) {
   const numpyOut = resolve(dirname(outfile), "numpy-ts.browser.js");

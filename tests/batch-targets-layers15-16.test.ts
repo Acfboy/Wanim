@@ -416,8 +416,7 @@ describe("Scene pause/wait_until/frozen-frame", () => {
 // manim.mobject.graphing.coordinate_systems.CoordinateSystem.get_axes
 // Python: base raises NotImplementedError; Axes/NumberPlane return 2 axes.
 // D-axes: the TS Axes hierarchy is not Mobject-based yet, so get_axes()
-// returns an (empty) VGroup; base still throws. See 
-// ("Axes.axes/NumberLine.ticks empty containers").
+// returns an (empty) VGroup; base still throws.
 describe("CoordinateSystem.get_axes", () => {
   it("base class raises NotImplementedError", () => {
     const base = Object.create(CoordinateSystem.prototype) as CoordinateSystem;
