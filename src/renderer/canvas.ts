@@ -732,13 +732,15 @@ export function applyMobject3DFlags(
 
 /**
  * Draw one serialized frame onto `ctx`.  Restores the camera geometry stored in
- * the frame, clears the canvas and replays the display list.
+ * the frame, clears the canvas and replays the display list through `backend`
+ * (the plain Canvas2D painter by default).
  */
 export function drawFrame(
   ctx: CanvasRenderingContext2D,
   camera: CanvasCamera,
   frame: MJSONFrame,
   background = "#000000",
+  backend?: { draw(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject, seed?: number): void },
 ): void {
   configureFrameCamera(camera, frame);
   clearCanvas(ctx, camera, background);
@@ -748,10 +750,20 @@ export function drawFrame(
     camera.fixed_in_frame_mobjects.clear();
     camera.fixed_orientation_mobjects.clear();
   }
+  const painter: (
+    context: CanvasRenderingContext2D,
+    cam: CanvasCamera,
+    mob: VMobject,
+    seed?: number,
+  ) => void = backend === undefined
+    ? (context, cam, mob) => drawVmobject(context, cam, mob)
+    : (context, cam, mob, seed) => backend.draw(context, cam, mob, seed);
+  let index = 0;
   for (const record of frame.m) {
     const vmobject = deserialize_vmobject(record);
     if (threeD) applyMobject3DFlags(camera, vmobject, record);
-    drawVmobject(ctx, camera, vmobject);
+    painter(ctx, camera, vmobject, index);
+    index += 1;
   }
 }
 

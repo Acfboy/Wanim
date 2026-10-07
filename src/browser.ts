@@ -66,6 +66,11 @@ export interface BrowserRenderOptions {
   fps?: number;
   /** Use the WebGL2 backend for 3D geometry when available (default true). */
   useWebGL?: boolean;
+  /**
+   * Background colour override as a CSS hex string (e.g. `"#ffffff"`).  When
+   * omitted, the scene/camera background is kept.
+   */
+  background?: string;
   /** Abort a realtime run; the scene stops at the next frame boundary. */
   signal?: AbortSignal;
   onProgress?: (info: { frames: number; plays: number; elapsedMs: number }) => void;
@@ -110,6 +115,9 @@ export async function render_scene_to_canvas(
   const cameraClass = default_camera_class(sceneClass);
   apply_quality(options.quality ?? "-ql");
   const camera = new cameraClass();
+  if (options.background !== undefined) {
+    camera.background_color = options.background;
+  }
   canvas.width = camera.pixel_width;
   canvas.height = camera.pixel_height;
   const ctx = canvas.getContext("2d");
@@ -130,6 +138,11 @@ export async function render_scene_to_canvas(
     onFrame: options.onProgress,
     useWebGL: options.useWebGL,
   });
+  if (options.background !== undefined) {
+    // The scene adopts the renderer's camera, which the renderer constructs
+    // itself; apply the backdrop there too.
+    renderer.camera.background_color = options.background;
+  }
   const scene = construct_scene(sceneClass, renderer as never);
   // Interactive scenes need a DOM host to receive pointer events and to place
   // the restart/next buttons.  Without a DOM (Node) the scene falls back to its
@@ -189,7 +202,9 @@ export function play_frames(
   frames: MJSONFrame[],
   options: MJSONPlayerOptions = {},
 ): MJSONPlayerHandle {
-  const player = new MJSONCanvasPlayer(canvas, { meta, frames });
+  const player = new MJSONCanvasPlayer(canvas, { meta, frames }, {
+    backend: options.backend,
+  });
   return player.play(options);
 }
 
@@ -204,7 +219,10 @@ export function play_mjson(
   text: string,
   options: MJSONPlayerOptions = {},
 ): MJSONPlayerHandle {
-  return new MJSONCanvasPlayer(canvas, parse_mjson(text)).play(options);
+  const player = new MJSONCanvasPlayer(canvas, parse_mjson(text), {
+    backend: options.backend,
+  });
+  return player.play(options);
 }
 
 // Real-time scheduling primitives, re-exported so embedders (and the demo
