@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { parse_theme, type SectionProxyLike } from "../src/_config/logger_utils.js";
@@ -118,9 +120,10 @@ describe("parse_theme", () => {
 describe("config_file_paths", () => {
   it("returns library, user, and folder paths in precedence order", () => {
     const paths = config_file_paths();
+    const libraryCfg = fileURLToPath(new URL("../src/_config/default.cfg", import.meta.url));
 
     expect(paths).toHaveLength(3);
-    expect(paths[0]).toMatch(/\/wanim\/src\/_config\/default\.cfg$/);
+    expect(paths[0]).toBe(libraryCfg);
     expect(paths[1]).toBe(`${process.env.HOME}/.config/manim/manim.cfg`);
     expect(paths[2]).toBe("manim.cfg");
   });
@@ -186,8 +189,9 @@ describe("template discovery", () => {
 
   it("returns the absolute templates directory", () => {
     const path = get_template_path();
+    const expected = fileURLToPath(new URL("../src/templates", import.meta.url));
 
-    expect(path).toMatch(/\/wanim\/src\/templates$/);
+    expect(path).toBe(expected);
     expect(path.startsWith("/")).toBe(true);
   });
 });
