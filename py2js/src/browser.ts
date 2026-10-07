@@ -240,6 +240,8 @@ export interface RunPythonOptions {
   fps?: number;
   drawFrames?: boolean;
   recordFrames?: boolean;
+  /** Background colour override (CSS hex); keeps the scene background when omitted. */
+  background?: string;
   /** Optional scene name; defaults to the first `Scene` subclass found. */
   sceneName?: string;
   /** Called with the chosen scene name once compilation/discovery succeeds. */
@@ -299,6 +301,7 @@ export async function runPythonOnCanvas(
       fps: options.fps ?? 30,
       drawFrames: options.drawFrames ?? true,
       recordFrames: options.recordFrames ?? false,
+      background: options.background,
       signal: options.signal,
     });
     return { sceneName, stats: (result as Any).stats, result };

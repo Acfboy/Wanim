@@ -34,6 +34,7 @@ import {
 import { WebGLThreeDRenderer } from "./webgl_3d.js";
 import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { is_thenable } from "../utils/scheduler.js";
+import { create_canvas_backend, type CanvasBackend } from "./backend.js";
 
 export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
   ctx: CanvasRenderingContext2D;
@@ -55,6 +56,8 @@ export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
    * false to force the pure Canvas2D path (pixel-parity comparisons, tests).
    */
   useWebGL?: boolean;
+  /** Explicit paint backend (defaults to the plain Canvas2D backend). */
+  backend?: CanvasBackend;
 }
 
 export interface CanvasRenderProgress {
@@ -108,6 +111,8 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
   abortSignal: AbortSignal | null;
   /** Whether the WebGL2 3D backend may be used (see options). */
   useWebGL: boolean;
+  /** Paint backend for the 2D display list. */
+  readonly backend: CanvasBackend;
   private _webgl: WebGLThreeDRenderer | null | undefined = undefined;
   private _pendingRecord: MJSONFrame | null = null;
   private _startedAt = 0;
@@ -122,6 +127,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this.abortSignal = options.abortSignal ?? null;
     this.onFrame = options.onFrame ?? null;
     this.useWebGL = options.useWebGL ?? true;
+    this.backend = options.backend ?? create_canvas_backend();
     // Count scene construction (Tex/MathJax, mobject setup) as part of the
     // run; the renderer is created immediately before the Scene.
     this._startedAt = performance.now();
@@ -132,6 +138,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
   dispose(): void {
     this._webgl?.dispose();
     this._webgl = null;
+    this.backend.dispose();
   }
 
   /** Lazily created WebGL2 backend (null when unavailable/disabled). */
@@ -191,7 +198,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
         clearCanvas(this.ctx, camera, background);
         setCanvasTransform(this.ctx, camera);
         for (const mobject of displayed) {
-          if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);
+          if (mobject instanceof VMobject) this.backend.draw(this.ctx, camera, mobject);
         }
       }
       this.stats.drawMs += performance.now() - t1;
@@ -330,6 +337,8 @@ export interface MJSONPlayerOptions {
   onFrame?: (frameIndex: number) => void;
   /** Called when a non-looping playback reaches the end. */
   onEnd?: () => void;
+  /** Paint backend (defaults to the plain Canvas2D backend). */
+  backend?: CanvasBackend;
 }
 
 /** Playback handle returned by {@link MJSONCanvasPlayer.play}. */
@@ -364,15 +373,21 @@ export class MJSONPlayerHandle {
 export class MJSONCanvasPlayer {
   readonly document: MJSONDocument;
   readonly is3D: boolean;
+  readonly backend: CanvasBackend;
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly camera: PreviewCamera | PreviewThreeDCamera;
   private readonly background: string;
   private readonly flatFrames: MJSONFrame[] = [];
 
-  constructor(canvas: HTMLCanvasElement, document: MJSONDocument) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    document: MJSONDocument,
+    options: { backend?: CanvasBackend } = {},
+  ) {
     this.canvas = canvas;
     this.document = document;
+    this.backend = options.backend ?? create_canvas_backend();
     const meta = document.meta;
     canvas.width = meta.width;
     canvas.height = meta.height;
@@ -405,7 +420,7 @@ export class MJSONCanvasPlayer {
   renderFrame(index: number): void {
     const frame = this.flatFrames[Math.max(0, Math.min(index, this.flatFrames.length - 1))];
     if (frame === undefined) return;
-    drawFrame(this.ctx, this.camera, frame, this.background);
+    drawFrame(this.ctx, this.camera, frame, this.background, this.backend);
   }
 
   play(options: MJSONPlayerOptions = {}): MJSONPlayerHandle {
