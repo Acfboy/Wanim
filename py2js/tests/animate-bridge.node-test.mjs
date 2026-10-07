@@ -78,4 +78,15 @@ check("MethodWithArgs record keeps the kwargs tag for replay", () => {
   assert.equal(recorded.kwargs.opacity, 0.25);
 });
 
+check("Slider receives its keyword options through the bridge", () => {
+  // `Slider` extends `PathSlider`; it used to read PathSlider's inherited
+  // __argnames__ and build with no options (default range [0, 1], value 0).
+  const slider = ns.Slider(
+    desugar({ start: [-2, 0, 0], end: [2, 0, 0], value_range: [0.5, 3], init_value: 1 }),
+  );
+  assert.deepEqual(slider.value_range, [0.5, 3]);
+  assert.equal(slider.get_value(), 1);
+  assert.deepEqual(slider.start_point, [-2, 0, 0]);
+});
+
 console.log(`\n${passed} animate-bridge checks passed`);
