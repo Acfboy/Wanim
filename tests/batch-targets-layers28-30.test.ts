@@ -280,10 +280,14 @@ describe("Matrix.__init__ / get_mob_matrix / colors (bracket-free)", () => {
     );
     expect(m.mob_matrix.length).toBe(2);
     expect(m.mob_matrix[0]?.length).toBe(2);
-    vecClose(m.mob_matrix[0]?.[0]!.get_center(), [-0.65, 0.4, 0]);
-    vecClose(m.mob_matrix[0]?.[1]!.get_center(), [0.65, 0.4, 0]);
-    vecClose(m.mob_matrix[1]?.[0]!.get_center(), [-0.65, -0.4, 0]);
-    vecClose(m.mob_matrix[1]?.[1]!.get_center(), [0.65, -0.4, 0]);
+    // DEVIATION (content-aware grid): 2-wide squares get pitch
+    // max(1.3, 2 + 0.25) = max(0.8, 2 + 0.25) = 2.25 instead of upstream's
+    // fixed 1.3/0.8, so the centered centers are (-1.125, 1.125),
+    // (1.125, 1.125), (-1.125, -1.125), (1.125, -1.125).
+    vecClose(m.mob_matrix[0]?.[0]!.get_center(), [-1.125, 1.125, 0]);
+    vecClose(m.mob_matrix[0]?.[1]!.get_center(), [1.125, 1.125, 0]);
+    vecClose(m.mob_matrix[1]?.[0]!.get_center(), [-1.125, -1.125, 0]);
+    vecClose(m.mob_matrix[1]?.[1]!.get_center(), [1.125, -1.125, 0]);
     expect(m.elements.submobjects.length).toBe(4);
   });
   it("get_mob_matrix returns the underlying matrix (identity)", () => {

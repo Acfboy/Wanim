@@ -174,10 +174,14 @@ describe("matrix pure layout + ported tex", () => {
     );
     expect(m.mob_matrix.length).toBe(2);
     expect(m.mob_matrix[0]?.length).toBe(2);
-    vecClose(m.mob_matrix[0]?.[0]!.get_center(), [-0.65, 0.4, 0]);
-    vecClose(m.mob_matrix[0]?.[1]!.get_center(), [0.65, 0.4, 0]);
-    vecClose(m.mob_matrix[1]?.[0]!.get_center(), [-0.65, -0.4, 0]);
-    vecClose(m.mob_matrix[1]?.[1]!.get_center(), [0.65, -0.4, 0]);
+    // DEVIATION (content-aware grid): upstream puts 2x2 Squares (side 2) on
+    // the fixed 1.3/0.8 pitch (overlapping them); the port grows the pitch to
+    // max(1.3, 2 + 0.25) = max(0.8, 2 + 0.25) = 2.25 -> centered centers
+    // (-1.125, 1.125), (1.125, 1.125), (-1.125, -1.125), (1.125, -1.125).
+    vecClose(m.mob_matrix[0]?.[0]!.get_center(), [-1.125, 1.125, 0]);
+    vecClose(m.mob_matrix[0]?.[1]!.get_center(), [1.125, 1.125, 0]);
+    vecClose(m.mob_matrix[1]?.[0]!.get_center(), [-1.125, -1.125, 0]);
+    vecClose(m.mob_matrix[1]?.[1]!.get_center(), [1.125, -1.125, 0]);
     expect(m.get_rows().submobjects.length).toBe(2); // python: 2
     expect(m.get_columns().submobjects.length).toBe(2); // python: 2
     expect(m.get_entries().submobjects.length).toBe(4);

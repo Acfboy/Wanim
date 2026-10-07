@@ -204,8 +204,12 @@ describe("Write", () => {
 
 // ---------------------------------------------------------------------------
 // manim.mobject.matrix.Matrix._organize_mob_matrix
-// Python (v_buff 0.8, h_buff 1.3, corner DR): a [-1,1,0], b [0.3,1,0],
-// c [-1,0.2,0], d [0.3,0.2,0].
+// DEVIATION (content-aware grid): upstream Python anchors entries on the fixed
+// grid (j*h_buff, -i*v_buff), so a 2x2 Square (side 2 > h_buff 1.3) overlaps
+// its neighbour. The TS port grows the pitch to `entry + entry_gap` instead:
+// with v_buff 0.8, h_buff 1.3, gap 0.25, corner DR the pitch is
+// max(1.3, 2 + 0.25) = 2.25 in both directions, giving centers
+// (-1,1) (1.25,1) (-1,-1.25) (1.25,-1.25).
 // (Matrix() itself needs MathTex brackets -> TODO stub, so the method is
 // exercised on a bare prototype instance like Python's Matrix.__new__ trick.)
 // ---------------------------------------------------------------------------
@@ -214,13 +218,36 @@ describe("Matrix._organize_mob_matrix", () => {
     const m = Object.create(Matrix.prototype) as Matrix;
     m.v_buff = 0.8;
     m.h_buff = 1.3;
+    m.entry_gap = 0.25;
     m.element_alignment_corner = [1, -1, 0];
     const [a, b, c, d] = [new Square(), new Square(), new Square(), new Square()];
     m._organize_mob_matrix([[a!, b!], [c!, d!]]);
     expectRowsClose([a!.get_center()], [[-1, 1, 0]], 1e-9);
-    expectRowsClose([b!.get_center()], [[0.3, 1, 0]], 1e-9);
-    expectRowsClose([c!.get_center()], [[-1, 0.2, 0]], 1e-9);
-    expectRowsClose([d!.get_center()], [[0.3, 0.2, 0]], 1e-9);
+    expectRowsClose([b!.get_center()], [[1.25, 1, 0]], 1e-9);
+    expectRowsClose([c!.get_center()], [[-1, -1.25, 0]], 1e-9);
+    expectRowsClose([d!.get_center()], [[1.25, -1.25, 0]], 1e-9);
+  });
+
+  it("keeps the upstream fixed grid when entries fit inside the buffs", () => {
+    const m = Object.create(Matrix.prototype) as Matrix;
+    m.v_buff = 0.8;
+    m.h_buff = 1.3;
+    m.entry_gap = 0.25;
+    m.element_alignment_corner = [1, -1, 0];
+    const [a, b, c, d] = [
+      new Square(0.5),
+      new Square(0.5),
+      new Square(0.5),
+      new Square(0.5),
+    ];
+    m._organize_mob_matrix([[a!, b!], [c!, d!]]);
+    // Python (v_buff 0.8, h_buff 1.3, corner DR, 0.5-wide squares): the pitch
+    // stays max(1.3, 0.5 + 0.25) = 1.3 / max(0.8, 0.5 + 0.25) = 0.8, so the
+    // centers are (-0.25, 0.25), (1.05, 0.25), (-0.25, -0.55), (1.05, -0.55).
+    expectRowsClose([a!.get_center()], [[-0.25, 0.25, 0]], 1e-9);
+    expectRowsClose([b!.get_center()], [[1.05, 0.25, 0]], 1e-9);
+    expectRowsClose([c!.get_center()], [[-0.25, -0.55, 0]], 1e-9);
+    expectRowsClose([d!.get_center()], [[1.05, -0.55, 0]], 1e-9);
   });
 });
 

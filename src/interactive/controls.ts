@@ -106,19 +106,6 @@ function mod(value: number, modulus: number): number {
   return ((value % modulus) + modulus) % modulus;
 }
 
-/** Corner/center of a rectangle in the direction `direction`. */
-function alignmentPoint(
-  left: number,
-  right: number,
-  bottom: number,
-  top: number,
-  direction: readonly number[],
-): [number, number] {
-  const x = (direction[0] ?? 0) > 0 ? right : (direction[0] ?? 0) < 0 ? left : (left + right) / 2;
-  const y = (direction[1] ?? 0) > 0 ? top : (direction[1] ?? 0) < 0 ? bottom : (bottom + top) / 2;
-  return [x, y];
-}
-
 export interface PathSliderOptions {
   value_range?: readonly number[];
   init_value?: number;
@@ -799,6 +786,12 @@ export interface InputDecimalMatrixOptions extends MatrixOptions {}
  * A {@link DecimalMatrix} whose entries are editable {@link InputDecimalNumber}
  * cells. Editing a cell re-runs {@link InputDecimalMatrix.relayout}, so the
  * grid and brackets follow the new cell sizes.
+ *
+ * The grid layout is the content-aware one implemented by
+ * {@link DecimalMatrix._organize_mob_matrix}: pitches are `h_buff`/`v_buff`
+ * while the entries fit, and grow to `entry + entry_gap` when they do not.
+ * Construction therefore already matches an equivalent {@link DecimalMatrix},
+ * and edits never overlap neighbouring cells.
  */
 export class InputDecimalMatrix extends DecimalMatrix {
   constructor(matrix: unknown[][], options: InputDecimalMatrixOptions = {}) {
@@ -809,53 +802,16 @@ export class InputDecimalMatrix extends DecimalMatrix {
     } = options;
     super(matrix, { element_to_mobject, element_to_mobject_config, ...rest });
     attachRelayout(this.mob_matrix, () => this.relayout());
-    // `Matrix` lays cells out by anchoring each cell's alignment corner at the
-    // fixed grid points `(j*h_buff, -i*v_buff)`, while `relayout` packs cells
-    // into slots sized by each column/row's widest cell.  Those two layouts
-    // differ (by roughly one cell width/height), so without this first pass an
-    // edit would visibly jump the matrix to its auto-layout size.  Enter the
-    // auto-layout at construction time instead.
-    this.relayout();
   }
 
   /**
-   * Re-place the cells on a grid of slots sized by the widest cell per column
-   * and the tallest cell per row (with `h_buff`/`v_buff` gaps), re-fit the
-   * brackets, and shift everything back to its previous center.
+   * Re-place the cells on the shared content-aware grid (the same algorithm
+   * used at construction), re-fit the brackets, and shift everything back to
+   * its previous center.
    */
   relayout(): this {
     const savedCenter = this.get_center();
-    const matrix = this.mob_matrix;
-    const rows = matrix.length;
-    const cols = rows > 0 ? matrix[0]!.length : 0;
-    if (rows > 0 && cols > 0) {
-      const colWidths = new Array<number>(cols).fill(0);
-      const rowHeights = new Array<number>(rows).fill(0);
-      for (let i = 0; i < rows; i += 1) {
-        for (let j = 0; j < cols; j += 1) {
-          const cell = matrix[i]![j]!;
-          colWidths[j] = Math.max(colWidths[j]!, cell.width);
-          rowHeights[i] = Math.max(rowHeights[i]!, cell.height);
-        }
-      }
-      let x = 0;
-      for (let j = 0; j < cols; j += 1) {
-        let y = 0;
-        for (let i = 0; i < rows; i += 1) {
-          const cell = matrix[i]![j]!;
-          const [cornerX, cornerY] = alignmentPoint(
-            x,
-            x + colWidths[j]!,
-            y - rowHeights[i]!,
-            y,
-            this.element_alignment_corner,
-          );
-          cell.move_to([cornerX, cornerY, 0], this.element_alignment_corner);
-          y -= rowHeights[i]! + this.v_buff;
-        }
-        x += colWidths[j]! + this.h_buff;
-      }
-    }
+    this._organize_mob_matrix(this.mob_matrix);
     if (this.stretch_brackets) {
       this.brackets.stretch_to_fit_height(this.elements.height + 2 * this.bracket_v_buff);
     }

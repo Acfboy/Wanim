@@ -145,8 +145,10 @@ describe("GrowArrow.__init__", () => {
 //   matrix_to_tex_string([[1,2],[3,4]]) ==
 //     '\\left[ \\begin{array}{cc}1 & 2 \\\\ 3 & 4\\end{array} \\right]'
 //   1-D input becomes a single column.
-//   MobjectMatrix 2x2: v_buff 0.8, h_buff 1.3, entries 4, rows 2, cols 2,
-//   c00 [-0.65, 0.4, 0], c01 [0.65, 0.4, 0], c10 [-0.65, -0.4, 0].
+//   MobjectMatrix 2x2: v_buff 0.8, h_buff 1.3, entries 4, rows 2, cols 2.
+//   DEVIATION: the port's grid is content-aware, so 2-wide squares get a pitch
+//   of max(1.3, 2 + 0.25) = max(0.8, 2 + 0.25) = 2.25 instead of upstream's
+//   fixed 1.3/0.8; centers below are the 2.25-pitch ones.
 // ---------------------------------------------------------------------------
 class NoBracketMatrix extends Matrix {
   override _add_brackets(): this {
@@ -187,11 +189,13 @@ describe("Matrix (Mobject entries, brackets patched)", () => {
     expect(m.get_entries().submobjects.length).toBe(4);
     expect(m.get_rows().submobjects.length).toBe(2);
     expect(m.get_columns().submobjects.length).toBe(2);
-    // Python: c00 [-0.65, 0.4, 0], c01 [0.65, 0.4, 0], c10 [-0.65, -0.4, 0]
-    expectPointClose(m.mob_matrix[0]![0]!.get_center(), [-0.65, 0.4, 0], 1e-6);
-    expectPointClose(m.mob_matrix[0]![1]!.get_center(), [0.65, 0.4, 0], 1e-6);
-    expectPointClose(m.mob_matrix[1]![0]!.get_center(), [-0.65, -0.4, 0], 1e-6);
-    expectPointClose(m.mob_matrix[1]![1]!.get_center(), [0.65, -0.4, 0], 1e-6);
+    // DEVIATION: content-aware pitch (2.25) for the 2x2 Squares; the centered
+    // centers are (-1.125, 1.125), (1.125, 1.125), (-1.125, -1.125),
+    // (1.125, -1.125).
+    expectPointClose(m.mob_matrix[0]![0]!.get_center(), [-1.125, 1.125, 0], 1e-6);
+    expectPointClose(m.mob_matrix[0]![1]!.get_center(), [1.125, 1.125, 0], 1e-6);
+    expectPointClose(m.mob_matrix[1]![0]!.get_center(), [-1.125, -1.125, 0], 1e-6);
+    expectPointClose(m.mob_matrix[1]![1]!.get_center(), [1.125, -1.125, 0], 1e-6);
   });
 
   it("_add_brackets without patch builds MathTex brackets", () => {

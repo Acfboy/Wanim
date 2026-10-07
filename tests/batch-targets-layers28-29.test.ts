@@ -218,10 +218,13 @@ describe("integration", () => {
     m.set_row_colors("GREEN");
     expect(vd.__getitem__("first") === s1).toBe(true);
     expect(s1.get_color().to_hex().toUpperCase()).toBe("#83C167");
-    expect(centerClose(m.mob_matrix[0]?.[0] as VMobject, [-0.65, 0, 0])).toBe(
+    // DEVIATION (content-aware grid): 2-wide squares get pitch
+    // max(1.3, 2 + 0.25) = 2.25 instead of upstream's 1.3, so the centered
+    // centers are (-1.125, 0) and (1.125, 0).
+    expect(centerClose(m.mob_matrix[0]?.[0] as VMobject, [-1.125, 0, 0])).toBe(
       true,
     );
-    expect(centerClose(m.mob_matrix[0]?.[1] as VMobject, [0.65, 0, 0])).toBe(
+    expect(centerClose(m.mob_matrix[0]?.[1] as VMobject, [1.125, 0, 0])).toBe(
       true,
     );
   });
