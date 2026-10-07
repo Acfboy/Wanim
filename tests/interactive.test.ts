@@ -628,6 +628,29 @@ describe("InputDecimalMatrix", () => {
     }
   });
 
+  test("construction already uses the relayout layout (no jump on first edit)", () => {
+    const matrix = new InputDecimalMatrix(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      { element_to_mobject_config: { num_decimal_places: 1 } },
+    );
+    const width = matrix.width;
+    const height = matrix.height;
+    const centersBefore = matrix.mob_matrix.map((row) => row.map((cell) => [...cell.get_center()]));
+
+    matrix.relayout();
+    expect(matrix.width).toBeCloseTo(width, 9);
+    expect(matrix.height).toBeCloseTo(height, 9);
+    matrix.mob_matrix.forEach((row, i) => {
+      row.forEach((cell, j) => {
+        expect(cell.get_center()[0]).toBeCloseTo(centersBefore[i]![j]![0]!, 9);
+        expect(cell.get_center()[1]).toBeCloseTo(centersBefore[i]![j]![1]!, 9);
+      });
+    });
+  });
+
   test("InteractiveScene routes a pointer press to a matrix cell", async () => {
     class MatrixScene extends InteractiveScene {
       matrix!: InputDecimalMatrix;
@@ -704,5 +727,27 @@ describe("InputDecimalTable", () => {
     const verticalX = vertical.get_center()[0] ?? 0;
     expect(verticalX).toBeGreaterThan(col0.get_right()[0] ?? 0);
     expect(verticalX).toBeLessThan(col1.get_left()[0] ?? 0);
+  });
+
+  test("repeated relayouts replace the previous lines instead of stacking them", () => {
+    const table = new InputDecimalTable(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      { include_outer_lines: true },
+    );
+    const lineCount = (): number =>
+      table.get_family().filter((member) => member instanceof Line).length;
+    const initialLines = lineCount();
+    const initialSubmobjects = table.submobjects.length;
+
+    const cell = table.mob_table[0]![0]!;
+    for (const value of [10, 20, 30]) {
+      cell.set_value(value);
+      (cell as unknown as { on_change?: () => void }).on_change?.();
+      expect(lineCount()).toBe(initialLines);
+      expect(table.submobjects.length).toBe(initialSubmobjects);
+    }
   });
 });
