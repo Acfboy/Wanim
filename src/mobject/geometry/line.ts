@@ -200,9 +200,10 @@ export class Line extends TipableVMobject {
     // would skip that side effect and diverge from Python (e.g. Arrow.scale(1)
     // during FadeIn's faded-copy creation shrinks 1.75 -> 1.3125 there).
     // Delegate to super for those so the width update happens.
+    // NOTE: Mobject instances are Proxies that throw AttributeError on
+    // missing members, so probe with `in` instead of reading the property.
     const hasArrowWidthRule =
-      (this as unknown as { _set_stroke_width_from_length?: unknown })
-        ._set_stroke_width_from_length !== undefined;
+      "_set_stroke_width_from_length" in (this as unknown as Record<string, unknown>);
     if (
       this.path_arc === 0
       && !this.has_tip()
