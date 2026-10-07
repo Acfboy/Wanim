@@ -3793,7 +3793,14 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   /** Parameter names of a native class constructor (walking up the chain). */
   function parseConstructorParams(Ctor: new (...a: Any[]) => Any): (string | null)[] | null {
     if (constructorParamsCache.has(Ctor)) return constructorParamsCache.get(Ctor) ?? null;
-    const explicitCtor = (Ctor as Any).__argnames__;
+    // Only *own* `__argnames__` describe this constructor: a class static is
+    // inherited by subclasses, and a subclass usually has a different
+    // signature (e.g. `Slider(options)` extends `PathSlider(path, options)`).
+    // Honoring an inherited list maps the subclass's kwargs onto the parent's
+    // slots and drops them.
+    const explicitCtor = Object.prototype.hasOwnProperty.call(Ctor, "__argnames__")
+      ? (Ctor as Any).__argnames__
+      : undefined;
     if (Array.isArray(explicitCtor)) {
       constructorParamsCache.set(Ctor, [...explicitCtor]);
       return [...explicitCtor];

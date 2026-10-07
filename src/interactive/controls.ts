@@ -926,6 +926,13 @@ export class InputDecimalTable extends DecimalTable {
 // parameter names, but esbuild renames colliding locals when bundling, so the
 // names are pinned here (see `arrange_in_grid` for the same pattern).
 (PathSlider as unknown as { __argnames__?: string[] }).__argnames__ = ["path", "options"];
+// `Slider` takes a single options bag (its track is derived from `start`/`end`),
+// so it must pin its *own* names: a class static `__argnames__` is inherited by
+// subclasses, and without this override the bridge would read PathSlider's
+// ["path", "options"], map every Slider kwarg into the (nonexistent) options
+// slot of that shape and construct `new Slider(undefined, extras)`, dropping
+// `value_range`/`init_value`/... entirely.
+(Slider as unknown as { __argnames__?: string[] }).__argnames__ = ["options"];
 (InputInteger as unknown as { __argnames__?: string[] }).__argnames__ = ["numberValue", "options"];
 (InputDecimalMatrix as unknown as { __argnames__?: string[] }).__argnames__ = ["matrix", "options"];
 (InputDecimalTable as unknown as { __argnames__?: string[] }).__argnames__ = ["table", "options"];

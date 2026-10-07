@@ -939,4 +939,36 @@ check("native class wrappers do not expose __argnames__ (kwargs pass through)", 
   assert.deepEqual(instance.options.value_range, [0, 360]);
 });
 
+check("subclass constructors do not inherit the parent's __argnames__", () => {
+  // A class static is inherited through the constructor prototype chain.
+  // `Slider(options)` extends `PathSlider(path, options)`: reading the
+  // inherited ["path", "options"] made the bridge map `start`/`end`/
+  // `value_range`/... into a nonexistent slot and build the Slider with no
+  // options at all (default value_range [0, 1], init_value 0).
+  class PathSlider {
+    constructor(path, options = {}) {
+      this.path = path;
+      this.options = options;
+    }
+  }
+  PathSlider.__argnames__ = ["path", "options"];
+  class Slider extends PathSlider {
+    constructor(options = {}) {
+      super(undefined, options);
+    }
+  }
+  const runtime = createRuntimeCore({ wanim: { PathSlider, Slider }, np: {}, NDArray: FakeNDArray });
+  const wrapped = runtime.wrapWanimNamespace({ PathSlider, Slider });
+
+  const bag = Object.create(null);
+  bag[Symbol("kwargs-object")] = true;
+  bag.start = [-2, 0, 0];
+  bag.value_range = [0.5, 3];
+  bag.init_value = 1;
+  const instance = wrapped.Slider(bag);
+  assert.deepEqual(instance.options.value_range, [0.5, 3]);
+  assert.equal(instance.options.init_value, 1);
+  assert.deepEqual(instance.options.start, [-2, 0, 0]);
+});
+
 console.log(`\n${passed} tests passed`);
