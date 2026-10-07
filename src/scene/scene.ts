@@ -409,7 +409,7 @@ export class Scene {
     this.renderer?.init_scene?.(this);
     // NOTE: Python seeds the `random` and `numpy.random` singletons here.
     // The TS runtime has no seedable global RNG, so only the field above is
-    // stored (see ).
+    // stored.
   }
 
   /** The time since the start of the scene. */
@@ -1224,8 +1224,7 @@ export class Scene {
 
     // NOTE: the IPython InteractiveShellEmbed session (post_run_cell render
     // hook, caller-locals namespace, and the play/wait/add/remove/interact
-    // shortcuts) has no TS equivalent and is skipped; see
-    // .
+    // shortcuts) has no TS equivalent and is skipped.
     console.warn("embed requires an IPython terminal session, which is not available in the TypeScript runtime.");
 
     // End scene when exiting an embed.

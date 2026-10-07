@@ -453,7 +453,7 @@ export function unsupportedImportError(result: PreprocessResult): Error | null {
 // (unbalanced brackets, `else` in clause position, `async for`, tuple display
 // in a `(...)` head, ...) is left untouched so the compiler still reports it.
 //
-// Known limitations (documented in ): a bare lambda with
+// Known limitations: a bare lambda with
 // a conditional body as an iteration target (e.g. `for a in lambda: 1 if c
 // else 2`) would confuse the clause splitter; generator comprehensions lose
 // laziness (the flattened list is built eagerly); and `:=` (walrus) targets
@@ -1590,7 +1590,7 @@ export function desugarNumpySubscripts(source: string): string {
 // `@@`, f-string interpolations, `#`-commented gaps, ...) is left untouched
 // so the compiler still reports it instead of being silently miscompiled.
 //
-// Known limitations (documented in ): like the other
+// Known limitations: like the other
 // desugars this is a source-level heuristic, not a full parser — an `@`
 // inside an f-string `{...}` interpolation is not rewritten, and an `@=`
 // target with side effects (`a[i()] @= b`) is evaluated twice.
@@ -2283,7 +2283,7 @@ export function desugarComplexLiterals(source: string): string {
 // `reversed` (`def`/`class`/assignment at line start) the source is left
 // untouched so the local binding keeps working.
 //
-// Known limitations (documented in ): shadowing
+// Known limitations: shadowing
 // `reversed` via `lambda`/`global`/`nonlocal`/import alias, or calling it
 // through an alias (`r = reversed; r(x)`), is not detected.
 
@@ -3330,7 +3330,7 @@ export function desugarTupleTrailingCommas(source: string): string {
 // element starting with `**` inside `[...]` is invalid Python and is left
 // untouched so the compiler still reports it.
 //
-// Known limitations (documented in ): like the other
+// Known limitations: like the other
 // desugars this is a source-level heuristic -- a starred display inside an
 // f-string `{...}` interpolation is not rewritten; a starred comprehension
 // element (`[*a for a in b]`, valid Python) is left for the compiler; and

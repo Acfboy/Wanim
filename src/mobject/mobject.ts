@@ -289,7 +289,7 @@ function isFlatLeafGroup(mob: Mobject): boolean {
  * overwrites.  Skipping it avoids the subpath/bezier re-alignment on every
  * frame of a live `MathTex`/graph readout; the copied geometry is the
  * target's, so the visual result is unchanged (point counts follow the
- * target rather than the subdivision — see ). */
+ * target rather than the subdivision). */
 function canDirectBecome(a: Mobject, b: Mobject): boolean {
   if (a.has_points() !== b.has_points()) return false;
   const ca = a.submobjects;
@@ -3709,7 +3709,7 @@ export function createAnimationBuilder(mobject: Mobject): _AnimationBuilder {
 // bag for kwargs-to-map (e.g. `opacity=` has no slot on
 // `apply_method_update`, so it lands in an extras merge that drops the tag),
 // and the detagged bag would ride positionally into `color` and throw in
-// `ManimColor` (`circles.animate.set_fill(opacity=0.25)`).
+// `ManimColor` (e.g. `circles.animate.set_fill(opacity=0.25)`).
 // These classes are internal machinery (never Python kwarg call targets),
 // so they opt out of prototype wrapping entirely.
 (

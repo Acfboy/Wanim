@@ -288,7 +288,7 @@ export interface BarChartOptions {
 // x-axis/bar labels (Tex/MathTex via the ported text pipeline) are ported in
 // full. The bars cannot join the Axes group via Python's add/add_to_back
 // because the TS Axes hierarchy is not Mobject-based, so `add_to_back` is
-// called on the chart itself; see .
+// called on the chart itself.
 export class BarChart extends Axes {
   values: number[];
   bar_names: string[] | null;

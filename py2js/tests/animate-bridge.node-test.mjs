@@ -6,8 +6,7 @@
 // positionally so the wrapped-method kwargs bridge maps `opacity` onto the
 // `set_fill` slot. If an intermediate builder method is itself wrapped, the
 // bridge mistakes the bag for kwargs-to-map, detags it via an extras merge,
-// and the plain object lands in `color` -> `ManimColor ... not Object`
-// ().
+// and the plain object lands in `color` -> `ManimColor ... not Object`.
 //
 // Run with:  pnpm test:py2js   (needs `pnpm build` first for dist/index.js)
 import assert from "node:assert/strict";

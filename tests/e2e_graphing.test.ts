@@ -7,7 +7,7 @@
 // See tests/e2e_graphing.test.ts header notes per assertion. The original manim has no
 // `latex` binary, so text-bearing paths (BarChart y-axis numbers / bar_names,
 // ComplexPlane DecimalNumber labels) are covered structurally instead of by
-// point-exact comparison; see .
+// point-exact comparison.
 import { describe, expect, it } from "vitest";
 import { Scene } from "../src/scene/scene.js";
 import { Create } from "../src/animation/creation.js";
