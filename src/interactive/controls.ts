@@ -809,6 +809,13 @@ export class InputDecimalMatrix extends DecimalMatrix {
     } = options;
     super(matrix, { element_to_mobject, element_to_mobject_config, ...rest });
     attachRelayout(this.mob_matrix, () => this.relayout());
+    // `Matrix` lays cells out by anchoring each cell's alignment corner at the
+    // fixed grid points `(j*h_buff, -i*v_buff)`, while `relayout` packs cells
+    // into slots sized by each column/row's widest cell.  Those two layouts
+    // differ (by roughly one cell width/height), so without this first pass an
+    // edit would visibly jump the matrix to its auto-layout size.  Enter the
+    // auto-layout at construction time instead.
+    this.relayout();
   }
 
   /**
@@ -896,7 +903,12 @@ export class InputDecimalTable extends DecimalTable {
   relayout(): this {
     const savedCenter = this.get_center();
     this._organize_mob_table(this.mob_table);
-    this.remove(this.horizontal_lines, this.vertical_lines);
+    // `Table._add_*_lines` adds each `Line` directly to the table (the
+    // `horizontal_lines`/`vertical_lines` VGroups only wrap them), so removing
+    // the groups themselves is a no-op and every edit would stack another set
+    // of lines (and widen the table's bbox, making each new horizontal line
+    // longer).  Remove the wrapped lines instead.
+    this.remove(...this.horizontal_lines.submobjects, ...this.vertical_lines.submobjects);
     this._add_horizontal_lines();
     this._add_vertical_lines();
     const newCenter = this.get_center();

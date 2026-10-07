@@ -909,4 +909,34 @@ check("format is exposed to compiled scenes as a global", () => {
   assert.equal(runtime.globals.format(9, "04b"), "1001");
 });
 
+check("native class wrappers do not expose __argnames__ (kwargs pass through)", () => {
+  // rapydscript's ρσ_interpolate_kwargs consumes the trailing kwargs bag when
+  // the callee exposes __argnames__, mapping named keys onto positional slots
+  // and *dropping the rest*.  Constructor wrappers must therefore hide it from
+  // rapydscript (the raw class keeps it for `parseConstructorParams`), so the
+  // bag reaches the wrapper's own `mapConstructorArgs`, which merges extras
+  // into the trailing options slot.  Regression: `PathSlider(path,
+  // is_closed=True)` silently lost `is_closed`.
+  class PathSlider {
+    constructor(path, options = {}) {
+      this.path = path;
+      this.options = options;
+    }
+  }
+  PathSlider.__argnames__ = ["path", "options"];
+  const runtime = createRuntimeCore({ wanim: { PathSlider }, np: {}, NDArray: FakeNDArray });
+  const wrapped = runtime.wrapWanimNamespace({ PathSlider }).PathSlider;
+  assert.equal(wrapped.__argnames__, undefined);
+  assert.deepEqual(PathSlider.__argnames__, ["path", "options"]);
+
+  const bag = Object.create(null);
+  bag[Symbol("kwargs-object")] = true;
+  bag.value_range = [0, 360];
+  bag.is_closed = true;
+  const instance = wrapped("ring", bag);
+  assert.equal(instance.path, "ring");
+  assert.equal(instance.options.is_closed, true);
+  assert.deepEqual(instance.options.value_range, [0, 360]);
+});
+
 console.log(`\n${passed} tests passed`);

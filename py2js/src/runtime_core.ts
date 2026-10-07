@@ -3898,6 +3898,17 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // Copy static members (e.g. `_original__init__`, `get_scene_classes_from_module`).
     for (const key of Object.getOwnPropertyNames(Ctor)) {
       if (key === "prototype" || key === "length" || key === "name") continue;
+      // `__argnames__` is constructor metadata consumed by `mapConstructorArgs`
+      // through `parseConstructorParams(Ctor)`, which reads it off the *raw*
+      // class.  Copying it onto the wrapper would let rapydscript's own
+      // `ρσ_interpolate_kwargs` intercept keyword arguments first: its
+      // non-`__handles_kwarg_interpolation__` path maps only keys that name a
+      // parameter and then drops the rest, so a call like
+      // `PathSlider(path, is_closed=True)` (pinned `["path", "options"]`) lost
+      // every option -- including `is_closed`.  Leaving the wrapper free of
+      // `__argnames__` makes rapydscript pass the kwargs bag through, and the
+      // wrapper's `mapConstructorArgs` merges extras into the options bag.
+      if (key === "__argnames__") continue;
       try {
         (Wrapper as Any)[key] = (Ctor as Any)[key];
       } catch {
