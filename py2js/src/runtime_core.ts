@@ -1396,18 +1396,26 @@ export function pythonFormat(value: Any, formatSpec?: Any): string {
 export function createRuntimeCore(deps: RuntimeDeps) {
   const { wanim, np, NDArray } = deps;
   // Plain-object dict literals (`{"a": 1}` compiles to `{}`) need Python
-  // dict methods in every realm that runs translated code (Node unit tests,
-  // the browser main window, ...).  The iframe sandbox that actually runs
-  // scenes gets its own `Object.prototype` patched via `installPythonShims`.
-  try {
-    installPythonDictShims((globalThis as Any).Object?.prototype);
-  } catch {
-    /* non-configurable host: sandbox patch still covers scenes */
-  }
-  try {
-    installPythonArraySortShim((globalThis as Any).Array?.prototype);
-  } catch {
-    /* non-configurable host: sandbox patch still covers scenes */
+  // dict/array methods in every realm that *runs translated code*.  Under Node
+  // (unit tests, the tsc build) that is the process realm, patched here.  A
+  // browser page's realm is NOT a translated-code realm: scenes run inside the
+  // iframe sandbox, which gets its own `Object.prototype`/`Array.prototype`
+  // patched via `installPythonShims`.  Patching the host page instead would
+  // pollute `window.Object.prototype` with `update`/`items`/`sort`/... and
+  // break unrelated JS: importing this bundle made CodeMirror's plugin
+  // observer hit the `update` shim ("dict.update() called on a non-dict
+  // object") and crash the editor.  Keep the host page untouched.
+  if (typeof window === "undefined") {
+    try {
+      installPythonDictShims((globalThis as Any).Object?.prototype);
+    } catch {
+      /* non-configurable host: sandbox patch still covers scenes */
+    }
+    try {
+      installPythonArraySortShim((globalThis as Any).Array?.prototype);
+    } catch {
+      /* non-configurable host: sandbox patch still covers scenes */
+    }
   }
 
   function isNdArray(value: unknown): value is NumpyTS.NDArray {
