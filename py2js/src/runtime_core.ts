@@ -5887,13 +5887,26 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           // `rng = np.random.RandomState(1)` then `rng.uniform(-np.pi, np.pi)`):
           // numpy-ts only ships the new `Generator` API (`default_rng`) and has
           // no `RandomState` class, so anycourseware using the legacy constructor
-          // fails with `RandomState is not a function`.  Provide a `RandomState`
-          // factory backed by `default_rng(seed)` with the widely used legacy
-          // distribution methods delegating to the inner generator.
+          // fails with `RandomState is not a function`.
           //
-          // NOTE: the bit stream intentionally differs from CPython's MT19937
-          // legacy stream (numpy-ts has no MT19937); the factory is
-          // deterministic per seed, which is what wanim scenes need.
+          // A `RandomState` owns an independent MT19937 stream seeded exactly
+          // like the legacy module (`rk_seed` == `init_genrand`), while
+          // numpy-ts only exposes its MT19937 through module-global functions
+          // (`seed` / `random` / ... over one shared WASM state).  Back each
+          // instance with its own MT19937 snapshot (via `get_state` /
+          // `set_state`) and swap it in/out around every draw, so instance
+          // streams are bit-identical to CPython numpy
+          // (e.g. `RandomState(185104).random(32)`) without disturbing the
+          // module-global stream.  Seeds numpy cannot express as a single
+          // uint32 (notably array seeds, which need `init_by_array`) fall back
+          // to a `default_rng` generator, as before.
+          //
+          // Known limitation: the legacy gaussian cache (`legacyGauss`, used
+          // by `normal` / `randn` / `standard_cauchy` / ...) lives outside the
+          // get/set state snapshot, so it is shared between instances.  Single
+          // sequences per instance still match numpy exactly; only
+          // cross-instance interleavings of gauss-based draws may deviate.
+          //
           // The factory is a plain function (not an ES class) because
           // rapydscript compiles `RandomState(1)` to a bare call, and class
           // constructors throw when invoked without `new`.
@@ -5925,13 +5938,99 @@ export function createRuntimeCore(deps: RuntimeDeps) {
                 return (origDefaultRng as Any)();
               }
             };
+            type RsMtSnapshot = { mt: number[]; mti: number };
+            const rsMtFns =
+              typeof (origRandom as Any).seed === "function" &&
+              typeof (origRandom as Any).get_state === "function" &&
+              typeof (origRandom as Any).set_state === "function"
+                ? {
+                    seed: (origRandom as Any).seed as (...a: Any[]) => Any,
+                    getState: (origRandom as Any).get_state as (...a: Any[]) => Any,
+                    setState: (origRandom as Any).set_state as (...a: Any[]) => Any,
+                  }
+                : null;
+            const copyRsMt = (st: Any): RsMtSnapshot => ({
+              mt: Array.from(st.mt as ArrayLike<number>),
+              mti: Number(st.mti),
+            });
+            // Seed the module-global MT19937, capture the fresh state as the
+            // instance's snapshot, then restore the global stream untouched.
+            const seedRsMtSnapshot = (s: Any): RsMtSnapshot | null => {
+              if (rsMtFns === null) return null;
+              const prev = rsMtFns.getState();
+              rsMtFns.seed(s);
+              const inst = copyRsMt(rsMtFns.getState());
+              rsMtFns.setState(prev);
+              return inst;
+            };
             const RandomStateFactory = function (...args: Any[]): Any {
               const ctorKwargs = args.length > 0 ? detectKwargs(args[args.length - 1]) : null;
               let ctorPos = ctorKwargs !== null ? args.slice(0, -1) : args.slice();
               if (ctorKwargs !== null) {
                 ctorPos = placeKwargs(["seed"], ctorPos, ctorKwargs as Record<string, Any>);
               }
-              let gen: Any = freshRsGen(ctorPos.length > 0 ? ctorPos[0] : undefined);
+              // Mutable per-instance backend.  `snapshot !== null` selects the
+              // numpy-exact MT19937 path (`gen` is the adapter below);
+              // otherwise `gen` is a `default_rng` generator (array seeds).
+              const box: { snapshot: RsMtSnapshot | null } = { snapshot: null };
+              let gen: Any = null;
+              // Swap the instance snapshot into the module-global MT19937,
+              // draw, then write the advanced state back and restore the
+              // global stream.  Everything drawn inside `fn` — including
+              // nested raw numpy-ts calls made by broadcasting wrappers —
+              // comes from this instance's stream.
+              const drawFromSnapshot = <T>(fn: () => T): T => {
+                const snap = box.snapshot;
+                if (snap === null || rsMtFns === null) return fn();
+                const prev = rsMtFns.getState();
+                rsMtFns.setState({ mt: Array.from(snap.mt), mti: snap.mti });
+                try {
+                  return fn();
+                } finally {
+                  box.snapshot = copyRsMt(rsMtFns.getState());
+                  rsMtFns.setState(prev);
+                }
+              };
+              // Adapter exposing the same method names the factory delegates
+              // to, backed by the legacy module functions (which implement
+              // numpy's exact legacy algorithms) under the instance snapshot.
+              const rsLegacyAdapter: Record<string, Any> = {};
+              for (const name of Object.keys(RANDOM_DIST_ARGNAMES)) {
+                if (name === "integers") continue;
+                if (typeof (origRandom as Any)[name] !== "function") continue;
+                rsLegacyAdapter[name] = (...a: Any[]) =>
+                  drawFromSnapshot(() => (origRandom as Any)[name](...a));
+              }
+              // `Generator.integers(low, high, size)` == legacy
+              // `randint(low, high, size)` (high exclusive both ways).
+              rsLegacyAdapter.integers = (...a: Any[]) =>
+                drawFromSnapshot(() => (origRandom as Any).randint(...a.slice(0, 3)));
+              for (const name of ["choice", "permutation", "shuffle"]) {
+                if (typeof (origRandom as Any)[name] !== "function") continue;
+                rsLegacyAdapter[name] = (...a: Any[]) =>
+                  drawFromSnapshot(() => (origRandom as Any)[name](...a));
+              }
+              const armBackend = (rawSeed: Any): void => {
+                const coerced = coerceRsSeed(rawSeed);
+                if (
+                  coerced !== undefined &&
+                  typeof coerced !== "number" &&
+                  typeof coerced !== "bigint"
+                ) {
+                  box.snapshot = null;
+                  gen = freshRsGen(rawSeed);
+                  return;
+                }
+                const snap = seedRsMtSnapshot(coerced);
+                if (snap === null) {
+                  box.snapshot = null;
+                  gen = freshRsGen(rawSeed);
+                  return;
+                }
+                box.snapshot = snap;
+                gen = rsLegacyAdapter;
+              };
+              armBackend(ctorPos.length > 0 ? ctorPos[0] : undefined);
               const rs: Record<string, Any> = {};
               const delegate = (method: string, argnames: string[]): Any => {
                 const fn = function (...callArgs: Any[]): Any {
@@ -5951,7 +6050,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
                 const kw = callArgs.length > 0 ? detectKwargs(callArgs[callArgs.length - 1]) : null;
                 let pos = kw !== null ? callArgs.slice(0, -1) : callArgs.slice();
                 if (kw !== null) pos = placeKwargs(["seed"], pos, kw as Record<string, Any>);
-                gen = freshRsGen(pos.length > 0 ? pos[0] : undefined);
+                armBackend(pos.length > 0 ? pos[0] : undefined);
                 return undefined;
               };
               (seedFn as Any).__argnames__ = ["seed"];

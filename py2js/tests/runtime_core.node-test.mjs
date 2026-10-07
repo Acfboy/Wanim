@@ -540,6 +540,60 @@ check("numpy facade exposes legacy np.random.RandomState", () => {
   assert.equal(typeof n, "number");
 });
 
+check("np.random.RandomState replays numpy's legacy MT19937 stream", () => {
+  const np = ndCore.buildNumpy();
+  const nums = (x) => {
+    const v = x && typeof x.tolist === "function" ? x.tolist() : x;
+    return Array.isArray(v) ? v.map(Number) : Number(v);
+  };
+  // Reference values from CPython numpy (`np.random.RandomState(seed)`).
+  for (const [seed, expected] of [
+    [185104, [0.22110513689684463, 0.5562520794428832, 0.7719918076935661]],
+    [780151, [0.9013098450794184, 0.8585832902345384, 0.0567201856385835]],
+    [33, [0.24851012743772993, 0.44997542105079547, 0.4109408029965408]],
+  ]) {
+    const rng = np.random.RandomState(seed);
+    assert.deepEqual(nums(rng.random(32)).slice(0, 3), expected);
+  }
+  // Stream continues across calls on the same instance.
+  const rng = np.random.RandomState(185104);
+  assert.ok(Math.abs(nums(rng.random(32)).reduce((a, b) => a + b, 0) - 17.185795920594238) < 1e-12);
+  assert.equal(nums(rng.random()), 0.7282318438918697);
+  // Other legacy distributions match numpy too.
+  assert.equal(nums(np.random.RandomState(1).uniform(-Math.PI, Math.PI)), -0.521366120872004);
+  assert.deepEqual(nums(np.random.RandomState(1).randint(0, 10, 5)), [5, 8, 9, 5, 0]);
+  assert.deepEqual(
+    nums(np.random.RandomState(7).normal(0, 1, 3)),
+    [1.690525703800356, -0.4659373705408328, 0.0328201636785844],
+  );
+  assert.equal(nums(np.random.RandomState(42).choice(10)), 6);
+  assert.deepEqual(nums(np.random.RandomState(42).permutation(5)), [1, 4, 2, 0, 3]);
+  // Instances are independent: interleaved draws replay each seed's stream.
+  const a = np.random.RandomState(11);
+  const b = np.random.RandomState(12);
+  const a1 = nums(a.random());
+  nums(b.random());
+  const ref = np.random.RandomState(11);
+  assert.equal(a1, nums(ref.random()));
+  assert.equal(nums(a.random()), nums(ref.random()));
+  // Reseeding replays the stream.
+  b.seed(12);
+  assert.equal(nums(b.random()), nums(np.random.RandomState(12).random()));
+  // Instance draws leave the module-global stream untouched.
+  np.random.seed(999);
+  np.random.random();
+  const tmp = np.random.RandomState(5);
+  nums(tmp.random(3));
+  np.random.seed(999);
+  np.random.random();
+  const expected = np.random.random();
+  np.random.seed(999);
+  np.random.random();
+  const tmp2 = np.random.RandomState(5);
+  nums(tmp2.random(3));
+  assert.equal(np.random.random(), expected);
+});
+
 check("numpy facade np.random distributions accept kwargs and array params", () => {
   const np = ndCore.buildNumpy();
   // rapydscript maps kwargs via __argnames__; without it the kwargs bag is
