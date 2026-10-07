@@ -773,10 +773,13 @@ describe("DecimalTable", () => {
 // DEVIATION (D4): TS Matrix._add_brackets throws TODO (tex not ported), so
 // default construction of either subclass throws; layout is exercised via a
 // bracket-free subclass plus the pure matrix_to_tex_string helper.
-// Python (bracket-free _organize_mob_matrix over 2x2 Squares, v_buff=0.8,
-// h_buff=1.3, corner DR): (-1,1),(0.3,1),(-1,0.2),(0.3,0.2) pre-centering;
-// full Matrix.__init__ centers -> (-0.65,0.4),(0.65,0.4),(-0.65,-0.4),
-// (0.65,-0.4).
+// DEVIATION (D5): the grid is content-aware instead of upstream's fixed pitch
+// (j*h_buff, -i*v_buff). A 2x2 Square is 2 wide/tall, so with v_buff=0.8,
+// h_buff=1.3, entry_gap=0.25, corner DR the pitch grows to 2.25 and the
+// pre-centering centers are (-1,1),(1.25,1),(-1,-1.25),(1.25,-1.25); the full
+// Matrix.__init__ then centers them -> (-1.125,1.125),(1.125,1.125),
+// (-1.125,-1.125),(1.125,-1.125). Entries fitting inside the buffs keep the
+// upstream positions (see _organize_mob_matrix tests).
 // matrix_to_tex_string([[1,2],[3,4]]) ==
 //   "\\left[ \\begin{array}{cc}1 & 2 \\\\ 3 & 4\\end{array} \\right]";
 // matrix_to_tex_string([1,2,3]) uses a single {c} column.
@@ -808,20 +811,20 @@ describe("DecimalMatrix / MobjectMatrix", () => {
       {},
     );
     // NOTE: the constructor centers afterwards; undo it to compare with the
-    // raw _organize_mob_matrix probe.
+    // raw _organize_mob_matrix probe (DEVIATION D5: pitch 2.25).
     const raw = [
       [-1.0, 1.0, 0.0],
-      [0.30000000000000004, 1.0, 0.0],
-      [-1.0, 0.19999999999999996, 0.0],
-      [0.30000000000000004, 0.19999999999999996, 0.0],
+      [1.25, 1.0, 0.0],
+      [-1.0, -1.25, 0.0],
+      [1.25, -1.25, 0.0],
     ];
     const flat = m.mob_matrix.flat();
     expect(flat.length).toBe(4);
     for (let i = 0; i < 4; i += 1) {
       const c = centerOf(flat[i] as Mobject);
       // centered actual + back-shifted mean == raw probe: the constructor
-      // centers the whole matrix, whose entry-mean is (-0.35, 0.6, 0).
-      expectRowsClose([[c[0]! - 0.35, c[1]! + 0.6, c[2]!]], [raw[i]!]);
+      // centers the whole matrix, whose entry-mean is (0.125, -0.125, 0).
+      expectRowsClose([[c[0]! + 0.125, c[1]! - 0.125, c[2]!]], [raw[i]!]);
     }
   });
 
@@ -835,10 +838,10 @@ describe("DecimalMatrix / MobjectMatrix", () => {
     );
     const flat = m.mob_matrix.flat();
     const want = [
-      [-0.65, 0.4, 0],
-      [0.65, 0.4, 0],
-      [-0.65, -0.4, 0],
-      [0.65, -0.4, 0],
+      [-1.125, 1.125, 0],
+      [1.125, 1.125, 0],
+      [-1.125, -1.125, 0],
+      [1.125, -1.125, 0],
     ];
     for (let i = 0; i < 4; i += 1) {
       expectRowsClose([centerOf(flat[i] as Mobject)], [want[i]!], 1e-6);

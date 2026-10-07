@@ -3,7 +3,7 @@
 // Element mobjects default to MathTex, and the brackets/determinant helpers
 // use MathTex/Tex. Text rendering is provided by the ported MathJax/MathTex
 // pipeline, so no LaTeX install is required.
-import { DOWN, DR, LEFT, MED_SMALL_BUFF, RIGHT } from "../constants.js";
+import { DR, LEFT, MED_SMALL_BUFF, RIGHT } from "../constants.js";
 import { isNDArray, nestedRows } from "../utils/arrays.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 import { BackgroundRectangle } from "./geometry/shape_matchers.js";
@@ -110,8 +110,17 @@ export function matrix_to_mobject(matrix: unknown): MathTex {
 }
 
 export interface MatrixOptions {
+  /** Minimum vertical pitch between rows, in world units. */
   v_buff?: number;
+  /** Minimum horizontal pitch between columns, in world units. */
   h_buff?: number;
+  /**
+   * Minimum visible gap kept between a cell and its neighbour when the cell
+   * is larger than the pitch. Ignored while the entries fit inside
+   * `h_buff`/`v_buff`, so matrices with ordinary-sized entries keep the plain
+   * fixed-pitch grid.
+   */
+  entry_gap?: number;
   bracket_h_buff?: number;
   bracket_v_buff?: number;
   add_background_rectangles_to_entries?: boolean;
@@ -129,6 +138,7 @@ export interface MatrixOptions {
 export class Matrix extends VMobject {
   v_buff: number;
   h_buff: number;
+  entry_gap: number;
   bracket_h_buff: number;
   bracket_v_buff: number;
   add_background_rectangles_to_entries: boolean;
@@ -147,6 +157,7 @@ export class Matrix extends VMobject {
     const {
       v_buff = 0.8,
       h_buff = 1.3,
+      entry_gap = MED_SMALL_BUFF,
       bracket_h_buff = MED_SMALL_BUFF,
       bracket_v_buff = MED_SMALL_BUFF,
       add_background_rectangles_to_entries = false,
@@ -163,6 +174,7 @@ export class Matrix extends VMobject {
     super(kwargs);
     this.v_buff = v_buff;
     this.h_buff = h_buff;
+    this.entry_gap = entry_gap;
     this.bracket_h_buff = bracket_h_buff;
     this.bracket_v_buff = bracket_v_buff;
     this.add_background_rectangles_to_entries = add_background_rectangles_to_entries;
@@ -197,18 +209,59 @@ export class Matrix extends VMobject {
   }
 
   _organize_mob_matrix(matrix: VMobject[][]): this {
-    for (let i = 0; i < matrix.length; i += 1) {
-      const row = matrix[i]!;
-      for (let j = 0; j < row.length; j += 1) {
-        const mob = row[j]!;
-        // NOTE: mirrors Python `i * self.v_buff * DOWN + j * self.h_buff *
-        // RIGHT` with DOWN = [0, -1, 0], RIGHT = [1, 0, 0].
-        mob.move_to(
-          [
-            j * this.h_buff * (RIGHT[0] as number),
-            i * this.v_buff * (DOWN[1] as number),
-            0,
-          ],
+    // NOTE: intentionally deviates from upstream manim, which anchors every
+    // entry's alignment corner on the fixed grid `(j*h_buff, -i*v_buff)` and
+    // lets entries wider/taller than the pitch overlap their neighbour. Here
+    // the pitch grows with the content so entries never overlap:
+    //   pitch_j = max(h_buff, leftExtent_j + rightExtent_{j-1} + entry_gap)
+    // and analogously per row. When every entry fits inside the buffs this is
+    // exactly the upstream fixed grid, so ordinary matrices are unchanged.
+    const rows = matrix.length;
+    const cols = rows > 0 ? matrix[0]!.length : 0;
+    if (rows === 0 || cols === 0) return this;
+
+    // Extent of each column's cells beyond (or before) the alignment anchor.
+    const leftExtents = new Array<number>(cols).fill(0);
+    const rightExtents = new Array<number>(cols).fill(0);
+    const bottomExtents = new Array<number>(rows).fill(0);
+    const topExtents = new Array<number>(rows).fill(0);
+    for (let i = 0; i < rows; i += 1) {
+      for (let j = 0; j < cols; j += 1) {
+        const cell = matrix[i]![j]!;
+        const anchor = cell.get_critical_point(this.element_alignment_corner);
+        const left = cell.get_left()[0] ?? 0;
+        const right = cell.get_right()[0] ?? 0;
+        const bottom = cell.get_bottom()[1] ?? 0;
+        const top = cell.get_top()[1] ?? 0;
+        const anchorX = anchor[0] ?? 0;
+        const anchorY = anchor[1] ?? 0;
+        leftExtents[j] = Math.max(leftExtents[j]!, anchorX - left);
+        rightExtents[j] = Math.max(rightExtents[j]!, right - anchorX);
+        bottomExtents[i] = Math.max(bottomExtents[i]!, anchorY - bottom);
+        topExtents[i] = Math.max(topExtents[i]!, top - anchorY);
+      }
+    }
+
+    const xs = new Array<number>(cols).fill(0);
+    for (let j = 1; j < cols; j += 1) {
+      const pitch = Math.max(
+        this.h_buff,
+        leftExtents[j]! + rightExtents[j - 1]! + this.entry_gap,
+      );
+      xs[j] = xs[j - 1]! + pitch;
+    }
+    const ys = new Array<number>(rows).fill(0);
+    for (let i = 1; i < rows; i += 1) {
+      const pitch = Math.max(
+        this.v_buff,
+        topExtents[i]! + bottomExtents[i - 1]! + this.entry_gap,
+      );
+      ys[i] = ys[i - 1]! - pitch;
+    }
+    for (let i = 0; i < rows; i += 1) {
+      for (let j = 0; j < cols; j += 1) {
+        matrix[i]![j]!.move_to(
+          [xs[j]!, ys[i]!, 0],
           this.element_alignment_corner,
         );
       }
