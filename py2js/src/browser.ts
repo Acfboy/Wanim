@@ -265,6 +265,13 @@ export interface RunPythonOptions {
   /** Called with the chosen scene name once compilation/discovery succeeds. */
   onScene?: (name: string) => void;
   /**
+   * Called with the constructed `Scene` instance right before it starts
+   * rendering.  Useful for driving a live `InteractiveScene` from an embedder
+   * (`scene.next_step()`, `scene.restart()`); the instance is only valid for
+   * the duration of the run.
+   */
+  onSceneReady?: (scene: unknown) => void;
+  /**
    * Optional-module preload plan.  `"auto"` (default) detects MathJax and font
    * needs from the Python source; `"none"` disables preloading; an object
    * picks the modules explicitly.
@@ -328,6 +335,7 @@ export async function runPythonOnCanvas(
       recordFrames: options.recordFrames ?? false,
       background: options.background,
       signal: options.signal,
+      onSceneReady: options.onSceneReady,
     });
     return { sceneName, stats: (result as Any).stats, result };
   } finally {

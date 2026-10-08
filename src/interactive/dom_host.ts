@@ -89,8 +89,8 @@ function applyIcon(button: HTMLButtonElement, icon: InteractiveButtonIcon): void
   button.appendChild(svg);
 }
 
-function ensureStyles(): void {
-  if (document.getElementById("wanim-interactive-styles") !== null) return;
+function ensureStyles(container: ParentNode): void {
+  if (container.querySelector("#wanim-interactive-styles") !== null) return;
   const style = document.createElement("style");
   style.id = "wanim-interactive-styles";
   style.textContent = `
@@ -125,6 +125,29 @@ function ensureStyles(): void {
   document.head.appendChild(style);
 }
 
+/**
+ * The style scope for a canvas: its shadow root when the embedder mounted the
+ * canvas inside one (document styles do not cross the shadow boundary), the
+ * document head otherwise.
+ */
+function styleContainerFor(canvas: HTMLCanvasElement): ParentNode {
+  const root = canvas.getRootNode();
+  if (typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) return root;
+  return document.head;
+}
+
+/**
+ * Where the control bar lives: the canvas' parent (which also gives the bar
+ * its absolute-positioning context) when there is one, else the shadow root /
+ * document body the canvas belongs to.
+ */
+function controlContainerFor(canvas: HTMLCanvasElement): ParentNode {
+  if (canvas.parentElement !== null) return canvas.parentElement;
+  const root = canvas.getRootNode();
+  if (typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) return root;
+  return document.body;
+}
+
 export class DomInteractiveHost implements InteractiveHost {
   readonly live = true;
   private readonly canvas: HTMLCanvasElement;
@@ -142,7 +165,13 @@ export class DomInteractiveHost implements InteractiveHost {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    ensureStyles();
+    // The buttons are styled with a class-based stylesheet: inject it into the
+    // canvas' own scope (its shadow root when there is one — document styles do
+    // not cross the shadow boundary).  The inline editor is always attached to
+    // the document body, so the document head keeps a copy too.
+    ensureStyles(document.head);
+    const styleContainer = styleContainerFor(canvas);
+    if (styleContainer !== document.head) ensureStyles(styleContainer);
     // Dragging a control (or orbiting a 3D camera) is a scene gesture, not a
     // page scroll: without `touch-action: none` the browser withholds further
     // pointer events on touch once it decides the gesture is a scroll.
@@ -159,7 +188,8 @@ export class DomInteractiveHost implements InteractiveHost {
       this.controls.style.gap = "6px";
       this.controls.style.zIndex = "10";
       // Overlay the bottom-left corner of the canvas.
-      const wrapper = canvas.parentElement;
+      const mount = controlContainerFor(canvas);
+      const wrapper = mount instanceof HTMLElement ? mount : null;
       if (wrapper !== null) {
         if (getComputedStyle(wrapper).position === "static") wrapper.style.position = "relative";
         this.controls.style.position = "absolute";
@@ -170,7 +200,7 @@ export class DomInteractiveHost implements InteractiveHost {
         this.controls.style.position = "fixed";
         this.controls.style.left = "8px";
         this.controls.style.bottom = "8px";
-        document.body.appendChild(this.controls);
+        mount.appendChild(this.controls);
       }
       CONTROLS_BARS.set(canvas, this.controls);
     }
