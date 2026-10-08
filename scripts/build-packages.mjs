@@ -49,6 +49,7 @@ const REQUIRED_DIST = [
   "py2js.bare.browser.js",
   "rapydscript.js",
   "numpy-ts.browser.js",
+  "wanim-element.browser.js",
   "chunks",
 ];
 
@@ -57,12 +58,13 @@ function run(command, args, options = {}) {
 }
 
 function buildDist() {
-  console.log("wanim: building dist/ (tsc + browser + py2js + rapydscript + py2js bare)");
+  console.log("wanim: building dist/ (tsc + browser + py2js + rapydscript + element + py2js bare)");
   run(pnpm, ["build"]);
   run(node, ["scripts/build-browser.mjs"]);
   run(node, ["scripts/build-rapydscript-browser.mjs"]);
   run(node, ["scripts/build-py2js.mjs"]);
   run(node, ["scripts/build-py2js.mjs", "--bare"]);
+  run(node, ["scripts/build-element.mjs"]);
 }
 
 function checkDist() {
@@ -99,6 +101,9 @@ const BROWSER_ONLY_DIST = new Set([
   "py2js.bare.browser.js",
   "rapydscript.js",
   "numpy-ts.browser.js",
+  "wanim-element.browser.js",
+  "element.js",
+  "element.d.ts",
   "chunks",
 ]);
 
@@ -169,6 +174,11 @@ function assembleCombined() {
   // zero-config: the whole browser/ directory works as served.
   copyFile(resolve(dist, "py2js.browser.js"), resolve(pkg, "browser/py2js.browser.js"));
   copyFile(resolve(dist, "rapydscript.js"), resolve(pkg, "browser/rapydscript.js"));
+  // The <wanim-scene> custom element (lazy: py2js/rapydscript load on first run).
+  copyFile(
+    resolve(dist, "wanim-element.browser.js"),
+    resolve(pkg, "browser/wanim-element.browser.js"),
+  );
   return pkg;
 }
 

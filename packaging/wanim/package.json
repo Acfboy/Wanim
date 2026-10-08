@@ -27,6 +27,8 @@
     "./browser/py2js": "./browser/py2js.browser.js",
     "./browser/rapydscript": "./browser/rapydscript.js",
     "./browser/numpy-ts": "./browser/numpy-ts.browser.js",
+    "./element": "./browser/wanim-element.browser.js",
+    "./browser/element": "./browser/wanim-element.browser.js",
     "./package.json": "./package.json"
   },
   "files": [
