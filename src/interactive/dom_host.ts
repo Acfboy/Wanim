@@ -143,6 +143,10 @@ export class DomInteractiveHost implements InteractiveHost {
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     ensureStyles();
+    // Dragging a control (or orbiting a 3D camera) is a scene gesture, not a
+    // page scroll: without `touch-action: none` the browser withholds further
+    // pointer events on touch once it decides the gesture is a scroll.
+    canvas.style.touchAction = "none";
     const existing = CONTROLS_BARS.get(canvas);
     if (existing !== undefined && existing.isConnected) {
       // Reuse the resident bar; drop the previous run's buttons.
@@ -227,6 +231,22 @@ export class DomInteractiveHost implements InteractiveHost {
       this.canvas.removeEventListener("pointerdown", down);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+    };
+    this.disposers.push(dispose);
+    return dispose;
+  }
+
+  onWheel(handler: (event: WheelEvent) => void): () => void {
+    const wheel = (event: WheelEvent): void => {
+      // The canvas owns scroll gestures: without this a wheel/trackpad scroll
+      // over the scene scrolls the page instead of zooming the camera.
+      event.preventDefault();
+      handler(event);
+    };
+    // `passive: false` is required for preventDefault to be honoured.
+    this.canvas.addEventListener("wheel", wheel, { passive: false });
+    const dispose = (): void => {
+      this.canvas.removeEventListener("wheel", wheel);
     };
     this.disposers.push(dispose);
     return dispose;
