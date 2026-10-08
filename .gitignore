@@ -3,6 +3,9 @@ dist/
 *.log
 media/
 
+# Assembled publishable npm packages (scripts/build-packages.mjs)
+packages-out/
+
 # rapydscript-ng checkout cache (fetched by scripts/build-rapydscript-browser.mjs)
 .rapydscript-ng/
 
