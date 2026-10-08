@@ -36,6 +36,13 @@ export {
   type TitleOptions,
 } from "./tex_mobject.js";
 
-export { texToSvg, texToSvgCached, mathjaxSvgCache, type TexToSvgOptions } from "./mathjax.js";
+export {
+  texToSvg,
+  texToSvgCached,
+  mathjaxSvgCache,
+  preload_mathjax,
+  is_mathjax_loaded,
+  type TexToSvgOptions,
+} from "./mathjax.js";
 
 export * from "./pango/index.js";
