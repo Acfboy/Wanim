@@ -64,6 +64,12 @@ export interface InteractiveHost {
   pointFromEvent(event: PointerEvent, camera: unknown): number[];
   /** Register pointer callbacks; returns a disposer. */
   onPointer(handlers: PointerHandlers): () => void;
+  /**
+   * Register a wheel/scroll callback; returns a disposer.  Optional so
+   * existing hosts stay valid: scenes that care about zoom only wire it when
+   * the host implements it (a headless host has no wheel to deliver).
+   */
+  onWheel?(handler: (event: WheelEvent) => void): () => void;
   /** Add an overlay button; returns a disposer that detaches its click handler. */
   addButton(label: string, onClick: () => void, icon?: InteractiveButtonIcon): () => void;
   /**
@@ -89,6 +95,9 @@ export class NullInteractiveHost implements InteractiveHost {
     return [0, 0, 0];
   }
   onPointer(_handlers: PointerHandlers): () => void {
+    return () => {};
+  }
+  onWheel(_handler: (event: WheelEvent) => void): () => void {
     return () => {};
   }
   addButton(_label: string, _onClick: () => void, _icon?: InteractiveButtonIcon): () => void {

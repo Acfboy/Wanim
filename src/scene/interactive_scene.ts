@@ -182,6 +182,10 @@ export class InteractiveScene extends Scene {
   private async run_phase(phase: Phase, host: InteractiveHost): Promise<"next" | "restart" | "abort" | "finish"> {
     if (this.is_aborted()) return "abort";
     this._phaseKind = phase.kind;
+    // A gesture must not survive a phase boundary: `move`/`up` events of an
+    // in-flight drag are ignored outside the blueprint phase, so clearing the
+    // state here is what stops a stale drag from jumping on the next frame.
+    this.on_interaction_reset();
     // Buttons are unavailable while a phase function (typically a `play`
     // animation) runs; they light up again once the scene is idle and the user
     // can interact / advance.
@@ -293,11 +297,14 @@ export class InteractiveScene extends Scene {
     this._installed = true;
     this._disposers.push(
       host.onPointer({
-        down: (event) => this.handle_pointer_down(this.point_from_event(host, event)),
-        move: (event) => this.handle_pointer_move(this.point_from_event(host, event)),
-        up: () => this.handle_pointer_up(),
+        down: (event) => this.handle_pointer_down(this.point_from_event(host, event), event),
+        move: (event) => this.handle_pointer_move(this.point_from_event(host, event), event),
+        up: (event) => this.handle_pointer_up(event),
       }),
     );
+    if (typeof host.onWheel === "function") {
+      this._disposers.push(host.onWheel((event) => this.handle_pointer_wheel(event)));
+    }
     this._disposers.push(host.addButton("从头再来", () => this.restart(), "restart"));
     this._disposers.push(host.addButton("进入下一步", () => this.next_step(), "next"));
     this._disposers.push(
@@ -320,26 +327,76 @@ export class InteractiveScene extends Scene {
     this._installed = false;
     this.interactive_host.endTextEdit();
     this._activeControl = null;
+    this.on_interaction_reset();
   }
 
-  private handle_pointer_down(point: number[]): void {
+  /**
+   * Pointer/wheel routing shared with subclasses.
+   *
+   * A press first hit-tests the interactive controls; only when it lands on
+   * the background is {@link on_background_pointer_down} invoked, so controls
+   * always win over background gestures (e.g. a 3D camera orbit).  The same
+   * applies to motion while a control drag is active.  Background gestures,
+   * like control interaction, only run while the blueprint phase is idle —
+   * animations never compete with user input.
+   */
+  protected handle_pointer_down(point: number[], event?: PointerEvent): void {
     if (this._phaseKind !== "blueprint") return;
     const control = this.find_control_at(point);
-    if (control === null) return;
+    if (control === null) {
+      this.on_background_pointer_down(point, event);
+      return;
+    }
     this._activeControl = control;
     control.on_press(point, { host: this.interactive_host, camera: this.camera });
   }
 
-  private handle_pointer_move(point: number[]): void {
-    if (this._activeControl === null) return;
-    this._activeControl.on_drag(point, { host: this.interactive_host, camera: this.camera });
+  protected handle_pointer_move(point: number[], event?: PointerEvent): void {
+    if (this._activeControl !== null) {
+      this._activeControl.on_drag(point, { host: this.interactive_host, camera: this.camera });
+      return;
+    }
+    if (this._phaseKind !== "blueprint") return;
+    this.on_background_pointer_move(point, event);
   }
 
-  private handle_pointer_up(): void {
-    if (this._activeControl === null) return;
-    this._activeControl.on_release();
-    this._activeControl = null;
+  protected handle_pointer_up(event?: PointerEvent): void {
+    if (this._activeControl !== null) {
+      this._activeControl.on_release();
+      this._activeControl = null;
+      return;
+    }
+    if (this._phaseKind !== "blueprint") return;
+    this.on_background_pointer_up(event);
   }
+
+  protected handle_pointer_wheel(event: WheelEvent): void {
+    if (this._phaseKind !== "blueprint") return;
+    this.on_background_wheel(event);
+  }
+
+  /**
+   * Called when a pointer press misses every interactive control.  Subclasses
+   * override this to implement background gestures (e.g. camera orbit in
+   * `InteractiveThreeDScene`); the default is a no-op.
+   */
+  protected on_background_pointer_down(_point: number[], _event?: PointerEvent): void {}
+
+  /** Called for pointer motion that is not dragging an interactive control. */
+  protected on_background_pointer_move(_point: number[], _event?: PointerEvent): void {}
+
+  /** Called when a background press ends (a control press ends via its release). */
+  protected on_background_pointer_up(_event?: PointerEvent): void {}
+
+  /** Called for wheel events while the blueprint phase is idle. */
+  protected on_background_wheel(_event: WheelEvent): void {}
+
+  /**
+   * Called whenever interaction state is torn down: a story restart, a new
+   * render, or the end of a phase.  Subclasses use it to drop in-flight
+   * gesture state (e.g. an orbit drag).
+   */
+  protected on_interaction_reset(): void {}
 
   private is_aborted(): boolean {
     // Judge against this run's own scheduler: a newer run installs a different
@@ -361,6 +418,7 @@ export class InteractiveScene extends Scene {
     this.last_t = 0;
     this._activeControl = null;
     this.interactive_host.endTextEdit();
+    this.on_interaction_reset();
     const renderer = this.renderer as
       | { clear_screen?: () => void; num_plays?: number; time?: number }
       | null
