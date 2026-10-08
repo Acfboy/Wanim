@@ -39,6 +39,10 @@ import {
   unsupportedImportError,
 } from "./preprocess.js";
 import { formatCompileError } from "./compile_error.js";
+import {
+  preloadForSource,
+  type RunPythonPreload,
+} from "./preload.js";
 
 type Any = any;
 
@@ -231,6 +235,20 @@ function discoverScenes(win: Any, injected: Record<string, Any>): Record<string,
   return found;
 }
 
+/**
+ * Await the optional wanim modules (MathJax / fonts) the scene is likely to
+ * need, before any scene code runs.  See ./preload.ts for detection.
+ */
+async function applyPreload(
+  source: string,
+  options: { preload?: RunPythonPreload },
+): Promise<void> {
+  await preloadForSource(source, options, {
+    mathjax: () => (wanim as Any).preload_mathjax(),
+    fonts: () => (wanim as Any).preload_fonts(),
+  });
+}
+
 export interface RunPythonOptions {
   /** manim quality flag controlling resolution / frame rate (default `-qm`). */
   quality?: string;
@@ -246,6 +264,12 @@ export interface RunPythonOptions {
   sceneName?: string;
   /** Called with the chosen scene name once compilation/discovery succeeds. */
   onScene?: (name: string) => void;
+  /**
+   * Optional-module preload plan.  `"auto"` (default) detects MathJax and font
+   * needs from the Python source; `"none"` disables preloading; an object
+   * picks the modules explicitly.
+   */
+  preload?: RunPythonPreload;
   signal?: AbortSignal;
 }
 
@@ -267,6 +291,7 @@ export async function runPythonOnCanvas(
   options: RunPythonOptions = {},
 ): Promise<RunPythonResult> {
   const { js, numpyNames } = await compilePython(source);
+  await applyPreload(source, options);
   const runtime = buildRuntime();
   for (const name of numpyNames) {
     if (name === "*") Object.assign(runtime.globals, runtime.np);
@@ -321,6 +346,8 @@ export interface InteractiveBenchOptions {
   warmup?: number;
   /** Optional scene name; defaults to the first InteractiveScene found. */
   sceneName?: string;
+  /** Optional-module preload plan (same semantics as `RunPythonOptions.preload`). */
+  preload?: RunPythonPreload;
   /**
    * Called immediately before each measured frame, with the scene instance and
    * the frame index.  Scenes expose a `bench_step(index, total)` method to
@@ -351,6 +378,7 @@ export async function benchInteractiveScene(
   options: InteractiveBenchOptions = {},
 ): Promise<InteractiveBenchResult> {
   const { js, numpyNames } = await compilePython(source);
+  await applyPreload(source, options);
   const runtime = buildRuntime();
   for (const name of numpyNames) {
     if (name === "*") Object.assign(runtime.globals, runtime.np);
