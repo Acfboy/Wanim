@@ -122,3 +122,85 @@ canvas {
   .stage-col { border-left: 0; border-top: 1px solid #cbb69f; }
   .editor { height: 50vh; }
 }
+
+/* --- embed dialog --------------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(42, 33, 25, 0.45);
+}
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+  width: min(680px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  background: #fdf9f3;
+  border: 1px solid #cbb69f;
+  padding: 18px 20px 16px;
+}
+.modal h2 { margin: 0 0 8px; font-size: 18px; }
+.modal-note { margin: 0; color: #7a6552; font-size: 12px; line-height: 1.6; }
+.modal-note code { background: #f1e6d8; padding: 1px 4px; }
+
+.embed-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 14px 0;
+}
+.embed-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #5a4a3c;
+  font-size: 12px;
+}
+.embed-grid input,
+.embed-grid select { width: 100%; }
+.embed-grid input {
+  background: #fdf9f3;
+  color: #2a2119;
+  border: 1px solid #dccbb8;
+  border-radius: 0;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+#embed-snippet {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  background: #fdf9f3;
+  color: #2a2119;
+  border: 1px solid #dccbb8;
+  border-radius: 0;
+  padding: 8px 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.embed-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e0b48a;
+  background: #fbf1e3;
+  color: #8a5a2b;
+  font-size: 12px;
+}
+.embed-warning[hidden] { display: none; }
+
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.modal-actions .grow { flex: 1; }

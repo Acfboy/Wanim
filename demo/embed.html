@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wanim · embed</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; }
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    background: #000;
+    touch-action: none;
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    color: #8fa3b8;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    text-align: center;
+    white-space: pre-wrap;
+    word-break: break-word;
+    pointer-events: none;
+  }
+  #overlay.error { color: #ff8a80; }
+  #overlay[hidden] { display: none; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "wanim": "../dist/wanim.browser.js",
+    "numpy-ts": "../dist/numpy-ts.browser.js",
+    "py2js": "../dist/py2js.browser.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"><canvas id="canvas" width="1280" height="720"></canvas></div>
+<div id="overlay">Loading…</div>
+<script type="module" src="./embed.js"></script>
+</body>
+</html>
