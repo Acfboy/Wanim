@@ -42,8 +42,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Acfboy/Wanim.git",
-    "directory": "wanim"
+    "url": "git+https://github.com/Acfboy/Wanim.git"
   },
   "license": "MIT",
   "engines": {
