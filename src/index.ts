@@ -154,3 +154,4 @@ export * from "./renderer/scene_runner.js";
 export * from "./renderer/index.js";
 export * from "./loader.js";
 export * from "./browser.js";
+export * from "./embed.js";

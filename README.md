@@ -76,11 +76,50 @@ scene), press **Run**, and watch it play on the canvas.
   browser bundles live in `dist/` (gitignored) and are produced by
   `pnpm build:demo` (`build:browser`, `build:py2js`, `build:rapydscript`).
   `pnpm demo` runs that build automatically when the bundles are missing.
+- `demo/embed.html` is the minimal iframe player behind the editor's
+  **嵌入 / Embed** button; it reads the compressed code from the URL fragment
+  and speaks the postMessage protocol described below.
 - `build:rapydscript` clones rapydscript-ng at a pinned commit and applies
   `py2js/patches/rapydscript-ng.patch` — wanim does not vendor it.
 - Fonts are **not** stored in the repository. Node uses the host's system font;
   the demo server answers `fonts/*.ttf` with the host's default English font
   (override with `WANIM_FONT=/path/to/font.ttf`).
+
+## Embedding with an iframe (`#c=` fragment)
+
+The editor's **嵌入 / Embed** dialog (and the helpers exported by the library)
+pack the Python source into a minimal player page URL, so a blog can paste a
+single `<iframe>` tag.  The code travels in the URL **fragment**, which is
+never sent to the server:
+
+```js
+import { build_embed_hash, build_embed_iframe, decode_embed_code } from "wanim";
+
+const hash = await build_embed_hash(pythonSource, {
+  quality: "-qm",       // -ql | -qm | -qh | -q4k
+});
+// "#c=z.<base64url(deflate-raw)>[&q=-qm]"
+const iframe = build_embed_iframe(`https://host.example/embed${hash}`, {
+  width: 960,
+  height: 540,
+});
+```
+
+Tokens are `z.<base64url>` (deflate-raw through `CompressionStream`) with a
+`u.<base64url>` stored fallback for environments without it; UTF-8 (including
+Chinese and emoji) round-trips.  `parse_embed_hash` / `decode_embed_hash` read
+a fragment back, and malformed tokens/flags throw a readable error.
+
+The player page speaks a small postMessage protocol and only accepts messages
+whose `event.source` is `window.parent`:
+
+| Direction | Payload |
+| --- | --- |
+| embed → parent | `{ source: "wanim-embed", v: 1, type: "ready" \| "scene" \| "done" \| "error", sceneName?, stats?, error? }` |
+| parent → embed | `{ type: "wanim:run" \| "wanim:stop" \| "wanim:set-code", code?, quality? }` |
+
+`wanim:set-code` updates the code (and optional flags) and re-runs only when
+the player is already running; follow it with `wanim:run` otherwise.
 
 ## Optional modules (browser)
 
