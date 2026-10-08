@@ -454,3 +454,94 @@ presetEl.addEventListener("change", () => loadPreset(presetEl.value));
 
 loadPreset(presetEl.value);
 setOutput("Press Run to execute the Python scene.");
+
+// --- embed ------------------------------------------------------------------
+// Builds a paste-ready <iframe> pointing at ./embed.html with the current code
+// compressed into the URL fragment (`#c=<token>`).  The fragment never reaches
+// the server, so the code stays client-side.
+const embedBtn = document.getElementById("embed");
+const embedModal = document.getElementById("embed-modal");
+const embedWidthEl = document.getElementById("embed-width");
+const embedHeightEl = document.getElementById("embed-height");
+const embedQualityEl = document.getElementById("embed-quality");
+const embedSnippetEl = document.getElementById("embed-snippet");
+const embedWarningEl = document.getElementById("embed-warning");
+const embedStatusEl = document.getElementById("embed-status");
+const embedCopyEl = document.getElementById("embed-copy");
+const embedCloseEl = document.getElementById("embed-close");
+
+// Browsers and blogging platforms vary; past this length a fragment URL is
+// likely to be truncated somewhere in the pipeline.
+const MAX_EMBED_URL = 30000;
+let embedGeneration = 0;
+
+async function generateEmbed() {
+  const generation = ++embedGeneration;
+  embedStatusEl.textContent = "生成中… / Generating…";
+  embedSnippetEl.value = "";
+  embedWarningEl.hidden = true;
+  const width = Math.max(1, Math.round(Number(embedWidthEl.value) || 960));
+  const height = Math.max(1, Math.round(Number(embedHeightEl.value) || 540));
+  try {
+    const hash = await wanim.build_embed_hash(codeEl.value, {
+      quality: embedQualityEl.value,
+    });
+    const url = new URL("embed.html", location.href).href + hash;
+    const snippet = wanim.build_embed_iframe(url, { width, height, title: "wanim scene" });
+    if (generation !== embedGeneration) return;
+    embedSnippetEl.value = snippet;
+    if (url.length > MAX_EMBED_URL) {
+      embedWarningEl.textContent =
+        `URL 约 ${url.length} 字符，超过 ${MAX_EMBED_URL}；部分平台可能截断。建议缩短代码或降低画质。`;
+      embedWarningEl.hidden = false;
+    }
+    embedStatusEl.textContent = `URL ${url.length} 字符`;
+  } catch (error) {
+    if (generation !== embedGeneration) return;
+    embedStatusEl.textContent = "生成失败 / Failed";
+    setOutput(error?.stack ?? String(error), true);
+    console.error(error);
+  }
+}
+
+function openEmbed() {
+  embedModal.hidden = false;
+  void generateEmbed();
+}
+
+function closeEmbed() {
+  embedModal.hidden = true;
+}
+
+embedBtn.addEventListener("click", openEmbed);
+embedCloseEl.addEventListener("click", closeEmbed);
+embedModal.addEventListener("click", (event) => {
+  if (event.target === embedModal) closeEmbed();
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !embedModal.hidden) closeEmbed();
+});
+for (const el of [embedWidthEl, embedHeightEl, embedQualityEl]) {
+  el.addEventListener("change", () => { void generateEmbed(); });
+}
+embedCopyEl.addEventListener("click", async () => {
+  const text = embedSnippetEl.value;
+  if (text === "") return;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch {
+    /* clipboard API unavailable (http / permissions): select the text instead */
+  }
+  if (!copied) {
+    embedSnippetEl.focus();
+    embedSnippetEl.select();
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+  }
+  embedStatusEl.textContent = copied ? "已复制 / Copied" : "复制失败，请手动选择文本";
+});

@@ -39,6 +39,7 @@
     </div>
     <div class="bar bar-bottom">
       <button id="run" class="primary">运行 / Run</button>
+      <button id="embed" title="generate an iframe snippet pointing at a minimal player page">嵌入 / Embed</button>
       <span id="status">Idle.</span>
     </div>
   </section>
@@ -50,6 +51,42 @@
     <pre id="output"></pre>
   </section>
 </main>
+
+<!-- "嵌入 / Embed" dialog: builds an iframe snippet pointing at ./embed.html
+     with the compressed code in the URL fragment. -->
+<div id="embed-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="嵌入 / Embed">
+    <h2>嵌入 / Embed</h2>
+    <p class="modal-note">
+      生成一段指向 <code>embed.html</code> 的 <code>&lt;iframe&gt;</code> 代码；
+      Python 代码压缩后放在 URL fragment（<code>#c=…</code>）里，不会发送给服务器。
+    </p>
+    <div class="embed-grid">
+      <label>宽 / Width
+        <input id="embed-width" type="number" min="160" step="10" value="960" />
+      </label>
+      <label>高 / Height
+        <input id="embed-height" type="number" min="90" step="10" value="540" />
+      </label>
+      <label>画质 / Quality
+        <select id="embed-quality">
+          <option value="-ql">-ql 480p</option>
+          <option value="-qm" selected>-qm 720p</option>
+          <option value="-qh">-qh 1080p</option>
+          <option value="-q4k">-q4k 4K</option>
+        </select>
+      </label>
+    </div>
+    <textarea id="embed-snippet" readonly spellcheck="false" placeholder="生成中…"></textarea>
+    <div id="embed-warning" class="embed-warning" hidden></div>
+    <div class="modal-actions">
+      <span id="embed-status" class="modal-note"></span>
+      <span class="grow"></span>
+      <button id="embed-copy">复制 / Copy</button>
+      <button id="embed-close" class="primary">关闭 / Close</button>
+    </div>
+  </div>
+</div>
 
 <!-- Prism (syntax highlighting) is loaded from its official CDN; the editor
      still works as a plain textarea if the CDN is unreachable. -->
