@@ -74,6 +74,13 @@ export interface BrowserRenderOptions {
   /** Abort a realtime run; the scene stops at the next frame boundary. */
   signal?: AbortSignal;
   onProgress?: (info: { frames: number; plays: number; elapsedMs: number }) => void;
+  /**
+   * Called with the constructed `Scene` instance right before it starts
+   * rendering.  Embedders use this to drive live scenes (e.g. an
+   * `InteractiveScene`'s `next_step()` / `restart()`) without importing wanim
+   * internals.  The instance is only valid for the duration of the run.
+   */
+  onSceneReady?: (scene: unknown) => void;
 }
 
 export interface BrowserRenderResult {
@@ -144,6 +151,7 @@ export async function render_scene_to_canvas(
     renderer.camera.background_color = options.background;
   }
   const scene = construct_scene(sceneClass, renderer as never);
+  options.onSceneReady?.(scene);
   // Interactive scenes need a DOM host to receive pointer events and to place
   // the restart/next buttons.  Without a DOM (Node) the scene falls back to its
   // headless host and runs a single pass.
