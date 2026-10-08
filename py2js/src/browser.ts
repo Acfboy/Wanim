@@ -74,6 +74,11 @@ export {
 };
 export type { PythonRuntime };
 export { wanim };
+// Optional-module preload planning, so embedders that run already-compiled
+// scene JS (instead of `runPythonOnCanvas`) can preload MathJax/fonts
+// from the Python source they still have at hand.
+export { detectPreloadNeeds, resolvePreloadNeeds } from "./preload.js";
+export type { PreloadNeeds, RunPythonPreload } from "./preload.js";
 
 /** The subset of the rapydscript browser global this module relies on. */
 interface RapydScriptCompiler {
