@@ -262,6 +262,41 @@ class InteractiveDemo(InteractiveScene):
     def construct(self):
         self.play(FadeOut(self.circle))
 `,
+  interactive3d: `from manim import *
+
+class InteractiveThreeDDemo(InteractiveThreeDScene):
+    def blueprint(self):
+        # 空白处按住拖动 = 旋转相机，滚轮 / 触控板 = 缩放
+        self.set_camera_orientation(phi=70 * DEGREES, theta=-45 * DEGREES)
+
+        axes = ThreeDAxes()
+        sphere = Sphere(radius=1.4, color=BLUE, fill_opacity=0.85)
+        sphere.add_reaction(lambda m: m.move_to([0, 0, height_slider.get_value()]))
+
+        # 控件用 add_fixed_in_frame_mobjects 固定在屏幕上，
+        # 这样指针命中坐标不受相机旋转影响，drag 球体时不会误触 orbit
+        height_slider = Slider(
+            start=[-5.0, -3.0, 0],
+            end=[-1.5, -3.0, 0],
+            value_range=(-1.5, 1.5),
+            init_value=0,
+            color=YELLOW,
+        )
+        height_label = Text("sphere z", font_size=28).next_to(height_slider, UP, buff=0.2)
+        self.add_fixed_in_frame_mobjects(height_slider, height_label)
+
+        hint = Text("拖动旋转 / 滚轮缩放", font_size=30)
+        hint.to_corner(UL)
+        self.add_fixed_in_frame_mobjects(hint)
+
+        self.hint = hint
+        self.sphere = sphere
+        self.add(axes, sphere)
+
+    def construct(self):
+        # 动画期间 orbit 暂停（与交互控件同一套 phase 规则）
+        self.play(FadeOut(self.hint))
+`,
 };
 
 const codeEl = document.getElementById("code");
