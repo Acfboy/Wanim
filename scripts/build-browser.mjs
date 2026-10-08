@@ -8,29 +8,43 @@
 // use.
 //
 // Output: dist/wanim.browser.js, an ES module usable from an import map entry
-// `"wanim"`.  `dist/` is gitignored: the demo page references it, so run
-// `pnpm build:demo` before `pnpm demo`.
+// `"wanim"`.  Optional heavy dependencies (MathJax) are emitted as separate
+// chunks under dist/chunks/ and imported dynamically at runtime via
+// `preload_mathjax()` (see src/loader.ts), so pages that do not use TeX never
+// download them.  `dist/` is
+// gitignored: the demo page references it, so run `pnpm build:demo` before
+// `pnpm demo`.
 //
 // The browser text pipeline defaults to free CDN fonts (Tinos + Noto Serif
 // SC, see `DEFAULT_FONT_URLS`); embedders can point it elsewhere with
-// `configure_fonts([...])`.  Only the bundle itself is written here.
+// `configure_fonts([...])`.  Only the bundle and its chunks are written here.
 //
 // Env overrides:
-//   WANIM_BROWSER_OUT  output file (default dist/wanim.browser.js)
+//   WANIM_BROWSER_OUT  output file (default dist/wanim.browser.js); chunks are
+//                      written to a sibling `chunks/` directory
 //   WANIM_MINIFY       "0" to disable minification (default: minify)
 //   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const shim = (name) => resolve(here, "shims", name);
 
 const outfile = resolve(process.env.WANIM_BROWSER_OUT ?? resolve(root, "dist", "wanim.browser.js"));
+const outdir = dirname(outfile);
+const entryName = basename(outfile).replace(/\.js$/, "");
 const minify = process.env.WANIM_MINIFY !== "0";
 const sourcemap = process.env.WANIM_SOURCEMAP === "1";
+
+// Drop chunks from a previous build: their names are content-hashed, so stale
+// files would otherwise accumulate (and could leak a dependency that is no
+// longer optional).
+const chunksDir = resolve(outdir, "chunks");
+rmSync(chunksDir, { recursive: true, force: true });
+mkdirSync(outdir, { recursive: true });
 
 // numpy-ts is kept external, but referenced by a *relative* URL rather than a
 // bare specifier: the bundle then resolves it against its own location, so it
@@ -38,8 +52,14 @@ const sourcemap = process.env.WANIM_SOURCEMAP === "1";
 const NUMPY_RELATIVE = "./numpy-ts.browser.js";
 
 await build({
-  entryPoints: [resolve(root, "dist", "index.js")],
-  outfile,
+  // `outdir` + `splitting` (instead of a single `outfile`) let esbuild hoist
+  // dynamic imports (MathJax) into separate chunks next to the entry; the
+  // entry keeps its original name.
+  entryPoints: { [entryName]: resolve(root, "dist", "index.js") },
+  outdir,
+  entryNames: "[name]",
+  chunkNames: "chunks/[name]-[hash]",
+  splitting: true,
   bundle: true,
   format: "esm",
   platform: "browser",

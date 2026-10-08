@@ -6,33 +6,59 @@
 // conversion. The produced SVG uses `currentColor` for strokes/fills, matching
 // MathJax's browser output; callers that want a concrete colour should remap
 // that (see SVGMobject / SingleStringMathTex).
-
-import { mathjax } from "mathjax-full/js/mathjax.js";
-import { TeX } from "mathjax-full/js/input/tex.js";
-import { SVG } from "mathjax-full/js/output/svg.js";
-import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
-import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
-import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
+//
+// `mathjax-full` is a large optional dependency: it lives in
+// `./mathjax_runtime.js`, which is loaded on demand through
+// {@link preload_mathjax}.  The public `texToSvg*` helpers stay synchronous;
+// before the runtime is loaded they throw a clear error instead of crashing
+// with a missing-module import.
+import type { MathJaxRuntime } from "./mathjax_runtime.js";
 
 export interface TexToSvgOptions {
   display?: boolean;
 }
 
-type MathJaxDocument = { convert(tex: string, options?: { display?: boolean }): unknown };
+let runtime: MathJaxRuntime | null = null;
+let pending: Promise<void> | null = null;
 
-let cachedDocument: MathJaxDocument | null = null;
-let cachedAdaptor: ReturnType<typeof liteAdaptor> | null = null;
+/** True once {@link preload_mathjax} has finished. */
+export function is_mathjax_loaded(): boolean {
+  return runtime !== null;
+}
 
-function getMathJax(): { doc: MathJaxDocument; adaptor: ReturnType<typeof liteAdaptor> } {
-  if (cachedDocument === null || cachedAdaptor === null) {
-    const adaptor = liteAdaptor();
-    RegisterHTMLHandler(adaptor);
-    const tex = new TeX({ packages: AllPackages });
-    const svg = new SVG({ fontCache: "none" });
-    cachedDocument = mathjax.document("", { InputJax: tex, OutputJax: svg }) as unknown as MathJaxDocument;
-    cachedAdaptor = adaptor;
+/**
+ * Load MathJax (the TeX input and SVG output pipelines) into memory.
+ *
+ * The returned promise is cached: concurrent and repeated calls share one
+ * pending load and resolve immediately once MathJax is ready.  Browser users
+ * may call this during app startup to pay the download/parse cost up front;
+ * `runPythonOnCanvas` calls it automatically for scenes that typeset math.
+ */
+export function preload_mathjax(): Promise<void> {
+  if (pending === null) {
+    pending = import("./mathjax_runtime.js")
+      .then((mod) => {
+        runtime = mod.create_mathjax_runtime();
+      })
+      .catch((error: unknown) => {
+        // Allow a later retry after a transient chunk/network failure.
+        pending = null;
+        throw error;
+      });
   }
-  return { doc: cachedDocument, adaptor: cachedAdaptor };
+  return pending;
+}
+
+function getMathJax(): MathJaxRuntime {
+  if (runtime === null) {
+    throw new Error(
+      "wanim: MathJax is not loaded, so TeX mobjects cannot be built yet. " +
+        "Call `await preload_mathjax()` (or `await preload_modules({ mathjax: true })`) " +
+        "before constructing Tex/MathTex/DecimalNumber/Matrix/... . " +
+        "`runPythonOnCanvas` does this automatically for scenes whose source uses TeX.",
+    );
+  }
+  return runtime;
 }
 
 /** Extract the `<svg>...</svg>` fragment from MathJax's container output. */

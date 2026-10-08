@@ -58,6 +58,27 @@ scene), press **Run**, and watch it play on the canvas.
   the demo server answers `fonts/*.ttf` with the host's default English font
   (override with `WANIM_FONT=/path/to/font.ttf`).
 
+## Optional modules (browser)
+
+The browser bundle keeps MathJax out of the main file: it is
+emitted as content-hashed chunks under `dist/chunks/` and fetched only when
+needed, so pages that never typeset TeX never
+download them. Serve `dist/` **including `chunks/`** — the bundle imports them
+by relative URL.
+
+```js
+import { preload_mathjax, preload_fonts, preload_modules } from "wanim";
+
+// one call, or use the individual functions (all are idempotent):
+await preload_modules({ mathjax: true, fonts: true });
+```
+
+`runPythonOnCanvas` inspects the Python source and preloads automatically
+(`preload: "none"` disables it; an object picks modules explicitly). The TeX
+helpers stay synchronous: calling `texToSvg`/building a `MathTex` before
+`preload_mathjax()` throws with instructions instead of failing obscurely, and
+in Node call `await preload_mathjax()` once at startup.
+
 ## Library (Node)
 
 ```bash
