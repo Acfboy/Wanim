@@ -149,14 +149,18 @@ void main() {
     vec2 n2 = l2 > 0.0 ? vec2(-d2.y, d2.x) / l2 : vec2(0.0);
     vec2 m = n1 + n2;
     float lm = length(m);
+    // Endpoint vertices have one zero-length side (prev == cur at the start,
+    // next == cur at the end), so a robust base direction must fall back to the
+    // non-zero normal instead of n1 (which is zero at a start vertex).
+    vec2 baseN = l1 > 0.0 ? n1 : n2;
     vec2 dir;
     if (lm < 1e-6) {
-      dir = l1 > 0.0 ? n1 : n2;
+      dir = baseN;
     } else {
       m /= lm;
       float denom = dot(m, n1);
       // Cairo's default miter limit is 10; clamp there instead of beveling.
-      dir = denom > 1e-4 ? m * min(1.0 / denom, 10.0) : n1;
+      dir = denom > 1e-4 ? m * min(1.0 / denom, 10.0) : baseN;
     }
     pos = cur + dir * (a_half_width * a_side);
   }
@@ -1364,7 +1368,7 @@ export class WebGLThreeDRenderer {
     // source) is wasted here — the record reuses its baked colours and only
     // the positions/normals move.  Same normals `get_mobject_base_colors`
     // would report (shared across all three colour sources).
-    const normals = _cornerNormalsFlat(vm.points);
+    const normals = _cornerNormalsFlat(vm.points, vm);
     const n0 = normals?.normal0 ?? ZERO_VEC;
     const n1 = normals?.normal1 ?? ZERO_VEC;
     const { data, rowDim } = pts;
