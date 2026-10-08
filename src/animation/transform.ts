@@ -7,6 +7,7 @@ import { identityMatrix, matrixRows, pointFrom, pointRows, pointsFrom } from "..
 import { path_along_arc, path_along_circles, type PathFuncType } from "../utils/paths.js";
 import { squish_rate_func } from "../utils/rate_functions.js";
 import { DEGREES, DEFAULT_POINTWISE_FUNCTION_RUN_TIME, ORIGIN, OUT } from "../constants.js";
+import { mobject_structure_epoch } from "../utils/render_epoch.js";
 import type { ParsableManimColor } from "../utils/color/core.js";
 
 export interface TransformOptions extends AnimationOptions {
@@ -27,6 +28,8 @@ export class Transform extends Animation {
   replace_mobject_with_target_in_scene: boolean;
   /** Cached zipped families (rebuilt in `begin`); see get_all_families_zipped. */
   private _families_zipped: Mobject[][] | null = null;
+  /** Structure epoch the cached zip was built from; see get_all_families_zipped. */
+  private _families_zipped_epoch = -1;
 
   constructor(mobject: Mobject, targetMobject?: Mobject | TransformOptions, options: TransformOptions = {}) {
     const actualOptions = targetMobject instanceof Mobject || targetMobject === undefined ? options : (targetMobject as TransformOptions);
@@ -158,10 +161,19 @@ export class Transform extends Animation {
     // NOTE: mirrors `zip(*(mob.family_members_with_points() for mob in mobs))`
     // stopping at the SHORTEST family (like animation.ts), rather than
     // padding shorter families with the current mobject.
-    // The family structure does not change during an animation, so the zip is
-    // computed once per `begin` instead of once per frame (which walked every
-    // face of every family three times per frame).
-    if (this._families_zipped !== null) return this._families_zipped;
+    // The family structure is stable across frames for most animations, so
+    // the zip is computed once per `begin` instead of once per frame (which
+    // walked every face of every family three times per frame).  It is NOT
+    // stable in general: an updater on `starting_mobject`/`target_copy` may
+    // rebuild a subtree (e.g. `DecimalNumber.set_value` recreating its glyphs),
+    // and a cached zip would keep interpolating against detached leaves whose
+    // points may have been blanked.  Validate against the global structure
+    // epoch so the cache survives point-only frames but is dropped on any
+    // child-list replacement.
+    const structureEpoch = mobject_structure_epoch();
+    if (this._families_zipped !== null && this._families_zipped_epoch === structureEpoch) {
+      return this._families_zipped;
+    }
     const mobs = [
       this.mobject,
       this.starting_mobject,
@@ -171,6 +183,7 @@ export class Transform extends Animation {
     if (families.length === 0) return [];
     const length = Math.min(...families.map((family) => family.length));
     this._families_zipped = Array.from({ length }, (_, index) => families.map((family) => family[index] as Mobject));
+    this._families_zipped_epoch = structureEpoch;
     return this._families_zipped;
   }
 

@@ -18,3 +18,23 @@ export function mobject_geometry_epoch(): number {
 export function bump_mobject_geometry_epoch(): void {
   GEOMETRY_EPOCH += 1;
 }
+
+/**
+ * Global revision counter for mobject family structure (the `submobjects`
+ * tree).
+ *
+ * Unlike {@link mobject_geometry_epoch}, this is NOT bumped by point writes:
+ * it changes only when children are added, removed or replaced.  Consumers
+ * that cache per-family traversals (e.g. `Transform`'s zipped families) use it
+ * to stay valid across frames while still noticing structural rebuilds, such
+ * as a `DecimalNumber` updater recreating its glyphs mid-animation.
+ */
+let STRUCTURE_EPOCH = 0;
+
+export function mobject_structure_epoch(): number {
+  return STRUCTURE_EPOCH;
+}
+
+export function bump_mobject_structure_epoch(): void {
+  STRUCTURE_EPOCH += 1;
+}

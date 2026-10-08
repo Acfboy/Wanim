@@ -5,7 +5,7 @@ import { BLACK, ManimColor, WHITE, color_gradient, interpolate_color, type Parsa
 import { angle_between_vectors, cross, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
-import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
+import { bump_mobject_geometry_epoch, bump_mobject_structure_epoch } from "../utils/render_epoch.js";
 import { straight_path, type PathFuncType } from "../utils/paths.js";
 import { addPoints, isNDArray, linspace, nestedRows, norm, numeric, pointAt, pointFrom, pointRows, pointsFrom, pythonTypeName, scalePoint, subtractPoints, toPythonRepr, toPythonString, _cContiguousRows, _readFlatStore, _flatStoreSlots } from "../utils/arrays.js";
 import { Animation } from "../animation/animation.js";
@@ -645,7 +645,16 @@ export class Mobject {
   z_index: number;
   z_index_group: Mobject | null = null;
   point_hash: string | null = null;
-  submobjects: Mobject[] = [];
+  // `submobjects` is an accessor so replacing the child list bumps the global
+  // structure epoch (see `mobject_structure_epoch`).  Per-family caches such
+  // as `Transform`'s zipped families key off it and must not survive a rebuild
+  // (e.g. a `DecimalNumber` updater recreating glyphs mid-animation).
+  private _submobjects: Mobject[] = [];
+  get submobjects(): Mobject[] { return this._submobjects; }
+  set submobjects(value: Mobject[]) {
+    this._submobjects = value;
+    bump_mobject_structure_epoch();
+  }
   updaters: MobjectUpdater[] = [];
   /**
    * Interaction callbacks (see `InteractiveScene`). Unlike updaters — which run
@@ -951,6 +960,7 @@ export class Mobject {
     this._assert_valid_submobjects([mobject]);
     this.submobjects.splice(index, 0, mobject);
     bump_mobject_geometry_epoch();
+    bump_mobject_structure_epoch();
     return this;
   }
 
@@ -976,7 +986,10 @@ export class Mobject {
   remove(...mobjects: Mobject[]): this {
     for (const mobject of mobjects) {
       const index = this.submobjects.indexOf(mobject);
-      if (index >= 0) this.submobjects.splice(index, 1);
+      if (index >= 0) {
+        this.submobjects.splice(index, 1);
+        bump_mobject_structure_epoch();
+      }
     }
     bump_mobject_geometry_epoch();
     return this;
