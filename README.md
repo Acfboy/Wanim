@@ -38,6 +38,30 @@ class SquareToCircle(Scene):
 `runPythonOnCanvas(...)` compiles it with rapydscript and renders it live — no
 pre-rendering to video, the canvas updates while the scene runs.
 
+## `<wanim-scene>` web component
+
+```html
+<script type="module" src="./dist/wanim-element.browser.js"></script>
+
+<wanim-scene quality="-qm" autoplay>
+  <script type="text/x-python">
+from manim import *
+class Demo(Scene):
+    def construct(self):
+        self.play(Create(Circle()))
+  </script>
+</wanim-scene>
+```
+
+Importing the bundle only registers the custom element; `py2js.browser.js`,
+`rapydscript.js` and optional modules download from the same `dist/` directory
+on first run.  The element supports `code`, `quality`, `render-style`,
+`background`, `fps`, `scene`, `autoplay`, `loop`, `src`, `preload-modules` and
+`compiler-src`; `run()`/`stop()`/`next()`/`restart()` methods and
+`wanim-ready`/`wanim-run`/`wanim-scene`/`wanim-done`/`wanim-error` events.
+See `demo/component.html` for live examples and `packaging/wanim/README.md`
+for the full attribute table.
+
 ## Demo site
 
 ```bash

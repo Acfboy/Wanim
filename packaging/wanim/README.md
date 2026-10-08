@@ -79,6 +79,65 @@ await preload_modules({ mathjax: true, fonts: true });
 The main bundle stays ~1.4 MiB (~0.4 MiB gzip); MathJax (~2 MiB)
 is fetched only when needed. Keep `browser/chunks/` on the server.
 
+## `<wanim-scene>` web component
+
+For the smallest possible embed, load the element bundle from the same
+`browser/` directory and drop a `<wanim-scene>` into the page — no import map
+or page script required:
+
+```html
+<script type="module" src="/wanim/browser/wanim-element.browser.js"></script>
+
+<wanim-scene quality="-qm" render-style="standard" autoplay>
+  <script type="text/x-python">
+from manim import *
+class Demo(Scene):
+    def construct(self):
+        self.play(Create(Circle()))
+  </script>
+</wanim-scene>
+```
+
+Importing the bundle only registers the element (and is a no-op under
+Node/SSR). `py2js.browser.js`, `rapydscript.js` and any optional module are
+fetched from the element bundle's own directory on first run.
+
+For scripted use, assign `.code` and `await .run()`; all events bubble and
+cross shadow boundaries:
+
+```html
+<wanim-scene id="s" quality="-qm" autoplay="false"></wanim-scene>
+<script type="module">
+  const el = document.getElementById("s");
+  el.addEventListener("wanim-done", (e) => console.log(e.detail.stats));
+  el.addEventListener("wanim-error", (e) => console.error(e.detail.error));
+  el.code = "from manim import *\n...";
+  await el.run();
+</script>
+```
+
+| Attribute | Property | Meaning |
+| --- | --- | --- |
+| `code` | `.code` | Python source (or a `<script type="text/x-python">` child / `src`) |
+| `quality` | `.quality` | manim quality flag, default `-qm` |
+| `background` | — | CSS colour override |
+| `fps` | — | realtime frame rate, default 30 |
+| `scene` | `.sceneName` | scene class name to run |
+| `src` | — | URL to fetch the Python source from |
+| `autoplay` | — | default true; `autoplay="false"` disables |
+| `loop` | — | re-run when a run finishes |
+| `preload-modules` | — | space-separated `mathjax fonts` to prefetch |
+| `compiler-src` | — | rapydscript URL override |
+
+Methods: `run()` (async, resolves with the render stats), `stop()`, `next()`
+(advance a live `InteractiveScene`; returns `false` otherwise), `restart()`.
+Events: `wanim-ready`, `wanim-run`, `wanim-scene` (`detail.name`),
+`wanim-done` (`detail.stats`), `wanim-error` (`detail.error`).
+
+The element renders a `<canvas part="canvas">` plus a status/error line
+(`part="status"`) inside its shadow root; see `demo/component.html` in the
+repository for a full page.
+
 ## Node
 
 ```js
@@ -98,11 +157,12 @@ dependency graph.
 
 ```
 browser/
-  wanim.browser.js       wanim-core bundle
-  numpy-ts.browser.js    numpy-ts (MIT), shared WASM-backed array runtime
-  py2js.browser.js       Python bridge (relative imports into this directory)
-  rapydscript.js         patched rapydscript-ng compiler (BSD-2-Clause)
-  chunks/                MathJax (Apache-2.0) on demand
+  wanim.browser.js         wanim-core bundle
+  numpy-ts.browser.js      numpy-ts (MIT), shared WASM-backed array runtime
+  py2js.browser.js         Python bridge (relative imports into this directory)
+  rapydscript.js           patched rapydscript-ng compiler (BSD-2-Clause)
+  wanim-element.browser.js <wanim-scene> custom element (lazy bridge loading)
+  chunks/                  MathJax (Apache-2.0) on demand
 dist/                    Node ESM entry (re-exports wanim-core + wanim-py)
 ```
 
