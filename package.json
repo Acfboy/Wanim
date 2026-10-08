@@ -17,6 +17,8 @@
     "build:py2js": "node scripts/build-py2js.mjs",
     "build:rapydscript": "node scripts/build-rapydscript-browser.mjs",
     "build:demo": "pnpm build:browser && pnpm build:rapydscript && pnpm build:py2js",
+    "build:packages": "node scripts/build-packages.mjs",
+    "pack:packages": "node scripts/build-packages.mjs --skip-build --pack",
     "demo": "node scripts/demo-server.mjs",
     "smoke:editor": "node scripts/editor_smoke.mjs",
     "test": "vitest run",

@@ -1,0 +1,57 @@
+{
+  "name": "wanim-py",
+  "version": "0.1.0",
+  "description": "Run (almost unmodified) manim Python in the browser: the patched rapydscript bridge for wanim-core.",
+  "keywords": [
+    "manim",
+    "python",
+    "rapydscript",
+    "browser",
+    "canvas",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/node.js",
+  "module": "./dist/node.js",
+  "types": "./dist/node.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "default": "./dist/node.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./browser/py2js.browser.js"
+    },
+    "./browser/rapydscript": "./browser/rapydscript.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "browser",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "numpy-ts": "^1.7.0"
+  },
+  "peerDependencies": {
+    "wanim": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "wanim": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Acfboy/Wanim.git",
+    "directory": "wanim"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

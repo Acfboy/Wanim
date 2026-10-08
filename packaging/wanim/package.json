@@ -1,0 +1,52 @@
+{
+  "name": "wanim",
+  "version": "0.1.0",
+  "description": "Manim Python in the browser: wanim-core plus the py2js bridge and prebuilt browser bundles in one zero-config package.",
+  "keywords": [
+    "manim",
+    "animation",
+    "python",
+    "browser",
+    "canvas",
+    "math",
+    "visualization"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "browser": "./browser/wanim.browser.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./browser/wanim.browser.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./browser": "./browser/wanim.browser.js",
+    "./browser/py2js": "./browser/py2js.browser.js",
+    "./browser/rapydscript": "./browser/rapydscript.js",
+    "./browser/numpy-ts": "./browser/numpy-ts.browser.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "browser",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "wanim-core": "0.1.0",
+    "wanim-py": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Acfboy/Wanim.git",
+    "directory": "wanim"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -88,6 +88,22 @@ pnpm typecheck
 pnpm test:py2js      # py2js source preprocessor tests
 ```
 
+## Packaging (npm)
+
+The publishable packages are assembled from `packaging/` (metadata: package.json
+/ README / LICENSE) plus the build artifacts into the gitignored `packages-out/`:
+
+```bash
+pnpm build:packages   # rebuild dist/ and assemble wanim-core, wanim-py, wanim
+pnpm pack:packages    # assemble from the current dist/ and run npm pack
+```
+
+`wanim-core` ships the tsc `dist/` (Node ESM + d.ts) and the browser bundles
+under `browser/`; `wanim-py` ships the `--bare`-external py2js bundle (import
+map resolves `wanim`/`numpy-ts`) and the Node toolbox; the combined `wanim`
+package puts every relative-import bundle in one `browser/` directory for
+zero-config use.
+
 ## Layout
 
 - `src/` — the manim-compatible library (mobjects, animations, cameras,
