@@ -22,8 +22,8 @@ const here = resolve(fileURLToPath(import.meta.url), "..");
 const root = resolve(here, "..");
 const port = Number(process.argv[2] ?? 5174);
 
-const REQUIRED = ["wanim.browser.js", "py2js.browser.js", "rapydscript.js"].map((name) =>
-  join(root, "dist", name),
+const REQUIRED = ["wanim.browser.js", "py2js.browser.js", "rapydscript.js", "wanim-element.browser.js"].map(
+  (name) => join(root, "dist", name),
 );
 if (REQUIRED.some((file) => !existsSync(file))) {
   console.log("wanim: demo bundles are missing, running `pnpm build:demo`…");

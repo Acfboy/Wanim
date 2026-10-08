@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wanim · &lt;wanim-scene&gt; web component</title>
+<!-- The import map is optional: wanim-element.browser.js resolves its own
+     siblings (py2js / wanim / numpy-ts / rapydscript) by relative URL.  It is
+     only needed when page code imports the bundles by bare specifier. -->
+<script type="importmap">
+{
+  "imports": {
+    "wanim": "../dist/wanim.browser.js",
+    "numpy-ts": "../dist/numpy-ts.browser.js",
+    "py2js": "../dist/py2js.browser.js"
+  }
+}
+</script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #f4f6f8;
+    color: #1c2733;
+  }
+  header { max-width: 880px; margin: 0 auto 16px; }
+  header h1 { font-size: 22px; margin: 0 0 4px; }
+  header p { margin: 0; color: #5c6b7a; }
+  header a { color: #0d3b66; }
+  main {
+    max-width: 880px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid #d9e1e8;
+    border-radius: 8px;
+    padding: 14px 16px 16px;
+    min-width: 0;
+    box-shadow: 0 1px 2px rgb(16 42 67 / 6%);
+  }
+  .card h2 { font-size: 16px; margin: 0 0 10px; }
+  .card p.note { margin: 8px 0 0; color: #5c6b7a; font-size: 13px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button {
+    font: inherit;
+    padding: 5px 12px;
+    border: 1px solid #0d3b66;
+    background: #0d3b66;
+    color: #fff;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  button.secondary { background: #fff; color: #0d3b66; }
+  #log {
+    margin: 10px 0 0;
+    padding: 8px 10px;
+    min-height: 48px;
+    max-height: 180px;
+    overflow: auto;
+    background: #101c26;
+    color: #dbe9f7;
+    border-radius: 6px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+  }
+  wanim-scene { margin-top: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><code>&lt;wanim-scene&gt;</code> web component</h1>
+  <p>零配置把 manim Python 场景嵌进任意网页 · <a href="./index.html">← 编辑器 demo</a></p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 图形场景（autoplay，内联 <code>&lt;script type="text/x-python"&gt;</code>）</h2>
+    <wanim-scene id="shapes" quality="-qm">
+      <script type="text/x-python">
+from manim import *
+
+class SquareToCircle(Scene):
+    def construct(self):
+        circle = Circle()
+        circle.set_fill(PINK, opacity=0.5)
+        square = Square()
+        square.rotate(PI / 4)
+        self.play(Create(square))
+        self.play(Transform(square, circle))
+        self.play(FadeOut(square))
+      </script>
+    </wanim-scene>
+    <p class="note">场景结束后触发 <code>wanim-done</code> 事件。</p>
+  </section>
+
+  <section class="card">
+    <h2>2. MathTex 场景（MathJax 首次用到才下载）</h2>
+    <wanim-scene id="tex" quality="-qm">
+      <script type="text/x-python">
+from manim import *
+
+class Formula(Scene):
+    def construct(self):
+        formula = MathTex(r"e^{i\pi} + 1 = 0")
+        self.play(Write(formula))
+        self.wait(0.5)
+      </script>
+    </wanim-scene>
+  </section>
+
+  <section class="card">
+    <h2>3. InteractiveScene（shadow DOM 内的按钮栏 + 外部 <code>el.next()</code>）</h2>
+    <wanim-scene id="interactive" quality="-qm">
+      <script type="text/x-python">
+from manim import *
+
+class InteractiveDemo(InteractiveScene):
+    def blueprint(self):
+        axes = Axes(
+            x_range=[0, 4, 1],
+            y_range=[0, 2, 1],
+            x_length=6,
+            y_length=3,
+            axis_config={"include_numbers": True},
+        )
+        axes.to_edge(LEFT)
+        slider = Slider(
+            start=axes.c2p(0, 0),
+            end=axes.c2p(4, 0),
+            value_range=(0.5, 3),
+            init_value=1,
+            color=YELLOW,
+            stroke_width=6,
+        )
+        circle = Circle(radius=1, color=BLUE)
+        circle.add_reaction(lambda m: m.set_width(slider.get_value()))
+        self.add(axes, slider, circle)
+
+        num = InputDecimalNumber(2, num_decimal_places=1, color=YELLOW)
+        num.to_corner(UL)
+        square = Square(side_length=2, color=YELLOW)
+        square.add_reaction(lambda m: m.set_width(num.get_value()))
+        self.add(num, square)
+
+    def construct(self):
+        self.wait(1)
+      </script>
+    </wanim-scene>
+    <div class="controls">
+      <button id="next-btn">el.next()</button>
+      <button id="restart-btn" class="secondary">el.restart()</button>
+    </div>
+    <p class="note">canvas 下方的按钮栏由 DomInteractiveHost 插入 shadow root 内；拖动滑块 / 编辑数字后点「进入下一步」或外部按钮结束场景。</p>
+  </section>
+
+  <section class="card">
+    <h2>4. 属性 / 事件 API（<code>autoplay="false"</code>）</h2>
+    <wanim-scene id="api" quality="-qm" autoplay="false"></wanim-scene>
+    <div class="controls">
+      <button id="assign-run">el.code = … 并 await el.run()</button>
+      <button id="bad-code" class="secondary">坏代码（wanim-error）</button>
+      <button id="stop" class="secondary">stop()</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<!-- Importing the element bundle only registers the custom element: the Python
+     bridge, the rapydscript compiler and MathJax stay untouched
+     until the first run needs them. -->
+<script type="module" src="../dist/wanim-element.browser.js"></script>
+<script type="module">
+const logEl = document.getElementById("log");
+function log(text) {
+  logEl.textContent += text + "\n";
+}
+
+const api = document.getElementById("api");
+for (const name of ["wanim-ready", "wanim-run", "wanim-scene", "wanim-done", "wanim-error"]) {
+  api.addEventListener(name, (event) => {
+    if (name === "wanim-scene") log(`event wanim-scene name=${event.detail.name}`);
+    else if (name === "wanim-done") log(`event wanim-done frames=${event.detail.stats.frames}`);
+    else if (name === "wanim-error") log(`event wanim-error message=${event.detail.error?.message ?? event.detail.error}`);
+    else log(`event ${name}`);
+  });
+}
+
+const API_CODE = `from manim import *
+
+class ApiDemo(Scene):
+    def construct(self):
+        self.play(Create(Triangle().set_color(GREEN)))
+        self.wait(0.3)
+`;
+
+document.getElementById("assign-run").addEventListener("click", async () => {
+  try {
+    api.code = API_CODE;
+    const stats = await api.run();
+    log(`run() resolved: ${stats.frames} frames in ${(stats.totalMs / 1000).toFixed(2)} s`);
+  } catch (error) {
+    log(`run() rejected: ${error.message}`);
+  }
+});
+
+document.getElementById("bad-code").addEventListener("click", async () => {
+  api.code = "this is not valid python";
+  try {
+    await api.run();
+  } catch (error) {
+    log(`bad code rejected: ${error.message}`);
+  }
+});
+
+document.getElementById("stop").addEventListener("click", () => {
+  api.stop();
+  log("stop() called");
+});
+
+const interactive = document.getElementById("interactive");
+document.getElementById("next-btn").addEventListener("click", () => {
+  log(`interactive.next() -> ${interactive.next()}`);
+});
+document.getElementById("restart-btn").addEventListener("click", () => {
+  log("interactive.restart()");
+  void interactive.restart().catch(() => {});
+});
+
+for (const id of ["shapes", "tex", "interactive"]) {
+  const el = document.getElementById(id);
+  el.addEventListener("wanim-done", () => log(`#${id} done`));
+  el.addEventListener("wanim-error", (event) => log(`#${id} error: ${event.detail.error?.message ?? event.detail.error}`));
+}
+log("页面上没有 rapydscript / mathjax 请求 —— 首次运行前只加载了 element bundle。");
+</script>
+</body>
+</html>
