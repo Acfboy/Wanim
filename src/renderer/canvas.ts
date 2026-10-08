@@ -569,12 +569,22 @@ function colorInfoStyle(
   const first = info.colors[0];
   if (first === undefined) return "rgba(0, 0, 0, 0)";
   if (!info.gradient || info.colors.length < 2) return rgbaToCss(first);
+  // A CanvasGradient with equal stops (or two identical projected endpoints) is
+  // empty and would paint nothing, so collapse it to the flat colour.
+  const second = info.colors[1]!;
+  if (
+    first[0] === second[0] && first[1] === second[1]
+    && first[2] === second[2] && first[3] === second[3]
+  ) {
+    return rgbaToCss(first);
+  }
   const p0 = camera.project_point_flat !== undefined
     ? camera.project_point_flat(info.start)
     : [info.start[0] ?? 0, info.start[1] ?? 0];
   const p1 = camera.project_point_flat !== undefined
     ? camera.project_point_flat(info.end)
     : [info.end[0] ?? 0, info.end[1] ?? 0];
+  if (p0[0] === p1[0] && p0[1] === p1[1]) return rgbaToCss(first);
   const gradient = ctx.createLinearGradient(p0[0] ?? 0, p0[1] ?? 0, p1[0] ?? 0, p1[1] ?? 0);
   gradient.addColorStop(0, rgbaToCss(info.colors[0]!));
   gradient.addColorStop(1, rgbaToCss(info.colors[1]!));

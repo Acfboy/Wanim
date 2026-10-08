@@ -15,6 +15,7 @@ import {
   get_3d_vmob_end_corner_unit_normal,
   get_3d_vmob_start_corner,
   get_3d_vmob_start_corner_unit_normal,
+  vmob_unit_normal_override,
 } from "../mobject/three_d/three_d_utils.js";
 import { Camera, type CameraOptions, type CaptureOptions } from "./camera.js";
 
@@ -108,15 +109,56 @@ const TRANSPARENT_RGBA = array([[0, 0, 0, 0]]) as NDArray;
  *
  * @internal
  */
-export function _cornerNormalsFlat(points: unknown): { normal0: number[]; normal1: number[] } | null {
+export function _cornerNormalsFlat(
+  points: unknown,
+  vm?: VMobject,
+): { normal0: number[]; normal1: number[] } | null {
   const pts = _cContiguousRows(points);
   if (pts === null || pts.rowDim < 3 || pts.rowCount < 4) return null;
   const n = pts.rowCount;
   const endIndex = Math.floor((n - 1) / 6) * 3;
+  // `get_unit_normal` overrides (ThreeDAxes._set_axis_shading) replace the
+  // geometric normals; plain shade_in_3d objects keep the flat path with zero
+  // extra work.
+  const startCorner = [Number(pts.data[0]), Number(pts.data[1]), Number(pts.data[2])];
+  const endCorner = [
+    Number(pts.data[endIndex * pts.rowDim]),
+    Number(pts.data[endIndex * pts.rowDim + 1]),
+    Number(pts.data[endIndex * pts.rowDim + 2]),
+  ];
   return {
-    normal0: vmobUnitNormalFlat(pts.data, pts.rowDim, n, 0),
-    normal1: vmobUnitNormalFlat(pts.data, pts.rowDim, n, endIndex),
+    normal0: (vm !== undefined ? vmob_unit_normal_override(vm, startCorner) : null)
+      ?? vmobUnitNormalFlat(pts.data, pts.rowDim, n, 0),
+    normal1: (vm !== undefined ? vmob_unit_normal_override(vm, endCorner) : null)
+      ?? vmobUnitNormalFlat(pts.data, pts.rowDim, n, endIndex),
   };
+}
+
+/**
+ * Gradient endpoints of a shaded VMobject.  `ThreeDAxes._set_axis_shading`
+ * installs an own `get_gradient_start_and_end_points` (the axis edge centers
+ * along the light vector); it must drive both the Canvas2D gradient and the
+ * WebGL shader's interpolation parameter.  Without an override the geometric
+ * corners are used — identical to the default VMobject method result for
+ * `shade_in_3d` objects — so ordinary surfaces keep the flat fast path.
+ */
+function shadedGradientPoints(
+  vm: VMobject,
+  startCorner: number[],
+  endCorner: number[],
+): [number[], number[]] {
+  // Instance-level overrides and subclass methods differ from the base
+  // prototype method; the base result is exactly the geometric corners, so
+  // the (allocation-heavy) call is skipped for ordinary objects.
+  const resolve = vm.get_gradient_start_and_end_points;
+  if (typeof resolve !== "function" || resolve === VMobject.prototype.get_gradient_start_and_end_points) {
+    return [startCorner, endCorner];
+  }
+  const [startPoint, endPoint] = resolve.call(vm);
+  return [
+    pointRows(startPoint, 3)[0] ?? startCorner,
+    pointRows(endPoint, 3)[0] ?? endCorner,
+  ];
 }
 
 /** Read row `index` of a C-contiguous rgba store into a fresh `[r, g, b, a]`. */
@@ -546,18 +588,21 @@ export class ThreeDCamera extends Camera {
       Number(pts.data[endIndex * rowDim + 1]),
       Number(pts.data[endIndex * rowDim + 2]),
     ];
-    const startNormal = vmobUnitNormalFlat(pts.data, rowDim, n, 0);
-    const endNormal = vmobUnitNormalFlat(pts.data, rowDim, n, endIndex);
+    const startNormal = vmob_unit_normal_override(vm, startCorner)
+      ?? vmobUnitNormalFlat(pts.data, rowDim, n, 0);
+    const endNormal = vmob_unit_normal_override(vm, endCorner)
+      ?? vmobUnitNormalFlat(pts.data, rowDim, n, endIndex);
     // `rgbas.repeat(2, axis=0)` for <2 rows, else the first two rows.
     const row0 = src.rowCount >= 1 ? readRgbaRow(src.data, 0) : [0, 0, 0, 0];
     const row1 = src.rowCount >= 2 ? readRgbaRow(src.data, 1) : row0.slice();
     const c0 = shadeFlat(row0, startCorner, startNormal, lightPoint);
     const c1 = shadeFlat(row1, endCorner, endNormal, lightPoint);
+    const [gradientStart, gradientEnd] = shadedGradientPoints(vm, startCorner, endCorner);
     return {
       colors: [c0, c1],
       gradient: true,
-      start: startCorner,
-      end: endCorner,
+      start: gradientStart,
+      end: gradientEnd,
     };
   }
 
@@ -632,14 +677,17 @@ export class ThreeDCamera extends Camera {
       Number(pts.data[endIndex * rowDim + 1]),
       Number(pts.data[endIndex * rowDim + 2]),
     ];
-    const normal0 = vmobUnitNormalFlat(pts.data, rowDim, n, 0);
-    const normal1 = vmobUnitNormalFlat(pts.data, rowDim, n, endIndex);
+    const normal0 = vmob_unit_normal_override(vm, startCorner)
+      ?? vmobUnitNormalFlat(pts.data, rowDim, n, 0);
+    const normal1 = vmob_unit_normal_override(vm, endCorner)
+      ?? vmobUnitNormalFlat(pts.data, rowDim, n, endIndex);
+    const [gradientStart, gradientEnd] = shadedGradientPoints(vm, startCorner, endCorner);
     const resolve = (source: NDArray): BaseColorInfo | null => {
       const src = _cContiguousRows(source);
       if (src === null || src.rowDim < 4 || src.rowCount === 0) return null;
       const row0 = readRgbaRow(src.data, 0);
       if (src.rowCount === 1) {
-        return { colors: [row0], gradient: false, start: startCorner, end: endCorner, normal0, normal1 };
+        return { colors: [row0], gradient: false, start: gradientStart, end: gradientEnd, normal0, normal1 };
       }
       if (src.rowCount > 2) return null;
       const row1 = readRgbaRow(src.data, 1);
@@ -648,8 +696,8 @@ export class ThreeDCamera extends Camera {
       return {
         colors: equal ? [row0] : [row0, row1],
         gradient: !equal,
-        start: startCorner,
-        end: endCorner,
+        start: gradientStart,
+        end: gradientEnd,
         normal0,
         normal1,
       };
