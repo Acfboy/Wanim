@@ -45,3 +45,13 @@ available.
 ```bash
 pnpm test:py2js
 ```
+
+## Packaging
+
+`../scripts/build-py2js.mjs` bundles `src/browser.ts` into
+`dist/py2js.browser.js` with `wanim` and `numpy-ts` referenced by *relative*
+URLs (the demo layout). With `--bare` it emits
+`dist/py2js.bare.browser.js`, keeping both as bare specifiers so the standalone
+npm package can be resolved through an import map or bundler. The DOM-free
+toolbox (preprocessing, error formatting, preload planning, runtime shims) is
+exported from `src/node.ts` as the package's Node entry point.
