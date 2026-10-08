@@ -15,6 +15,7 @@ import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { Scene } from "../scene/scene.js";
 import { MovingCameraScene } from "../scene/moving_camera_scene.js";
 import { SpecialThreeDScene, ThreeDScene } from "../scene/three_d_scene.js";
+import { InteractiveThreeDScene } from "../scene/interactive_three_d_scene.js";
 import { get_scene_classes_from_module, type SceneModule } from "../utils/module_ops.js";
 import { is_thenable } from "../utils/scheduler.js";
 import { JSONCairoRenderer } from "./json_renderer.js";
@@ -58,7 +59,13 @@ function isSubclassOf(ctor: unknown, base: unknown): boolean {
 
 /** The camera class the scene would use by default (mirrors __main__.py). */
 export function default_camera_class(sceneClass: SceneConstructor): new (...args: any[]) => Camera {
-  if (isSubclassOf(sceneClass, ThreeDScene)) {
+  // `InteractiveThreeDScene` composes `InteractiveScene` (for the interactive
+  // loop) with ThreeDScene's camera methods, so it is not a `ThreeDScene`
+  // subclass and needs its own arm here.
+  if (
+    isSubclassOf(sceneClass, ThreeDScene) ||
+    isSubclassOf(sceneClass, InteractiveThreeDScene)
+  ) {
     return ThreeDCamera as unknown as new (...args: any[]) => Camera;
   }
   if (isSubclassOf(sceneClass, MovingCameraScene)) {
