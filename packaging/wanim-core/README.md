@@ -69,7 +69,7 @@ TeX mobjects.
 ## Node
 
 ```js
-import { MathTex, Scene, Circle, Create, preload_mathjax } from "wanim-core";
+import { MathTex, preload_mathjax } from "wanim-core";
 
 await preload_mathjax();
 
