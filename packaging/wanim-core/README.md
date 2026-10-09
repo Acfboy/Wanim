@@ -56,22 +56,23 @@ chunks directory, then preload explicitly or let the API lazy-load:
 
 | API | Purpose |
 | --- | --- |
-| `await preload_mathjax()` | TeX support (`Tex`, `MathTex`, `DecimalNumber`, …) |
-| `await preload_fonts(paths?)` | parse and cache the default (or given) font chain |
-| `await preload_modules({ mathjax, fonts })` | run several preloads in parallel |
-| `modules_status()` / `is_module_loaded(name)` | introspection |
+| `await preload_submodules("mathjax")` | TeX support (`Tex`, `MathTex`, `DecimalNumber`, …) |
+| `await preload_submodules("fonts", { fonts?: string[] })` | parse and cache the active (or given) font chain |
+| `await preload_submodules(["mathjax", "fonts"])` | load several submodules in parallel |
+| `submodule_status()` | `{ fonts, mathjax }` introspection |
 
-All preload functions are idempotent. The TeX helpers (`texToSvg`, building a
-`MathTex`) stay synchronous and throw with instructions if MathJax has not been
-loaded; in Node, call `await preload_mathjax()` once at startup before building
-TeX mobjects.
+All preloads are idempotent and share one pending load per submodule; unknown
+names throw a `ValueError`. The TeX helpers (`texToSvg`, building a `MathTex`)
+stay synchronous and throw with instructions if MathJax has not been loaded; in
+Node, call `await preload_submodules("mathjax")` once at startup before
+building TeX mobjects.
 
 ## Node
 
 ```js
-import { MathTex, preload_mathjax } from "wanim-core";
+import { MathTex, preload_submodules } from "wanim-core";
 
-await preload_mathjax();
+await preload_submodules("mathjax");
 
 const formula = new MathTex("E = mc^2");
 console.log(formula.width > 0); // true

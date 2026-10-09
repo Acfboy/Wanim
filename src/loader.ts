@@ -5,81 +5,96 @@
  * part of the main bundle; they are emitted as separate chunks and pulled in on
  * demand.  This module is the public, embedder-facing entry point for that:
  *
- *   - {@link preload_mathjax} loads MathJax and caches the pending promise
- *     (idempotent, safe to call concurrently).
- *   - {@link preload_modules} combines it with the existing font preloader in a
- *     single call.
- *   - {@link modules_status} / {@link is_module_loaded} let embedders and tests
- *     check what is already in memory.
+ *   - {@link preload_submodules} loads one or several named submodules; each
+ *     loader caches its pending promise, so repeated and concurrent calls are
+ *     idempotent.
+ *   - {@link submodule_status} reports which submodules are already in memory.
  *
  * Nothing here downloads anything until a preload function is called, so a
- * page that never uses TeX never pays for those chunks.
+ * page that never uses TeX or web fonts never pays for those chunks.  Font
+ * *configuration* is a separate concern: see
+ * `configure_fonts` in `mobject/text/pango/svg-renderer.ts`.
  */
-import {
-  fontCache,
-  getDefaultFontPaths,
-  preload_fonts,
-} from "./mobject/text/pango/index.js";
+import { fontCache, getDefaultFontPaths } from "./mobject/text/pango/index.js";
+import { preload_fonts } from "./mobject/text/pango/svg-renderer.js";
 import { is_mathjax_loaded, preload_mathjax } from "./mobject/text/mathjax.js";
 
-/** Names accepted by {@link is_module_loaded} / {@link modules_status}. */
-export type OptionalModuleName = "mathjax" | "fonts";
+/** Names accepted by {@link preload_submodules} / {@link submodule_status}. */
+export type SubmoduleName = "fonts" | "mathjax";
 
-export interface ModulesStatus {
-  /** MathJax (TeX -> SVG) runtime loaded. */
-  mathjax: boolean;
-  /** Every font of the active chain is parsed and cached (see `preload_fonts`). */
-  fonts: boolean;
-}
-
-export interface PreloadModulesOptions {
-  /** Load MathJax (for `Tex`/`MathTex`/`DecimalNumber`/`Matrix`/...). */
-  mathjax?: boolean;
+export interface PreloadSubmodulesOptions {
   /**
-   * Load fonts: `true` uses the active chain (`configure_fonts` or the default
-   * CDN fonts), an array overrides it for this call.
+   * Font paths for a `"fonts"` load.  When omitted, the active chain is used:
+   * the `configure_fonts` override or the environment default (the free CDN
+   * pair in the browser).
    */
-  fonts?: boolean | readonly string[];
+  fonts?: readonly string[];
 }
 
-/** True when the named optional module has finished loading. */
-export function is_module_loaded(name: OptionalModuleName): boolean {
-  switch (name) {
-    case "mathjax":
-      return is_mathjax_loaded();
-    case "fonts": {
-      const paths = getDefaultFontPaths();
-      return paths.length > 0 && paths.every((path) => fontCache.has(path));
+const SUBMODULE_NAMES: readonly SubmoduleName[] = ["fonts", "mathjax"];
+
+/** Python-style ValueError (a plain `Error` whose name reads "ValueError"). */
+function value_error(message: string): Error {
+  const error = new Error(message);
+  error.name = "ValueError";
+  return error;
+}
+
+/** Flatten, validate and de-duplicate the requested names (order preserved). */
+function normalize_names(names?: SubmoduleName | readonly SubmoduleName[]): SubmoduleName[] {
+  if (names === undefined) return [];
+  const requested = typeof names === "string" ? [names] : names;
+  const unique: SubmoduleName[] = [];
+  for (const name of requested) {
+    if (!SUBMODULE_NAMES.includes(name)) {
+      throw value_error(
+        `wanim: unknown submodule ${JSON.stringify(name)}; expected one of ` +
+          `${SUBMODULE_NAMES.map((name) => `"${name}"`).join(", ")} ` +
+          `(a single name or an array of names)`,
+      );
     }
-    default: {
-      const unknown: never = name;
-      throw new Error(`wanim: unknown optional module ${String(unknown)}`);
-    }
+    if (!unique.includes(name)) unique.push(name);
   }
+  return unique;
 }
 
-/** Snapshot of the optional-module load state (fonts, MathJax). */
-export function modules_status(): ModulesStatus {
-  return {
-    mathjax: is_module_loaded("mathjax"),
-    fonts: is_module_loaded("fonts"),
-  };
+/** True when every font of the active chain is parsed and cached. */
+function is_fonts_loaded(): boolean {
+  const paths = getDefaultFontPaths();
+  return paths.length > 0 && paths.every((path) => fontCache.has(path));
 }
 
 /**
- * Load the requested optional modules in parallel.
+ * Load the named optional submodules.
  *
- * `preload_modules({ mathjax: true, fonts: true })` is the one-call equivalent
- * of the individual preload functions plus `preload_fonts()`.  Unset/false
- * flags are no-ops.
+ * `names` may be a single name or an array; duplicates load once.  Omitting
+ * `names` (or passing an empty array) is a no-op.  Each submodule's loader
+ * caches its pending promise, so repeated and concurrent calls share a single
+ * load.  A `"fonts"` load uses `options.fonts` when given and the active chain
+ * (`configure_fonts` or the default CDN fonts) otherwise.  Unknown names
+ * reject with a `ValueError` listing the accepted submodules.
  */
-export async function preload_modules(options: PreloadModulesOptions = {}): Promise<void> {
-  const tasks: Promise<unknown>[] = [];
-  if (options.mathjax) tasks.push(preload_mathjax());
-  if (options.fonts !== undefined && options.fonts !== false) {
-    tasks.push(preload_fonts(typeof options.fonts === "boolean" ? undefined : options.fonts));
-  }
-  await Promise.all(tasks);
+export async function preload_submodules(
+  names?: SubmoduleName | readonly SubmoduleName[],
+  options: PreloadSubmodulesOptions = {},
+): Promise<void> {
+  const requested = normalize_names(names);
+  await Promise.all(
+    requested.map((name) => {
+      switch (name) {
+        case "mathjax":
+          return preload_mathjax();
+        case "fonts":
+          return preload_fonts(options.fonts);
+      }
+    }),
+  );
 }
 
-export { preload_fonts, preload_mathjax };
+/** Snapshot of the optional-submodule load state. */
+export function submodule_status(): { fonts: boolean; mathjax: boolean } {
+  return {
+    fonts: is_fonts_loaded(),
+    mathjax: is_mathjax_loaded(),
+  };
+}

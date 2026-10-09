@@ -10,8 +10,8 @@
 // Output: dist/wanim.browser.js, an ES module usable from an import map entry
 // `"wanim"`.  Optional heavy dependencies (MathJax) are emitted as separate
 // chunks under dist/chunks/ and imported dynamically at runtime via
-// `preload_mathjax()` (see src/loader.ts), so pages that do not use TeX never
-// download them.  `dist/` is
+// `preload_submodules()` (see src/loader.ts), so pages that do not use TeX
+// never download them.  `dist/` is
 // gitignored: the demo page references it, so run `pnpm build:demo` before
 // `pnpm demo`.
 //

@@ -75,8 +75,8 @@ export {
 export type { PythonRuntime };
 export { wanim };
 // Optional-module preload planning, so embedders that run already-compiled
-// scene JS (instead of `runPythonOnCanvas`) can preload MathJax/fonts
-// from the Python source they still have at hand.
+// scene JS (instead of `runPythonOnCanvas`) can preload MathJax/fonts from the
+// Python source they still have at hand.
 export { detectPreloadNeeds, resolvePreloadNeeds } from "./preload.js";
 export type { PreloadNeeds, RunPythonPreload } from "./preload.js";
 
@@ -249,8 +249,8 @@ async function applyPreload(
   options: { preload?: RunPythonPreload },
 ): Promise<void> {
   await preloadForSource(source, options, {
-    mathjax: () => (wanim as Any).preload_mathjax(),
-    fonts: () => (wanim as Any).preload_fonts(),
+    mathjax: () => (wanim as Any).preload_submodules("mathjax"),
+    fonts: () => (wanim as Any).preload_submodules("fonts"),
   });
 }
 

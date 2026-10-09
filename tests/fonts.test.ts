@@ -6,10 +6,12 @@ import {
   getDefaultPangoRenderer,
   getTextPaths,
   loadFontSync,
-  preload_fonts,
-  preloadFonts,
   renderMarkupToSVGString,
 } from "../src/mobject/text/pango/index.js";
+// `preload_fonts` / `preloadFonts` are internal since the unified loader API
+// (`preload_submodules("fonts")`); tested here through their deep paths.
+import { preloadFonts } from "../src/mobject/text/pango/font-loader.js";
+import { preload_fonts } from "../src/mobject/text/pango/svg-renderer.js";
 import { Text } from "../src/mobject/text/index.js";
 
 const LATIN = new URL("../assets/fonts/TimesNewRoman.ttf", import.meta.url).pathname;
