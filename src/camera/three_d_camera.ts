@@ -342,6 +342,17 @@ export class ThreeDCamera extends Camera {
 
   fixed_orientation_mobjects: Map<Mobject, CenterFunc> = new Map();
   fixed_in_frame_mobjects: Set<Mobject> = new Set();
+  /**
+   * Roots passed to {@link add_fixed_in_frame_mobjects}. A mobject's family may
+   * be rebuilt after registration (`DecimalNumber.set_value` swaps glyph
+   * submobjects), so membership is re-derived from these roots every frame via
+   * {@link is_fixed_in_frame} instead of relying on the leaf snapshot alone.
+   */
+  private _fixed_in_frame_roots: Mobject[] = [];
+  /** Leaves explicitly removed from a registered root's family. */
+  private _fixed_in_frame_excluded = new WeakSet<Mobject>();
+  /** Cached descendants of the roots; rebuilt at most once per frame. */
+  private _fixed_in_frame_descendants: WeakSet<Mobject> | null = null;
   rotation_matrix: NDArray = array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]) as NDArray;
   /** Cache key (phi/theta/gamma) and flat rows backing {@link rotation_matrix}. */
   private _rotation_key = "";
@@ -905,6 +916,11 @@ export class ThreeDCamera extends Camera {
   }
 
   reset_rotation_matrix(): void {
+    // The renderer calls this once per frame before projecting. A
+    // fixed-in-frame root's family may have been rebuilt since the last frame
+    // (e.g. `DecimalNumber.set_value` replaces its glyph submobjects), so drop
+    // the descendant cache; `is_fixed_in_frame` lazily rebuilds it.
+    this._fixed_in_frame_descendants = null;
     // The rotation matrix only depends on (phi, theta, gamma); regenerating it
     // through numpy's `matmul` on every frame (and for every frame capture) was
     // pure overhead whenever the camera angles were unchanged.
@@ -1066,7 +1082,7 @@ export class ThreeDCamera extends Camera {
   override transform_points_pre_display(mobject: Mobject, points: NDArray): NDArray {
     const base = super.transform_points_pre_display(mobject, points);
     const fixed_orientation = this.fixed_orientation_mobjects.has(mobject);
-    const fixed_in_frame = this.fixed_in_frame_mobjects.has(mobject);
+    const fixed_in_frame = this.is_fixed_in_frame(mobject);
 
     if (fixed_in_frame) return base;
     if (fixed_orientation) {
@@ -1088,7 +1104,7 @@ export class ThreeDCamera extends Camera {
    * caller fall back to the regular path.
    */
   transform_points_pre_display_flat(mobject: Mobject, points: unknown): FlatProjectedPoints | null {
-    if (this.fixed_in_frame_mobjects.has(mobject) || this.fixed_orientation_mobjects.has(mobject)) {
+    if (this.is_fixed_in_frame(mobject) || this.fixed_orientation_mobjects.has(mobject)) {
       return null;
     }
     return this.project_points_flat(points);
@@ -1128,10 +1144,40 @@ export class ThreeDCamera extends Camera {
     }
   }
 
+  /**
+   * Whether `mobject` should be drawn in the screen frame. Checks the leaf
+   * snapshot first and then the registered roots' *current* families, so
+   * mobjects whose submobjects were rebuilt after registration (glyph-based
+   * numbers) keep their fixed-in-frame status. The descendant set is cached
+   * and refreshed once per frame by {@link reset_rotation_matrix}.
+   */
+  is_fixed_in_frame(mobject: Mobject): boolean {
+    if (this.fixed_in_frame_mobjects.has(mobject)) return true;
+    if (this._fixed_in_frame_roots.length === 0) return false;
+    if (this._fixed_in_frame_excluded.has(mobject)) return false;
+    if (this._fixed_in_frame_descendants === null) {
+      const descendants = new WeakSet<Mobject>();
+      for (const root of this._fixed_in_frame_roots) {
+        for (const member of root.get_family()) {
+          if (!this._fixed_in_frame_excluded.has(member)) descendants.add(member);
+        }
+      }
+      this._fixed_in_frame_descendants = descendants;
+    }
+    return this._fixed_in_frame_descendants.has(mobject);
+  }
+
   add_fixed_in_frame_mobjects(...mobjects: Mobject[]): void {
     for (const mobject of extract_mobject_family_members(mobjects)) {
       this.fixed_in_frame_mobjects.add(mobject);
+      this._fixed_in_frame_excluded.delete(mobject);
     }
+    for (const mobject of mobjects) {
+      if (!this._fixed_in_frame_roots.includes(mobject)) {
+        this._fixed_in_frame_roots.push(mobject);
+      }
+    }
+    this._fixed_in_frame_descendants = null;
   }
 
   remove_fixed_orientation_mobjects(...mobjects: Mobject[]): void {
@@ -1143,6 +1189,14 @@ export class ThreeDCamera extends Camera {
   remove_fixed_in_frame_mobjects(...mobjects: Mobject[]): void {
     for (const mobject of extract_mobject_family_members(mobjects)) {
       this.fixed_in_frame_mobjects.delete(mobject);
+      // Excluded so a registered root's dynamic family check cannot re-add it.
+      this._fixed_in_frame_excluded.add(mobject);
     }
+    for (const mobject of mobjects) {
+      this._fixed_in_frame_roots = this._fixed_in_frame_roots.filter(
+        (root) => root !== mobject,
+      );
+    }
+    this._fixed_in_frame_descendants = null;
   }
 }
