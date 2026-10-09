@@ -109,7 +109,10 @@ async function run() {
       signal: controller.signal,
       onScene: (name) => {
         if (generationAtStart !== generation) return;
-        showOverlay(`Running ${name}…`);
+        // Compilation finished and the scene is about to render: drop the
+        // status text so interactive scenes are not covered by a perpetual
+        // "Running …" overlay. Errors still show through the catch below.
+        hideOverlay();
         post("scene", { sceneName: name });
       },
     });
