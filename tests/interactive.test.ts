@@ -4,6 +4,8 @@ import { Camera } from "../src/camera/camera.js";
 import { Arc, Circle } from "../src/mobject/geometry/arc.js";
 import { Line } from "../src/mobject/geometry/line.js";
 import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
+import { DecimalNumber } from "../src/mobject/text/numbers.js";
+import { YELLOW } from "../src/utils/color/index.js";
 import {
   InputDecimalMatrix,
   InputDecimalNumber,
@@ -207,6 +209,8 @@ describe("InputDecimalNumber", () => {
     const number = new InputDecimalNumber(0, { num_decimal_places: 1 });
     const context = { host, camera: new Camera() };
     number.on_press([0, 0, 0], context);
+    // A click (press without a drag) opens the editor on release.
+    number.on_release();
     expect(host.editor).not.toBeNull();
     host.editor?.onInput("2.5");
     expect(number.get_value()).toBeCloseTo(2.5, 12);
@@ -219,6 +223,178 @@ describe("InputDecimalNumber", () => {
     const number = new InputDecimalNumber(1, { num_decimal_places: 1 });
     expect(number.is_hit(number.get_center())).toBe(true);
     expect(number.is_hit([number.get_center()[0] + 100, 0, 0])).toBe(false);
+  });
+});
+
+describe("InputDecimalNumber value_range, scrubbing and hover", () => {
+  /** World-space vertical distance matching `pixels` on screen. */
+  function worldPixels(camera: Camera, pixels: number): number {
+    return pixels / (camera.pixel_height / camera.frame_height);
+  }
+
+  test("clamps the initial value, set_value and text edits into value_range", () => {
+    const host = new FakeHost();
+    const number = new InputDecimalNumber(5, { value_range: [0, 3] });
+    expect(number.get_value()).toBe(3);
+
+    number.set_value(-1);
+    expect(number.get_value()).toBe(0);
+    number.set_value(1.5);
+    expect(number.get_value()).toBe(1.5);
+
+    number.on_press(number.get_center(), controlContext(host));
+    number.on_release();
+    host.editor?.onInput("7");
+    expect(number.get_value()).toBe(3);
+    host.editor?.onInput("-2");
+    expect(number.get_value()).toBe(0);
+  });
+
+  test("dragging vertically scrubs the value and clamps at both ends", () => {
+    const host = new FakeHost();
+    const camera = new Camera();
+    const number = new InputDecimalNumber(0, { value_range: [0, 10], drag_pixels: 100, drag_span: 10 });
+    const context = { host, camera };
+    const cx = number.get_center()[0] ?? 0;
+    const cy = number.get_center()[1] ?? 0;
+
+    number.on_press([cx, cy, 0], context);
+    // 20 px up = +2.
+    number.on_drag([cx, cy + worldPixels(camera, 20), 0], context);
+    expect(number.get_value()).toBeCloseTo(2, 6);
+    number.on_drag([cx, cy + worldPixels(camera, 40), 0], context);
+    expect(number.get_value()).toBeCloseTo(4, 6);
+
+    // Dragging far past the top clamps to the maximum...
+    number.on_drag([cx, cy + worldPixels(camera, 400), 0], context);
+    expect(number.get_value()).toBe(10);
+    // ...and reversing from the boundary responds immediately (the drag
+    // accumulator must not keep "debt" from the clamped overshoot).
+    number.on_drag([cx, cy + worldPixels(camera, 390), 0], context);
+    expect(number.get_value()).toBeCloseTo(9, 6);
+
+    number.on_release();
+    // A drag is not a click: no editor may open.
+    expect(host.editor).toBeNull();
+  });
+
+  test("a tiny jitter is still a click; a real drag is not", () => {
+    const host = new FakeHost();
+    const camera = new Camera();
+    const context = { host, camera };
+
+    const number = new InputDecimalNumber(1);
+    const cx = number.get_center()[0] ?? 0;
+    const cy = number.get_center()[1] ?? 0;
+    number.on_press([cx, cy, 0], context);
+    number.on_drag([cx, cy + worldPixels(camera, 2), 0], context);
+    number.on_release();
+    expect(host.editor).not.toBeNull();
+    host.endTextEdit();
+
+    const other = new InputDecimalNumber(1);
+    const ox = other.get_center()[0] ?? 0;
+    const oy = other.get_center()[1] ?? 0;
+    other.on_press([ox, oy, 0], context);
+    other.on_drag([ox, oy + worldPixels(camera, 20), 0], context);
+    other.on_release();
+    expect(host.editor).toBeNull();
+  });
+
+  test("prefers the host's screen scale over the camera's backing scale", () => {
+    const host = new FakeHost();
+    (host as unknown as { pixelsPerWorldUnit: () => [number, number] }).pixelsPerWorldUnit = () => [1000, 1000];
+    const number = new InputDecimalNumber(0, { drag_pixels: 100, drag_span: 1 });
+    const context = { host, camera: new Camera() };
+    const cx = number.get_center()[0] ?? 0;
+    const cy = number.get_center()[1] ?? 0;
+
+    number.on_press([cx, cy, 0], context);
+    // 0.1 world units at 1000 px/unit = 100 px -> the full drag_span.
+    number.on_drag([cx, cy + 0.1, 0], context);
+    expect(number.get_value()).toBeCloseTo(1, 6);
+    number.on_release();
+  });
+
+  test("hover highlights the number in its own colour, behind the digits", () => {
+    const number = new InputDecimalNumber(12, { color: YELLOW, highlight_opacity: 0.4 });
+    const highlight = number.highlight;
+    expect(highlight).not.toBeNull();
+    expect(number.submobjects[0]).toBe(highlight);
+    expect(number.get_family()).toContain(highlight);
+    expect(highlight?.get_fill_opacity()).toBe(0);
+
+    number.set_hovered(true);
+    expect(number.hovered).toBe(true);
+    expect(highlight?.get_fill_opacity()).toBeCloseTo(0.4, 6);
+    expect(highlight?.get_fill_color().to_hex()).toBe(YELLOW.to_hex());
+
+    number.set_hovered(false);
+    expect(number.hovered).toBe(false);
+    expect(highlight?.get_fill_opacity()).toBe(0);
+  });
+
+  test("the highlight matches the glyph bounding box (no layout impact)", () => {
+    const number = new InputDecimalNumber(1234, { color: YELLOW, num_decimal_places: 0 });
+    const plain = new DecimalNumber(1234, { num_decimal_places: 0, group_with_commas: false });
+    expect(number.width).toBeCloseTo(plain.width, 9);
+    expect(number.height).toBeCloseTo(plain.height, 9);
+
+    const highlight = number.highlight!;
+    expect(number.submobjects[0]).toBe(highlight);
+    expect(highlight.get_left()[0]).toBeCloseTo(number.get_left()[0], 6);
+    expect(highlight.get_right()[0]).toBeCloseTo(number.get_right()[0], 6);
+
+    number.set_value(7);
+    expect(number.submobjects[0]).toBe(highlight);
+    expect(number.width).toBeCloseTo(highlight.width, 9);
+  });
+
+  test("InputInteger scrubs in whole steps", () => {
+    const host = new FakeHost();
+    const camera = new Camera();
+    const number = new InputInteger(0, { drag_pixels: 100, drag_span: 10 });
+    const context = { host, camera };
+    const cx = number.get_center()[0] ?? 0;
+    const cy = number.get_center()[1] ?? 0;
+
+    number.on_press([cx, cy, 0], context);
+    number.on_drag([cx, cy + worldPixels(camera, 4), 0], context);
+    expect(number.get_value()).toBe(0);
+    // Slow drags accumulate: the second 4 px step crosses one whole unit.
+    number.on_drag([cx, cy + worldPixels(camera, 8), 0], context);
+    expect(number.get_value()).toBe(1);
+    number.on_drag([cx, cy + worldPixels(camera, 20), 0], context);
+    expect(number.get_value()).toBe(2);
+    number.on_release();
+  });
+
+  test("InteractiveScene highlights the hovered number and clears it off-target", async () => {
+    class NumberScene extends InteractiveScene {
+      number!: InputDecimalNumber;
+      blueprint(): void {
+        this.number = new InputDecimalNumber(3, { color: YELLOW });
+        this.add(this.number);
+      }
+    }
+    const host = new FakeHost();
+    const scene = new NumberScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+
+    host.drag(scene.number.get_center());
+    expect(scene.number.hovered).toBe(true);
+    expect(scene.number.highlight?.get_fill_opacity()).toBeGreaterThan(0);
+
+    host.drag([5, 5, 0]);
+    expect(scene.number.hovered).toBe(false);
+    expect(scene.number.highlight?.get_fill_opacity()).toBe(0);
+
+    host.click("进入下一步");
+    await host.advance(1);
+    host.click("进入下一步");
+    await host.advance(1);
+    await done;
   });
 });
 
@@ -555,6 +731,7 @@ describe("InputInteger", () => {
     const host = new FakeHost();
     const number = new InputInteger(0);
     number.on_press([0, 0, 0], controlContext(host));
+    number.on_release();
     expect(host.editor).not.toBeNull();
     expect(host.editor?.allow_decimal_point).toBe(false);
 
@@ -579,6 +756,7 @@ describe("InputDecimalNumber on_change", () => {
       changes += 1;
     };
     number.on_press([0, 0, 0], controlContext(host));
+    number.on_release();
     host.editor?.onInput("2.5");
     expect(changes).toBe(1);
     host.editor?.onInput("not a number");
@@ -607,6 +785,7 @@ describe("InputDecimalMatrix", () => {
     const gapBefore = (right.get_center()[0] ?? 0) - (left.get_center()[0] ?? 0);
 
     left.on_press(left.get_center(), controlContext(host));
+    left.on_release();
     expect(host.editor).not.toBeNull();
     host.editor?.onInput("123456");
 
@@ -669,6 +848,7 @@ describe("InputDecimalMatrix", () => {
 
     const cell = scene.matrix.mob_matrix[1]![0]!;
     host.press(cell.get_center());
+    host.release(cell.get_center());
     await host.advance(1);
     expect(host.editor).not.toBeNull();
     host.editor?.onInput("42");
@@ -700,6 +880,7 @@ describe("InputDecimalTable", () => {
     const oldVertical = table.vertical_lines;
     const cell = table.mob_table[0]![0]!;
     cell.on_press(cell.get_center(), controlContext(host));
+    cell.on_release();
     host.editor?.onInput("12345");
 
     expect(table.get_center()[0]).toBeCloseTo(centerBefore[0] ?? 0, 6);

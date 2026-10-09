@@ -239,6 +239,21 @@ export class DomInteractiveHost implements InteractiveHost {
     return this.pixelToWorld(pixelX, pixelY, camera as CameraLike);
   }
 
+  /**
+   * Screen pixels per world unit. Uses the canvas' *displayed* size (its CSS
+   * box), so drag distances stay constant no matter how the backing store is
+   * scaled down or up by the page layout.
+   */
+  pixelsPerWorldUnit(camera: unknown): [number, number] {
+    const cam = camera as CameraLike;
+    const rect = this.canvas.getBoundingClientRect();
+    const frameWidth = cam.frame_width ?? 14;
+    const frameHeight = cam.frame_height ?? 8;
+    const width = rect.width > 0 ? rect.width : this.canvas.width;
+    const height = rect.height > 0 ? rect.height : this.canvas.height;
+    return [width / frameWidth, height / frameHeight];
+  }
+
   onPointer(handlers: PointerHandlers): () => void {
     const down = (event: PointerEvent): void => {
       // Prevent the default focus change: opening the number editor focuses a
@@ -253,14 +268,20 @@ export class DomInteractiveHost implements InteractiveHost {
     const up = (event: PointerEvent): void => {
       handlers.up(event);
     };
+    const leave = (event: PointerEvent): void => {
+      handlers.leave?.(event);
+    };
     this.canvas.addEventListener("pointerdown", down);
     // Capture window-level move/up so a drag survives leaving the canvas.
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    // Entering an overlay control (or leaving the canvas) ends hover.
+    this.canvas.addEventListener("pointerleave", leave);
     const dispose = (): void => {
       this.canvas.removeEventListener("pointerdown", down);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      this.canvas.removeEventListener("pointerleave", leave);
     };
     this.disposers.push(dispose);
     return dispose;

@@ -49,6 +49,8 @@ export class InteractiveScene extends Scene {
   private _storyboard: InteractiveStep[] | null = null;
   private _phaseKind: PhaseKind = "blueprint";
   private _activeControl: InteractiveControl | null = null;
+  private _hoveredControl: (Mobject & InteractiveControl) | null = null;
+  private _controlsCache: Array<Mobject & InteractiveControl> | null = null;
   private _disposers: Array<() => void> = [];
   private _installed = false;
   private _requestNext = false;
@@ -186,6 +188,10 @@ export class InteractiveScene extends Scene {
     // in-flight drag are ignored outside the blueprint phase, so clearing the
     // state here is what stops a stale drag from jumping on the next frame.
     this.on_interaction_reset();
+    // The phase (re)builds the scene's mobjects, so the cached control list and
+    // any hover highlight from the previous phase are stale.
+    this.clear_hover();
+    this._controlsCache = null;
     // Buttons are unavailable while a phase function (typically a `play`
     // animation) runs; they light up again once the scene is idle and the user
     // can interact / advance.
@@ -280,7 +286,10 @@ export class InteractiveScene extends Scene {
   }
 
   private interactive_controls(): Array<Mobject & InteractiveControl> {
-    return this.interactive_family().filter(isInteractiveControl);
+    if (this._controlsCache === null) {
+      this._controlsCache = this.interactive_family().filter(isInteractiveControl);
+    }
+    return this._controlsCache;
   }
 
   private find_control_at(point: readonly number[]): (Mobject & InteractiveControl) | null {
@@ -292,6 +301,27 @@ export class InteractiveScene extends Scene {
     return null;
   }
 
+  /**
+   * Move the hover highlight to `control` (or clear it with `null`). Only
+   * controls implementing the optional `set_hovered` are notified.
+   */
+  private set_hovered_control(control: (Mobject & InteractiveControl) | null): void {
+    if (control === this._hoveredControl) return;
+    this._hoveredControl?.set_hovered?.(false);
+    this._hoveredControl = control;
+    control?.set_hovered?.(true);
+  }
+
+  /** Re-evaluate which control the pointer is over. */
+  private update_hover(point: readonly number[]): void {
+    this.set_hovered_control(this.find_control_at(point));
+  }
+
+  /** Drop any active hover highlight (phase change, pointer leave, teardown). */
+  private clear_hover(): void {
+    this.set_hovered_control(null);
+  }
+
   private install_host(host: InteractiveHost): void {
     if (this._installed) return;
     this._installed = true;
@@ -300,6 +330,7 @@ export class InteractiveScene extends Scene {
         down: (event) => this.handle_pointer_down(this.point_from_event(host, event), event),
         move: (event) => this.handle_pointer_move(this.point_from_event(host, event), event),
         up: (event) => this.handle_pointer_up(event),
+        leave: () => this.clear_hover(),
       }),
     );
     if (typeof host.onWheel === "function") {
@@ -327,6 +358,8 @@ export class InteractiveScene extends Scene {
     this._installed = false;
     this.interactive_host.endTextEdit();
     this._activeControl = null;
+    this.clear_hover();
+    this._controlsCache = null;
     this.on_interaction_reset();
   }
 
@@ -344,9 +377,11 @@ export class InteractiveScene extends Scene {
     if (this._phaseKind !== "blueprint") return;
     const control = this.find_control_at(point);
     if (control === null) {
+      this.clear_hover();
       this.on_background_pointer_down(point, event);
       return;
     }
+    this.set_hovered_control(control);
     this._activeControl = control;
     control.on_press(point, { host: this.interactive_host, camera: this.camera });
   }
@@ -357,6 +392,7 @@ export class InteractiveScene extends Scene {
       return;
     }
     if (this._phaseKind !== "blueprint") return;
+    this.update_hover(point);
     this.on_background_pointer_move(point, event);
   }
 
@@ -417,6 +453,8 @@ export class InteractiveScene extends Scene {
     this.updaters = [];
     this.last_t = 0;
     this._activeControl = null;
+    this.clear_hover();
+    this._controlsCache = null;
     this.interactive_host.endTextEdit();
     this.on_interaction_reset();
     const renderer = this.renderer as
