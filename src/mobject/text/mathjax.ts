@@ -53,8 +53,8 @@ function getMathJax(): MathJaxRuntime {
   if (runtime === null) {
     throw new Error(
       "wanim: MathJax is not loaded, so TeX mobjects cannot be built yet. " +
-        "Call `await preload_mathjax()` (or `await preload_modules({ mathjax: true })`) " +
-        "before constructing Tex/MathTex/DecimalNumber/Matrix/... . " +
+        "Call `await preload_submodules(\"mathjax\")` before constructing " +
+        "Tex/MathTex/DecimalNumber/Matrix/... . " +
         "`runPythonOnCanvas` does this automatically for scenes whose source uses TeX.",
     );
   }

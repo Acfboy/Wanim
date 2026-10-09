@@ -40,8 +40,6 @@ export {
   texToSvg,
   texToSvgCached,
   mathjaxSvgCache,
-  preload_mathjax,
-  is_mathjax_loaded,
   type TexToSvgOptions,
 } from "./mathjax.js";
 

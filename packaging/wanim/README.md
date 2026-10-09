@@ -67,13 +67,14 @@ alone is enough for `runPythonOnCanvas`.
 
 ### Optional modules
 
-`MathTex`/`Tex` and text fonts are on-demand:
+`MathTex`/`Tex`, the hand-drawn style and text fonts are on-demand:
 
 ```js
-import { preload_mathjax, preload_modules } from "wanim";
+import { preload_submodules, submodule_status } from "wanim";
 
-await preload_mathjax();                                  // before first TeX use
-await preload_modules({ mathjax: true, fonts: true });
+await preload_submodules("mathjax");                    // before first TeX use
+await preload_submodules(["mathjax", "fonts"]);         // several at once
+submodule_status();                                     // { fonts, mathjax }
 ```
 
 The main bundle stays ~1.4 MiB (~0.4 MiB gzip); MathJax (~2 MiB)
@@ -144,7 +145,7 @@ repository for a full page.
 import * as wanim from "wanim";      // wanim-core + wanim-py Node API
 import { MathTex } from "wanim";
 
-await wanim.preload_mathjax();
+await wanim.preload_submodules("mathjax");
 console.log(new MathTex("a^2 + b^2 = c^2").width > 0);
 ```
 

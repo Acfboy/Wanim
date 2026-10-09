@@ -7,7 +7,7 @@
  * ```html
  * <!-- 1. Inline: just load this module and put Python in a child script. -->
  * <script type="module" src="/wanim/browser/wanim-element.browser.js"></script>
- * <wanim-scene quality="-qm" autoplay>
+ * <wanim-scene quality="-qm" render-style="standard" autoplay>
  *   <script type="text/x-python">
  * from manim import *
  * class Demo(Scene):
@@ -77,8 +77,10 @@ interface Py2jsModule {
     options: Record<string, unknown>,
   ): Promise<{ sceneName: string; stats: WanimSceneStats; result: unknown }>;
   wanim?: {
-    preload_mathjax?: () => Promise<unknown>;
-    preload_fonts?: () => Promise<unknown>;
+    preload_submodules?: (
+      names?: WanimPreloadModule | readonly WanimPreloadModule[],
+      options?: { fonts?: readonly string[] },
+    ) => Promise<unknown>;
   };
 }
 
@@ -562,15 +564,10 @@ export class WanimSceneElement extends HTMLElementBase {
     const modules = this.preloadModules();
     if (modules.length === 0) return;
     const api = (py2js ?? (await loadPy2js())).wanim;
-    await Promise.all(
-      modules.map((name) => {
-        const loader = name === "mathjax" ? api?.preload_mathjax : api?.preload_fonts;
-        if (typeof loader !== "function") {
-          throw new Error(`preload module "${name}" is not available in this wanim build`);
-        }
-        return loader();
-      }),
-    );
+    if (typeof api?.preload_submodules !== "function") {
+      throw new Error("preload_submodules is not available in this wanim build");
+    }
+    await api.preload_submodules(modules);
   }
 
   private scheduleAutoplay(): void {

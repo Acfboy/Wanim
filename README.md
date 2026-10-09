@@ -130,17 +130,23 @@ download them. Serve `dist/` **including `chunks/`** — the bundle imports them
 by relative URL.
 
 ```js
-import { preload_mathjax, preload_fonts, preload_modules } from "wanim";
+import { preload_submodules, submodule_status } from "wanim";
 
-// one call, or use the individual functions (all are idempotent):
-await preload_modules({ mathjax: true, fonts: true });
+// one name, several names, or a de-duplicated array (all is idempotent):
+await preload_submodules("mathjax");
+await preload_submodules(["mathjax", "fonts"]);
+// `fonts` defaults to the active chain; pass paths for a one-off chain:
+await preload_submodules("fonts", { fonts: ["/fonts/MyFont.ttf"] });
+
+submodule_status(); // { fonts, mathjax }
 ```
 
 `runPythonOnCanvas` inspects the Python source and preloads automatically
 (`preload: "none"` disables it; an object picks modules explicitly). The TeX
-helpers stay synchronous: calling `texToSvg`/building a `MathTex` before
-`preload_mathjax()` throws with instructions instead of failing obscurely, and
-in Node call `await preload_mathjax()` once at startup.
+helpers stay synchronous: calling `texToSvg`/building a `MathTex` before the
+MathJax submodule is loaded throws with instructions instead of failing
+obscurely, and in Node call `await preload_submodules("mathjax")` once at
+startup.
 
 ## Library (Node)
 
