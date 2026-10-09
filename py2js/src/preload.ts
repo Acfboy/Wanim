@@ -28,7 +28,7 @@ export interface PreloadNeeds {
  * broad: see the module comment.
  */
 const MATHJAX_PATTERN =
-  /\b(?:MathTex|SingleStringMathTex|Tex|BulletedList|Title|DecimalNumber|Integer|Variable|Matrix|IntegerMatrix|Table|IntegerTable|MathTable|Brace|BraceBetweenPoints|BraceLabel|BraceText|Label|LabeledLine|LabeledArrow|LabeledPolygram|get_axis_labels|get_coordinate_labels|get_graph_label|include_numbers|numbers_to_include|InputDecimalNumber)\b/;
+  /\b(?:MathTex|SingleStringMathTex|Tex|BulletedList|Title|DecimalNumber|Integer|Variable|Matrix|IntegerMatrix|Table|IntegerTable|MathTable|Brace|BraceBetweenPoints|BraceLabel|BraceText|Label|LabeledLine|LabeledArrow|LabeledPolygram|get_axis_labels|get_coordinate_labels|get_graph_label|include_numbers|numbers_to_include|InputDecimalNumber|InputInteger)\b/;
 
 /** Python identifiers that build Pango/opentype text (not TeX). */
 const FONTS_PATTERN = /\b(?:Text|MarkupText|Paragraph|BraceText|register_font)\b/;

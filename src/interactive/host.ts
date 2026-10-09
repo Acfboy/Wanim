@@ -26,6 +26,12 @@ export interface PointerHandlers {
   down: (event: PointerEvent) => void;
   move: (event: PointerEvent) => void;
   up: (event: PointerEvent) => void;
+  /**
+   * Optional: the pointer left the interactive surface (e.g. the canvas).
+   * Scenes use it to drop hover highlights. Hosts without a pointer-leave
+   * concept may omit it.
+   */
+  leave?: (event: PointerEvent) => void;
 }
 
 /** Options for an inline text edit session opened by the host. */
@@ -62,6 +68,15 @@ export interface InteractiveHost {
   readonly live: boolean;
   /** Convert a pointer event to a world-space point using `camera`. */
   pointFromEvent(event: PointerEvent, camera: unknown): number[];
+  /**
+   * Screen (client) pixels per world unit for pointer motion, used by controls
+   * that translate drag distances into values. Optional: when omitted, the
+   * controls fall back to the camera's backing-store pixels, which is exact
+   * only when the canvas is displayed at its natural size. A DOM host whose
+   * canvas is CSS-scaled should implement this so a 100-px pointer drag always
+   * measures 100 screen pixels.
+   */
+  pixelsPerWorldUnit?(camera: unknown): [number, number];
   /** Register pointer callbacks; returns a disposer. */
   onPointer(handlers: PointerHandlers): () => void;
   /**

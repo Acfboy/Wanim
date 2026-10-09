@@ -56,6 +56,12 @@ export interface InteractiveControl {
   on_press(point: readonly number[], context: InteractiveContext): void;
   on_drag(point: readonly number[], context: InteractiveContext): void;
   on_release(): void;
+  /**
+   * Optional hover notification, delivered while the pointer moves over the
+   * control and no drag is in progress. Controls that draw a hover highlight
+   * implement it; the scene ignores controls that do not.
+   */
+  set_hovered?(hovered: boolean): void;
 }
 
 /** Duck-typed check that `mobject` is an interactive control. */
@@ -104,6 +110,33 @@ function wrap01(value: number): number {
 /** Python-style non-negative modulo. */
 function mod(value: number, modulus: number): number {
   return ((value % modulus) + modulus) % modulus;
+}
+
+/**
+ * Screen pixels per world unit, per axis, read off a camera-like object.
+ * Falls back to a 100 px/unit guess when the camera does not expose its
+ * pixel/frame geometry (custom or headless cameras).
+ */
+function pixelScale(camera: unknown): [number, number] {
+  const cam = camera as {
+    pixel_width?: number;
+    pixel_height?: number;
+    frame_width?: number;
+    frame_height?: number;
+  } | null;
+  const pixelWidth = cam?.pixel_width;
+  const pixelHeight = cam?.pixel_height;
+  const frameWidth = cam?.frame_width;
+  const frameHeight = cam?.frame_height;
+  const scaleX =
+    typeof pixelWidth === "number" && typeof frameWidth === "number" && pixelWidth > 0 && frameWidth > 0
+      ? pixelWidth / frameWidth
+      : 0;
+  const scaleY =
+    typeof pixelHeight === "number" && typeof frameHeight === "number" && pixelHeight > 0 && frameHeight > 0
+      ? pixelHeight / frameHeight
+      : 0;
+  return [scaleX > 0 ? scaleX : 100, scaleY > 0 ? scaleY : 100];
 }
 
 export interface PathSliderOptions {
@@ -631,27 +664,106 @@ export class Switch extends VGroup implements InteractiveControl {
   }
 }
 
+export interface InputDecimalNumberOptions extends DecimalNumberOptions {
+  /**
+   * Inclusive `[low, high]` bound for the value. Text edits and vertical drags
+   * are clamped into it (overflow -> high, underflow -> low); `null` (the
+   * default) leaves the number unbounded.
+   */
+  value_range?: readonly number[] | null;
+  /**
+   * Vertical screen distance (in pixels) that sweeps `drag_span` while
+   * scrubbing. Defaults to `150`.
+   */
+  drag_pixels?: number;
+  /**
+   * Value change produced by a `drag_pixels`-long drag. Defaults to the
+   * `value_range` span, or ten display steps (`10 * 10^-num_decimal_places`)
+   * when the number is unbounded.
+   */
+  drag_span?: number;
+  /** Fill opacity of the hover highlight layer. Defaults to `0.25`. */
+  highlight_opacity?: number;
+}
+
+/** A vertical drag shorter than this (in screen pixels) is still a click. */
+const SCRUB_START_PIXELS = 4;
+
 /**
  * A `DecimalNumber` whose value can be edited by clicking it (the host opens an
- * inline text editor anchored over the number).
+ * inline text editor anchored over the number) or scrubbed by pressing it and
+ * dragging up/down. While the pointer hovers the number a translucent
+ * rectangle in the number's own colour is drawn behind the digits.
+ *
+ * With `value_range` the value is clamped to `[low, high]` both on text edits
+ * and on drags, so `get_value()` always stays inside the range.
  */
 export class InputDecimalNumber extends DecimalNumber implements InteractiveControl {
   readonly [INTERACTIVE_CONTROL] = true;
   editing = false;
   /**
    * Called after a successful edit updates the value (every keystroke while
-   * editing, and again on commit). `null` means "no change handler".
+   * editing, every scrub step while dragging, and again on commit). `null`
+   * means "no change handler".
    */
   on_change: (() => void) | null = null;
+  /** Inclusive `[low, high]` bound, or `null` when the number is unbounded. */
+  value_range: [number, number] | null;
+  drag_pixels: number;
+  drag_span: number | null;
+  highlight_opacity: number;
+  /** Whether the pointer currently hovers the number. */
+  hovered = false;
+  /** Highlight rectangle drawn behind the glyphs (`null` before construction). */
+  highlight: Rectangle | null = null;
+  private _press_context: InteractiveContext | null = null;
+  private _press_point: number[] | null = null;
+  private _last_drag_point: number[] | null = null;
+  private _scrubbing = false;
+  /**
+   * Fractional drag accumulator: slow drags accumulate until they cross a
+   * display step instead of rounding away on every pointer event.
+   */
+  private _scrub_value = 0;
 
-  constructor(numberValue: DecimalNumberValue = 0, options: DecimalNumberOptions = {}) {
+  constructor(numberValue: DecimalNumberValue = 0, options: InputDecimalNumberOptions = {}) {
+    const {
+      value_range = null,
+      drag_pixels = 150,
+      drag_span = null,
+      highlight_opacity = 0.25,
+      ...decimalOptions
+    } = options;
     // Grouping separators (10,000) make the caret/glyph mapping confusing for a
     // live-edited number, so the interactive input defaults to no grouping.
-    super(numberValue, { group_with_commas: false, ...options });
+    super(clampToValueRange(numberValue, value_range), { group_with_commas: false, ...decimalOptions });
+    const low = value_range?.[0] ?? 0;
+    const high = value_range?.[1] ?? 1;
+    this.value_range = value_range === null || value_range === undefined ? null : [low, high];
+    this.drag_pixels = drag_pixels > 0 ? drag_pixels : 150;
+    this.drag_span = drag_span;
+    this.highlight_opacity = highlight_opacity;
+    this._sync_highlight();
   }
 
   override get_value(): DecimalNumberValue {
     return super.get_value();
+  }
+
+  /**
+   * Set the value, clamping it into `value_range` first (no-op for complex
+   * values, which are not scrubbed).
+   */
+  override set_value(value: DecimalNumberValue): this {
+    // The highlight must be absent while DecimalNumber rebuilds/repositions
+    // its glyphs: as the first "old" submobject it would donate its own
+    // translucent style to the first glyph, and it would skew the bounding box
+    // `move_to` reads while re-laying out.
+    const hadHighlight = this.highlight !== null;
+    if (hadHighlight) this._detach_highlight();
+    super.set_value(this._clamp_value(value));
+    if (this.highlight !== null) this._sync_highlight();
+    return this;
   }
 
   is_hit(point: readonly number[]): boolean {
@@ -669,13 +781,66 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     );
   }
 
-  on_press(_point: readonly number[], context: InteractiveContext): void {
-    this._begin_edit(context);
+  on_press(point: readonly number[], context: InteractiveContext): void {
+    // The gesture is decided on release: a click opens the editor, a vertical
+    // drag scrubs the value.
+    this._press_context = context;
+    this._press_point = [...point3d(point)];
+    this._last_drag_point = [...point3d(point)];
+    this._scrubbing = false;
+    this._scrub_value = this._scalar_value();
   }
 
-  on_drag(_point: readonly number[], _context: InteractiveContext): void {}
+  on_drag(point: readonly number[], context: InteractiveContext): void {
+    const last = this._last_drag_point;
+    if (last === null) {
+      this.on_press(point, context);
+      return;
+    }
+    // Prefer the host's screen scale (a CSS-scaled canvas would otherwise make
+    // a "150 px" drag depend on the backing-store size).
+    const [pixelsX, pixelsY] =
+      context.host.pixelsPerWorldUnit?.(context.camera) ?? pixelScale(context.camera);
+    const press = this._press_point ?? last;
+    const dx = (point[0] ?? 0) - (press[0] ?? 0);
+    const dy = (point[1] ?? 0) - (press[1] ?? 0);
+    if (!this._scrubbing) {
+      if (Math.hypot(dx * pixelsX, dy * pixelsY) < SCRUB_START_PIXELS) {
+        this._last_drag_point = [...point3d(point)];
+        return;
+      }
+      this._scrubbing = true;
+    }
+    const step = ((point[1] ?? 0) - (last[1] ?? 0)) * pixelsY * (this._drag_span_value() / this.drag_pixels);
+    this._scrub_value += step;
+    const quantized = this._quantize_value(this._scrub_value);
+    const clamped = this._clamp_scalar(quantized);
+    // Hitting a bound drops the accumulated overshoot, so reversing the drag
+    // from the boundary responds immediately. In-range integer quantization
+    // keeps the fraction (0.8 stays 0.8 until the next step crosses 1).
+    if (clamped !== quantized) this._scrub_value = clamped;
+    this.set_value(clamped);
+    this.on_change?.();
+    this._last_drag_point = [...point3d(point)];
+  }
 
-  on_release(): void {}
+  on_release(): void {
+    const context = this._press_context;
+    const wasScrubbing = this._scrubbing;
+    this._press_context = null;
+    this._press_point = null;
+    this._last_drag_point = null;
+    this._scrubbing = false;
+    if (!wasScrubbing && context !== null) this._begin_edit(context);
+  }
+
+  /** Update the hover highlight (called by the scene on pointer motion). */
+  set_hovered(hovered: boolean): void {
+    const next = Boolean(hovered);
+    if (this.hovered === next) return;
+    this.hovered = next;
+    this._apply_highlight_style();
+  }
 
   /** Open the host's inline editor for this number. */
   protected _begin_edit(context: InteractiveContext): void {
@@ -721,9 +886,10 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
    */
   interactive_caret_anchor(index: number): number[] | null {
     // `_set_submobjects_from_number` adds one submobject per displayed
-    // character (in order); unit/background submobjects, if any, come after.
+    // character (in order); unit/background submobjects, if any, come after,
+    // and the hover highlight sits before the glyphs.
     const display = this._get_num_string(this.number);
-    const glyphs = this.submobjects.slice(0, display.length);
+    const glyphs = this.submobjects.filter((member) => member !== this.highlight).slice(0, display.length);
     if (glyphs.length === 0) return null;
     const bottom = this.get_bottom();
     const y = bottom[1] ?? 0;
@@ -734,15 +900,91 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     const left = glyphs[Math.max(0, index)]!.get_left();
     return [left[0] ?? 0, y, 0];
   }
+
+  /** The value as a real number (complex values scrub their real part). */
+  private _scalar_value(): number {
+    const value = this.get_value();
+    return typeof value === "number" ? value : value.re;
+  }
+
+  /** Clamp a real value into `value_range` (complex values pass through). */
+  private _clamp_value(value: DecimalNumberValue): DecimalNumberValue {
+    return typeof value === "number" ? this._clamp_scalar(value) : value;
+  }
+
+  /** Clamp a scalar into `value_range` (identity when unbounded). */
+  private _clamp_scalar(value: number): number {
+    const range = this.value_range;
+    if (range === null) return value;
+    return Math.max(range[0], Math.min(range[1], value));
+  }
+
+  /** Value change produced by `drag_pixels` of vertical drag. */
+  private _drag_span_value(): number {
+    if (this.drag_span !== null) return this.drag_span;
+    if (this.value_range !== null) return this.value_range[1] - this.value_range[0];
+    return 10 / 10 ** this.num_decimal_places;
+  }
+
+  /** Snap one scrub step (identity for decimals; integers round). */
+  protected _quantize_value(value: number): number {
+    return value;
+  }
+
+  /** Remove the highlight from the submobject list (before a glyph rebuild). */
+  private _detach_highlight(): void {
+    const highlight = this.highlight;
+    if (highlight === null) return;
+    const index = this.submobjects.indexOf(highlight);
+    if (index >= 0) this.submobjects.splice(index, 1);
+  }
+
+  /** Re-fit the highlight to the glyphs and put it behind them. */
+  private _sync_highlight(): void {
+    if (this.submobjects.length === 0) return;
+    let highlight = this.highlight;
+    if (highlight === null) {
+      highlight = new Rectangle({ width: 1, height: 1, stroke_width: 0 });
+      this.highlight = highlight;
+    }
+    const left = this.get_left()[0] ?? 0;
+    const right = this.get_right()[0] ?? 0;
+    const bottom = this.get_bottom()[1] ?? 0;
+    const top = this.get_top()[1] ?? 0;
+    const center = this.get_center();
+    highlight.stretch_to_fit_width(Math.max(right - left, 1e-6));
+    highlight.stretch_to_fit_height(Math.max(top - bottom, 1e-6));
+    highlight.move_to(center);
+    this.submobjects.unshift(highlight);
+    this._apply_highlight_style();
+  }
+
+  private _apply_highlight_style(): void {
+    const highlight = this.highlight;
+    if (highlight === null) return;
+    highlight.set_fill(this.get_color() ?? WHITE, this.hovered ? this.highlight_opacity : 0);
+  }
+}
+
+/** Clamp a (possibly complex) initial value into `value_range`. */
+function clampToValueRange(
+  value: DecimalNumberValue,
+  range: readonly number[] | null | undefined,
+): DecimalNumberValue {
+  if (range === null || range === undefined || typeof value !== "number") return value;
+  const low = range[0] ?? 0;
+  const high = range[1] ?? 1;
+  return Math.max(low, Math.min(high, value));
 }
 
 /**
- * An `Integer` whose value can be edited by clicking it. Text edits are
- * rounded/truncated like {@link Integer}; the inline editor does not accept a
- * decimal point.
+ * An `Integer` whose value can be edited by clicking it or scrubbed by
+ * dragging. Text edits are rounded/truncated like {@link Integer}; the inline
+ * editor does not accept a decimal point, and a scrub drag snaps to whole
+ * integers.
  */
 export class InputInteger extends InputDecimalNumber {
-  constructor(numberValue: DecimalNumberValue = 0, options: DecimalNumberOptions = {}) {
+  constructor(numberValue: DecimalNumberValue = 0, options: InputDecimalNumberOptions = {}) {
     super(numberValue, {
       ...options,
       num_decimal_places: options.num_decimal_places ?? 0,
@@ -758,6 +1000,10 @@ export class InputInteger extends InputDecimalNumber {
 
   protected override _allow_decimal_point(): boolean {
     return false;
+  }
+
+  protected override _quantize_value(value: number): number {
+    return Math.trunc(roundToDecimals(value, 0));
   }
 }
 
@@ -889,6 +1135,7 @@ export class InputDecimalTable extends DecimalTable {
 // slot of that shape and construct `new Slider(undefined, extras)`, dropping
 // `value_range`/`init_value`/... entirely.
 (Slider as unknown as { __argnames__?: string[] }).__argnames__ = ["options"];
+(InputDecimalNumber as unknown as { __argnames__?: string[] }).__argnames__ = ["numberValue", "options"];
 (InputInteger as unknown as { __argnames__?: string[] }).__argnames__ = ["numberValue", "options"];
 (InputDecimalMatrix as unknown as { __argnames__?: string[] }).__argnames__ = ["matrix", "options"];
 (InputDecimalTable as unknown as { __argnames__?: string[] }).__argnames__ = ["table", "options"];
