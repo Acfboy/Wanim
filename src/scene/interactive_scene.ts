@@ -68,6 +68,21 @@ export class InteractiveScene extends Scene {
   blueprint(): void {}
 
   /**
+   * Adding/removing mobjects changes which interactive controls exist (slides
+   * that swap whole views in and out), so drop the control cache. Without this
+   * a removed slider would keep receiving hit tests from the stale cache.
+   */
+  override add(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
+    this._controlsCache = null;
+    return super.add(...mobjects);
+  }
+
+  override remove(...mobjects: Array<Mobject | Iterable<Mobject>>): this {
+    this._controlsCache = null;
+    return super.remove(...mobjects);
+  }
+
+  /**
    * Schedule a sequence of `(blueprint, construct)` pairs. Each entry may be a
    * two-element array or an object `{ blueprint, construct }`; pass `None`/`null`
    * for a half that should be skipped. Once called, `blueprint`/`construct` are
