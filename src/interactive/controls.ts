@@ -18,13 +18,14 @@
  * move afterwards.
  */
 import type { ParsableManimColor } from "../utils/color/index.js";
-import { BLUE_E, GREY_C, WHITE, YELLOW } from "../utils/color/index.js";
+import { BLACK, BLUE_E, GREY_B, GREY_C, WHITE, YELLOW, interpolate_color, ManimColor } from "../utils/color/index.js";
 import { LEFT, RIGHT } from "../constants.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Dot } from "../mobject/geometry/arc.js";
 import { Line } from "../mobject/geometry/line.js";
-import { Rectangle } from "../mobject/geometry/polygram.js";
+import { isPlainOptionsBag, Rectangle, RoundedRectangle } from "../mobject/geometry/polygram.js";
+import { Text } from "../mobject/text/text_mobject.js";
 import { DecimalMatrix, type MatrixOptions } from "../mobject/matrix.js";
 import { DecimalTable, type TableData, type TableOptions } from "../mobject/table.js";
 import {
@@ -664,6 +665,137 @@ export class Switch extends VGroup implements InteractiveControl {
   }
 }
 
+export interface ChipOptions {
+  /** Initial selected state. Defaults to `false`. */
+  value?: boolean;
+  /** Accent colour: the label colour and, when selected, the border/fill tint. */
+  color?: ParsableManimColor;
+  /** Chip height in world units. Defaults to `0.52`. */
+  height?: number;
+  /** Label font size. Defaults to `24`. */
+  font_size?: number;
+  /** Horizontal padding around the label. Defaults to `0.22`. */
+  padding?: number;
+  /** Corner radius. Defaults to `height * 0.22`. */
+  corner_radius?: number;
+  /** Fill colour of an unselected chip. Defaults to a dark grey. */
+  fill_color?: ParsableManimColor;
+  /** Border colour of an unselected chip. Defaults to a mid grey. */
+  stroke_color?: ParsableManimColor;
+  /** Stroke width. Defaults to `1.5`. */
+  stroke_width?: number;
+}
+
+/**
+ * A tag-like toggle chip: a rounded box with a centred label and a trailing
+ * `×` (shown in every state, like the original explorable-video tag rows).
+ * Clicking anywhere on the chip flips its boolean value; selected chips get an
+ * accent-tinted fill, border and label.
+ */
+export class Chip extends VGroup implements InteractiveControl {
+  readonly [INTERACTIVE_CONTROL] = true;
+  box: RoundedRectangle;
+  label: Text;
+  cross: Text;
+  accent_color: ParsableManimColor;
+  unselected_fill: ParsableManimColor;
+  unselected_stroke: ParsableManimColor;
+  stroke_width: number;
+  private _value: boolean;
+
+  constructor(
+    label: string | (ChipOptions & { label?: string }) = "",
+    options: ChipOptions = {},
+  ) {
+    super();
+    const bag: ChipOptions & { label?: string } = isPlainOptionsBag(label)
+      ? { ...(label as ChipOptions & { label?: string }), ...options }
+      : { ...options };
+    const positionalLabel = isPlainOptionsBag(label) ? undefined : (label as string);
+    const {
+      value = false,
+      color = WHITE,
+      height = 0.52,
+      font_size = 24,
+      padding = 0.22,
+      corner_radius = height * 0.22,
+      fill_color = "#202020",
+      stroke_color = GREY_C,
+      stroke_width = 1.5,
+    } = bag;
+    const text = bag.label ?? positionalLabel ?? "";
+    this._value = value;
+    this.accent_color = color;
+    this.unselected_fill = fill_color;
+    this.unselected_stroke = stroke_color;
+    this.stroke_width = stroke_width;
+
+    this.label = new Text(text, { font_size, color });
+    this.cross = new Text("×", { font_size: font_size * 0.9, color: GREY_B });
+    const gap = padding * 0.5;
+    const contentWidth = this.label.get_width() + gap + this.cross.get_width();
+    this.box = new RoundedRectangle({
+      width: contentWidth + 2 * padding,
+      height,
+      corner_radius,
+      stroke_width,
+    });
+    this.box.set_fill(fill_color, 1);
+    this.box.set_stroke(stroke_color, stroke_width);
+    this.label.move_to(this.box.get_center());
+    this.label.shift([-(this.cross.get_width() + gap) / 2, 0, 0]);
+    this.cross.next_to(this.label, RIGHT, gap);
+    this.add(this.box, this.label, this.cross);
+    this._apply_state();
+  }
+
+  get_value(): boolean {
+    return this._value;
+  }
+
+  set_value(value: boolean): this {
+    this._value = Boolean(value);
+    this._apply_state();
+    return this;
+  }
+
+  toggle(): this {
+    return this.set_value(!this._value);
+  }
+
+  is_hit(point: readonly number[]): boolean {
+    const left = this.box.get_left();
+    const right = this.box.get_right();
+    const bottom = this.box.get_bottom();
+    const top = this.box.get_top();
+    const pad = this.box.height * 0.15;
+    const [x, y] = point2d(point);
+    return (
+      x >= (left[0] ?? 0) - pad &&
+      x <= (right[0] ?? 0) + pad &&
+      y >= (bottom[1] ?? 0) - pad &&
+      y <= (top[1] ?? 0) + pad
+    );
+  }
+
+  on_press(_point: readonly number[], _context: InteractiveContext): void {
+    this.toggle();
+  }
+
+  on_drag(_point: readonly number[], _context: InteractiveContext): void {}
+
+  on_release(): void {}
+
+  private _apply_state(): void {
+    const on = this._value;
+    const accent = new ManimColor(this.accent_color);
+    this.box.set_fill(on ? interpolate_color(new ManimColor(BLACK), accent, 0.18) : this.unselected_fill, 1);
+    this.box.set_stroke(on ? this.accent_color : this.unselected_stroke, this.stroke_width);
+    this.label.set_color(on ? this.accent_color : GREY_B);
+    this.cross.set_color(on ? this.accent_color : this.unselected_stroke);
+  }
+}
+
 export interface InputDecimalNumberOptions extends DecimalNumberOptions {
   /**
    * Inclusive `[low, high]` bound for the value. Text edits and vertical drags
@@ -1135,6 +1267,7 @@ export class InputDecimalTable extends DecimalTable {
 // slot of that shape and construct `new Slider(undefined, extras)`, dropping
 // `value_range`/`init_value`/... entirely.
 (Slider as unknown as { __argnames__?: string[] }).__argnames__ = ["options"];
+(Chip as unknown as { __argnames__?: string[] }).__argnames__ = ["label", "options"];
 (InputDecimalNumber as unknown as { __argnames__?: string[] }).__argnames__ = ["numberValue", "options"];
 (InputInteger as unknown as { __argnames__?: string[] }).__argnames__ = ["numberValue", "options"];
 (InputDecimalMatrix as unknown as { __argnames__?: string[] }).__argnames__ = ["matrix", "options"];
