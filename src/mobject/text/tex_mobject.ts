@@ -93,6 +93,37 @@ export class SingleStringMathTex extends SVGMobject {
     this.init_svg_mobject(true);
     this.move_into_position();
 
+    // NOTE: Python's `SVGMobject.__init__` parses the SVG first and only then
+    // applies the explicit style arguments (`fill_color`, `fill_opacity`,
+    // `stroke_color`, ...) to the parsed paths, *before* `init_colors()`
+    // recolors the currentColor (black) glyphs. Here the MathJax SVG is parsed
+    // after `super()` returned, so the style pass the base constructor ran hit
+    // an empty mobject. Re-apply it to the parsed paths, otherwise
+    // `fill_color=...` and friends are silently replaced by the default white.
+    const style_override: {
+      fill_color?: ParsableManimColor;
+      fill_opacity?: number;
+      stroke_color?: ParsableManimColor;
+      stroke_opacity?: number;
+      stroke_width?: number;
+    } = {};
+    if (options.fill_color !== undefined && options.fill_color !== null) {
+      style_override.fill_color = options.fill_color;
+    }
+    if (options.fill_opacity !== undefined && options.fill_opacity !== null) {
+      style_override.fill_opacity = options.fill_opacity;
+    }
+    if (options.stroke_color !== undefined && options.stroke_color !== null) {
+      style_override.stroke_color = options.stroke_color;
+    }
+    if (options.stroke_opacity !== undefined && options.stroke_opacity !== null) {
+      style_override.stroke_opacity = options.stroke_opacity;
+    }
+    if (stroke_width !== undefined && stroke_width !== null) {
+      style_override.stroke_width = stroke_width;
+    }
+    if (Object.keys(style_override).length > 0) this.set_style(style_override);
+
     this.init_colors();
     // NOTE: the fixed `TEX_MOB_SCALE_FACTOR` rescale and the `font_size`
     // rescale are both uniform scalings about the centred origin, so in the
@@ -252,6 +283,7 @@ function mathTexCacheKey(texStrings: string[], options: MathTexOptions): string 
   const parts: unknown[] = ["MathTex"];
   const simpleKeys = [
     "arg_separator", "tex_environment", "font_size", "color", "stroke_width",
+    "fill_color", "fill_opacity", "stroke_color", "stroke_opacity",
     "should_center", "height", "width", "organize_left_to_right",
     "disable_ligatures", "warn_missing_font",
   ] as const;
