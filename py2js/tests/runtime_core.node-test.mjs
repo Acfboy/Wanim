@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 
 import * as npReal from "numpy-ts";
 
-import { createRuntimeCore } from "../dist/runtime_core.js";
+import { createRuntimeCore, installPythonShims } from "../dist/runtime_core.js";
 
 class FakeNDArray {}
 const core = createRuntimeCore({
@@ -312,6 +312,81 @@ check("numpy facade exposes linalg.LinAlgError for except handlers", () => {
   const error = new np.linalg.LinAlgError("singular");
   assert.ok(error instanceof Error);
   assert.equal(error.name, "LinAlgError");
+});
+
+check("linalg numerical failures throw np.linalg.LinAlgError", () => {
+  const np = ndCore.buildNumpy();
+  // numpy-ts throws `Error: inv: singular matrix`; Python catches LinAlgError.
+  assert.throws(
+    () => np.linalg.inv([[1, 2], [2, 4]]),
+    (error) => error instanceof np.linalg.LinAlgError && /singular/.test(error.message),
+  );
+  assert.throws(
+    () => np.linalg.cholesky([[1, 2], [2, 1]]),
+    (error) => error instanceof np.linalg.LinAlgError && /positive definite/.test(error.message),
+  );
+});
+
+check("np dtype constructors cast scalars and array-likes", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(np.uint8(300), 44);
+  assert.equal(np.uint8(-1), 255);
+  assert.equal(np.int8(200), -56);
+  assert.equal(np.uint16(70000), 4464);
+  assert.equal(np.int64(5), 5);
+  assert.equal(np.uint64(5), 5);
+  assert.equal(np.float64(2), 2);
+  assert.equal(np.float32(0.69), 0.6899999976158142);
+  assert.equal(np.bool_(2), true);
+  assert.equal(np.bool_(0), false);
+  assert.equal(np.complex128(2.5).re, 2.5);
+  assert.equal(np.complex(0, Math.PI / 4).im, Math.PI / 4);
+  const casted = np.uint8([[0, 128], [255, 64]]);
+  assert.equal(casted.dtype, "uint8");
+  assert.deepEqual(casted.tolist(), [[0, 128], [255, 64]]);
+});
+
+check("np dtype constructors work as dtype= arguments and with astype()", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(np.zeros(3, np.uint8).dtype, "uint8");
+  assert.equal(np.ones(3, np.float32).dtype, "float32");
+  assert.equal(np.arange(0, 3, 1, np.int16).dtype, "int16");
+  assert.equal(np.array([[1, 2]], np.uint16).dtype, "uint16");
+  assert.equal(np.arange(5).astype(np.bool_).dtype, "bool");
+});
+
+check("np.dtype normalizes numeric specs and rejects structured dtypes", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(np.dtype("f4"), "float32");
+  assert.equal(np.dtype("float"), "float64");
+  assert.equal(np.dtype(np.float32), "float32");
+  assert.equal(np.dtype(np.uint8), "uint8");
+  assert.equal(np.zeros(2, np.dtype("u1")).dtype, "uint8");
+  assert.throws(() => np.dtype([["point", "f4"]]), /structured dtypes are not supported/);
+  assert.throws(() => np.dtype("object"), /unsupported dtype/);
+});
+
+check("np legacy constants and aliases", () => {
+  const np = ndCore.buildNumpy();
+  assert.equal(np.infty, Infinity);
+  assert.equal(np.Inf, Infinity);
+  assert.equal(np.PINF, Infinity);
+  assert.equal(np.NINF, -Infinity);
+  assert.ok(Number.isNaN(np.NaN));
+  assert.equal(np.product([1, 2, 3, 4]), 24);
+  assert.equal(np.prod([1, 2, 3, 4]), 24);
+  assert.deepEqual(np.cumproduct([1, 2, 3]).tolist(), [1, 2, 6]);
+});
+
+check("scalar shims bridge .item()/.real/.imag onto unboxed primitives", () => {
+  installPythonShims({ Number, Boolean, BigInt });
+  assert.equal((5).item(), 5);
+  assert.equal((1.5).real, 1.5);
+  assert.equal((1.5).imag, 0);
+  assert.equal(true.item(), true);
+  assert.equal(true.real, 1);
+  assert.equal(true.imag, 0);
+  assert.equal((7n).item(), 7n);
 });
 
 check("numpy facade accepts rapydscript range() objects as array-likes", () => {
