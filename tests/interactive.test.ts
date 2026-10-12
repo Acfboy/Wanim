@@ -224,6 +224,40 @@ describe("InputDecimalNumber", () => {
     expect(number.is_hit(number.get_center())).toBe(true);
     expect(number.is_hit([number.get_center()[0] + 100, 0, 0])).toBe(false);
   });
+
+  test("inline editor and caret track a forced display sign", () => {
+    const host = new FakeHost();
+    const number = new InputDecimalNumber(0, {
+      num_decimal_places: 2,
+      value_range: [-1, 1],
+      include_sign: true,
+    });
+    number.on_press(number.get_center(), controlContext(host));
+    number.on_release();
+    // The editor text starts exactly like the rendered number, sign included.
+    expect(host.editor?.initial).toBe("+0.00");
+
+    const glyphs = number.submobjects.filter((member) => member !== number.highlight);
+    // Caret at the end of "+0.00" sits after the last glyph...
+    expect(number.interactive_caret_anchor(5)?.[0]).toBeCloseTo(number.get_right()[0], 9);
+    // ...and at the start it sits before the displayed sign glyph.
+    expect(number.interactive_caret_anchor(0)?.[0]).toBeCloseTo(glyphs[0]!.get_left()[0], 9);
+
+    // Deleting the sign still anchors the text end at the number's right edge
+    // (the display sign is skipped, not every position shifted by one glyph);
+    // the start caret now sits after the display-only sign.
+    host.editor?.onInput("0.00");
+    expect(number.interactive_caret_anchor(4)?.[0]).toBeCloseTo(number.get_right()[0], 9);
+    expect(number.interactive_caret_anchor(0)?.[0]).toBeCloseTo(glyphs[1]!.get_left()[0], 9);
+
+    // A text that carries its own sign maps one-to-one onto the glyphs.
+    host.editor?.onInput("-0.5");
+    const signedGlyphs = number.submobjects.filter((member) => member !== number.highlight);
+    expect(number.interactive_caret_anchor(4)?.[0]).toBeCloseTo(signedGlyphs[4]!.get_left()[0], 9);
+    expect(number.interactive_caret_anchor(2)?.[0]).toBeCloseTo(signedGlyphs[2]!.get_left()[0], 9);
+    host.editor?.onCommit("-0.5");
+    expect(number.get_value()).toBeCloseTo(-0.5, 12);
+  });
 });
 
 describe("InputDecimalNumber value_range, scrubbing and hover", () => {

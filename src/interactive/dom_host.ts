@@ -38,14 +38,14 @@ function pointRows(value: unknown): number[][] {
 
 /**
  * Whether a key press should be swallowed by the numeric inline editor:
- * single printable characters other than a digit, `-` or (when allowed) `.`
+ * single printable characters other than a digit, a sign or (when allowed) `.`
  * (letters, ...). Navigation/editing keys and modifier shortcuts are left
  * alone.
  */
 function isBlockedNumberKey(event: KeyboardEvent, allowDecimalPoint: boolean): boolean {
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
-  return allowDecimalPoint ? !/[0-9.\-]/.test(event.key) : !/[0-9\-]/.test(event.key);
+  return allowDecimalPoint ? !/[0-9.+\-]/.test(event.key) : !/[0-9+\-]/.test(event.key);
 }
 
 /** One control bar per canvas, so re-runs reuse (never duplicate) the buttons. */
@@ -394,11 +394,15 @@ export class DomInteractiveHost implements InteractiveHost {
     const allowDecimalPoint = options.allow_decimal_point !== false;
     textarea.addEventListener("input", () => {
       // Keep the editor numeric-only (letters/non-numeric pastes are dropped),
-      // with at most one leading minus sign. Integer editors also drop `.`.
-      const raw = textarea.value.replace(allowDecimalPoint ? /[^0-9.\-]/g : /[^0-9\-]/g, "");
+      // with at most one leading sign. The sign may be a `+` the control put
+      // there to match an `include_sign` display, so it is preserved rather
+      // than stripped. Integer editors also drop `.`.
+      const raw = textarea.value.replace(allowDecimalPoint ? /[^0-9.+\-]/g : /[^0-9+\-]/g, "");
       const negative = raw.includes("-");
-      let cleaned = raw.replace(/-/g, "");
+      const positive = !negative && raw.includes("+");
+      let cleaned = raw.replace(/[+\-]/g, "");
       if (negative) cleaned = "-" + cleaned;
+      else if (positive) cleaned = "+" + cleaned;
       if (cleaned !== textarea.value) {
         textarea.value = cleaned;
         textarea.setSelectionRange(cleaned.length, cleaned.length);
