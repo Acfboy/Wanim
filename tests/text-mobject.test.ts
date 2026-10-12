@@ -141,6 +141,32 @@ describe("SingleStringMathTex / MathTex / Tex", () => {
     expect((partA as VMobject).submobjects[0] as VMobject).toBeDefined();
   });
 
+  it("MathTex honours explicit fill/stroke style overrides", () => {
+    // Python `SVGMobject.__init__` applies explicit style kwargs to the parsed
+    // paths (manim's ManimCELogo example uses `MathTex(r"\mathbb{M}",
+    // fill_color=logo_black)`); the MathJax backend must not repaint them
+    // white through `init_colors`.
+    const m = new MathTex(String.raw`\mathbb{M}`, { fill_color: "#343434" });
+    const leaf = (m.submobjects[0] as VMobject).submobjects[0] as VMobject;
+    expect(leaf.get_fill_color().to_hex()).toBe("#343434");
+    expect(leaf.get_fill_opacity()).toBe(1);
+
+    const stroked = new MathTex("x", { stroke_color: "#ff0000", fill_opacity: 0, stroke_width: 2 });
+    const strokedLeaf = (stroked.submobjects[0] as VMobject).submobjects[0] as VMobject;
+    expect(strokedLeaf.get_fill_opacity()).toBe(0);
+    expect(strokedLeaf.get_stroke_color().to_hex()).toBe("#FF0000");
+    expect(strokedLeaf.get_stroke_width()).toBe(2);
+  });
+
+  it("repeated expressions with different fill_color are not cache-poisoned", () => {
+    const plain = new MathTex("q");
+    const dark = new MathTex("q", { fill_color: "#343434" });
+    const plainLeaf = (plain.submobjects[0] as VMobject).submobjects[0] as VMobject;
+    const darkLeaf = (dark.submobjects[0] as VMobject).submobjects[0] as VMobject;
+    expect(plainLeaf.get_fill_color().to_hex()).toBe("#FFFFFF");
+    expect(darkLeaf.get_fill_color().to_hex()).toBe("#343434");
+  });
+
   it("Tex('hello') wraps plain text and renders", () => {
     const tex = new Tex("hello");
     expect(totalPoints(tex)).toBeGreaterThan(0);
