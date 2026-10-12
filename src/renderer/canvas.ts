@@ -27,8 +27,9 @@ import { array, type NDArray } from "numpy-ts";
 import { Camera } from "../camera/camera.js";
 import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { CapStyleType, LineJointType } from "../constants.js";
+import { AbstractImageMobject } from "../mobject/types/image_mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
-import { _cContiguousRows, isNDArray, pointRows } from "../utils/arrays.js";
+import { _cContiguousRows, isNDArray, numeric, pointRows } from "../utils/arrays.js";
 
 /** One serialized VMobject record (see `renderer/json_renderer.ts`). */
 export interface MJSONMobject {
@@ -106,6 +107,9 @@ export interface CanvasCamera {
   frame_center: readonly number[];
   cairo_line_width_multiple: number;
   transform_points_pre_display(mobject: VMobject, points: NDArray): NDArray;
+  /** World->device mapping in fractional pixels (real `Camera` method; the
+   *  serialized-file player has no images, so it may omit this). */
+  points_to_subpixel_coords?(mobject: VMobject, points: NDArray): NDArray;
   /** Optional flat projection fast path (ThreeDCamera); returns projected
    *  (x, y) pairs in camera space or `null` to fall back. */
   transform_points_pre_display_flat?(
@@ -234,6 +238,220 @@ export function setCanvasTransform(ctx: CanvasRenderingContext2D, camera: Canvas
     pw / 2 - (fc[0] ?? 0) * widthMult,
     ph / 2 + (fc[1] ?? 0) * heightMult,
   );
+}
+
+// --- image mobjects ---------------------------------------------------------
+//
+// Python pastes `ImageMobject` pixel arrays into the camera's RGBA buffer with
+// PIL; the Canvas2D backend instead uploads each pixel array to a scratch
+// canvas once and draws it as a transformed `<canvas>` image (drawImage also
+// gives free nearest/bilinear/bicubic resampling).  Static images (moving,
+// scaling, rotating) hit the cache and cost one blit per frame; only pixel
+// rewrites (`interpolate_color`, `set_opacity` animations) rebuild it.
+
+interface ImagePixelSource {
+  source: HTMLCanvasElement;
+  width: number;
+  height: number;
+}
+
+/** Scratch canvases keyed by the (stable) pixel-array object identity. */
+const IMAGE_CANVAS_CACHE = new WeakMap<object, ImagePixelSource>();
+
+/**
+ * Flat backing-store view of a contiguous pixel array, or `null` when it is a
+ * strided view.  `NDArray.toArray()` costs hundreds of ms for a 1080p image
+ * (nested JS arrays), so the conversion reads the typed array directly; the
+ * `data.length === size` check rejects views whose backing store is larger.
+ */
+function contiguousPixelData(pixelArray: NDArray): ArrayLike<number> | null {
+  try {
+    const array = pixelArray as NDArray & {
+      data?: ArrayLike<number>;
+      flags?: { C_CONTIGUOUS?: boolean };
+    };
+    const shape = array.shape;
+    if (!Array.isArray(shape) || shape.length < 2 || shape.length > 3) return null;
+    let size = 1;
+    for (const dim of shape) size *= dim ?? 0;
+    const flat = array.data;
+    const contiguous = array.flags === undefined || array.flags.C_CONTIGUOUS !== false;
+    if (flat === undefined || !contiguous || flat.length !== size) return null;
+    return flat;
+  } catch {
+    return null;
+  }
+}
+
+function flattenNested(value: unknown, out: Float64Array, cursor: { index: number }): void {
+  if (Array.isArray(value)) {
+    for (const child of value) flattenNested(child, out, cursor);
+    return;
+  }
+  if (cursor.index < out.length) out[cursor.index++] = numeric(value);
+}
+
+/**
+ * Convert an `(h, w[, c])` pixel array into non-premultiplied RGBA bytes.
+ *
+ * `change_to_rgba_array` normalizes grayscale input to 3/4 channels but keeps
+ * the input dtype, so byte arrays arrive as 0..255 while float images arrive
+ * as 0..1; the scale is chosen from the observed maximum so both work.
+ * Exported for tests (no DOM needed).
+ */
+export function pixelArrayToRgbaBytes(pixelArray: NDArray): {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+} {
+  const shape = (pixelArray as NDArray).shape as number[];
+  const height = shape.length >= 2 ? shape[0] ?? 0 : 0;
+  const width = shape.length >= 2 ? shape[1] ?? 0 : 0;
+  const channels = shape.length >= 3 ? Math.max(shape[2] ?? 1, 1) : 1;
+  const data = new Uint8ClampedArray(width * height * 4);
+  if (width === 0 || height === 0) return { data, width, height };
+  const flat = contiguousPixelData(pixelArray);
+  const dtype = typeof (pixelArray as { dtype?: unknown }).dtype === "string"
+    ? (pixelArray as { dtype: string }).dtype
+    : "";
+  const pixelCount = width * height;
+  // Fast lane: an already-byte RGBA buffer is a plain typed-array copy.
+  if (flat !== null && channels === 4 && (dtype === "uint8" || dtype === "int8")) {
+    for (let index = 0; index < data.length; index += 1) data[index] = Number(flat[index] ?? 0);
+    return { data, width, height };
+  }
+  let maxValue = 0;
+  if (flat !== null) {
+    const count = Math.min(flat.length, pixelCount * channels);
+    for (let index = 0; index < count; index += 1) {
+      const value = Math.abs(Number(flat[index] ?? 0));
+      if (value > maxValue) maxValue = value;
+    }
+  } else {
+    const values = new Float64Array(pixelCount * channels);
+    flattenNested((pixelArray as NDArray).toArray() as unknown, values, { index: 0 });
+    for (let index = 0; index < values.length; index += 1) {
+      const value = Math.abs(values[index] ?? 0);
+      if (value > maxValue) maxValue = value;
+    }
+    const scale = maxValue <= 1.0000001 ? 255 : 1;
+    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+      const base = pixel * channels;
+      const r = values[base] ?? 0;
+      const g = channels >= 2 ? values[base + 1] ?? r : r;
+      const b = channels >= 3 ? values[base + 2] ?? r : r;
+      const offset = pixel * 4;
+      data[offset] = r * scale;
+      data[offset + 1] = g * scale;
+      data[offset + 2] = b * scale;
+      data[offset + 3] = channels >= 4 ? (values[base + 3] ?? 0) * scale : 255;
+    }
+    return { data, width, height };
+  }
+  const scale = maxValue <= 1.0000001 ? 255 : 1;
+  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+    const base = pixel * channels;
+    const r = Number(flat[base] ?? 0);
+    const g = channels >= 2 ? Number(flat[base + 1] ?? r) : r;
+    const b = channels >= 3 ? Number(flat[base + 2] ?? r) : r;
+    const offset = pixel * 4;
+    data[offset] = r * scale;
+    data[offset + 1] = g * scale;
+    data[offset + 2] = b * scale;
+    data[offset + 3] = channels >= 4 ? Number(flat[base + 3] ?? 0) * scale : 255;
+  }
+  return { data, width, height };
+}
+
+function createScratchCanvas(width: number, height: number): HTMLCanvasElement | null {
+  if (typeof document === "undefined" || typeof document.createElement !== "function") {
+    return null;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+function imagePixelSource(pixelArray: NDArray): ImagePixelSource | null {
+  const cached = IMAGE_CANVAS_CACHE.get(pixelArray as unknown as object);
+  if (cached !== undefined) return cached;
+  const { data, width, height } = pixelArrayToRgbaBytes(pixelArray);
+  if (width === 0 || height === 0) return null;
+  const canvas = createScratchCanvas(width, height);
+  if (canvas === null) return null;
+  const scratch = canvas.getContext("2d");
+  if (scratch === null) return null;
+  const imageData = scratch.createImageData(width, height);
+  imageData.data.set(data);
+  scratch.putImageData(imageData, 0, 0);
+  const entry = { source: canvas, width, height };
+  IMAGE_CANVAS_CACHE.set(pixelArray as unknown as object, entry);
+  return entry;
+}
+
+/** Project the image's four corner points (`UL, UR, DL, DR`) into device px. */
+function projectImageCorners(camera: CanvasCamera, imageMobject: AbstractImageMobject): number[][] | null {
+  const points = imageMobject.points;
+  if (points === undefined || points === null) return null;
+  try {
+    if (typeof camera.points_to_subpixel_coords === "function") {
+      return pointRows(
+        camera.points_to_subpixel_coords(imageMobject as unknown as VMobject, points),
+        2,
+      );
+    }
+    const transformed = pointRows(
+      camera.transform_points_pre_display(imageMobject as unknown as VMobject, points),
+      3,
+    );
+    const fc = pointRows(camera.frame_center, 3)[0] ?? [0, 0, 0];
+    const widthMult = camera.pixel_width / camera.frame_width;
+    const heightMult = camera.pixel_height / camera.frame_height;
+    return transformed.map(([x, y]) => [
+      (x - (fc[0] ?? 0)) * widthMult + camera.pixel_width / 2,
+      (y - (fc[1] ?? 0)) * -heightMult + camera.pixel_height / 2,
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Draw one `AbstractImageMobject` in device space.
+ *
+ * The image occupies the parallelogram spanned by its corner points; the
+ * affine matrix maps image pixel space `(0,0)-(w,h)` (y down) onto `UL-UR-DL`.
+ * Unlike the VMobject path (which relies on the camera transform installed on
+ * `ctx`), this composes an absolute device-space matrix so 3D-projected quads
+ * work as well.
+ */
+export function drawImageMobject(
+  ctx: CanvasRenderingContext2D,
+  camera: CanvasCamera,
+  imageMobject: AbstractImageMobject,
+): void {
+  const corners = projectImageCorners(camera, imageMobject);
+  if (corners === null || corners.length < 4) return;
+  const source = imagePixelSource(imageMobject.get_pixel_array());
+  if (source === null) return;
+  const [ul, ur, dl] = [corners[0]!, corners[1]!, corners[2]!];
+  const { width, height } = source;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.transform(
+    ((ur[0] ?? 0) - (ul[0] ?? 0)) / width,
+    ((ur[1] ?? 0) - (ul[1] ?? 0)) / width,
+    ((dl[0] ?? 0) - (ul[0] ?? 0)) / height,
+    ((dl[1] ?? 0) - (ul[1] ?? 0)) / height,
+    ul[0] ?? 0,
+    ul[1] ?? 0,
+  );
+  const nearest = imageMobject.resampling_algorithm === 0;
+  ctx.imageSmoothingEnabled = !nearest;
+  ctx.imageSmoothingQuality = nearest ? "low" : "high";
+  ctx.drawImage(source.source as CanvasImageSource, 0, 0, width, height);
+  ctx.restore();
 }
 
 /**

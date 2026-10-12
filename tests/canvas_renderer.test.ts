@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { array } from "numpy-ts";
 import {
   applyMobject3DFlags,
@@ -11,6 +11,7 @@ import {
   drawFrame,
   drawVmobject,
   isThreeDFrame,
+  pixelArrayToRgbaBytes,
   PreviewThreeDCamera,
   setCanvasPath,
   type MJSONFrame,
@@ -18,6 +19,8 @@ import {
 } from "../src/renderer/canvas.js";
 import { CanvasSceneRenderer } from "../src/renderer/canvas_renderer.js";
 import { serialize_frame } from "../src/renderer/json_renderer.js";
+import { ImageMobject } from "../src/mobject/types/image_mobject.js";
+import { PMobject } from "../src/mobject/types/point_cloud_mobject.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
 import { Cube } from "../src/mobject/three_d/three_dimensions.js";
 import { Camera } from "../src/camera/camera.js";
@@ -81,10 +84,17 @@ interface Call {
   args: number[];
 }
 
-function mockContext(): { ctx: CanvasRenderingContext2D; calls: Call[]; state: Record<string, unknown>; fillStyles: unknown[] } {
+function mockContext(): {
+  ctx: CanvasRenderingContext2D;
+  calls: Call[];
+  state: Record<string, unknown>;
+  fillStyles: unknown[];
+  drawImageArgs: unknown[][];
+} {
   const calls: Call[] = [];
   const state: Record<string, unknown> = {};
   const fillStyles: unknown[] = [];
+  const drawImageArgs: unknown[][] = [];
   const record = (name: string) => (...args: unknown[]) => {
     calls.push({ name, args: args.map(Number) });
   };
@@ -92,6 +102,7 @@ function mockContext(): { ctx: CanvasRenderingContext2D; calls: Call[]; state: R
     calls,
     state,
     fillStyles,
+    drawImageArgs,
     setTransform: (...args: number[]) => {
       calls.push({ name: "setTransform", args });
       state.transform = args;
@@ -113,9 +124,16 @@ function mockContext(): { ctx: CanvasRenderingContext2D; calls: Call[]; state: R
     fill: record("fill"),
     stroke: record("stroke"),
     fillRect: record("fillRect"),
+    save: record("save"),
+    restore: record("restore"),
+    transform: record("transform"),
+    drawImage: (...args: unknown[]) => {
+      calls.push({ name: "drawImage", args: [] });
+      drawImageArgs.push(args);
+    },
     createLinearGradient: () => ({ addColorStop: () => {} }),
   } as unknown as CanvasRenderingContext2D;
-  return { ctx, calls, state, fillStyles };
+  return { ctx, calls, state, fillStyles, drawImageArgs };
 }
 
 const pointRows = (value: unknown): number[][] => value as number[][];
@@ -196,6 +214,83 @@ describe("CanvasSceneRenderer", () => {
     expect(renderer.stats.frames).toBe(3);
     expect(Number.isFinite(renderer.stats.extractMs)).toBe(true);
     expect(Number.isFinite(renderer.stats.drawMs)).toBe(true);
+  });
+
+  test("fails loudly on PMobject instead of drawing a blank frame", () => {
+    const { ctx } = mockContext();
+    const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: true, recordFrames: false });
+    const pmobject = new PMobject();
+    pmobject.add_points([[0, 0, 0]]);
+    const scene = { mobjects: [pmobject] } as unknown as Parameters<CanvasSceneRenderer["update_frame"]>[0];
+    let thrown: unknown = null;
+    try {
+      renderer.update_frame(scene);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("NotImplementedError");
+    expect((thrown as Error).message).toMatch(/PMobject is not supported/);
+  });
+
+  test("draws an ImageMobject through a cached scratch canvas", () => {
+    const putImageData = vi.fn();
+    const scratchCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        createImageData: (width: number, height: number) => ({
+          data: new Uint8ClampedArray(width * height * 4),
+          width,
+          height,
+        }),
+        putImageData,
+      }),
+    };
+    vi.stubGlobal("document", { createElement: () => scratchCanvas });
+    try {
+      const { ctx, drawImageArgs } = mockContext();
+      const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: true, recordFrames: false });
+      const image = new ImageMobject([[0, 1], [0.5, 1]]);
+      const scene = { mobjects: [image] } as unknown as Parameters<CanvasSceneRenderer["update_frame"]>[0];
+      renderer.update_frame(scene);
+      expect(drawImageArgs).toHaveLength(1);
+      expect(drawImageArgs[0]?.[0]).toBe(scratchCanvas);
+      expect(drawImageArgs[0]?.slice(1)).toEqual([0, 0, 2, 2]);
+      // Second frame reuses the cached scratch canvas (no re-upload).
+      renderer.update_frame(scene);
+      expect(drawImageArgs).toHaveLength(2);
+      expect(putImageData).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("pixelArrayToRgbaBytes", () => {
+  test("grayscale byte arrays replicate to RGB with opaque alpha", () => {
+    const { data, width, height } = pixelArrayToRgbaBytes(array([[0, 128], [255, 64]]));
+    expect([width, height]).toEqual([2, 2]);
+    expect([...data]).toEqual([
+      0, 0, 0, 255,
+      128, 128, 128, 255,
+      255, 255, 255, 255,
+      64, 64, 64, 255,
+    ]);
+  });
+
+  test("float arrays are scaled from 0..1", () => {
+    const { data } = pixelArrayToRgbaBytes(array([[0, 1], [0.5, 1]]));
+    expect(data[0]).toBe(0);
+    expect(data[3]).toBe(255);
+    expect(data[4]).toBe(255);
+    expect(data[8]).toBe(128);
+  });
+
+  test("byte RGBA arrays pass through unchanged", () => {
+    const rgba = array([[[10, 20, 30, 40], [50, 60, 70, 80]]]).astype("uint8");
+    const { data } = pixelArrayToRgbaBytes(rgba);
+    expect([...data]).toEqual([10, 20, 30, 40, 50, 60, 70, 80]);
   });
 });
 

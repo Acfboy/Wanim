@@ -11,11 +11,14 @@
  *    throughput/limit-FPS benchmark needs.  Serialization is skipped.
  */
 import type { Mobject } from "../mobject/mobject.js";
+import { AbstractImageMobject } from "../mobject/types/image_mobject.js";
+import { PMobject } from "../mobject/types/point_cloud_mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import type { Scene } from "../scene/scene.js";
 import {
   clearCanvas,
   drawFrame,
+  drawImageMobject,
   drawVmobject,
   isThreeDFrame,
   PreviewCamera,
@@ -189,6 +192,20 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     const t1 = performance.now();
     this.stats.extractMs += t1 - t0;
 
+    // `PMobject` (point clouds) has no Canvas/WebGL rasterizer yet and used to
+    // be skipped silently, so a point-cloud scene "rendered" blank with no
+    // error; fail loudly instead (the serializer already rejects them).
+    for (const mobject of displayed) {
+      if (mobject instanceof PMobject) {
+        const error = new Error(
+          "PMobject is not supported by the wanim renderer yet: point clouds " +
+            "cannot be drawn. Use vector mobjects (e.g. Dot/DotCloud) instead.",
+        );
+        error.name = "NotImplementedError";
+        throw error;
+      }
+    }
+
     if (this.drawFrames) {
       const background = backgroundCss({
         background_color: camera.background_color.to_hex(),
@@ -199,6 +216,9 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
         setCanvasTransform(this.ctx, camera);
         for (const mobject of displayed) {
           if (mobject instanceof VMobject) this.backend.draw(this.ctx, camera, mobject);
+          else if (mobject instanceof AbstractImageMobject) {
+            drawImageMobject(this.ctx, camera as CanvasCamera, mobject);
+          }
         }
       }
       this.stats.drawMs += performance.now() - t1;
@@ -269,6 +289,9 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     for (let index = split; index < displayed.length; index += 1) {
       const mobject = displayed[index];
       if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);
+      else if (mobject instanceof AbstractImageMobject) {
+        drawImageMobject(this.ctx, camera as CanvasCamera, mobject);
+      }
     }
     return true;
   }
