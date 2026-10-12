@@ -24,6 +24,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./core": {
+      "types": "./dist/index.d.ts",
+      "browser": "./browser/wanim.browser.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
     "./py2js": {
       "types": "./dist/py2js.d.ts",
       "browser": "./browser/py2js.browser.js",
@@ -42,6 +48,7 @@
       "default": "./browser/bridge.browser.js"
     },
     "./browser": "./browser/wanim.browser.js",
+    "./browser/core": "./browser/wanim.browser.js",
     "./browser/py2js": "./browser/py2js.browser.js",
     "./browser/py-runtime": "./browser/py-runtime.browser.js",
     "./browser/bridge": "./browser/bridge.browser.js",
