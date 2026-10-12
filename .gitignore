@@ -6,6 +6,9 @@ media/
 # Assembled publishable npm packages (scripts/build-packages.mjs)
 packages-out/
 
+# Package-variant browser bundles (bare numpy-ts / external MathJax)
+dist-pkg/
+
 # rapydscript-ng checkout cache (fetched by scripts/build-rapydscript-browser.mjs)
 .rapydscript-ng/
 

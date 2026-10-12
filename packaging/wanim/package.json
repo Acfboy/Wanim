@@ -1,7 +1,7 @@
 {
-  "name": "wanim",
+  "name": "wanimjs",
   "version": "0.1.0",
-  "description": "Manim Python in the browser: wanim-core plus the py2js bridge and prebuilt browser bundles in one zero-config package.",
+  "description": "Manim-compatible animation library in TypeScript with a real-time Canvas2D backend, a Python-to-JS compiler bridge and prebuilt browser bundles — one package with subpath exports.",
   "keywords": [
     "manim",
     "animation",
@@ -9,7 +9,8 @@
     "browser",
     "canvas",
     "math",
-    "visualization"
+    "visualization",
+    "rapydscript"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -23,24 +24,46 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./py2js": {
+      "types": "./dist/py2js.d.ts",
+      "browser": "./browser/py2js.browser.js",
+      "import": "./dist/py2js.js",
+      "default": "./dist/py2js.js"
+    },
+    "./py-runtime": {
+      "types": "./dist/py-runtime.d.ts",
+      "browser": "./browser/py-runtime.browser.js",
+      "import": "./dist/py-runtime.js",
+      "default": "./dist/py-runtime.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "browser": "./browser/bridge.browser.js",
+      "default": "./browser/bridge.browser.js"
+    },
     "./browser": "./browser/wanim.browser.js",
     "./browser/py2js": "./browser/py2js.browser.js",
+    "./browser/py-runtime": "./browser/py-runtime.browser.js",
+    "./browser/bridge": "./browser/bridge.browser.js",
     "./browser/rapydscript": "./browser/rapydscript.js",
-    "./browser/numpy-ts": "./browser/numpy-ts.browser.js",
-    "./element": "./browser/wanim-element.browser.js",
     "./browser/element": "./browser/wanim-element.browser.js",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "browser",
+    "src/_config/default.cfg",
+    "src/templates",
     "README.md",
     "LICENSE"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/utils/numpy_config.js"
+  ],
   "dependencies": {
-    "wanim-core": "0.1.0",
-    "wanim-py": "0.1.0"
+    "mathjax-full": "^3.2.2",
+    "numpy-ts": "^1.7.0",
+    "opentype.js": "^2.0.0"
   },
   "repository": {
     "type": "git",

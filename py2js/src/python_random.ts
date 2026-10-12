@@ -355,16 +355,6 @@ const LOG4 = Math.log(4);
 const SG_MAGICCONST = 1 + Math.log(4.5);
 const TWOPI = Math.PI * 2;
 
-/** Names exported by `from random import *` (mirrors `random.__all__`). */
-export const RANDOM_PUBLIC = [
-  "Random", "SystemRandom",
-  "betavariate", "binomialvariate", "choice", "choices", "expovariate",
-  "gammavariate", "gauss", "getrandbits", "getstate", "lognormvariate",
-  "normalvariate", "paretovariate", "randbytes", "randint", "random",
-  "randrange", "sample", "seed", "setstate", "shuffle", "triangular",
-  "uniform", "vonmisesvariate", "weibullvariate",
-];
-
 export class PythonRandom {
   private mt = new Uint32Array(MT_N);
   private index = MT_N + 1;

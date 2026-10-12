@@ -1,27 +1,39 @@
-# wanim
+# wanimjs
 
-**Manim Python in the browser, in one package.** `wanim` combines the three
-pieces of the Wanim stack so a `<canvas>` runs (almost unmodified) manim scenes
-with zero bundling and zero configuration:
+**Manim Python in the browser, in one package.** `wanimjs` ships the
+whole Wanim stack with subpath exports:
 
-- [`wanim-core`](https://www.npmjs.com/package/wanim-core) — the manim-compatible
-  animation library with a real-time Canvas2D backend;
-- [`wanim-py`](https://www.npmjs.com/package/wanim-py) — the patched rapydscript
-  Python-to-JS bridge;
-- prebuilt browser bundles of both, in a single `browser/` directory whose files
-  import each other by relative URL.
+| Subpath | What it is |
+| --- | --- |
+| `wanimjs` | the manim-compatible library (Node ESM + types) |
+| `wanimjs/py2js` | the Python→JS **compiler** (Node-safe: preprocessor + error formatter) |
+| `wanimjs/py-runtime` | the Python **runtime** (Node-safe: rapydscript shims, `math`/`random`/`itertools` facades, preload planner) |
+| `wanimjs/bridge` | **compiler + runtime + DOM glue** (`runPythonOnCanvas`, `benchInteractiveScene`) — browser-only |
+| `wanimjs/browser` | prebuilt browser bundle of the library |
+| `wanimjs/browser/py2js` | prebuilt browser bundle of the compiler |
+| `wanimjs/browser/py-runtime` | prebuilt browser bundle of the runtime |
+| `wanimjs/browser/bridge` | prebuilt browser bundle of the bridge (loads its siblings relatively) |
+| `wanimjs/browser/rapydscript` | the patched rapydscript-ng compiler (classic `<script>`, sets `globalThis.RapydScript`) |
+| `wanimjs/browser/element` | the `<wanim-scene>` custom element (lazy-loads the bridge) |
+
+The bundles are already built; consumers never need esbuild/tsc to run a
+scene.  **`numpy-ts` and MathJax are not bundled** — they are regular
+`dependencies` of this package and must be provided by your import map or
+bundler (see below).
 
 ## Zero-config browser embed
 
-Serve the `browser/` directory (all files, including `chunks/`) and add:
+Serve the `browser/` directory (all files, including `chunks/`) and provide
+`numpy-ts` yourself — copy `numpy-ts.browser.js` from
+`node_modules/numpy-ts/dist/` next to the other files, or map it to a CDN:
 
 ```html
 <script src="./browser/rapydscript.js"></script>
 <script type="importmap">
 {
   "imports": {
-    "py2js": "./browser/py2js.browser.js",
     "wanim": "./browser/wanim.browser.js",
+    "py2js": "./browser/bridge.browser.js",
     "numpy-ts": "./browser/numpy-ts.browser.js"
   }
 }
@@ -31,10 +43,8 @@ Serve the `browser/` directory (all files, including `chunks/`) and add:
 <script type="module">
 import { runPythonOnCanvas } from "py2js";
 
-// A plain shapes scene...
 await runPythonOnCanvas(
   `from manim import *
-
 class SquareToCircle(Scene):
     def construct(self):
         circle = Circle().set_fill(PINK, opacity=0.5)
@@ -46,24 +56,32 @@ class SquareToCircle(Scene):
   document.getElementById("stage"),
   { quality: "-qm" },
 );
-
-// ...and TeX works too (MathJax is fetched on demand).
-await runPythonOnCanvas(
-  `from manim import *
-
-class Formula(Scene):
-    def construct(self):
-        self.play(Write(MathTex(r"\\int_0^1 x^2\\,dx = \\tfrac{1}{3}")))
-`,
-  document.getElementById("stage"),
-  { quality: "-qm" },
-);
 </script>
 ```
 
-Because the bundle pair is addressed relatively, the import map's `wanim` /
-`numpy-ts` entries matter only if your own code imports those names; `py2js`
-alone is enough for `runPythonOnCanvas`.
+The bridge resolves `./py2js.browser.js`, `./py-runtime.browser.js` and
+`./wanim.browser.js` *relatively*, so only the import map entries your own
+code uses are required.  Keep the whole `browser/` directory together: the
+bridge checks `instanceof wanim.Scene`.
+
+### Providing numpy-ts and MathJax
+
+- **numpy-ts** is needed for every run (the library's array type), and it
+  already ships a browser ESM (`numpy-ts/dist/numpy-ts.browser.js`): copy it
+  next to the other files and add the import-map entry above.  Load it before
+  wanim's first array operation; `configureWasm({ maxMemory })` is available if
+  you need a bigger WASM heap.  Keep a single shared copy — it owns the WASM
+  heap.
+- **MathJax** is only needed for `MathTex`/`Tex`-style mobjects, and it is
+  fetched lazily: `browser/chunks/mathjax_runtime-*.js` imports
+  `mathjax-full/...` as bare specifiers.  Unlike numpy-ts, `mathjax-full`
+  publishes **CommonJS** under `js/`, so a plain import map cannot load it
+  directly: use a bundler (webpack/vite/rollup/esbuild) so the dependency
+  resolves with CJS interop, or pre-bundle it yourself.  If you only use
+  shapes/text and never `MathTex`, no MathJax is ever downloaded.
+
+The chunks themselves are tiny wanim glue; the MathJax code comes from the
+consumer's dependency tree.
 
 ### Optional modules
 
@@ -76,9 +94,6 @@ await preload_submodules("mathjax");                    // before first TeX use
 await preload_submodules(["mathjax", "fonts"]);         // several at once
 submodule_status();                                     // { fonts, mathjax }
 ```
-
-The main bundle stays ~1.4 MiB (~0.4 MiB gzip); MathJax (~2 MiB)
-is fetched only when needed. Keep `browser/chunks/` on the server.
 
 ## `<wanim-scene>` web component
 
@@ -100,8 +115,9 @@ class Demo(Scene):
 ```
 
 Importing the bundle only registers the element (and is a no-op under
-Node/SSR). `py2js.browser.js`, `rapydscript.js` and any optional module are
-fetched from the element bundle's own directory on first run.
+Node/SSR). `bridge.browser.js`, `rapydscript.js` and any optional module are
+fetched from the element bundle's own directory on first run (the element
+still needs `numpy-ts` from the import map, like the bridge).
 
 For scripted use, assign `.code` and `await .run()`; all events bubble and
 cross shadow boundaries:
@@ -135,50 +151,54 @@ Methods: `run()` (async, resolves with the render stats), `stop()`, `next()`
 Events: `wanim-ready`, `wanim-run`, `wanim-scene` (`detail.name`),
 `wanim-done` (`detail.stats`), `wanim-error` (`detail.error`).
 
-The element renders a `<canvas part="canvas">` plus a status/error line
-(`part="status"`) inside its shadow root; see `demo/component.html` in the
-repository for a full page.
-
-## Node
+## Node and bundlers
 
 ```js
-import * as wanim from "wanim";      // wanim-core + wanim-py Node API
-import { MathTex } from "wanim";
+import * as wanim from "wanimjs";        // library
+import { MathTex } from "wanimjs";
 
 await wanim.preload_submodules("mathjax");
 console.log(new MathTex("a^2 + b^2 = c^2").width > 0);
+
+// Node-safe halves of the Python pipeline (tooling, tests):
+import { preprocessImports, formatCompileError } from "wanimjs/py2js";
+import { createRuntimeCore, buildPythonMath } from "wanimjs/py-runtime";
 ```
 
-`wanim` re-exports `wanim-core` and the Node-safe half of `wanim-py`. The
-browser-only functions (`runPythonOnCanvas`, …) live in `browser/` and are not
-part of the Node entry point. Use the individual packages for a smaller
-dependency graph.
+The browser-only bridge (`runPythonOnCanvas`, `benchInteractiveScene`) lives
+under `wanimjs/bridge`, whose `browser` condition resolves to the
+prebuilt `browser/bridge.browser.js`; a bundler should keep `numpy-ts` a real
+dependency so it resolves normally.  TypeScript declarations for every
+subpath are included (`dist/*.d.ts`).
 
 ## Files
 
 ```
 browser/
-  wanim.browser.js         wanim-core bundle
-  numpy-ts.browser.js      numpy-ts (MIT), shared WASM-backed array runtime
-  py2js.browser.js         Python bridge (relative imports into this directory)
+  wanim.browser.js         library bundle (numpy-ts + MathJax external)
+  py2js.browser.js         Python→JS compiler (rapydscript global)
+  py-runtime.browser.js    Python runtime shims (no external imports)
+  bridge.browser.js        compiler + runtime + DOM glue (numpy-ts external)
   rapydscript.js           patched rapydscript-ng compiler (BSD-2-Clause)
-  wanim-element.browser.js <wanim-scene> custom element (lazy bridge loading)
-  chunks/                  MathJax (Apache-2.0) on demand
-dist/                    Node ESM entry (re-exports wanim-core + wanim-py)
+  wanim-element.browser.js <wanim-scene> custom element
+  chunks/                  MathJax glue (bare `mathjax-full/...` imports)
+dist/                      Node ESM entries + TypeScript declarations
+src/_config/default.cfg    runtime config read by the Node build
+src/templates/             scene templates read by the Node build
 ```
 
 ## Caveats
 
-- Do not mix copies of the bundles: `py2js.browser.js` checks
-  `instanceof wanim.Scene`, so the whole `browser/` directory must be served
-  together.
+- Do not mix copies of the bundles: the bridge checks `instanceof
+  wanim.Scene`, so the whole `browser/` directory must be served together.
+- `numpy-ts` must be a single shared module instance (it owns the WASM heap);
+  keep one import-map entry / one bundled copy.
 - The Python bridge supports `manim`, `numpy`, `random`, `math`, `itertools`;
   any other Python import raises a friendly error.
 - Text fonts default to free CDN fonts (Tinos + Noto Serif SC); call
   `configure_fonts([...])` to self-host.
-- See the sub-package READMEs for the full API and Node details.
 
 ## License
 
-MIT. Bundled upstream code keeps its own license (numpy-ts MIT, MathJax
+MIT. Upstream dependencies keep their own licenses (numpy-ts MIT, MathJax
 Apache-2.0, opentype.js MIT, rapydscript-ng BSD-2-Clause).

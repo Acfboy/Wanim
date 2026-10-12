@@ -1,16 +1,21 @@
 #!/usr/bin/env node
-// Assemble the publishable npm packages into `packages-out/` (gitignored).
+// Assemble the publishable npm package into `packages-out/wanim/` (gitignored).
 //
-//   packages-out/wanim-core/  the browser library: tsc dist + browser bundles
-//                             + the runtime config/template resources
-//   packages-out/wanim-py/    the py2js bridge: bare-specifier browser build,
-//                             patched rapydscript compiler, Node toolbox
-//   packages-out/wanim/       the combined zero-config package (relative
-//                             imports, everything in one browser/ directory)
+//   packages-out/wanim/   `wanimjs`: the tsc dist (core + Node entries),
+//                         the zero-config browser bundles and the runtime
+//                         config/template resources, with subpath exports for
+//                         the py2js compiler, the py runtime and the bridge.
 //
-// The per-package metadata (package.json, README.md, LICENSE) lives in
-// `packaging/<name>/`; this script builds the artifacts and copies the two
+// The package metadata (package.json, README.md, LICENSE) lives in
+// `packaging/wanim/`; this script builds the artifacts and copies the two
 // together.  Generated output is never committed.
+//
+// The browser/ directory ships no numpy-ts and no MathJax code: the package
+// variant of wanim.browser.js keeps both as bare externals (MathJax stays a
+// lazy glue chunk with `import "mathjax-full/..."`), and the bridge keeps
+// numpy-ts bare too.  Consumers provide them through an import map or a
+// bundler; `mathjax-full`, `numpy-ts` and `opentype.js` are regular
+// dependencies of the package.
 //
 // Usage:
 //   node scripts/build-packages.mjs                 # rebuild dist/ + assemble
@@ -35,45 +40,65 @@ const root = resolve(here, "..");
 const outRoot = resolve(root, "packages-out");
 const staticRoot = resolve(root, "packaging");
 const dist = resolve(root, "dist");
+const distPkg = resolve(root, "dist-pkg");
 const skipBuild = process.argv.includes("--skip-build");
 const doPack = process.argv.includes("--pack");
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const node = process.execPath;
 
-/** Artifacts each package needs from `dist/` (checked before assembling). */
+/** Artifacts the package needs from `dist/` (checked before assembling). */
 const REQUIRED_DIST = [
   "index.js",
   "index.d.ts",
   "wanim.browser.js",
+  "bridge.browser.js",
   "py2js.browser.js",
-  "py2js.bare.browser.js",
+  "py-runtime.browser.js",
   "rapydscript.js",
-  "numpy-ts.browser.js",
   "wanim-element.browser.js",
   "chunks",
 ];
+
+/** Artifacts the package needs from `dist-pkg/` (bare/external variants). */
+const REQUIRED_DIST_PKG = ["wanim.browser.js", "bridge.browser.js"];
 
 function run(command, args, options = {}) {
   execFileSync(command, args, { cwd: root, stdio: "inherit", ...options });
 }
 
 function buildDist() {
-  console.log("wanim: building dist/ (tsc + browser + py2js + rapydscript + element + py2js bare)");
+  console.log(
+    "wanim: building dist/ (tsc + browser + rapydscript + py2js + element + package variants)",
+  );
   run(pnpm, ["build"]);
+  // Dev bundles: the demo and other local consumers serving `dist/` rely on
+  // the relative numpy-ts URL and the full on-demand MathJax chunks.
   run(node, ["scripts/build-browser.mjs"]);
   run(node, ["scripts/build-rapydscript-browser.mjs"]);
   run(node, ["scripts/build-py2js.mjs"]);
-  run(node, ["scripts/build-py2js.mjs", "--bare"]);
   run(node, ["scripts/build-element.mjs"]);
+  // Package variants: no numpy-ts / MathJax code in the output.
+  rmSync(distPkg, { recursive: true, force: true });
+  run(node, ["scripts/build-browser.mjs"], {
+    env: {
+      ...process.env,
+      WANIM_NUMPY: "bare",
+      WANIM_MATHJAX: "external",
+      WANIM_BROWSER_OUT: resolve(distPkg, "wanim.browser.js"),
+    },
+  });
+  run(node, ["scripts/build-py2js.mjs", "--bare"]);
 }
 
 function checkDist() {
-  const missing = REQUIRED_DIST.filter((name) => !existsSync(resolve(dist, name)));
+  const missing = [
+    ...REQUIRED_DIST.filter((name) => !existsSync(resolve(dist, name))),
+    ...REQUIRED_DIST_PKG.filter((name) => !existsSync(resolve(distPkg, name))),
+  ];
   if (missing.length > 0) {
     console.error(
-      `wanim: dist/ is incomplete (missing ${missing.join(", ")}); ` +
-        "run `pnpm build:packages` without --skip-build first " +
-        "(the bare py2js bundle is not part of `build:demo`).",
+      `wanim: build output is incomplete (missing ${missing.join(", ")}); ` +
+        "run `pnpm build:packages` without --skip-build first.",
     );
     process.exit(1);
   }
@@ -97,8 +122,10 @@ function copyFile(src, dst) {
  */
 const BROWSER_ONLY_DIST = new Set([
   "wanim.browser.js",
+  "bridge.browser.js",
   "py2js.browser.js",
   "py2js.bare.browser.js",
+  "py-runtime.browser.js",
   "rapydscript.js",
   "numpy-ts.browser.js",
   "wanim-element.browser.js",
@@ -118,35 +145,30 @@ function copyDistTree(target) {
   });
 }
 
-function copyBrowserBundle(targetDir, { chunks = true } = {}) {
-  copyFile(resolve(dist, "wanim.browser.js"), join(targetDir, "wanim.browser.js"));
-  copyFile(resolve(dist, "numpy-ts.browser.js"), join(targetDir, "numpy-ts.browser.js"));
-  if (chunks) cpSync(resolve(dist, "chunks"), join(targetDir, "chunks"), { recursive: true });
-}
-
-function assembleCore() {
-  const pkg = copyStatic("wanim-core");
-  copyDistTree(resolve(pkg, "dist"));
-  copyBrowserBundle(resolve(pkg, "browser"));
-  // Runtime resources the tsc output reads by relative path (see
-  // src/_config/utils.ts and src/utils/file_ops.ts).
-  copyFile(resolve(root, "src/_config/default.cfg"), resolve(pkg, "src/_config/default.cfg"));
-  cpSync(resolve(root, "src/templates"), resolve(pkg, "src/templates"), { recursive: true });
-  return pkg;
-}
-
-function assemblePy() {
-  const pkg = copyStatic("wanim-py");
-  const browserDir = resolve(pkg, "browser");
-  copyFile(resolve(dist, "py2js.bare.browser.js"), join(browserDir, "py2js.browser.js"));
-  copyFile(resolve(dist, "rapydscript.js"), join(browserDir, "rapydscript.js"));
-  // Node toolbox + browser declarations straight from the TypeScript sources.
-  const pyDist = resolve(pkg, "dist");
+/**
+ * Compile the py2js Node entries with tsc and lay the output out under the
+ * published names:
+ *
+ *   compiler_node.js/.d.ts  -> py2js.js/.d.ts
+ *   runtime_node.js/.d.ts   -> py-runtime.js/.d.ts
+ *   browser.d.ts            -> bridge.d.ts (import of the repo-internal
+ *                              `../../dist/index.js` rewritten to the package)
+ *   browser.js              -> dropped (the browser bundle supersedes it)
+ *
+ * The remaining py2js modules (preprocess, compile_error, runtime_core, the
+ * python facades, ...) are copied as-is: the renamed entries import them at
+ * runtime, and the `.d.ts` files resolve `./compiler.js` / `./runtime.js`
+ * through their declarations.
+ */
+function copyPy2jsDist(target) {
+  const tmp = resolve(outRoot, ".py2js-tsc");
+  rmSync(tmp, { recursive: true, force: true });
   run(node, [
     "node_modules/typescript/bin/tsc",
-    "py2js/src/node.ts",
+    "py2js/src/compiler_node.ts",
+    "py2js/src/runtime_node.ts",
     "py2js/src/browser.ts",
-    "--outDir", pyDist,
+    "--outDir", tmp,
     "--target", "ES2022",
     "--module", "ESNext",
     "--moduleResolution", "Bundler",
@@ -155,30 +177,53 @@ function assemblePy() {
     "--strict",
     "--declaration",
   ]);
-  // The tsc browser.js is superseded by the esbuild bundle (bare externals,
-  // minified); keep only its declarations, rewritten to the published names.
-  rmSync(join(pyDist, "browser.js"));
-  const browserTypes = join(pyDist, "browser.d.ts");
-  const rewritten = readFileSync(browserTypes, "utf8").replace(
-    '"../../dist/index.js"',
-    '"wanim"',
-  );
-  writeFileSync(browserTypes, rewritten);
-  return pkg;
+  for (const name of readdirSync(tmp)) {
+    const from = join(tmp, name);
+    if (!statSync(from).isFile()) continue;
+    if (name === "browser.js") continue;
+    if (name === "browser.d.ts") {
+      const rewritten = readFileSync(from, "utf8").replace(
+        '"../../dist/index.js"',
+        '"wanimjs"',
+      );
+      writeFileSync(join(target, "bridge.d.ts"), rewritten);
+      continue;
+    }
+    const renamed = {
+      "compiler_node.js": "py2js.js",
+      "compiler_node.d.ts": "py2js.d.ts",
+      "runtime_node.js": "py-runtime.js",
+      "runtime_node.d.ts": "py-runtime.d.ts",
+    }[name] ?? name;
+    copyFile(from, join(target, renamed));
+  }
+  rmSync(tmp, { recursive: true, force: true });
 }
 
-function assembleCombined() {
+function assemble() {
   const pkg = copyStatic("wanim");
-  copyBrowserBundle(resolve(pkg, "browser"));
-  // The relative-import py2js bundle plus the compiler make this package
-  // zero-config: the whole browser/ directory works as served.
-  copyFile(resolve(dist, "py2js.browser.js"), resolve(pkg, "browser/py2js.browser.js"));
-  copyFile(resolve(dist, "rapydscript.js"), resolve(pkg, "browser/rapydscript.js"));
-  // The <wanim-scene> custom element (lazy: py2js/rapydscript load on first run).
+  // Browser bundles.  The package variants keep numpy-ts / MathJax external,
+  // so no upstream code is shipped; `chunks/` only holds wanim's small
+  // `mathjax-full` glue chunks.
+  const browserDir = resolve(pkg, "browser");
+  copyFile(resolve(distPkg, "wanim.browser.js"), join(browserDir, "wanim.browser.js"));
+  cpSync(resolve(distPkg, "chunks"), join(browserDir, "chunks"), { recursive: true });
+  copyFile(resolve(dist, "py2js.browser.js"), join(browserDir, "py2js.browser.js"));
+  copyFile(resolve(dist, "py-runtime.browser.js"), join(browserDir, "py-runtime.browser.js"));
+  copyFile(resolve(distPkg, "bridge.browser.js"), join(browserDir, "bridge.browser.js"));
+  copyFile(resolve(dist, "rapydscript.js"), join(browserDir, "rapydscript.js"));
   copyFile(
     resolve(dist, "wanim-element.browser.js"),
-    resolve(pkg, "browser/wanim-element.browser.js"),
+    join(browserDir, "wanim-element.browser.js"),
   );
+  // Node entries (tsc) plus the py2js declarations.
+  const pkgDist = resolve(pkg, "dist");
+  copyDistTree(pkgDist);
+  copyPy2jsDist(pkgDist);
+  // Runtime resources the tsc output reads by relative path (see
+  // src/_config/utils.ts and src/utils/file_ops.ts).
+  copyFile(resolve(root, "src/_config/default.cfg"), resolve(pkg, "src/_config/default.cfg"));
+  cpSync(resolve(root, "src/templates"), resolve(pkg, "src/templates"), { recursive: true });
   return pkg;
 }
 
@@ -217,7 +262,7 @@ function packAll(packages) {
   }
 }
 
-const packages = ["wanim-core", "wanim-py", "wanim"];
+const packages = ["wanim"];
 
 if (skipBuild) {
   console.log("wanim: --skip-build, reusing the current dist/");
@@ -228,14 +273,9 @@ checkDist();
 
 rmSync(outRoot, { recursive: true, force: true });
 mkdirSync(outRoot, { recursive: true });
-assembleCore();
-assemblePy();
-assembleCombined();
+const pkg = assemble();
 
-for (const name of packages) {
-  const pkg = resolve(outRoot, name);
-  console.log(`wanim: ${name} -> ${pkg} (${formatBytes(dirSize(pkg))})`);
-}
+console.log(`wanim: ${packages[0]} -> ${pkg} (${formatBytes(dirSize(pkg))})`);
 
 if (doPack) {
   packAll(packages);
