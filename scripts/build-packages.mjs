@@ -10,11 +10,11 @@
 // `packaging/wanim/`; this script builds the artifacts and copies the two
 // together.  Generated output is never committed.
 //
-// The browser/ directory ships no numpy-ts and no MathJax code: the package
-// variant of wanim.browser.js keeps both as bare externals (MathJax stays a
-// lazy glue chunk with `import "mathjax-full/..."`), and the bridge keeps
-// numpy-ts bare too.  Consumers provide them through an import map or a
-// bundler; `mathjax-full`, `numpy-ts` and `opentype.js` are regular
+// The browser/ directory ships no numpy-ts: the package variant of
+// wanim.browser.js keeps it a bare external, so consumers provide it through
+// an import map or a bundler.  MathJax is bundled into the on-demand chunks,
+// so TeX works without a bundler while pages that never typeset math never
+// download it.  `mathjax-full`, `numpy-ts` and `opentype.js` are regular
 // dependencies of the package.
 //
 // Usage:
@@ -59,8 +59,8 @@ const REQUIRED_DIST = [
   "chunks",
 ];
 
-/** Artifacts the package needs from `dist-pkg/` (bare/external variants). */
-const REQUIRED_DIST_PKG = ["wanim.browser.js", "bridge.browser.js"];
+/** Artifacts the package needs from `dist-pkg/` (bare variants). */
+const REQUIRED_DIST_PKG = ["wanim.browser.js", "bridge.browser.js", "chunks"];
 
 function run(command, args, options = {}) {
   execFileSync(command, args, { cwd: root, stdio: "inherit", ...options });
@@ -77,13 +77,13 @@ function buildDist() {
   run(node, ["scripts/build-rapydscript-browser.mjs"]);
   run(node, ["scripts/build-py2js.mjs"]);
   run(node, ["scripts/build-element.mjs"]);
-  // Package variants: no numpy-ts / MathJax code in the output.
+  // Package variant: numpy-ts stays a bare external and no copy is written;
+  // MathJax keeps its bundled lazy chunks.
   rmSync(distPkg, { recursive: true, force: true });
   run(node, ["scripts/build-browser.mjs"], {
     env: {
       ...process.env,
       WANIM_NUMPY: "bare",
-      WANIM_MATHJAX: "external",
       WANIM_BROWSER_OUT: resolve(distPkg, "wanim.browser.js"),
     },
   });
@@ -202,9 +202,9 @@ function copyPy2jsDist(target) {
 
 function assemble() {
   const pkg = copyStatic("wanim");
-  // Browser bundles.  The package variants keep numpy-ts / MathJax external,
-  // so no upstream code is shipped; `chunks/` only holds wanim's small
-  // `mathjax-full` glue chunks.
+  // Browser bundles.  The package variants keep numpy-ts a bare external, so
+  // no numpy-ts code is shipped; `chunks/` holds the on-demand MathJax bundle
+  // (loaded only when a scene typesets math).
   const browserDir = resolve(pkg, "browser");
   copyFile(resolve(distPkg, "wanim.browser.js"), join(browserDir, "wanim.browser.js"));
   cpSync(resolve(distPkg, "chunks"), join(browserDir, "chunks"), { recursive: true });

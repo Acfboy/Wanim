@@ -17,9 +17,10 @@ whole Wanim stack with subpath exports:
 | `wanimjs/browser/element` | the `<wanim-scene>` custom element (lazy-loads the bridge) |
 
 The bundles are already built; consumers never need esbuild/tsc to run a
-scene.  **`numpy-ts` and MathJax are not bundled** — they are regular
-`dependencies` of this package and must be provided by your import map or
-bundler (see below).
+scene.  **`numpy-ts` is not bundled** — it is a regular `dependency` of this
+package and must be provided by your import map or bundler (see below).
+MathJax ships as an on-demand chunk, so TeX works in plain import-map pages
+without a bundler.
 
 ## Zero-config browser embed
 
@@ -64,7 +65,7 @@ The bridge resolves `./py2js.browser.js`, `./py-runtime.browser.js` and
 code uses are required.  Keep the whole `browser/` directory together: the
 bridge checks `instanceof wanim.Scene`.
 
-### Providing numpy-ts and MathJax
+### Providing numpy-ts
 
 - **numpy-ts** is needed for every run (the library's array type), and it
   already ships a browser ESM (`numpy-ts/dist/numpy-ts.browser.js`): copy it
@@ -72,16 +73,12 @@ bridge checks `instanceof wanim.Scene`.
   wanim's first array operation; `configureWasm({ maxMemory })` is available if
   you need a bigger WASM heap.  Keep a single shared copy — it owns the WASM
   heap.
-- **MathJax** is only needed for `MathTex`/`Tex`-style mobjects, and it is
-  fetched lazily: `browser/chunks/mathjax_runtime-*.js` imports
-  `mathjax-full/...` as bare specifiers.  Unlike numpy-ts, `mathjax-full`
-  publishes **CommonJS** under `js/`, so a plain import map cannot load it
-  directly: use a bundler (webpack/vite/rollup/esbuild) so the dependency
-  resolves with CJS interop, or pre-bundle it yourself.  If you only use
-  shapes/text and never `MathTex`, no MathJax is ever downloaded.
 
-The chunks themselves are tiny wanim glue; the MathJax code comes from the
-consumer's dependency tree.
+**MathJax** needs nothing from you: the bundle always carries it as an
+on-demand chunk (`browser/chunks/mathjax_runtime-*.js`, fetched only when a
+scene actually typesets math), so import-map pages, CDNs and bundlers all work
+without an extra dependency to wire up.  Pages that only use shapes or plain
+text never download it.
 
 ### Optional modules
 
@@ -175,13 +172,13 @@ subpath are included (`dist/*.d.ts`).
 
 ```
 browser/
-  wanim.browser.js         library bundle (numpy-ts + MathJax external)
+  wanim.browser.js         library bundle (numpy-ts external)
   py2js.browser.js         Python→JS compiler (rapydscript global)
   py-runtime.browser.js    Python runtime shims (no external imports)
   bridge.browser.js        compiler + runtime + DOM glue (numpy-ts external)
   rapydscript.js           patched rapydscript-ng compiler (BSD-2-Clause)
   wanim-element.browser.js <wanim-scene> custom element
-  chunks/                  MathJax glue (bare `mathjax-full/...` imports)
+  chunks/                  on-demand MathJax (lazy, loaded on first TeX use)
 dist/                      Node ESM entries + TypeScript declarations
 src/_config/default.cfg    runtime config read by the Node build
 src/templates/             scene templates read by the Node build

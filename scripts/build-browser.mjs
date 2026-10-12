@@ -26,18 +26,16 @@
 //     MathJax is bundled into the on-demand `chunks/`.  This is what the demo
 //     and other local consumers serving `dist/` use.
 //
-//   package (`WANIM_NUMPY=bare` + `WANIM_MATHJAX=external`): both are external
-//     as *bare* specifiers (`numpy-ts`, `mathjax-full/...`) so no numpy-ts or
-//     MathJax code is shipped; the consumer's import map or bundler supplies
-//     them.  MathJax stays lazy: the on-demand chunks shrink to wanim's own
-//     glue (`chunks/mathjax_runtime-*.js`) with bare `mathjax-full/...`
-//     imports inside.  numpy-ts is not copied.
+//   package (`WANIM_NUMPY=bare`): numpy-ts is external as the *bare* specifier
+//     `numpy-ts` and no copy is written, so the published package ships no
+//     numpy-ts code; the consumer's import map or bundler supplies it.
+//     MathJax is still bundled into the on-demand `chunks/` here, so TeX works
+//     in plain import-map pages too (only the lazy chunk carries MathJax).
 //
 // Env overrides:
 //   WANIM_BROWSER_OUT  output file (default dist/wanim.browser.js); chunks are
 //                      written to a sibling `chunks/` directory
-//   WANIM_NUMPY        "bare" to keep numpy-ts a bare external
-//   WANIM_MATHJAX      "external" to keep mathjax-full (and subpaths) bare
+//   WANIM_NUMPY        "bare" to keep numpy-ts a bare external (no copy)
 //   WANIM_MINIFY       "0" to disable minification (default: minify)
 //   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
@@ -55,7 +53,6 @@ const entryName = basename(outfile).replace(/\.js$/, "");
 const minify = process.env.WANIM_MINIFY !== "0";
 const sourcemap = process.env.WANIM_SOURCEMAP === "1";
 const numpyBare = process.env.WANIM_NUMPY === "bare";
-const mathjaxExternal = process.env.WANIM_MATHJAX === "external";
 
 // Drop chunks from a previous build: their names are content-hashed, so stale
 // files would otherwise accumulate (and could leak a dependency that is no
@@ -99,9 +96,7 @@ await build({
   logLevel: "info",
   // Keep numpy-ts external so the page loads it from a single URL and can
   // `configureWasm()` *before* wanim's first array operation (a heap sized at
-  // import time cannot be resized afterwards).  In the package variant,
-  // MathJax is external too: the on-demand chunks then only contain wanim's
-  // glue with bare `mathjax-full/...` imports.
+  // import time cannot be resized afterwards).
   plugins: [
     {
       name: numpyBare ? "numpy-bare" : "numpy-relative",
@@ -110,12 +105,6 @@ await build({
           path: numpyBare ? "numpy-ts" : NUMPY_RELATIVE,
           external: true,
         }));
-        if (mathjaxExternal) {
-          build.onResolve({ filter: /^mathjax-full(\/.*)?$/ }, (args) => ({
-            path: args.path,
-            external: true,
-          }));
-        }
       },
     },
   ],
