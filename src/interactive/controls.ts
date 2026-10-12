@@ -857,6 +857,12 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
    * display step instead of rounding away on every pointer event.
    */
   private _scrub_value = 0;
+  /**
+   * Current inline-editor text while editing (`null` outside a session). The
+   * rendered number always shows the forced sign (`include_sign`), so the
+   * caret mapping must know whether the text carries its own sign.
+   */
+  private _edit_text: string | null = null;
 
   constructor(numberValue: DecimalNumberValue = 0, options: InputDecimalNumberOptions = {}) {
     const {
@@ -977,16 +983,20 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
   /** Open the host's inline editor for this number. */
   protected _begin_edit(context: InteractiveContext): void {
     this.editing = true;
+    const initial = this._format_value();
+    this._edit_text = initial;
     context.host.beginTextEdit(this, context.camera, {
-      initial: this._format_value(),
+      initial,
       allow_decimal_point: this._allow_decimal_point(),
       onInput: (text) => this._apply_text(text),
       onCommit: (text) => {
         this._apply_text(text);
         this.editing = false;
+        this._edit_text = null;
       },
       onCancel: () => {
         this.editing = false;
+        this._edit_text = null;
       },
     });
   }
@@ -997,6 +1007,7 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
   }
 
   protected _apply_text(text: string): void {
+    this._edit_text = text;
     const value = Number.parseFloat(text);
     if (Number.isFinite(value)) {
       this.set_value(value);
@@ -1006,8 +1017,12 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
 
   protected _format_value(): string {
     const value = this.get_value();
-    const scalar = typeof value === "number" ? value : value.re;
-    return scalar.toFixed(this.num_decimal_places);
+    // The editor starts from exactly what is rendered (same sign, same
+    // rounding), so the initial caret maps one-to-one onto the glyphs.
+    // Grouping separators are dropped: the editor only accepts a numeric
+    // literal (`1,000` would parse as `1`).
+    if (typeof value !== "number") return value.re.toFixed(this.num_decimal_places);
+    return this._get_num_string(value).replace(/,/g, "");
   }
 
   /**
@@ -1023,13 +1038,21 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     const display = this._get_num_string(this.number);
     const glyphs = this.submobjects.filter((member) => member !== this.highlight).slice(0, display.length);
     if (glyphs.length === 0) return null;
+    // The displayed number may carry a sign the editor text does not (e.g.
+    // `include_sign` renders `+0.00` while the text is `0.00`), or vice versa.
+    // Shift the index past a display-only sign so the caret stays on the digit
+    // the user is editing instead of one glyph to its left.
+    const text = this._edit_text ?? this._format_value();
+    const displaySign = display.startsWith("+") || display.startsWith("-") ? 1 : 0;
+    const textSign = text.startsWith("+") || text.startsWith("-") ? 1 : 0;
+    const glyphIndex = index + displaySign - textSign;
     const bottom = this.get_bottom();
     const y = bottom[1] ?? 0;
-    if (index >= glyphs.length) {
+    if (glyphIndex >= glyphs.length) {
       const right = glyphs[glyphs.length - 1]!.get_right();
       return [right[0] ?? 0, y, 0];
     }
-    const left = glyphs[Math.max(0, index)]!.get_left();
+    const left = glyphs[Math.max(0, glyphIndex)]!.get_left();
     return [left[0] ?? 0, y, 0];
   }
 
