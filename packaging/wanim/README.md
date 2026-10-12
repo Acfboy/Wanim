@@ -5,11 +5,11 @@ whole Wanim stack with subpath exports:
 
 | Subpath | What it is |
 | --- | --- |
-| `wanimjs` | the manim-compatible library (Node ESM + types) |
+| `wanimjs` | the manim-compatible **core** library (Node ESM + types); also exported as `wanimjs/core` |
 | `wanimjs/py2js` | the Python→JS **compiler** (Node-safe: preprocessor + error formatter) |
 | `wanimjs/py-runtime` | the Python **runtime** (Node-safe: rapydscript shims, `math`/`random`/`itertools` facades, preload planner) |
 | `wanimjs/bridge` | **compiler + runtime + DOM glue** (`runPythonOnCanvas`, `benchInteractiveScene`) — browser-only |
-| `wanimjs/browser` | prebuilt browser bundle of the library |
+| `wanimjs/browser` | prebuilt browser bundle of the core library (also `./browser/core`) |
 | `wanimjs/browser/py2js` | prebuilt browser bundle of the compiler |
 | `wanimjs/browser/py-runtime` | prebuilt browser bundle of the runtime |
 | `wanimjs/browser/bridge` | prebuilt browser bundle of the bridge (loads its siblings relatively) |
