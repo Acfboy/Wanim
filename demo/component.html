@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>wanim · &lt;wanim-scene&gt; web component</title>
 <!-- The import map is optional: wanim-element.browser.js resolves its own
-     siblings (py2js / wanim / numpy-ts / rapydscript) by relative URL.  It is
+     siblings (bridge / wanim / numpy-ts / rapydscript) by relative URL.  It is
      only needed when page code imports the bundles by bare specifier. -->
 <script type="importmap">
 {
   "imports": {
     "wanim": "../dist/wanim.browser.js",
     "numpy-ts": "../dist/numpy-ts.browser.js",
-    "py2js": "../dist/py2js.browser.js"
+    "py2js": "../dist/bridge.browser.js"
   }
 }
 </script>

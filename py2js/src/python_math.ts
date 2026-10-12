@@ -262,18 +262,6 @@ function nextAfterStep(x: number, y: number): number {
 // Module definition.
 // ---------------------------------------------------------------------------
 
-/** Names exported by `from math import *` (functions + constants). */
-export const MATH_PUBLIC = [
-  "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt",
-  "ceil", "comb", "copysign", "cos", "cosh", "degrees", "dist", "erf",
-  "erfc", "exp", "exp2", "expm1", "fabs", "factorial", "floor", "fmod",
-  "frexp", "fsum", "gamma", "gcd", "hypot", "isclose", "isfinite",
-  "isinf", "isnan", "isqrt", "lcm", "ldexp", "lgamma", "log", "log10",
-  "log1p", "log2", "modf", "nextafter", "perm", "pow", "prod", "radians",
-  "remainder", "sin", "sinh", "sqrt", "tan", "tanh", "trunc", "ulp",
-  "pi", "e", "tau", "inf", "nan",
-];
-
 export interface PythonMathModule extends Record<string, Any> {
   pi: number;
   e: number;

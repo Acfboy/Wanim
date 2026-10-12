@@ -27,7 +27,7 @@
  * ```
  *
  * The element is lazy: importing this module only registers the element.  The
- * Python bridge (`py2js.browser.js`), the rapydscript compiler and any optional
+ * Python bridge (`bridge.browser.js`), the rapydscript compiler and any optional
  * module (MathJax / fonts) are fetched on first use from the same
  * directory as this bundle, so the whole `browser/` directory is deployable
  * as-is.
@@ -69,7 +69,7 @@ export interface WanimSceneStats {
 /** Optional modules that can be prefetched through `preload-modules`. */
 export type WanimPreloadModule = "mathjax" | "fonts";
 
-/** Minimal shape of the lazily imported `py2js.browser.js` module. */
+/** Minimal shape of the lazily imported `bridge.browser.js` module. */
 interface Py2jsModule {
   runPythonOnCanvas(
     source: string,
@@ -193,7 +193,7 @@ let py2jsPromise: Promise<Py2jsModule> | null = null;
 /** Lazy-import the Python bridge shipped next to this bundle (cached). */
 function loadPy2js(): Promise<Py2jsModule> {
   if (py2jsPromise === null) {
-    const url = siblingUrl("py2js.browser.js");
+    const url = siblingUrl("bridge.browser.js");
     py2jsPromise = import(url).then(
       (module) => module as Py2jsModule,
       (error: unknown) => {

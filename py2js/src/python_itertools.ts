@@ -221,15 +221,6 @@ function* iterEach(iterable: Any, fn: string): Generator<Any> {
 // Module definition.
 // ---------------------------------------------------------------------------
 
-/** Names exported by `from itertools import *`. */
-export const ITERTOOLS_PUBLIC = [
-  "accumulate", "batched", "chain", "combinations",
-  "combinations_with_replacement", "compress", "count", "cycle",
-  "dropwhile", "filterfalse", "groupby", "islice", "pairwise",
-  "permutations", "product", "repeat", "starmap", "takewhile",
-  "tee", "zip_longest",
-];
-
 export interface PythonItertoolsModule extends Record<string, Any> {}
 
 function annotate(fn: Any, names: string[]): Any {

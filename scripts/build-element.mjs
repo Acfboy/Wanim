@@ -5,7 +5,7 @@
 // to dist/element.js.  This script bundles that file into a small, minified ES
 // module at dist/wanim-element.browser.js.
 //
-// The bundle deliberately keeps `py2js.browser.js` and `rapydscript.js` as
+// The bundle deliberately keeps `bridge.browser.js` and `rapydscript.js` as
 // *runtime* URLs relative to the bundle itself (resolved through
 // `import.meta.url`), so the whole browser/ directory can be served as-is and
 // the Python bridge only downloads on first run.  Importing the module has no

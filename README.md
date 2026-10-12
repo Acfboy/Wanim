@@ -12,6 +12,9 @@ time.
 ## Run manim Python on a canvas
 
 ```js
+// The demo's import map maps "py2js" to the bridge bundle
+// (`dist/bridge.browser.js`); from the npm package use
+// `wanimjs/bridge` (or `/browser/bridge`).
 import { runPythonOnCanvas } from "py2js";
 
 await runPythonOnCanvas(pythonSource, document.querySelector("canvas"), {
@@ -53,9 +56,10 @@ class Demo(Scene):
 </wanim-scene>
 ```
 
-Importing the bundle only registers the custom element; `py2js.browser.js`,
-`rapydscript.js` and optional modules download from the same `dist/` directory
-on first run.  The element supports `code`, `quality`, `render-style`,
+Importing the bundle only registers the custom element; `bridge.browser.js`,
+`py2js.browser.js` (compiler), `py-runtime.browser.js`, `rapydscript.js` and
+optional modules download from the same `dist/` directory on first run.  The
+element supports `code`, `quality`, `render-style`,
 `background`, `fps`, `scene`, `autoplay`, `loop`, `src`, `preload-modules` and
 `compiler-src`; `run()`/`stop()`/`next()`/`restart()` methods and
 `wanim-ready`/`wanim-run`/`wanim-scene`/`wanim-done`/`wanim-error` events.
@@ -159,19 +163,22 @@ pnpm test:py2js      # py2js source preprocessor tests
 
 ## Packaging (npm)
 
-The publishable packages are assembled from `packaging/` (metadata: package.json
-/ README / LICENSE) plus the build artifacts into the gitignored `packages-out/`:
+The publishable package is assembled from `packaging/wanim/` (metadata:
+package.json / README / LICENSE) plus the build artifacts into the gitignored
+`packages-out/`:
 
 ```bash
-pnpm build:packages   # rebuild dist/ and assemble wanim-core, wanim-py, wanim
+pnpm build:packages   # rebuild dist/ and assemble wanimjs
 pnpm pack:packages    # assemble from the current dist/ and run npm pack
 ```
 
-`wanim-core` ships the tsc `dist/` (Node ESM + d.ts) and the browser bundles
-under `browser/`; `wanim-py` ships the `--bare`-external py2js bundle (import
-map resolves `wanim`/`numpy-ts`) and the Node toolbox; the combined `wanim`
-package puts every relative-import bundle in one `browser/` directory for
-zero-config use.
+`wanimjs` ships the tsc `dist/` (Node ESM + d.ts) and one
+`browser/` directory with every relative-import bundle for zero-config use,
+addressable through subpath exports (`/py2js` compiler, `/py-runtime`
+runtime, `/bridge`, `/browser/*`, `/browser/element`).  numpy-ts and MathJax
+are external dependencies: the package variant keeps them as bare specifiers
+(MathJax stays a lazy glue chunk), so consumers supply them through an import
+map or bundler and no upstream code is shipped.
 
 ## Layout
 

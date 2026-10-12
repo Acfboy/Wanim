@@ -19,9 +19,25 @@
 // SC, see `DEFAULT_FONT_URLS`); embedders can point it elsewhere with
 // `configure_fonts([...])`.  Only the bundle and its chunks are written here.
 //
+// Two variants:
+//
+//   dev (default): `numpy-ts` is external but referenced by the *relative*
+//     URL `./numpy-ts.browser.js`, and the file is copied next to the bundle;
+//     MathJax is bundled into the on-demand `chunks/`.  This is what the demo
+//     and other local consumers serving `dist/` use.
+//
+//   package (`WANIM_NUMPY=bare` + `WANIM_MATHJAX=external`): both are external
+//     as *bare* specifiers (`numpy-ts`, `mathjax-full/...`) so no numpy-ts or
+//     MathJax code is shipped; the consumer's import map or bundler supplies
+//     them.  MathJax stays lazy: the on-demand chunks shrink to wanim's own
+//     glue (`chunks/mathjax_runtime-*.js`) with bare `mathjax-full/...`
+//     imports inside.  numpy-ts is not copied.
+//
 // Env overrides:
 //   WANIM_BROWSER_OUT  output file (default dist/wanim.browser.js); chunks are
 //                      written to a sibling `chunks/` directory
+//   WANIM_NUMPY        "bare" to keep numpy-ts a bare external
+//   WANIM_MATHJAX      "external" to keep mathjax-full (and subpaths) bare
 //   WANIM_MINIFY       "0" to disable minification (default: minify)
 //   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
@@ -38,6 +54,8 @@ const outdir = dirname(outfile);
 const entryName = basename(outfile).replace(/\.js$/, "");
 const minify = process.env.WANIM_MINIFY !== "0";
 const sourcemap = process.env.WANIM_SOURCEMAP === "1";
+const numpyBare = process.env.WANIM_NUMPY === "bare";
+const mathjaxExternal = process.env.WANIM_MATHJAX === "external";
 
 // Drop chunks from a previous build: their names are content-hashed, so stale
 // files would otherwise accumulate (and could leak a dependency that is no
@@ -46,9 +64,10 @@ const chunksDir = resolve(outdir, "chunks");
 rmSync(chunksDir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
 
-// numpy-ts is kept external, but referenced by a *relative* URL rather than a
-// bare specifier: the bundle then resolves it against its own location, so it
-// works even when the page's import map is missing or was applied too late.
+// In the dev build numpy-ts is kept external, but referenced by a *relative*
+// URL rather than a bare specifier: the bundle then resolves it against its
+// own location, so it works even when the page's import map is missing or was
+// applied too late.
 const NUMPY_RELATIVE = "./numpy-ts.browser.js";
 
 await build({
@@ -80,15 +99,23 @@ await build({
   logLevel: "info",
   // Keep numpy-ts external so the page loads it from a single URL and can
   // `configureWasm()` *before* wanim's first array operation (a heap sized at
-  // import time cannot be resized afterwards).
+  // import time cannot be resized afterwards).  In the package variant,
+  // MathJax is external too: the on-demand chunks then only contain wanim's
+  // glue with bare `mathjax-full/...` imports.
   plugins: [
     {
-      name: "numpy-relative",
+      name: numpyBare ? "numpy-bare" : "numpy-relative",
       setup(build) {
         build.onResolve({ filter: /^numpy-ts$/ }, () => ({
-          path: NUMPY_RELATIVE,
+          path: numpyBare ? "numpy-ts" : NUMPY_RELATIVE,
           external: true,
         }));
+        if (mathjaxExternal) {
+          build.onResolve({ filter: /^mathjax-full(\/.*)?$/ }, (args) => ({
+            path: args.path,
+            external: true,
+          }));
+        }
       },
     },
   ],
@@ -107,16 +134,18 @@ await build({
   },
 });
 
-// Ship numpy-ts next to the bundle so the relative import resolves for the
-// demo and other local consumers serving `dist/`.
-const numpySource = resolve(root, "node_modules", "numpy-ts", "dist", "numpy-ts.browser.js");
-if (existsSync(numpySource)) {
-  const numpyOut = resolve(dirname(outfile), "numpy-ts.browser.js");
-  mkdirSync(dirname(numpyOut), { recursive: true });
-  copyFileSync(numpySource, numpyOut);
-  console.log(`wanim: wrote ${numpyOut}`);
-} else {
-  console.warn(`wanim: numpy-ts browser build not found at ${numpySource}`);
+if (!numpyBare) {
+  // Ship numpy-ts next to the bundle so the relative import resolves for the
+  // demo and other local consumers serving `dist/`.
+  const numpySource = resolve(root, "node_modules", "numpy-ts", "dist", "numpy-ts.browser.js");
+  if (existsSync(numpySource)) {
+    const numpyOut = resolve(dirname(outfile), "numpy-ts.browser.js");
+    mkdirSync(dirname(numpyOut), { recursive: true });
+    copyFileSync(numpySource, numpyOut);
+    console.log(`wanim: wrote ${numpyOut}`);
+  } else {
+    console.warn(`wanim: numpy-ts browser build not found at ${numpySource}`);
+  }
 }
 
 console.log(`wanim: wrote ${outfile}`);

@@ -31,9 +31,7 @@
  * relies on them.
  */
 
-import { ITERTOOLS_PUBLIC } from "./python_itertools.js";
-import { MATH_PUBLIC } from "./python_math.js";
-import { RANDOM_PUBLIC } from "./python_random.js";
+import { ITERTOOLS_PUBLIC, MATH_PUBLIC, RANDOM_PUBLIC } from "./public_names.js";
 
 export interface UnsupportedImport {
   module: string;

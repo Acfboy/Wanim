@@ -1,31 +1,37 @@
 #!/usr/bin/env node
-// Bundle the py2js browser bridge for the demo site.
+// Bundle the py2js browser bundles for the demo site and the npm package.
 //
-// The page compiles Python to JS with the browser rapydscript compiler
-// (`dist/rapydscript.js`, built by `build-rapydscript-browser.mjs`) and then
-// runs it against the wanim Canvas2D backend using the runtime shims in
-// `py2js/src/browser.ts`.
+// Three entry points (see py2js/src):
 //
-// `wanim` and `numpy-ts` stay external.  By default they are referenced by
-// *relative* URLs (the bundles all live in `dist/`), so the bridge works even
-// when the page's import map is missing or was applied too late, and all three
-// files resolve the same URLs, keeping the numpy-ts instance (and its WASM
-// heap) shared.  This is the build the demo site and the combined `wanim`
-// package use.
+//   compiler.ts  -> dist/py2js.browser.js      (Python -> JS, no externals)
+//   runtime.ts   -> dist/py-runtime.browser.js (rapydscript shims, no externals)
+//   browser.ts   -> dist/bridge.browser.js     (compiler + runtime + DOM glue)
 //
-// With `--bare` (or `PY2JS_EXTERNAL=bare`) the externals are left as *bare*
-// specifiers instead: `import ... from "wanim"` / `"numpy-ts"`.  That is the
-// variant shipped in the standalone `wanim-py` npm package, where the
-// consumer's import map (or bundler) resolves those two names; the default
-// output path becomes `dist/py2js.bare.browser.js` so the demo build in
-// `dist/py2js.browser.js` is not clobbered.
+// The compiler and runtime bundles have no external imports at all: the
+// compiler only needs the global `RapydScript` compiler, and the runtime's
+// wanim/numpy-ts namespaces are injected through `createRuntimeCore()`.
+//
+// The bridge imports the two sibling bundles, wanim and numpy-ts.  By default
+// those are referenced by *relative* URLs (the bundles all live in `dist/`),
+// so the bridge works even when the page's import map is missing or was
+// applied too late, and all the files resolve the same URLs, keeping the
+// numpy-ts instance (and its WASM heap) shared.  This is the build the demo
+// site uses.
+//
+// With `--bare` (or `PY2JS_EXTERNAL=bare`) a second bridge variant is emitted
+// for the published package: `numpy-ts` stays a *bare* specifier for the
+// consumer's import map / bundler, while the sibling bundles stay relative
+// (the package ships them side by side in `browser/`).  The default output
+// becomes `dist-pkg/bridge.browser.js` so the demo build is not clobbered.
 //
 // Env overrides:
-//   PY2JS_BROWSER_OUT  output file (default dist/py2js.browser.js, or
-//                      dist/py2js.bare.browser.js with --bare)
-//   PY2JS_EXTERNAL     "bare" for bare specifiers (same as --bare)
-//   WANIM_MINIFY       "0" to disable minification (default: minify)
-//   WANIM_SOURCEMAP    "1" to emit a sourcemap (default: none)
+//   PY2JS_COMPILER_OUT   compiler bundle (default dist/py2js.browser.js)
+//   PY2JS_RUNTIME_OUT    runtime bundle (default dist/py-runtime.browser.js)
+//   PY2JS_BRIDGE_OUT     bridge bundle (default dist/bridge.browser.js, or
+//                        dist-pkg/bridge.browser.js with --bare)
+//   PY2JS_EXTERNAL       "bare" for the package bridge variant (same as --bare)
+//   WANIM_MINIFY         "0" to disable minification (default: minify)
+//   WANIM_SOURCEMAP      "1" to emit a sourcemap (default: none)
 import { build } from "esbuild";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -33,7 +39,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wanimRoot = resolve(here, "..");
-const entry = resolve(wanimRoot, "py2js", "src", "browser.ts");
+const srcDir = resolve(wanimRoot, "py2js", "src");
 
 if (!existsSync(resolve(wanimRoot, "dist", "index.js"))) {
   console.error("wanim is not built; run `pnpm build` first.");
@@ -42,41 +48,84 @@ if (!existsSync(resolve(wanimRoot, "dist", "index.js"))) {
 
 const bare =
   process.argv.includes("--bare") || process.env.PY2JS_EXTERNAL === "bare";
-const externals = bare
-  ? { numpy: "numpy-ts", wanim: "wanim" }
-  : { numpy: "./numpy-ts.browser.js", wanim: "./wanim.browser.js" };
-const defaultOut = resolve(wanimRoot, "dist", bare ? "py2js.bare.browser.js" : "py2js.browser.js");
-const outfile = resolve(process.env.PY2JS_BROWSER_OUT ?? defaultOut);
 
-await build({
-  entryPoints: [entry],
-  outfile,
+const minify = process.env.WANIM_MINIFY !== "0";
+const sourcemap = process.env.WANIM_SOURCEMAP === "1";
+const banner = {
+  js: "if (typeof globalThis.process === 'undefined') { globalThis.process = { cwd: () => '/', env: {}, argv: [], platform: 'browser' }; }",
+};
+
+const shared = {
   bundle: true,
   format: "esm",
   platform: "browser",
   target: ["chrome110"],
-  sourcemap: process.env.WANIM_SOURCEMAP === "1",
-  minify: process.env.WANIM_MINIFY !== "0",
+  sourcemap,
+  minify,
   logLevel: "info",
-  plugins: [
-    {
-      name: bare ? "shared-bare" : "shared-relative",
-      setup(build) {
-        build.onResolve({ filter: /^numpy-ts$/ }, () => ({
-          path: externals.numpy,
-          external: true,
-        }));
-        build.onResolve({ filter: /dist\/index\.js$/ }, () => ({
-          path: externals.wanim,
-          external: true,
-        }));
-      },
-    },
-  ],
-  banner: {
-    js: "if (typeof globalThis.process === 'undefined') { globalThis.process = { cwd: () => '/', env: {}, argv: [], platform: 'browser' }; }",
-  },
+  banner,
   define: { "process.env.NODE_ENV": '"production"' },
-});
+};
 
-console.log(`wanim: wrote ${outfile}`);
+async function buildSimple(entry, outfile) {
+  await build({ ...shared, entryPoints: [resolve(srcDir, entry)], outfile });
+  console.log(`wanim: wrote ${outfile}`);
+}
+
+async function buildBridge(outfile) {
+  const externals = {
+    numpy: bare ? "numpy-ts" : "./numpy-ts.browser.js",
+    wanim: "./wanim.browser.js",
+    compiler: "./py2js.browser.js",
+    runtime: "./py-runtime.browser.js",
+  };
+  await build({
+    ...shared,
+    entryPoints: [resolve(srcDir, "browser.ts")],
+    outfile,
+    plugins: [
+      {
+        name: bare ? "bridge-bare" : "bridge-relative",
+        setup(build) {
+          build.onResolve({ filter: /^numpy-ts$/ }, () => ({
+            path: externals.numpy,
+            external: true,
+          }));
+          build.onResolve({ filter: /dist\/index\.js$/ }, () => ({
+            path: externals.wanim,
+            external: true,
+          }));
+          build.onResolve({ filter: /^\.\/compiler\.js$/ }, () => ({
+            path: externals.compiler,
+            external: true,
+          }));
+          build.onResolve({ filter: /^\.\/runtime\.js$/ }, () => ({
+            path: externals.runtime,
+            external: true,
+          }));
+        },
+      },
+    ],
+  });
+  console.log(`wanim: wrote ${outfile}`);
+}
+
+if (bare) {
+  const outfile = resolve(
+    process.env.PY2JS_BRIDGE_OUT ?? resolve(wanimRoot, "dist-pkg", "bridge.browser.js"),
+  );
+  await buildBridge(outfile);
+} else {
+  const compilerOut = resolve(
+    process.env.PY2JS_COMPILER_OUT ?? resolve(wanimRoot, "dist", "py2js.browser.js"),
+  );
+  const runtimeOut = resolve(
+    process.env.PY2JS_RUNTIME_OUT ?? resolve(wanimRoot, "dist", "py-runtime.browser.js"),
+  );
+  const bridgeOut = resolve(
+    process.env.PY2JS_BRIDGE_OUT ?? resolve(wanimRoot, "dist", "bridge.browser.js"),
+  );
+  await buildSimple("compiler.ts", compilerOut);
+  await buildSimple("runtime.ts", runtimeOut);
+  await buildBridge(bridgeOut);
+}

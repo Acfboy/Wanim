@@ -8,8 +8,15 @@ manim Python  --rapydscript-->  JavaScript  --wanim-->  live <canvas>
 
 `py2js` is a thin bridge between the patched
 [rapydscript-ng](https://github.com/kovidgoyal/rapydscript-ng) compiler and
-wanim's Canvas2D renderer. It exposes two functions (see
-`src/browser.ts`):
+wanim's Canvas2D renderer. It is split into three browser entries plus two
+Node-safe entries:
+
+- `src/compiler.ts` — translate Python to JS (`compilePython`); depends on
+  nothing but the global `RapydScript` compiler;
+- `src/runtime.ts` — the rapydscript shims and the Python `math` / `random` /
+  `itertools` facades (`createRuntimeCore`, `installPythonShims`);
+- `src/browser.ts` — the bridge that ties them together and adds the DOM
+  sandbox (`runPythonOnCanvas`, `benchInteractiveScene`):
 
 ```ts
 // 1. Translate manim Python to JavaScript.
@@ -48,10 +55,15 @@ pnpm test:py2js
 
 ## Packaging
 
-`../scripts/build-py2js.mjs` bundles `src/browser.ts` into
-`dist/py2js.browser.js` with `wanim` and `numpy-ts` referenced by *relative*
-URLs (the demo layout). With `--bare` it emits
-`dist/py2js.bare.browser.js`, keeping both as bare specifiers so the standalone
-npm package can be resolved through an import map or bundler. The DOM-free
-toolbox (preprocessing, error formatting, preload planning, runtime shims) is
-exported from `src/node.ts` as the package's Node entry point.
+`../scripts/build-py2js.mjs` bundles the three browser entries into
+`dist/py2js.browser.js` (compiler), `dist/py-runtime.browser.js` (runtime) and
+`dist/bridge.browser.js` (bridge). The compiler and runtime bundles have no
+external imports; the bridge keeps `wanim` and `numpy-ts` external, referenced
+by *relative* URLs in the dev layout. With `--bare` a package variant of the
+bridge is emitted to `dist-pkg/bridge.browser.js`, keeping `numpy-ts` a bare
+specifier (the sibling bundles stay relative; the package ships them side by
+side in `browser/`). The DOM-free toolbox is exported from
+`src/compiler_node.ts` (preprocessing, error formatting) and
+`src/runtime_node.ts` (preload planning, runtime shims, Python facades) — the
+Node entries of the `wanimjs/py2js` and `wanimjs/py-runtime`
+subpaths.

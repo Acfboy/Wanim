@@ -22,6 +22,10 @@ import { buildPythonItertools } from "./python_itertools.js";
 import { buildPythonMath } from "./python_math.js";
 import { buildPythonRandom } from "./python_random.js";
 
+// The `from <module> import *` name tables live in `public_names.ts` (shared
+// with the compiler's preprocessor, which must not pull in this runtime).
+export { ITERTOOLS_PUBLIC, MATH_PUBLIC, RANDOM_PUBLIC } from "./public_names.js";
+
 type Any = any;
 
 export interface RuntimeDeps {
