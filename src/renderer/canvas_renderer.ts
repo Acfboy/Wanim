@@ -19,10 +19,12 @@ import {
   clearCanvas,
   drawFrame,
   drawImageMobject,
+  drawPointCloud,
   drawVmobject,
   isThreeDFrame,
   PreviewCamera,
   PreviewThreeDCamera,
+  releasePointLayers,
   setCanvasTransform,
   backgroundCss,
   type CanvasCamera,
@@ -137,11 +139,12 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this._started = true;
   }
 
-  /** Release the WebGL backend (see WebGLThreeDRenderer.dispose). */
+  /** Release the WebGL backend and the point-cloud scratch bitmap. */
   dispose(): void {
     this._webgl?.dispose();
     this._webgl = null;
     this.backend.dispose();
+    releasePointLayers(this.ctx);
   }
 
   /** Lazily created WebGL2 backend (null when unavailable/disabled). */
@@ -192,20 +195,6 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     const t1 = performance.now();
     this.stats.extractMs += t1 - t0;
 
-    // `PMobject` (point clouds) has no Canvas/WebGL rasterizer yet and used to
-    // be skipped silently, so a point-cloud scene "rendered" blank with no
-    // error; fail loudly instead (the serializer already rejects them).
-    for (const mobject of displayed) {
-      if (mobject instanceof PMobject) {
-        const error = new Error(
-          "PMobject is not supported by the wanim renderer yet: point clouds " +
-            "cannot be drawn. Use vector mobjects (e.g. Dot/DotCloud) instead.",
-        );
-        error.name = "NotImplementedError";
-        throw error;
-      }
-    }
-
     if (this.drawFrames) {
       const background = backgroundCss({
         background_color: camera.background_color.to_hex(),
@@ -218,6 +207,8 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
           if (mobject instanceof VMobject) this.backend.draw(this.ctx, camera, mobject);
           else if (mobject instanceof AbstractImageMobject) {
             drawImageMobject(this.ctx, camera as CanvasCamera, mobject);
+          } else if (mobject instanceof PMobject) {
+            drawPointCloud(this.ctx, camera as CanvasCamera, mobject);
           }
         }
       }
@@ -291,6 +282,8 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
       if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);
       else if (mobject instanceof AbstractImageMobject) {
         drawImageMobject(this.ctx, camera as CanvasCamera, mobject);
+      } else if (mobject instanceof PMobject) {
+        drawPointCloud(this.ctx, camera as CanvasCamera, mobject);
       }
     }
     return true;

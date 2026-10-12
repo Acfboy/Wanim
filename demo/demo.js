@@ -178,6 +178,26 @@ class SineCurveUnitCircle(Scene):
         self.wait(8.5)
         dot.remove_updater(go_around_circle)
 `,
+  pointcloud: `from manim import *
+
+class PointCloudDemo(Scene):
+    def construct(self):
+        gradient = PointCloudDot(LEFT * 3.5, radius=1.6, stroke_width=2)
+        gradient.set_color_by_gradient(BLUE, GREEN)
+        thick = PointCloudDot(RIGHT * 3.5, radius=1.6, stroke_width=4, color=RED)
+        wave = PMobject(stroke_width=2)
+        points = [
+            [-6 + i * 0.05, 1.2 * np.sin(-6 + i * 0.05), 0]
+            for i in range(241)
+        ]
+        wave.add_points(points, color=YELLOW)
+        wave.shift(DOWN * 2.2)
+
+        self.add(gradient, thick, wave)
+        self.wait(0.5)
+        self.play(wave.animate.shift(UP * 3.2), run_time=2)
+        self.wait()
+`,
   threeD: `from manim import *
 
 class ThreeDSurfacePlot(ThreeDScene):

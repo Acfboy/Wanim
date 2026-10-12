@@ -9,6 +9,7 @@ import {
   configureFrameCamera,
   deserialize_vmobject,
   drawFrame,
+  drawPointCloud,
   drawVmobject,
   isThreeDFrame,
   pixelArrayToRgbaBytes,
@@ -120,6 +121,7 @@ function mockContext(): {
     beginPath: record("beginPath"),
     moveTo: record("moveTo"),
     bezierCurveTo: record("bezierCurveTo"),
+    rect: record("rect"),
     closePath: record("closePath"),
     fill: record("fill"),
     stroke: record("stroke"),
@@ -137,6 +139,39 @@ function mockContext(): {
 }
 
 const pointRows = (value: unknown): number[][] => value as number[][];
+
+interface PointLayerStub {
+  putImages: ImageData[];
+  putArgs: number[][];
+  clearRects: number[][];
+  putImageData: ReturnType<typeof vi.fn>;
+}
+
+/** Stub the full-frame scratch bitmap point clouds rasterize into. */
+function stubPointLayer(): PointLayerStub {
+  const putImages: ImageData[] = [];
+  const putArgs: number[][] = [];
+  const clearRects: number[][] = [];
+  const putImageData = vi.fn((image: ImageData, ...args: number[]) => {
+    putImages.push(image);
+    putArgs.push(args);
+  });
+  const scratch = {
+    width: 0,
+    height: 0,
+    getContext: () => ({
+      createImageData: (width: number, height: number) => ({
+        data: new Uint8ClampedArray(width * height * 4),
+        width,
+        height,
+      }),
+      putImageData,
+      clearRect: (...args: number[]) => { clearRects.push(args); },
+    }),
+  };
+  vi.stubGlobal("document", { createElement: () => scratch });
+  return { putImages, putArgs, clearRects, putImageData };
+}
 
 describe("setCanvasPath", () => {
   test("emits one moveTo and bezierCurveTo per cubic in a subpath", () => {
@@ -203,6 +238,134 @@ describe("clearCanvas style cache", () => {
   });
 });
 
+describe("drawPointCloud", () => {
+  function flatCamera(pixel = 100, frame = 10): Camera {
+    const camera = new Camera({ pixel_width: pixel, pixel_height: pixel, frame_width: frame, frame_height: frame });
+    // `adjusted_thickness` rescales by the global config resolution; pin it so
+    // the expected pixel squares are deterministic in tests.
+    camera.adjusted_thickness = (thickness: number) => thickness;
+    return camera;
+  }
+
+  function pixelBytes(image: ImageData, x: number, y: number): number[] {
+    const base = (y * image.width + x) * 4;
+    return [...image.data.slice(base, base + 4)];
+  }
+
+  test("writes each point as a thickness-sized pixel square", () => {
+    const stub = stubPointLayer();
+    try {
+      const { ctx, drawImageArgs } = mockContext();
+      const pmobject = new PMobject({ stroke_width: 1 });
+      pmobject.add_points([[0, 0, 0], [-3, 2, 0]], [[1, 0, 0, 1], [0, 0, 1, 1]]);
+      drawPointCloud(ctx, flatCamera(), pmobject);
+      expect(stub.putImages).toHaveLength(1);
+      const image = stub.putImages[0]!;
+      // The bitmap spans the union bounding box of the squares, (20, 30) to
+      // (50, 50): 31x21 px.  100x100 px over a 10x10 frame means 10 px per
+      // world unit, (0, 0) -> (50, 50) and (-3, 2) -> (20, 30).
+      expect([image.width, image.height]).toEqual([31, 21]);
+      expect(pixelBytes(image, 0, 0)).toEqual([0, 0, 255, 255]);
+      expect(pixelBytes(image, 30, 20)).toEqual([255, 0, 0, 255]);
+      // Uploaded with the plain 3-argument form, then composited with the
+      // dirty rect as both source and destination.
+      expect(stub.putArgs[0]).toEqual([20, 30]);
+      expect(drawImageArgs).toHaveLength(1);
+      expect(drawImageArgs[0]?.slice(1)).toEqual([20, 30, 31, 21, 20, 30, 31, 21]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("thickness grows the square around the point", () => {
+    const stub = stubPointLayer();
+    try {
+      const { ctx } = mockContext();
+      const pmobject = new PMobject({ stroke_width: 3 });
+      pmobject.add_points([[0, 0, 0]], [[1, 0, 0, 1]]);
+      drawPointCloud(ctx, flatCamera(), pmobject);
+      const image = stub.putImages[0]!;
+      // Thickening nudges [-1, 1] -> exactly a 3x3 square starting at (49, 49).
+      expect([image.width, image.height]).toEqual([3, 3]);
+      expect(stub.putArgs[0]).toEqual([49, 49]);
+      for (let y = 0; y < 3; y += 1) {
+        for (let x = 0; x < 3; x += 1) {
+          expect(pixelBytes(image, x, y)).toEqual([255, 0, 0, 255]);
+        }
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("fractional thickness truncates; below 1 draws nothing", () => {
+    const stub = stubPointLayer();
+    try {
+      const { ctx } = mockContext();
+      const thin = new PMobject({ stroke_width: 0.5 });
+      thin.add_points([[0, 0, 0]]);
+      drawPointCloud(ctx, flatCamera(), thin);
+      expect(stub.putImages).toHaveLength(0);
+
+      const wide = new PMobject({ stroke_width: 2.9 });
+      wide.add_points([[0, 0, 0]], [[1, 0, 0, 1]]);
+      drawPointCloud(ctx, flatCamera(), wide);
+      const image = stub.putImages[0]!;
+      expect([image.width, image.height]).toEqual([2, 2]);
+      expect(pixelBytes(image, 0, 0)).toEqual([255, 0, 0, 255]);
+      expect(pixelBytes(image, 1, 1)).toEqual([255, 0, 0, 255]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("clamps out-of-range colour channels", () => {
+    const stub = stubPointLayer();
+    try {
+      const { ctx } = mockContext();
+      const pmobject = new PMobject({ stroke_width: 1 });
+      pmobject.add_points([[0, 0, 0]], [[2, -1, 0.5, 1]]);
+      drawPointCloud(ctx, flatCamera(), pmobject);
+      expect(pixelBytes(stub.putImages[0]!, 0, 0)).toEqual([255, 0, 128, 255]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("composites in device space (identity transform)", () => {
+    const stub = stubPointLayer();
+    try {
+      const { ctx, calls } = mockContext();
+      const pmobject = new PMobject({ stroke_width: 1 });
+      pmobject.add_points([[0, 0, 0]], [[1, 0, 0, 1]]);
+      drawPointCloud(ctx, flatCamera(), pmobject);
+      expect(calls.filter((call) => call.name === "setTransform").map((call) => call.args)).toContainEqual([1, 0, 0, 1, 0, 0]);
+      expect(calls.filter((call) => call.name === "save")).toHaveLength(1);
+      expect(calls.filter((call) => call.name === "restore")).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("clears the previous composite from the layer before the next write", () => {
+    const stub = stubPointLayer();
+    try {
+      const { ctx } = mockContext();
+      const camera = flatCamera();
+      const first = new PMobject({ stroke_width: 1 });
+      first.add_points([[0, 0, 0]], [[1, 0, 0, 1]]);
+      drawPointCloud(ctx, camera, first);
+      const second = new PMobject({ stroke_width: 1 });
+      second.add_points([[-3, 2, 0]], [[0, 0, 1, 1]]);
+      drawPointCloud(ctx, camera, second);
+      expect(stub.clearRects).toEqual([[50, 50, 1, 1]]);
+      expect(stub.putImages).toHaveLength(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("CanvasSceneRenderer", () => {
   test("extract/draw timing is finite and frames counted", () => {
     const { ctx } = mockContext();
@@ -216,21 +379,36 @@ describe("CanvasSceneRenderer", () => {
     expect(Number.isFinite(renderer.stats.drawMs)).toBe(true);
   });
 
-  test("fails loudly on PMobject instead of drawing a blank frame", () => {
-    const { ctx } = mockContext();
-    const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: true, recordFrames: false });
-    const pmobject = new PMobject();
-    pmobject.add_points([[0, 0, 0]]);
-    const scene = { mobjects: [pmobject] } as unknown as Parameters<CanvasSceneRenderer["update_frame"]>[0];
-    let thrown: unknown = null;
+  test("draws a PMobject instead of throwing", () => {
+    const stub = stubPointLayer();
     try {
+      const { ctx, drawImageArgs } = mockContext();
+      const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: true, recordFrames: false });
+      const pmobject = new PMobject();
+      pmobject.add_points([[0, 0, 0]]);
+      const scene = { mobjects: [pmobject] } as unknown as Parameters<CanvasSceneRenderer["update_frame"]>[0];
       renderer.update_frame(scene);
-    } catch (error) {
-      thrown = error;
+      expect(drawImageArgs.length).toBeGreaterThan(0);
+      expect(stub.putImageData).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
     }
-    expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).name).toBe("NotImplementedError");
-    expect((thrown as Error).message).toMatch(/PMobject is not supported/);
+  });
+
+  test("draws point clouds alongside vector mobjects", () => {
+    stubPointLayer();
+    try {
+      const { ctx, calls, drawImageArgs } = mockContext();
+      const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: true, recordFrames: false });
+      const pmobject = new PMobject();
+      pmobject.add_points([[-4, 0, 0], [4, 0, 0]]);
+      const scene = { mobjects: [new Square(2), pmobject] } as unknown as Parameters<CanvasSceneRenderer["update_frame"]>[0];
+      renderer.update_frame(scene);
+      expect(drawImageArgs.length).toBeGreaterThan(0);
+      expect(calls.filter((call) => call.name === "bezierCurveTo").length).toBeGreaterThan(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   test("draws an ImageMobject through a cached scratch canvas", () => {
