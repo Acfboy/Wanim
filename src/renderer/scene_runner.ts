@@ -5,6 +5,11 @@
  * with the standard manim machinery and writes the serialized `.mjson`
  * document.  `run_scenes_from_module` discovers Scene subclasses exported by
  * a module and writes one `.mjson` per scene.
+ *
+ * Node.js rendering is meant for testing/benchmarking the library and for
+ * producing reference `.mjson` documents; wanim's product runs scenes live in
+ * the browser (`browser.ts`), so the Node-only helpers keep their own defaults
+ * and are not part of the user-facing API.
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -31,7 +36,7 @@ export const QUALITY_FLAGS: Record<string, [string, number, number, number]> = {
 export type SceneConstructor = new (...args: any[]) => Scene;
 
 /** Mirrors `apply_quality`: sets config resolution / frame rate. */
-export function apply_quality(flag = "-ql"): string {
+export function apply_quality(flag = "-qm"): string {
   const entry = QUALITY_FLAGS[flag];
   if (entry === undefined) {
     const error = new Error(`unknown quality flag: ${flag}`);
@@ -120,6 +125,9 @@ export interface RunScenesOptions {
 /**
  * Discover Scene subclasses exported by `module` and write one `.mjson` per
  * scene named `<SceneName>.mjson`.
+ *
+ * Test/benchmark harness: the low default keeps Node runs fast; the browser
+ * entries default to `-qm`.
  */
 export function run_scenes_from_module(
   module: Record<string, unknown>,

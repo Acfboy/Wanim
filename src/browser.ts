@@ -49,7 +49,7 @@ export function numpy_wasm_free_bytes(): number {
 }
 
 export interface BrowserRenderOptions {
-  /** Quality flag (`-ql`/`-qm`/`-qh`/`-q4k`); defaults to `-ql`. */
+  /** Quality flag (`-ql`/`-qm`/`-qh`/`-q4k`); defaults to `-qm`. */
   quality?: string;
   /** Draw every frame to the canvas during the run (default true). */
   drawFrames?: boolean;
@@ -120,7 +120,7 @@ export async function render_scene_to_canvas(
   options: BrowserRenderOptions = {},
 ): Promise<BrowserRenderResult> {
   const cameraClass = default_camera_class(sceneClass);
-  apply_quality(options.quality ?? "-ql");
+  apply_quality(options.quality ?? "-qm");
   const camera = new cameraClass();
   if (options.background !== undefined) {
     camera.background_color = options.background;
