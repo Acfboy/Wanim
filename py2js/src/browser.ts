@@ -214,6 +214,9 @@ function createSandbox(runtime: PythonRuntime): Sandbox {
     Object: win.Object,
     Array: win.Array,
     String: win.String,
+    Number: win.Number,
+    Boolean: win.Boolean,
+    BigInt: win.BigInt,
     get ρσ_str() {
       return win.ρσ_str;
     },

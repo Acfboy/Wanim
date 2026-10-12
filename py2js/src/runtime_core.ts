@@ -779,6 +779,47 @@ export function installPythonArraySortShim(ArrayProto: Any): void {
 }
 
 /**
+ * Bridge the Python number protocol onto unboxed JS primitives.
+ *
+ * `scalarize`/`scalarizeComplex` unbox 0-d numpy-ts results to JS numbers,
+ * booleans and BigInts, but translated code still calls scalar methods on
+ * them (`np.sum(a).item()`, `loss.item()`, `x.real`).  Python's numbers carry
+ * `.real`/`.imag` natively and numpy scalars additionally expose `.item()`.
+ * Only the translated-code realm's prototypes are patched (the iframe
+ * sandbox in the browser, never the host page).
+ */
+function installPythonScalarShims(proto: Any, withRealImag: boolean): void {
+  if (proto === undefined || proto === null) return;
+  if (Object.getOwnPropertyDescriptor(proto, "item") === undefined) {
+    Object.defineProperty(proto, "item", {
+      configurable: true,
+      writable: true,
+      value: function (this: Any): Any {
+        return this.valueOf();
+      },
+    });
+  }
+  if (!withRealImag) return;
+  if (Object.getOwnPropertyDescriptor(proto, "real") === undefined) {
+    Object.defineProperty(proto, "real", {
+      configurable: true,
+      get(this: Any): Any {
+        const value = this.valueOf();
+        return typeof value === "number" ? value : Number(value);
+      },
+    });
+  }
+  if (Object.getOwnPropertyDescriptor(proto, "imag") === undefined) {
+    Object.defineProperty(proto, "imag", {
+      configurable: true,
+      get(): number {
+        return 0;
+      },
+    });
+  }
+}
+
+/**
  * Install Python string-method shims on the vm context's own String.prototype.
  * rapydscript exposes these on its `ρσ_str` function object (not on
  * String.prototype), so `"x".upper()` fails unless we bridge them.
@@ -786,6 +827,9 @@ export function installPythonArraySortShim(ArrayProto: Any): void {
 export function installPythonShims(sandbox: Record<string, Any>): void {
   installPythonDictShims(sandbox.Object?.prototype);
   installPythonArraySortShim((sandbox as Any).Array?.prototype);
+  installPythonScalarShims((sandbox as Any).Number?.prototype, true);
+  installPythonScalarShims((sandbox as Any).Boolean?.prototype, true);
+  installPythonScalarShims((sandbox as Any).BigInt?.prototype, false);
   const S = sandbox.String?.prototype as Any;
   if (S === undefined) return;
   for (const name of PYTHON_STR_METHODS) {
@@ -1603,13 +1647,15 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (has("float16") || has("half") || has("f2")) return "float16";
       if (has("float32") || has("single") || has("f4")) return "float32";
       if (has("float")) return "float64";
+      // Unsigned checks must precede the signed ones: "uint8".includes("int8")
+      // is true, so the signed branch would mis-map every unsigned dtype.
+      if (has("uint64") || has("u8")) return "uint64";
+      if (has("uint32") || has("u4")) return "uint32";
+      if (has("uint16") || has("u2")) return "uint16";
+      if (has("uint8") || has("u1") || has("ubyte")) return "uint8";
       if (has("int8") || has("i1") || has("byte")) return "int8";
       if (has("int16") || has("i2") || has("short")) return "int16";
       if (has("int32") || has("i4")) return "int32";
-      if (has("uint8") || has("u1")) return "uint8";
-      if (has("uint16") || has("u2")) return "uint16";
-      if (has("uint32") || has("u4")) return "uint32";
-      if (has("uint64") || has("u8")) return "uint64";
       if (has("int") || has("long")) return "int64";
       if (has("bool")) return "bool";
       if (has("number")) return "float64";
@@ -4010,9 +4056,25 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     facade.pi = Math.PI;
     facade.e = Math.E;
     facade.inf = Infinity;
+    facade.infty = Infinity;
+    facade.Inf = Infinity;
+    facade.PINF = Infinity;
+    facade.NINF = -Infinity;
     facade.nan = NaN;
+    facade.NaN = NaN;
     facade.euler_gamma = 0.5772156649015329;
     facade.newaxis = null;
+
+    // numpy-ts ships no `LinAlgError` and throws plain `Error`s for numerical
+    // failures ("inv: singular matrix", "cholesky: matrix is not positive
+    // definite"); Python code catches `np.linalg.LinAlgError`, so the linalg
+    // wrappers below rethrow those as this class.
+    class LinAlgError extends Error {
+      constructor(message?: string) {
+        super(message);
+        this.name = "LinAlgError";
+      }
+    }
 
     const scalarUfuncs = [
       "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
@@ -5057,6 +5119,19 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         /* ignore */
       }
     }
+    // `np.product` / `np.cumproduct` are the pre-2.0 spellings of `prod` /
+    // `cumprod` (removed in numpy 2.0, still present in older scenes).  Alias
+    // after the reduction wrapping so signatures and scalarize behavior match.
+    try {
+      if (typeof (facade as Any).product !== "function" && typeof (facade as Any).prod === "function") {
+        (facade as Any).product = (facade as Any).prod;
+      }
+      if (typeof (facade as Any).cumproduct !== "function" && typeof (facade as Any).cumprod === "function") {
+        (facade as Any).cumproduct = (facade as Any).cumprod;
+      }
+    } catch {
+      /* ignore */
+    }
     // Plain-JS vectors (`RIGHT = [1, 0, 0]`, `get_center()` returns
     // `number[]`) reach numpy as plain arrays, but numpy-ts requires NDArray
     // inputs for `linalg.*`, `dot`/`matmul`/`cross`/etc. and throws
@@ -5116,6 +5191,20 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       }
       return result;
     }
+    /**
+     * Map numpy-ts' plain-`Error` numerical linalg failures onto
+     * `np.linalg.LinAlgError` so `except np.linalg.LinAlgError:` catches them
+     * (e.g. `np.linalg.inv` on a singular matrix).  Shape/type errors keep
+     * their original class, matching numpy's ValueError/TypeError split.
+     */
+    function toLinAlgError(error: Any): Any {
+      if (error instanceof LinAlgError) return error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (/singular|positive definite|converge/i.test(message)) {
+        return new LinAlgError(message);
+      }
+      return error;
+    }
     function wrapArrayFn(
       origFn: (...a: Any[]) => Any,
       arrayCount: number,
@@ -5131,7 +5220,13 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         for (let i = 0; i < arrayCount && i < positional.length; i += 1) {
           positional[i] = coerceArrayArg(positional[i]);
         }
-        const result = (origFn as Any)(...positional);
+        let result: Any;
+        try {
+          result = (origFn as Any)(...positional);
+        } catch (error) {
+          if (linalgKey !== undefined) throw toLinAlgError(error);
+          throw error;
+        }
         if (linalgKey !== undefined) return normalizeLinalgResult(linalgKey, result);
         return result;
       };
@@ -5150,7 +5245,11 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         if (positional.length > 0 && Array.isArray(positional[0])) {
           positional = [positional[0].map(coerceArrayArg), ...positional.slice(1)];
         }
-        return (origFn as Any)(...positional);
+        try {
+          return (origFn as Any)(...positional);
+        } catch (error) {
+          throw toLinAlgError(error);
+        }
       };
       (wrapped as Any).__argnames__ = [...argnames];
       return wrapped;
@@ -5218,20 +5317,12 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           }
         }
         facade.linalg = wrappedLinalg;
-        // numpy-ts ships no `LinAlgError` (its `linalg.solve` returns NaN
-        // instead of throwing on singular input), but valid numpy/manim code
-        // catches `np.linalg.LinAlgError` -- and the `except` desugar in
+        // numpy-ts throws plain `Error`s for numerical failures (wrapped into
+        // `LinAlgError` above), and this attribute is what `except
+        // np.linalg.LinAlgError:` resolves to; the `except` desugar in
         // `preprocess.ts` hoists exactly such attribute paths into aliases
-        // that are matched with `instanceof`.  Provide the class so the
-        // attribute exists and `except np.linalg.LinAlgError:` compiles and
-        // runs (matching nothing unless actually thrown, like CPython).
+        // that are matched with `instanceof`.
         if (typeof (wrappedLinalg as Any).LinAlgError !== "function") {
-          class LinAlgError extends Error {
-            constructor(message?: string) {
-              super(message);
-              this.name = "LinAlgError";
-            }
-          }
           (wrappedLinalg as Any).LinAlgError = LinAlgError;
         }
       }
@@ -6202,6 +6293,70 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     } catch {
       /* random wrapping is best-effort; numpy-ts paths stay usable */
     }
+    // --- Python dtype types as callable casts --------------------------------
+    // In Python `np.uint8` / `np.float32` / ... are dtype *types*: callable to
+    // cast scalars and array-likes (`np.uint8([[0, 128]])`, `np.float32(0.69)`,
+    // `arr.astype(np.float32)`, `np.zeros(4, dtype=np.uint8)`).  numpy-ts
+    // models dtypes as plain strings and exports none of these names, so valid
+    // code failed with `TypeError: np.uint8 is not a function`.  The casts
+    // delegate to numpy-ts' `astype`, so truncation/wrapping and float32
+    // rounding match array casts; 0-d results are unboxed, with int64/uint64
+    // BigInt scalars mapped to numbers (Python ints are doubles under
+    // rapydscript) and bool casts mapped to JS booleans.  The function `.name`
+    // is set to the dtype string so `normalizeNumpyDtype` can map these
+    // directly when passed as `dtype=...`.
+    const DTYPE_CTOR_ALIASES: Record<string, string> = {
+      float64: "float64", double: "float64", float_: "float64", float: "float64",
+      float32: "float32", single: "float32",
+      float16: "float16", half: "float16",
+      complex128: "complex128", cdouble: "complex128",
+      complex64: "complex64", csingle: "complex64",
+      int64: "int64", int_: "int64", longlong: "int64",
+      int32: "int32",
+      int16: "int16", short: "int16",
+      int8: "int8", byte: "int8",
+      uint64: "uint64", ulonglong: "uint64",
+      uint32: "uint32",
+      uint16: "uint16",
+      uint8: "uint8", ubyte: "uint8",
+      bool_: "bool", bool8: "bool", bool: "bool",
+    };
+    const castToDtype = (value: Any, dtype: string): Any => {
+      if (typeof value === "bigint") value = Number(value);
+      const casted = scalarizeComplex((facade as Any).array(value).astype(dtype));
+      if (typeof casted === "bigint") return Number(casted);
+      if (dtype === "bool" && typeof casted === "number") return casted !== 0;
+      return casted;
+    };
+    for (const [name, dtype] of Object.entries(DTYPE_CTOR_ALIASES)) {
+      if (typeof (np as Any)[name] === "function") continue;
+      const ctor = (value: Any): Any => castToDtype(value, dtype);
+      Object.defineProperty(ctor, "name", { configurable: true, value: dtype });
+      (facade as Any)[name] = ctor;
+    }
+    // `np.complex` is the (removed) alias of the `complex` builtin: two-arg
+    // construction such as `np.complex(0, PI / 4)` must keep working.
+    if (typeof (np as Any).complex !== "function") {
+      (facade as Any).complex = pythonComplex;
+    }
+    // `np.dtype(...)` accepts anything a plain numeric dtype can be built from
+    // (dtype strings, dtype types) and returns the numpy-ts dtype string that
+    // `dtype=`/`astype(...)` consume.  Structured dtypes (`np.dtype([...])`)
+    // need a record memory model numpy-ts does not have, so they fail loudly
+    // instead of silently yielding `undefined`.
+    facade.dtype = (spec: Any, ...rest: Any[]): Any => {
+      if (rest.length === 0 && (typeof spec === "string" || typeof spec === "function")) {
+        const normalized = normalizeNumpyDtype(spec);
+        if (normalized !== undefined) return normalized;
+      }
+      if (Array.isArray(spec) || (spec !== null && typeof spec === "object")) {
+        throw new Error(
+          "np.dtype([...]) structured dtypes are not supported by wanim; " +
+            "use a plain numeric dtype (e.g. np.float32).",
+        );
+      }
+      throw new Error(`np.dtype: unsupported dtype ${pyStr(spec)}`);
+    };
     return facade;
   }
 
