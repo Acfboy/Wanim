@@ -28,6 +28,7 @@ import { Camera } from "../camera/camera.js";
 import { ThreeDCamera } from "../camera/three_d_camera.js";
 import { CapStyleType, LineJointType } from "../constants.js";
 import { AbstractImageMobject } from "../mobject/types/image_mobject.js";
+import { PMobject } from "../mobject/types/point_cloud_mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { _cContiguousRows, isNDArray, numeric, pointRows } from "../utils/arrays.js";
 
@@ -110,6 +111,9 @@ export interface CanvasCamera {
   /** World->device mapping in fractional pixels (real `Camera` method; the
    *  serialized-file player has no images, so it may omit this). */
   points_to_subpixel_coords?(mobject: VMobject, points: NDArray): NDArray;
+  /** Resolution-scaled point diameter for `PMobject` (`Camera` method; falls
+   *  back to the raw stroke width when omitted). */
+  adjusted_thickness?(thickness: number): number;
   /** Optional flat projection fast path (ThreeDCamera); returns projected
    *  (x, y) pairs in camera space or `null` to fall back. */
   transform_points_pre_display_flat?(
@@ -451,6 +455,230 @@ export function drawImageMobject(
   ctx.imageSmoothingEnabled = !nearest;
   ctx.imageSmoothingQuality = nearest ? "low" : "high";
   ctx.drawImage(source.source as CanvasImageSource, 0, 0, width, height);
+  ctx.restore();
+}
+
+// --- point clouds -----------------------------------------------------------
+//
+// Python's cairo camera writes every point of a `PMobject` straight into the
+// RGBA pixel buffer as a `thickness`-sized square (`Camera.display_point_cloud`:
+// truncate the subpixel position, then write the point's colour at each nudge
+// offset, later writes replacing earlier ones).
+//
+// The Canvas backend keeps the same model: each frame rasterizes the squares
+// into a cached RGBA scratch bitmap sized to the cloud's bounding box, then
+// composites that rectangle onto the canvas once.  (Per-point `fillRect` costs
+// a style/state switch per point and made 40k-point clouds miss the frame
+// budget by 2x; one bitmap upload does not.)  Overlapping points replace each
+// other exactly like Python's sequential pixel writes; the finished bitmap
+// paints with source-over, and for the opaque colours PMobjects normally use
+// the result is identical to cairo.  Translucent points blend once against the
+// canvas, where Python's raw buffer write would drop the background beneath
+// them -- a deliberate, prettier divergence.
+
+interface PointLayer {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  width: number;
+  height: number;
+  /** Reused pixel buffer, sized to the current dirty rectangle. */
+  image: ImageData | null;
+  /** Composited region still stored in the layer; cleared before the next write. */
+  dirty: [number, number, number, number] | null;
+}
+
+/** Scratch bitmaps are keyed by the canvas context they composite into. */
+const POINT_LAYERS = new WeakMap<CanvasRenderingContext2D, PointLayer>();
+
+function acquirePointLayer(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): PointLayer | null {
+  const cached = POINT_LAYERS.get(ctx);
+  if (cached !== undefined && cached.width === width && cached.height === height) return cached;
+  if (cached !== undefined) POINT_LAYERS.delete(ctx);
+  const canvas = createScratchCanvas(width, height);
+  if (canvas === null) return null;
+  const layerCtx = canvas.getContext("2d");
+  if (layerCtx === null) return null;
+  const layer: PointLayer = { canvas, ctx: layerCtx, width, height, image: null, dirty: null };
+  POINT_LAYERS.set(ctx, layer);
+  return layer;
+}
+
+/** Release the point-cloud scratch bitmap cached for `ctx` (renderer dispose). */
+export function releasePointLayers(ctx: CanvasRenderingContext2D): void {
+  POINT_LAYERS.delete(ctx);
+}
+
+/** Subpixel device coordinates for a point array, mirroring
+ *  `Camera.points_to_subpixel_coords` when the camera cannot provide them. */
+function pointSubpixelCoords(camera: CanvasCamera, mobject: PMobject, points: NDArray): NDArray {
+  if (camera.points_to_subpixel_coords !== undefined) {
+    return camera.points_to_subpixel_coords(mobject as unknown as VMobject, points);
+  }
+  const transformed = pointRows(
+    camera.transform_points_pre_display(mobject as unknown as VMobject, points),
+    3,
+  );
+  const fc = pointRows(camera.frame_center, 3)[0] ?? [0, 0, 0];
+  const widthMult = camera.pixel_width / camera.frame_width;
+  const heightMult = camera.pixel_height / camera.frame_height;
+  return array(
+    transformed.map(([x, y]) => [
+      ((x ?? 0) - (fc[0] ?? 0)) * widthMult + camera.pixel_width / 2,
+      ((y ?? 0) - (fc[1] ?? 0)) * -heightMult + camera.pixel_height / 2,
+    ]),
+  ) as NDArray;
+}
+
+/** Normalized `[r, g, b, a]` -> device bytes, saturated at 0..255. */
+function rgbaBytes(rgba: readonly number[]): [number, number, number, number] {
+  return [
+    Math.round(clamp01(rgba[0] ?? 0) * 255),
+    Math.round(clamp01(rgba[1] ?? 0) * 255),
+    Math.round(clamp01(rgba[2] ?? 0) * 255),
+    Math.round(clamp01(rgba[3] ?? 0) * 255),
+  ];
+}
+
+/** Uniform rgba row of a flat store, already converted to bytes; null when the
+ *  rows differ (a real gradient). */
+function uniformRgbaBytes(
+  data: ArrayLike<number>,
+  rowDim: number,
+  rowCount: number,
+): [number, number, number, number] | null {
+  if (rowCount === 0 || rowDim !== 4) return null;
+  const r = Number(data[0] ?? 0);
+  const g = Number(data[1] ?? 0);
+  const b = Number(data[2] ?? 0);
+  const a = Number(data[3] ?? 0);
+  const length = rowCount * rowDim;
+  for (let index = rowDim; index < length; index += rowDim) {
+    if (
+      Number(data[index]) !== r ||
+      Number(data[index + 1]) !== g ||
+      Number(data[index + 2]) !== b ||
+      Number(data[index + 3]) !== a
+    ) {
+      return null;
+    }
+  }
+  return rgbaBytes([r, g, b, a]);
+}
+
+/**
+ * Draw one `PMobject` (point cloud) in device space.
+ *
+ * The square size is `trunc(adjusted_thickness(stroke_width))`, matching
+ * `Camera.get_thickening_nudges`: a thickness below 1 has no nudges and draws
+ * nothing.  The nudge range `[floor(-n/2)+1, floor(n/2)]` is a contiguous
+ * square, so a point's `n^2` pixel writes collapse into one `n`-sized square.
+ */
+export function drawPointCloud(
+  ctx: CanvasRenderingContext2D,
+  camera: CanvasCamera,
+  pmobject: PMobject,
+): void {
+  if (pmobject.get_num_points() === 0) return;
+  const thickness = camera.adjusted_thickness !== undefined
+    ? camera.adjusted_thickness(pmobject.stroke_width)
+    : pmobject.stroke_width;
+  const size = Math.trunc(Number.isFinite(thickness) ? thickness : 0);
+  if (size < 1) return;
+  const subpixel = pointRows(pointSubpixelCoords(camera, pmobject, pmobject.points), 2);
+  if (subpixel.length === 0) return;
+  const layer = acquirePointLayer(ctx, camera.pixel_width, camera.pixel_height);
+  if (layer === null) return;
+  const { width, height } = layer;
+
+  // Drop the previous composite from the layer (it is already on the canvas).
+  if (layer.dirty !== null) {
+    layer.ctx.clearRect(layer.dirty[0], layer.dirty[1], layer.dirty[2], layer.dirty[3]);
+    layer.dirty = null;
+  }
+
+  const rgbaFlat = _cContiguousRows(pmobject.rgbas);
+  const uniform = rgbaFlat === null
+    ? null
+    : uniformRgbaBytes(rgbaFlat.data, rgbaFlat.rowDim, rgbaFlat.rowCount);
+  const rows = uniform === null ? pointRows(pmobject.rgbas, 4) : [];
+  const offset = Math.floor(-size / 2) + 1;
+  const x0s = new Int32Array(subpixel.length);
+  const y0s = new Int32Array(subpixel.length);
+
+  // First pass: place every point and take the union bounding box.  The bitmap
+  // is only as large as the cloud's footprint and is reused while that size
+  // holds (a moving cloud normally keeps the same extent), so large canvases
+  // do not pay a full-frame upload per frame.
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let index = 0; index < subpixel.length; index += 1) {
+    const x0 = Math.trunc(Number(subpixel[index]?.[0])) + offset;
+    const y0 = Math.trunc(Number(subpixel[index]?.[1])) + offset;
+    if (!Number.isFinite(x0) || !Number.isFinite(y0)) continue;
+    x0s[index] = x0;
+    y0s[index] = y0;
+    const startX = Math.max(0, x0);
+    const startY = Math.max(0, y0);
+    const endX = Math.min(width, x0 + size);
+    const endY = Math.min(height, y0 + size);
+    if (startX >= endX || startY >= endY) continue;
+    if (startX < minX) minX = startX;
+    if (startY < minY) minY = startY;
+    if (endX - 1 > maxX) maxX = endX - 1;
+    if (endY - 1 > maxY) maxY = endY - 1;
+  }
+  if (maxX < minX || maxY < minY) return;
+
+  const bitmapWidth = maxX - minX + 1;
+  const bitmapHeight = maxY - minY + 1;
+  if (layer.image === null || layer.image.width !== bitmapWidth || layer.image.height !== bitmapHeight) {
+    layer.image = layer.ctx.createImageData(bitmapWidth, bitmapHeight);
+  }
+  const image = layer.image;
+  image.data.fill(0);
+
+  // Second pass: rasterize the squares into the bitmap, in display order, so
+  // later points replace earlier ones exactly like Python's pixel writes.
+  for (let index = 0; index < subpixel.length; index += 1) {
+    if (!Number.isFinite(subpixel[index]?.[0]) || !Number.isFinite(subpixel[index]?.[1])) continue;
+    const x0 = x0s[index] ?? 0;
+    const y0 = y0s[index] ?? 0;
+    const startX = Math.max(minX, Math.max(0, x0));
+    const startY = Math.max(minY, Math.max(0, y0));
+    const endX = Math.min(maxX + 1, Math.min(width, x0 + size));
+    const endY = Math.min(maxY + 1, Math.min(height, y0 + size));
+    if (startX >= endX || startY >= endY) continue;
+    const bytes = uniform ?? rgbaBytes(
+      rows.length === 0 ? [] : rows[index % rows.length] ?? [],
+    );
+    for (let y = startY; y < endY; y += 1) {
+      let position = ((y - minY) * bitmapWidth + (startX - minX)) * 4;
+      for (let x = startX; x < endX; x += 1) {
+        image.data[position] = bytes[0];
+        image.data[position + 1] = bytes[1];
+        image.data[position + 2] = bytes[2];
+        image.data[position + 3] = bytes[3];
+        position += 4;
+      }
+    }
+  }
+
+  const dirty: [number, number, number, number] = [minX, minY, bitmapWidth, bitmapHeight];
+  // Note: the 7-argument `putImageData` form is broken in Chromium whenever
+  // `dirtyX`/`dirtyY` are non-zero (verified on 145: it silently writes
+  // nothing), so the bitmap is bbox-sized and uploaded with the plain form.
+  layer.ctx.putImageData(image, minX, minY);
+  layer.dirty = dirty;
+  // The layer is device-space; `ctx` still carries the camera transform.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(layer.canvas, ...dirty, ...dirty);
   ctx.restore();
 }
 
