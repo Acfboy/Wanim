@@ -14,7 +14,6 @@
   --w-blue: #1787ad;
   --editor-bg: #282c34;
   --editor-line: rgba(255, 255, 255, 0.08);
-  --gutter-w: 3.2rem;
   --ui-font: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono-font: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -53,76 +52,28 @@ body {
   background: var(--editor-bg);
 }
 
+/* CodeMirror fills the pane; the One Dark theme supplies the colours. */
 .editor {
-  position: relative;
   height: 100%;
-}
-
-.gutter,
-.editor > pre,
-.editor > textarea {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  margin: 0;
-  padding: 1rem 1.1rem;
-  font: 0.82rem/1.6 var(--mono-font);
-  tab-size: 4;
-  white-space: pre;
-}
-
-.gutter {
-  left: 0;
-  width: var(--gutter-w);
-  padding: 1rem 0;
   overflow: hidden;
-  border-right: 1px solid var(--editor-line);
-  color: rgba(255, 255, 255, 0.28);
-  text-align: right;
-  user-select: none;
 }
 
-.gutter-line {
-  padding-right: 0.55rem;
+.editor .cm-editor {
+  height: 100%;
+  font-family: var(--mono-font);
+  font-size: 0.82rem;
 }
 
-.editor > pre {
-  left: var(--gutter-w);
-  right: 0;
-  overflow: auto;
-  background: transparent;
-  border-radius: 0;
-  text-shadow: none;
-  pointer-events: none;
-  scrollbar-width: none;
-}
-
-.editor > pre::-webkit-scrollbar {
-  display: none;
-}
-
-.editor > pre > code {
-  display: block;
-  padding: 0;
-  background: transparent;
-  font: inherit;
-  text-shadow: none;
-}
-
-.editor > textarea {
-  left: var(--gutter-w);
-  right: 0;
-  resize: none;
-  border: 0;
-  border-radius: 0;
+.editor .cm-editor.cm-focused {
   outline: none;
-  background: transparent;
-  color: transparent;
-  caret-color: #e6e6e6;
 }
 
-.editor > textarea::selection {
-  background: rgba(88, 196, 221, 0.25);
+.editor .cm-scroller {
+  line-height: 1.6;
+}
+
+.editor .cm-gutters {
+  border-right: 1px solid var(--editor-line);
 }
 
 /* --------------------------------------------------------------- preview -- */

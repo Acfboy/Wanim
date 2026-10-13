@@ -4,7 +4,6 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>wanim · Playground</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
 <link rel="stylesheet" href="./style.css" />
 <script type="importmap">
 {
@@ -20,11 +19,7 @@
 <main class="root">
   <div class="split">
     <section class="editor-pane">
-      <div class="editor">
-        <div id="gutter" class="gutter" aria-hidden="true"></div>
-        <pre id="highlight" aria-hidden="true"><code id="highlight-code" class="language-python"></code></pre>
-        <textarea id="code" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" aria-label="Python source"></textarea>
-      </div>
+      <div id="editor" class="editor"></div>
     </section>
 
     <section class="right-pane">
@@ -97,10 +92,6 @@
   </div>
 </div>
 
-<!-- Prism (syntax highlighting) is loaded from its official CDN; the editor
-     still works as a plain textarea if the CDN is unreachable. -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js" defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js" defer></script>
 <script type="module" src="./demo.js"></script>
 </body>
 </html>

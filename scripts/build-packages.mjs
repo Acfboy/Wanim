@@ -129,6 +129,7 @@ const BROWSER_ONLY_DIST = new Set([
   "rapydscript.js",
   "numpy-ts.browser.js",
   "wanim-element.browser.js",
+  "editor.browser.js",
   "element.js",
   "element.d.ts",
   "chunks",

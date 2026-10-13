@@ -67,18 +67,17 @@ async function main() {
     page.on("pageerror", (error) => errors.push(String(error)));
     await page.goto(`http://127.0.0.1:${port}/demo/index.html`, { waitUntil: "load" });
     // demo.js loads its ESM imports asynchronously; wait until the default
-    // preset has been inserted into the editor.
-    await page.waitForFunction("document.getElementById('code').value.length > 0", null, { timeout: 30000 });
+    // preset has been inserted into the CodeMirror editor.  The page exposes
+    // `window.__wanimDemo` for automation.
+    await page.waitForFunction("window.__wanimDemo?.editor.getValue().length > 0", null, { timeout: 30000 });
     if (pythonCode !== null) {
       await page.evaluate((code) => {
-        const el = document.getElementById("code");
-        el.value = code;
-        el.dispatchEvent(new Event("input"));
+        window.__wanimDemo.editor.setValue(code);
       }, pythonCode);
       console.log(`code: ${pythonCode.length} chars from ${codePath}`);
     } else {
       await page.selectOption("#preset", preset);
-      const codeLen = await page.evaluate(() => document.getElementById("code").value.length);
+      const codeLen = await page.evaluate(() => window.__wanimDemo.editor.getValue().length);
       console.log(`preset ${preset}: ${codeLen} chars`);
     }
     let cdp = null;

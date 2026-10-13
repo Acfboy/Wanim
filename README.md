@@ -452,7 +452,7 @@ Prerequisites: Node.js 20 or newer and [pnpm](https://pnpm.io/).
 git clone https://github.com/Acfboy/Wanim.git
 cd Wanim
 pnpm install
-pnpm build:demo    # type-check, bundle the browser runtime, compile rapydscript, build the element
+pnpm build:demo    # type-check, bundle the browser runtime, compile rapydscript, build the element and the editor
 pnpm demo          # playground-style editor at http://localhost:5174/demo/
 ```
 
@@ -465,6 +465,7 @@ The checkout is cached in `.rapydscript-ng/`.
 | `pnpm build` | compile the TypeScript library to `dist/` |
 | `pnpm build:browser` | bundle the browser runtime |
 | `pnpm build:demo` | build everything the demo and the browser bundles need |
+| `pnpm build:editor` | bundle `demo/editor.js`, the CodeMirror editor |
 | `pnpm build:packages` | assemble the publishable package in `packages-out/` |
 | `pnpm pack:packages` | assemble from the current `dist/` and run `npm pack` |
 | `pnpm test` | library test suite (Vitest) |
@@ -488,7 +489,7 @@ src/                  manim-compatible library in TypeScript
 py2js/                Python → JavaScript bridge
   src/                preprocessing, compiler, runtime shims, bridge
   patches/            rapydscript-ng patch
-demo/                 editor page and iframe player
+demo/                 playground-style editor (CodeMirror) and iframe player
 scripts/              bundling, packaging and demo server
 packaging/wanim/      package.json, README and LICENSE for the npm package
 tests/                Vitest suites for the library
