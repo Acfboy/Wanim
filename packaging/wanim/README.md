@@ -101,7 +101,7 @@ or page script required:
 ```html
 <script type="module" src="/wanim/browser/wanim-element.browser.js"></script>
 
-<wanim-scene quality="-qm" render-style="standard" autoplay>
+<wanim-scene quality="-qm" autoplay>
   <script type="text/x-python">
 from manim import *
 class Demo(Scene):
