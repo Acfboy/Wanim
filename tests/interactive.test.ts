@@ -71,8 +71,9 @@ class FakeHost implements InteractiveHost {
     };
   }
 
-  addButton(label: string, onClick: () => void, _icon?: unknown): () => void {
-    this.buttons.set(label, onClick);
+  addButton(label: string, onClick: () => void, icon?: unknown): () => void {
+    // Icon buttons are keyed by their stable action name, not the label.
+    this.buttons.set(typeof icon === "string" ? icon : label, onClick);
     // Buttons stay resident; only the handler is detached.
     return () => {};
   }
@@ -424,9 +425,9 @@ describe("InputDecimalNumber value_range, scrubbing and hover", () => {
     expect(scene.number.hovered).toBe(false);
     expect(scene.number.highlight?.get_fill_opacity()).toBe(0);
 
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     await done;
   });
@@ -478,7 +479,7 @@ describe("InteractiveScene", () => {
     expect(scene.circle.width).toBeCloseTo(3, 6);
 
     // Advance to construct.
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     expect(scene.constructed).toBe(true);
 
@@ -491,7 +492,7 @@ describe("InteractiveScene", () => {
 
     // Finish the last phase: the run's controls are disabled (the DOM host
     // removes them when the run is torn down).
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     await done;
     expect(host.buttonsEnabled).toBe(false);
@@ -510,9 +511,9 @@ describe("InteractiveScene", () => {
     expect(scene.constructed).toBe(false);
     expect(scene.mobjects.length).toBe(2);
 
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     await done;
   });
@@ -533,10 +534,10 @@ describe("InteractiveScene", () => {
     const done = scene.render();
     await host.advance(1);
     updates = 0;
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     expect(updates).toBeGreaterThan(0);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     await done;
   });
@@ -568,7 +569,7 @@ describe("InteractiveScene", () => {
     const done = scene.render();
     for (let step = 0; step < 4; step += 1) {
       await host.advance(1);
-      host.click("进入下一步");
+      host.click("next");
     }
     await host.advance(1);
     await done;
@@ -888,9 +889,9 @@ describe("InputDecimalMatrix", () => {
     host.editor?.onInput("42");
     expect(cell.get_value()).toBe(42);
 
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     await done;
   });

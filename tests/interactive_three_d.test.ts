@@ -79,8 +79,8 @@ class Fake3DHost implements InteractiveHost {
     };
   }
 
-  addButton(label: string, onClick: () => void, _icon?: unknown): () => void {
-    this.buttons.set(label, onClick);
+  addButton(label: string, onClick: () => void, icon?: unknown): () => void {
+    this.buttons.set(typeof icon === "string" ? icon : label, onClick);
     return () => {};
   }
 
@@ -139,9 +139,9 @@ class Fake3DHost implements InteractiveHost {
 
 /** Drive the default blueprint/construct pair to completion. */
 async function finishStory(host: Fake3DHost, done: Promise<void> | void): Promise<void> {
-  host.click("进入下一步");
+  host.click("next");
   await host.advance(1);
-  host.click("进入下一步");
+  host.click("next");
   await host.advance(1);
   await done;
 }
@@ -191,10 +191,10 @@ describe("InteractiveThreeDScene camera API", () => {
 
     const done = scene.render();
     await host.advance(1);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(3);
     expect(camera.get_theta()).not.toBeCloseTo(theta0, 6);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     await done;
   });
@@ -314,7 +314,7 @@ describe("InteractiveThreeDScene orbit", () => {
     host.drag([5, 5, 0], 100, 0);
     const theta1 = camera.get_theta();
     // Advance to the construct phase without releasing the pointer.
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(1);
     host.drag([5, 5, 0], 400, 0);
     expect(camera.get_theta()).toBeCloseTo(theta1, 12);
