@@ -46,8 +46,18 @@ function flat(value: unknown): number[] {
       : value;
   const out: number[] = [];
   const walk = (x: unknown): void => {
-    if (Array.isArray(x)) for (const e of x) walk(e);
-    else out.push(Number(x));
+    if (Array.isArray(x)) {
+      for (const e of x) walk(e);
+    } else if (
+      x !== null &&
+      typeof x === "object" &&
+      "toArray" in (x as object) &&
+      typeof (x as { toArray?: unknown }).toArray === "function"
+    ) {
+      walk((x as { toArray(): unknown }).toArray());
+    } else {
+      out.push(Number(x));
+    }
   };
   walk(raw);
   return out;

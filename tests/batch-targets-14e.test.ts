@@ -46,13 +46,22 @@ function rows(value: NDArray, dim = 3): number[][] {
   return pointRows(value, dim);
 }
 
-function expectRowsClose(actual: number[][], expected: number[][], tol = 1e-9): void {
-  expect(actual.length).toBe(expected.length);
+function expectRowsClose(actual: number[][] | { toArray(): unknown }, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
+  const actualRows = (Array.isArray(actual) ? actual : ((actual as { toArray(): unknown }).toArray() as unknown[])).map(
+    (row) => (Array.isArray(row) ? row : (row as { toArray(): unknown }).toArray()),
+  ) as number[][];
+  expect(actualRows.length).toBe(expectedRows.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(actual[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      const a = actual[i]?.[j] ?? NaN;
-      const e = expected[i]?.[j] ?? NaN;
+    expect(actualRows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      const a = actualRows[i]?.[j] ?? NaN;
+      const e = expectedRows[i]?.[j] ?? NaN;
       expect(Math.abs(a - e)).toBeLessThanOrEqual(tol + 1e-9 * Math.abs(e));
     }
   }
@@ -795,8 +804,8 @@ describe("integration", () => {
     face.set_points_as_corners([[0, 0, 0], [1, 0, 0], [1, 1, 0]]);
     expect(face.shade_in_3d).toBe(true);
     const [gradStart, gradEnd] = face.get_gradient_start_and_end_points();
-    expect(gradStart.length).toBe(3);
-    expect(gradEnd.length).toBe(3);
+    expect(pointRows(gradStart, 3)[0]!.length).toBe(3);
+    expect(pointRows(gradEnd, 3)[0]!.length).toBe(3);
     expect(scene.default_angled_camera_orientation_kwargs.phi).toBeCloseTo(
       70 * DEGREES, 12,
     );

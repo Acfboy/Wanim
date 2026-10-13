@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import type { NDArray } from "numpy-ts";
 import { MobjectTable } from "../src/mobject/table.js";
 import {
@@ -121,7 +122,7 @@ describe("Table.__init__ / _table_to_mob_table", () => {
       [new Square(), new Square()],
       [new Square(), new Square()],
     ]);
-    const verts = t.get_cell([1, 1]).get_vertices();
+    const verts = pointRows(t.get_cell([1, 1]).get_vertices(), 3);
     expect(verts.length).toBe(4);
     const expected = [
       [-3.3, 2.8, 0],

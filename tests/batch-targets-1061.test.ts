@@ -39,12 +39,21 @@ function expectClose(actual: number, expected: number, tol = 1e-9): void {
   expect(close(actual, expected, tol)).toBe(true);
 }
 
-function expectRowsClose(actual: number[][], expected: number[][], tol = 1e-9): void {
-  expect(actual.length).toBe(expected.length);
+function expectRowsClose(actual: number[][] | { toArray(): unknown }, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
+  const actualRows = (Array.isArray(actual) ? actual : ((actual as { toArray(): unknown }).toArray() as unknown[])).map(
+    (row) => (Array.isArray(row) ? row : (row as { toArray(): unknown }).toArray()),
+  ) as number[][];
+  expect(actualRows.length).toBe(expectedRows.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(actual[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(actual[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(actualRows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(actualRows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -400,7 +409,7 @@ describe("Star", () => {
   it("builds a 5-star like Python", () => {
     const st = new Star(5);
     expect(st.get_num_points()).toBe(40);
-    expectRowsClose(st.get_vertices().slice(0, 4), [
+    expectRowsClose(pointRows(st.get_vertices(), 3).slice(0, 4), [
       [2.220446049250313e-16, 1, 0],
       [-0.2245139882897927, 0.30901699437494745, 0],
       [-0.9510565162951535, 0.3090169943749477, 0],
@@ -431,7 +440,7 @@ describe("Star", () => {
 describe("ConvexHull.__init__", () => {
   it("hulls the points like Python", () => {
     const ch = new ConvexHull([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]);
-    const got = (ch.get_vertex_groups()[0] ?? []).map((p) => [...p]).sort((a, b) =>
+    const got = pointRows(ch.get_vertex_groups()[0] ?? [], 3).map((p) => [...p]).sort((a, b) =>
       a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!,
     );
     expectRowsClose(got, [[0, 0, 0], [0, 1, 0], [1, 0, 0], [1, 1, 0]]);
@@ -575,7 +584,8 @@ describe("batch-1061 integration", () => {
     const rim = toList(c.point_at_angle(Math.PI));
     expectClose(tl.get_length(), 1.0, 1e-9);
     // Tangent midpoint sits on the curve: distance to rim point ~ tip scale.
-    const dist = Math.hypot(...mid.map((v, i) => v - (rim[i] ?? 0)));
+    const midRow = pointRows(mid, 3)[0] ?? [];
+    const dist = Math.hypot(...midRow.map((v, i) => v - (rim[i] ?? 0)));
     expect(dist).toBeLessThan(0.6);
   });
   it("BraceBetweenPoints on a Star edge matches its tip direction", () => {

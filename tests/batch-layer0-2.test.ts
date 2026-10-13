@@ -71,8 +71,18 @@ function nums(value: unknown): number[] {
   const raw = (value as { toArray: () => unknown }).toArray();
   const out: number[] = [];
   const walk = (x: unknown): void => {
-    if (Array.isArray(x)) for (const e of x) walk(e);
-    else out.push(Number(x));
+    if (Array.isArray(x)) {
+      for (const e of x) walk(e);
+    } else if (
+      x !== null &&
+      typeof x === "object" &&
+      "toArray" in (x as object) &&
+      typeof (x as { toArray?: unknown }).toArray === "function"
+    ) {
+      walk((x as { toArray(): unknown }).toArray());
+    } else {
+      out.push(Number(x));
+    }
   };
   walk(raw);
   return out;
@@ -198,16 +208,16 @@ describe("complex_to_R3", () => {
 // ---------------------------------------------------------------------------
 describe("center_of_mass", () => {
   it("averages rows (NDArray input)", () => {
-    // TS returns a plain number[] (Python returns an ndarray).
-    const out = center_of_mass(array([[0, 0, 0], [2, 2, 2]])) as number[];
-    expect(out).toHaveLength(3);
-    for (const v of out) expect(v).toBeCloseTo(1, 12);
+    const out = center_of_mass(array([[0, 0, 0], [2, 2, 2]]));
+    expect(out.shape[0]).toBe(3);
+    for (const v of out.toArray() as number[]) expect(v).toBeCloseTo(1, 12);
   });
   it("returns the single point for one row", () => {
-    const out = center_of_mass(array([[1, 2, 3]])) as number[];
-    expect(out[0]).toBeCloseTo(1, 12);
-    expect(out[1]).toBeCloseTo(2, 12);
-    expect(out[2]).toBeCloseTo(3, 12);
+    const out = center_of_mass(array([[1, 2, 3]]));
+    const values = out.toArray() as number[];
+    expect(values[0]).toBeCloseTo(1, 12);
+    expect(values[1]).toBeCloseTo(2, 12);
+    expect(values[2]).toBeCloseTo(3, 12);
   });
   it("supports plain row lists", () => {
     expect(center_of_mass([[0, 0, 0], [2, 2, 2]])).toEqual([1, 1, 1]);

@@ -99,12 +99,21 @@ function booleanArea(mob: VMobject): number {
   return Math.abs(total) / 2;
 }
 
-function expectRowsClose(actual: number[][], expected: number[][], tol = 1e-9): void {
-  expect(actual.length).toBe(expected.length);
+function expectRowsClose(actual: number[][] | { toArray(): unknown }, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
+  const actualRows = (Array.isArray(actual) ? actual : ((actual as { toArray(): unknown }).toArray() as unknown[])).map(
+    (row) => (Array.isArray(row) ? row : (row as { toArray(): unknown }).toArray()),
+  ) as number[][];
+  expect(actualRows.length).toBe(expectedRows.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(actual[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(actual[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(actualRows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(actualRows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -654,9 +663,10 @@ describe("ConvexHull", () => {
     return rotations.map((r) => r.join(";")).sort();
   }
 
-  function expectSameCycle(actual: number[][], expected: number[][]): void {
-    expect(actual.length).toBe(expected.length);
-    const a = canonicalCycle(actual);
+  function expectSameCycle(actual: number[][] | { toArray(): unknown }, expected: number[][]): void {
+    const actualRows = Array.isArray(actual) ? actual : (actual.toArray() as number[][]);
+    expect(actualRows.length).toBe(expected.length);
+    const a = canonicalCycle(actualRows);
     expect(a).toContain(canonicalCycle(expected)[0]);
   }
 
@@ -724,7 +734,7 @@ describe("batch-1032 integration", () => {
     expect(a.has_tip()).toBe(true);
     const n = a.get_normal_vector();
     const dir = a.get_unit_vector();
-    const dot = n.reduce((s, v, i) => s + v * (dir[i] ?? 0), 0);
+    const dot = pointRows(n, 3)[0]!.reduce((s, v, i) => s + v * (pointRows(dir, 3)[0]?.[i] ?? 0), 0);
     expectClose(dot, 0, 1e-9);
     expectClose(Math.hypot(...n), 1);
   });

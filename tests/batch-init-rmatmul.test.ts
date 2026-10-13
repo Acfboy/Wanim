@@ -79,11 +79,12 @@ function asNumbers(value: unknown): number[] {
   return [Number(value)];
 }
 
-function expectClose(actual: unknown, expected: readonly number[], relTol = 1e-9): void {
+function expectClose(actual: unknown, expected: readonly number[] | { toArray(): unknown }, relTol = 1e-9): void {
   const values = asNumbers(actual);
-  expect(values).toHaveLength(expected.length);
-  for (let i = 0; i < expected.length; i += 1) {
-    const e = expected[i]!;
+  const exp = Array.isArray(expected) ? expected : (expected as { toArray(): unknown }).toArray() as number[];
+  expect(values).toHaveLength(exp.length);
+  for (let i = 0; i < exp.length; i += 1) {
+    const e = exp[i]!;
     const a = values[i]!;
     const tol = Math.max(1e-12, Math.abs(e) * relTol);
     expect(Math.abs(a - e)).toBeLessThanOrEqual(tol);

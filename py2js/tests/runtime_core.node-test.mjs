@@ -900,6 +900,21 @@ check("NDArray single-dim getitem serves boolean masks and fancy indices (error 
   assert.deepEqual(npReal.asarray([5, 6, 7]).__getitem__([true, false, true]).tolist(), [5, 7]);
 });
 
+check("NDArray __eq__/__ne__ are elementwise so (a == b).all() works", () => {
+  ndCore.buildRuntime(); // applies the NDArray prototype patch
+  const a = npReal.asarray([1, 2, 3]);
+  const b = npReal.asarray([1, 2, 4]);
+  // The compiled `a == b` reaches `ρσ_equals`, which prefers `a.__eq__`.
+  const eq = a.__eq__(b);
+  assert.ok(eq !== undefined, "__eq__ must be defined on NDArray");
+  assert.equal(typeof eq.all, "function");
+  assert.equal(eq.all(), false);
+  assert.equal(a.__eq__(npReal.asarray([1, 2, 3])).all(), true);
+  assert.equal(a.__ne__(b).any(), true);
+  // 0-d comparisons collapse to plain booleans so `if arr == x:` keeps working.
+  assert.equal(npReal.asarray(1).__eq__(npReal.asarray(1)), true);
+});
+
 check("pythonFormat covers the int mini-language (error 342)", () => {
   const f = core.pythonFormat;
   assert.equal(f(5, "04b"), "0101");

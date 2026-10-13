@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import type { NDArray } from "numpy-ts";
 import { Arrow, DoubleArrow, Vector } from "../src/mobject/geometry/line.js";
 import { CurvedArrow, CurvedDoubleArrow, Dot, LabeledDot } from "../src/mobject/geometry/arc.js";
@@ -408,7 +409,7 @@ describe("integration", () => {
     expect(avf.submobjects.length).toBe(9);
     // every field vector is rooted at a grid point: start matches its lattice site
     for (const m of avf.submobjects as Vector[]) {
-      const s = m.get_start();
+      const s = pointRows(m.get_start(), 3)[0] ?? [];
       expect(s.length).toBe(3);
     }
     const v = new Vector([3, 4, 0]);

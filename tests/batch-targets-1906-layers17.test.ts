@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
 import { Triangle, RegularPolygon, RegularPolygram } from "../src/mobject/geometry/polygram.js";
 import { Line, Arrow } from "../src/mobject/geometry/line.js";
@@ -40,16 +41,28 @@ function toRows(v: unknown): number[][] {
     : (((v as { toArray(): unknown }).toArray() as unknown[]) ?? []);
   // scalar point -> single row
   if (arr.length > 0 && typeof arr[0] === "number") return [(arr as unknown[]).map(Number)];
-  return (arr as unknown[][]).map((r) => (Array.isArray(r) ? r.map(Number) : [Number(r)]));
+  return (arr as unknown[][]).map((r) =>
+    Array.isArray(r)
+      ? r.map(Number)
+      : r !== null && typeof r === "object" && "toArray" in (r as object)
+        ? ((r as { toArray(): unknown }).toArray() as unknown[]).map(Number)
+        : [Number(r)],
+  );
 }
 
 function expectRowsClose(actual: unknown, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
   const rows = toRows(actual);
-  expect(rows.length).toBe(expected.length);
-  for (let i = 0; i < expected.length; i += 1) {
-    expect(rows[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(rows[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+  expect(rows.length).toBe(expectedRows.length);
+  for (let i = 0; i < expectedRows.length; i += 1) {
+    expect(rows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(rows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -121,7 +134,7 @@ describe("Triangle", () => {
   });
   it("closes the loop (3 anchors, all on the unit circle)", () => {
     const t = new Triangle();
-    const verts = t.get_vertices() as number[][];
+    const verts = pointRows(t.get_vertices(), 3);
     expect(verts.length).toBe(3);
     for (const v of verts) {
       expect(close(Math.hypot(v[0] ?? 0, v[1] ?? 0), 1.0, 1e-6)).toBe(true);
@@ -139,7 +152,7 @@ describe("Triangle", () => {
 describe("RegularPolygon.__init__", () => {
   it("defaults to a hexagon starting at [1,0,0] like python", () => {
     const r = new RegularPolygon();
-    const verts = r.get_vertices() as number[][];
+    const verts = pointRows(r.get_vertices(), 3);
     expect(verts.length).toBe(6);
     expectRowsClose([verts[0] ?? []], [[1, 0, 0]], 1e-9);
     expect(r.start_angle).toBe(0);
@@ -294,7 +307,7 @@ describe("Line.get_vector", () => {
     const l = new Line([1, 2, 3], [4, 6, 8]);
     l.shift([1, 1, 1]);
     const v = l.get_vector();
-    const diff = (l.get_end() as number[]).map((x, i) => x - (l.get_start() as number[])[i]!);
+    const diff = pointRows(l.get_end(), 3)[0]!.map((x, i) => x - (l.get_start() as number[])[i]!);
     expectRowsClose([v], [diff]);
     expectRowsClose([v], [[3, 4, 5]]);
   });
@@ -376,9 +389,10 @@ describe("CoordinateSystem", () => {
     const viaAlias = plane.p2c([1, 1, 0]);
     const viaDirect = plane.point_to_coords([1, 1, 0]);
     expect(viaAlias).toEqual(viaDirect);
-    expect(viaAlias.length).toBe(2);
-    expect(close(viaAlias[0] ?? NaN, 1, 1e-9)).toBe(true);
-    expect(close(viaAlias[1] ?? NaN, 1, 1e-9)).toBe(true);
+    const aliasRow = (viaAlias as unknown as { toArray(): number[] }).toArray();
+    expect(aliasRow.length).toBe(2);
+    expect(close(aliasRow[0] ?? NaN, 1, 1e-9)).toBe(true);
+    expect(close(aliasRow[1] ?? NaN, 1, 1e-9)).toBe(true);
   });
 });
 

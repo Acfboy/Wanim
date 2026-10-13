@@ -5,6 +5,7 @@
 // scale, nonzero edge lengths). Deterministic layouts are seeded through the
 // layout config.
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import {
   Graph,
   NetworkXGraph,
@@ -73,7 +74,7 @@ describe("graph automatic layouts", () => {
   it("default layout='spring' works on new Graph and yields nonzero edges", () => {
     const g = new Graph([1, 2, 3, 4]);
     g.change_layout("spring");
-    const centers = [...g.vertices.values()].map((mob: Mobject) => mob.get_center());
+    const centers = [...g.vertices.values()].map((mob: Mobject) => pointRows(mob.get_center(), 3)[0] ?? [0, 0, 0]);
     const distinct = new Set(centers.map((c) => c.map((v) => v.toFixed(6)).join(",")));
     expect(distinct.size).toBe(4);
     for (const edge of g.edges.values()) {

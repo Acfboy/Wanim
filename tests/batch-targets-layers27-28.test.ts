@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import { array, type NDArray } from "numpy-ts";
 import { ArrowVectorField } from "../src/mobject/vector_field.js";
 import { Table, MobjectTable } from "../src/mobject/table.js";
@@ -414,7 +415,7 @@ describe("integration", () => {
     expect(cell.get_num_points()).toBeGreaterThan(0);
     // python ground truth (MobjectTable 2x2 Square(1), h_buff=1.3, v_buff=0.8):
     // cell (1,1) corners UL [-2.3,1.8,0], UR [0,1.8,0], DR [0,0,0], DL [-2.3,0,0]
-    const verts = cell.get_vertices();
+    const verts = pointRows(cell.get_vertices(), 3);
     expect(verts.length).toBe(4);
     const expected = [
       [-2.3, 1.8, 0],

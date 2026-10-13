@@ -62,8 +62,8 @@ describe("ThreeDAxes axis shading (per-mobject get_unit_normal override)", () =>
     const camera = new ThreeDCamera();
     const xAxis = axes.get_x_axis() as unknown as VMobject;
     const piece = axisPieces(axes, 0)[0]!;
-    const expected = (piece.get_gradient_start_and_end_points() as number[][]).map((p) =>
-      p.map((value) => Math.round(value * 1e6) / 1e6),
+    const expected = (piece.get_gradient_start_and_end_points() as unknown[]).map((p) =>
+      (pointRows(p, 3)[0] ?? []).map((value) => Math.round(value * 1e6) / 1e6),
     );
     const info = camera.get_draw_color_info(piece, piece.get_stroke_rgbas(false));
     expect(info).not.toBeNull();

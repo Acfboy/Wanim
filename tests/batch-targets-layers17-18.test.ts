@@ -42,13 +42,16 @@ function close(a: number, b: number, tol = 1e-9): boolean {
   return Math.abs(a - b) <= Math.max(1e-12, denom * tol);
 }
 
-function expectPointClose(actual: unknown, expected: number[], tol = 1e-9): void {
-  const arr = Array.isArray(actual)
-    ? (actual as unknown[]).map(Number)
-    : Array.from((actual as { toArray(): Iterable<unknown> }).toArray() as Iterable<unknown>).map(Number);
-  expect(arr.length).toBe(expected.length);
-  for (let i = 0; i < expected.length; i += 1) {
-    expect(close(arr[i] ?? NaN, expected[i] ?? NaN, tol)).toBe(true);
+function expectPointClose(actual: unknown, expected: unknown, tol = 1e-9): void {
+  const toValues = (value: unknown): number[] =>
+    Array.isArray(value)
+      ? (value as unknown[]).map(Number)
+      : Array.from((value as { toArray(): Iterable<unknown> }).toArray() as Iterable<unknown>).map(Number);
+  const arr = toValues(actual);
+  const exp = toValues(expected);
+  expect(arr.length).toBe(exp.length);
+  for (let i = 0; i < exp.length; i += 1) {
+    expect(close(arr[i] ?? NaN, exp[i] ?? NaN, tol)).toBe(true);
   }
 }
 
@@ -125,7 +128,9 @@ describe("GrowArrow.__init__", () => {
     const g = new GrowArrow(a as unknown as Mobject & { get_start(): number[] });
     const pt = Array.isArray(g.point)
       ? [...(g.point as number[])]
-      : [...(g.point as Mobject).get_center()];
+      : g.point instanceof Mobject
+        ? [...g.point.get_center()]
+        : [...(g.point as { toArray(): Iterable<unknown> }).toArray()];
     expectPointClose(pt, (a as Arrow).get_start(), 1e-6);
     expect(g.introducer).toBe(true);
   });

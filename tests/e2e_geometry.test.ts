@@ -64,8 +64,9 @@ function pointsOf(mob: { points: { toArray(): unknown }; dim: number }): number[
   return pointRows(mob.points as never, mob.dim) as number[][];
 }
 
-function vertices(mob: { get_vertices(): number[][] }): number[][] {
-  return mob.get_vertices().map((row) => [...row]);
+function vertices(mob: { get_vertices(): number[][] | { toArray(): unknown } }): number[][] {
+  const raw = mob.get_vertices();
+  return (Array.isArray(raw) ? raw : (raw.toArray() as number[][])).map((row) => [...row]);
 }
 
 describe("e2e geometry ground truth (2D)", () => {
@@ -194,7 +195,7 @@ describe("e2e geometry ground truth (2D)", () => {
 
   it("RegularPolygram with density produces one vertex group", () => {
     const rpg = new RegularPolygram(7, { density: 3 });
-    const groups = rpg.get_vertex_groups().map((group) => group.map((row) => normArr(row)));
+    const groups = rpg.get_vertex_groups().map((group) => pointRows(group, 3).map((row) => normArr(row)));
     expect(groups).toEqual([
       [
         [0, 1, 0],

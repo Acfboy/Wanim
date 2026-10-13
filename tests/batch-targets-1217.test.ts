@@ -25,13 +25,16 @@ function close(a: number, b: number, tol = 1e-6): boolean {
   return Math.abs(a - b) <= Math.max(1e-9, Math.abs(b) * tol);
 }
 
-function expectVecClose(actual: number[] | NDArray, expected: number[], tol = 1e-6): void {
+function expectVecClose(actual: number[] | NDArray, expected: number[] | NDArray, tol = 1e-6): void {
   const arr: number[] = Array.isArray(actual)
     ? [...actual]
     : [...(actual.toArray() as unknown as number[])].map(Number);
-  expect(arr.length).toBe(expected.length);
-  for (let i = 0; i < expected.length; i += 1) {
-    expect(close(arr[i] ?? NaN, expected[i] ?? NaN, tol)).toBe(true);
+  const exp: number[] = Array.isArray(expected)
+    ? [...expected]
+    : [...(expected.toArray() as unknown as number[])].map(Number);
+  expect(arr.length).toBe(exp.length);
+  for (let i = 0; i < exp.length; i += 1) {
+    expect(close(arr[i] ?? NaN, exp[i] ?? NaN, tol)).toBe(true);
   }
 }
 
@@ -85,7 +88,7 @@ describe("Square", () => {
   });
   it("vertices match python order", () => {
     const s = new Square(2.0);
-    const verts = s.get_vertices();
+    const verts = pointRows(s.get_vertices(), 3);
     const expected = [[1, 1, 0], [-1, 1, 0], [-1, -1, 0], [1, -1, 0]];
     expect(verts.length).toBe(4);
     for (let i = 0; i < 4; i += 1) expectVecClose(verts[i] ?? [], expected[i] ?? []);

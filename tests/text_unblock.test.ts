@@ -1,3 +1,4 @@
+import { pointRows } from "../src/utils/arrays.js";
 import { describe, expect, it } from "vitest";
 import {
   MathTex,
@@ -27,7 +28,7 @@ import { DOWN, LEFT, MED_SMALL_BUFF, RIGHT, SMALL_BUFF, UP } from "../src/consta
 // mobjects were stubbed; the layout logic itself is LaTeX-independent).
 
 function centers(mob: VMobject): number[][] {
-  return (mob.submobjects as VMobject[]).map((child) => child.get_center() as number[]);
+  return (mob.submobjects as VMobject[]).map((child) => pointRows(child.get_center(), 3)[0] ?? [0, 0, 0]);
 }
 
 function relativeCenters(mob: VMobject): number[][] {
@@ -36,10 +37,12 @@ function relativeCenters(mob: VMobject): number[][] {
   return all.map((c) => c.map((value, i) => value - (origin[i] ?? 0)));
 }
 
-function expectVecClose(actual: number[], expected: number[], digits = 5): void {
-  expect(actual.length).toBe(expected.length);
-  for (let i = 0; i < expected.length; i += 1) {
-    expect(actual[i]!).toBeCloseTo(expected[i]!, digits);
+function expectVecClose(actual: number[] | { toArray(): unknown }, expected: number[] | { toArray(): unknown }, digits = 5): void {
+  const actualRows = Array.isArray(actual) ? actual : (actual.toArray() as number[]);
+  const expectedRows = Array.isArray(expected) ? expected : (expected.toArray() as number[]);
+  expect(actualRows.length).toBe(expectedRows.length);
+  for (let i = 0; i < expectedRows.length; i += 1) {
+    expect(actualRows[i]!).toBeCloseTo(expectedRows[i]!, digits);
   }
 }
 

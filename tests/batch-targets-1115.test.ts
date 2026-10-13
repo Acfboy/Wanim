@@ -67,12 +67,21 @@ function expectClose(actual: number, expected: number, tol = 1e-9): void {
   expect(close(actual, expected, tol)).toBe(true);
 }
 
-function expectRowsClose(actual: number[][], expected: number[][], tol = 1e-9): void {
-  expect(actual.length).toBe(expected.length);
+function expectRowsClose(actual: number[][] | { toArray(): unknown }, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
+  const actualRows = (Array.isArray(actual) ? actual : ((actual as { toArray(): unknown }).toArray() as unknown[])).map(
+    (row) => (Array.isArray(row) ? row : (row as { toArray(): unknown }).toArray()),
+  ) as number[][];
+  expect(actualRows.length).toBe(expectedRows.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(actual[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(actual[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(actualRows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(actualRows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -392,7 +401,7 @@ describe("TipableVMobject.get_start / get_end", () => {
 describe("RegularPolygon / RegularPolygram", () => {
   it("builds a hexagon with ground-truth vertices", () => {
     const rp = new RegularPolygon(6);
-    const verts = rp.get_vertices();
+    const verts = pointRows(rp.get_vertices(), 3);
     expect(verts.length).toBe(6);
     expectRowsClose([verts[0] ?? []], [[1, 0, 0]]);
     expectRowsClose([verts[1] ?? []], [[0.5000000000000002, 0.8660254037844386, 0.0]]);
@@ -400,7 +409,7 @@ describe("RegularPolygon / RegularPolygram", () => {
   });
 
   it("builds a triangle", () => {
-    expect(new RegularPolygon(3).get_vertices().length).toBe(3);
+    expect(pointRows(new RegularPolygon(3).get_vertices(), 3).length).toBe(3);
   });
 
   it("builds a pentagram as a single group starting at PI/2", () => {
