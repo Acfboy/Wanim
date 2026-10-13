@@ -1,4 +1,4 @@
-// wanim web editor: (almost unmodified) manim Python in the browser.
+// wanim web playground: (almost unmodified) manim Python in the browser.
 //
 //   Python --(rapydscript)--> JS --(wanim, live Canvas2D)--> the preview
 //
@@ -29,6 +29,7 @@ const TARGET_FPS = 30;
 // Render resolution / animation frame rate (manim quality flag).  Kept fixed so
 // the UI stays simple; `-qm` is 1280x720 @ 30fps and matches TARGET_FPS.
 const QUALITY = "-qm";
+const IDLE_HINT = "Press Run (Ctrl+Enter) to start the scene.";
 
 const PRESETS = {
   square: `from manim import *
@@ -286,15 +287,15 @@ class InteractiveDemo(InteractiveScene):
 
 class InteractiveThreeDDemo(InteractiveThreeDScene):
     def blueprint(self):
-        # 空白处按住拖动 = 旋转相机，滚轮 / 触控板 = 缩放
+        # Dragging on empty space orbits the camera; wheel / trackpad zooms.
         self.set_camera_orientation(phi=70 * DEGREES, theta=-45 * DEGREES)
 
         axes = ThreeDAxes()
         sphere = Sphere(radius=1.4, color=BLUE, fill_opacity=0.85)
         sphere.add_reaction(lambda m: m.move_to([0, 0, height_slider.get_value()]))
 
-        # 控件用 add_fixed_in_frame_mobjects 固定在屏幕上，
-        # 这样指针命中坐标不受相机旋转影响，drag 球体时不会误触 orbit
+        # The controls are fixed in frame so pointer hit-testing is unaffected
+        # by the camera rotation (dragging the sphere never starts an orbit).
         height_slider = Slider(
             start=[-5.0, -3.0, 0],
             end=[-1.5, -3.0, 0],
@@ -305,7 +306,7 @@ class InteractiveThreeDDemo(InteractiveThreeDScene):
         height_label = Text("sphere z", font_size=28).next_to(height_slider, UP, buff=0.2)
         self.add_fixed_in_frame_mobjects(height_slider, height_label)
 
-        hint = Text("拖动旋转 / 滚轮缩放", font_size=30)
+        hint = Text("Drag to orbit · Scroll to zoom", font_size=30)
         hint.to_corner(UL)
         self.add_fixed_in_frame_mobjects(hint)
 
@@ -314,42 +315,60 @@ class InteractiveThreeDDemo(InteractiveThreeDScene):
         self.add(axes, sphere)
 
     def construct(self):
-        # 动画期间 orbit 暂停（与交互控件同一套 phase 规则）
+        # Animations pause orbiting (same phase rules as the interactive controls).
         self.play(FadeOut(self.hint))
 `,
 };
 
 const codeEl = document.getElementById("code");
+const gutterEl = document.getElementById("gutter");
 const highlightEl = document.getElementById("highlight");
 const highlightCodeEl = document.getElementById("highlight-code");
 const presetEl = document.getElementById("preset");
 const stage = document.getElementById("stage");
-const statusEl = document.getElementById("status");
 const outputEl = document.getElementById("output");
 const runBtn = document.getElementById("run");
 
-let currentRun = null;
-let runGeneration = 0;
+// --- output log --------------------------------------------------------------
+// One status line per event, playground style: › info, ● done, ✗ error.
+const MAX_OUTPUT_LINES = 200;
 
-function setStatus(text) {
-  statusEl.textContent = text;
+function resetOutput() {
+  outputEl.textContent = "";
+  const empty = document.createElement("p");
+  empty.className = "output-empty";
+  empty.textContent = IDLE_HINT;
+  outputEl.append(empty);
 }
 
-function setOutput(text, isError) {
-  outputEl.textContent = text;
-  outputEl.classList.toggle("error", Boolean(isError));
+function logOutput(kind, text) {
+  const empty = outputEl.querySelector(".output-empty");
+  if (empty !== null) empty.remove();
+  const line = document.createElement("p");
+  line.className = kind === "error" ? "output-error" : kind === "done" ? "output-line output-done" : "output-line";
+  const marker = document.createElement("span");
+  marker.className = "output-marker";
+  marker.setAttribute("aria-hidden", "true");
+  marker.textContent = kind === "error" ? "✗" : kind === "done" ? "●" : "›";
+  line.append(marker, document.createTextNode(text));
+  outputEl.append(line);
+  while (outputEl.childElementCount > MAX_OUTPUT_LINES) outputEl.firstElementChild.remove();
+  outputEl.scrollTop = outputEl.scrollHeight;
 }
 
-function setBusy(busy) {
-  // Interactive scenes never resolve on their own (they run until the user
-  // finishes the story or starts another run), so the Run button stays
-  // clickable: pressing it again aborts the current run and starts over.
-  runBtn.textContent = busy ? "运行中… / Running" : "运行 / Run";
-}
-
-// --- syntax highlighting ---------------------------------------------------
+// --- syntax highlighting + line numbers --------------------------------------
 // Prism is loaded from a CDN; if that fails the textarea still works.  The
 // highlighted <pre> sits behind a transparent textarea and scrolls in sync.
+// The gutter is plain DOM (no plugin) and scrolls with the textarea too.
+function updateGutter() {
+  const lines = codeEl.value.split("\n").length;
+  let html = "";
+  for (let index = 1; index <= lines; index += 1) {
+    html += `<div class="gutter-line">${index}</div>`;
+  }
+  gutterEl.innerHTML = html;
+}
+
 function highlight() {
   const code = codeEl.value;
   const prism = window.Prism;
@@ -358,12 +377,14 @@ function highlight() {
   } else {
     highlightCodeEl.textContent = code + "\n";
   }
+  updateGutter();
   syncScroll();
 }
 
 function syncScroll() {
   highlightEl.scrollTop = codeEl.scrollTop;
   highlightEl.scrollLeft = codeEl.scrollLeft;
+  gutterEl.scrollTop = codeEl.scrollTop;
 }
 
 codeEl.addEventListener("input", highlight);
@@ -401,6 +422,8 @@ function loadRapydscript() {
 }
 
 // --- run -------------------------------------------------------------------
+let currentRun = null;
+
 async function stopCurrent() {
   const run = currentRun;
   if (run === null) return;
@@ -408,6 +431,7 @@ async function stopCurrent() {
   run.controller.abort();
   // Wait for the previous run (and its interactive scene loop) to fully stop
   // before the next one starts, so their schedulers/hosts don't overlap.
+  if (run.promise === null) return;
   try {
     await run.promise;
   } catch {
@@ -417,16 +441,21 @@ async function stopCurrent() {
 
 async function run() {
   await stopCurrent();
-  const generation = ++runGeneration;
-  setBusy(true);
-  setOutput("Compiling…", false);
-  setStatus("Compiling…");
+  // Interactive scenes never resolve on their own (they run until the user
+  // finishes the story), so pressing Run again aborts the current run and
+  // starts over: the `currentRun` identity below marks stale runs as dead.
+  const controller = new AbortController();
+  const run = { controller, promise: null };
+  currentRun = run;
+  logOutput("info", "Compiling…");
   try {
     // The patched rapydscript compiler is loaded lazily on first run.
     await loadRapydscript();
-    if (generation !== runGeneration) return;
+    if (currentRun !== run) return;
 
-    const controller = new AbortController();
+    // Presentation runs never call `scene_finished`, so `stats.totalMs` stays
+    // 0 there; measure the wall-clock time (compile + live playback) instead.
+    const startedAt = performance.now();
     const promise = py2js.runPythonOnCanvas(codeEl.value, stage, {
       quality: QUALITY,
       realtime: true,
@@ -435,29 +464,21 @@ async function run() {
       recordFrames: false,
       signal: controller.signal,
       onScene: (name) => {
-        setStatus(`Running ${name}…`);
-        setOutput(`Running ${name}…`, false);
+        if (currentRun !== run) return;
+        logOutput("info", `Running ${name}…`);
       },
     });
-    currentRun = { controller, promise };
+    run.promise = promise;
     const { stats } = await promise;
-    if (generation !== runGeneration) return;
-    setStatus("Done.");
-    setOutput(
-      `Done: ${stats.frames} frames in ${(stats.totalMs / 1000).toFixed(2)} s.\n` +
-        `extract ${stats.extractMs.toFixed(0)} ms · draw ${stats.drawMs.toFixed(0)} ms`,
-      false,
-    );
+    if (currentRun !== run) return;
+    currentRun = null;
+    const seconds = (performance.now() - startedAt) / 1000;
+    logOutput("done", `Done: ${stats.frames} frames in ${seconds.toFixed(2)} s.`);
   } catch (error) {
-    if (generation !== runGeneration) return;
-    setStatus("Error.");
-    setOutput(error?.stack ?? String(error), true);
+    if (currentRun !== run) return;
+    currentRun = null;
+    logOutput("error", error?.stack ?? String(error));
     console.error(error);
-  } finally {
-    if (generation === runGeneration) {
-      currentRun = null;
-      setBusy(false);
-    }
   }
 }
 
@@ -466,14 +487,31 @@ function loadPreset(name) {
   if (source === undefined) return;
   codeEl.value = source;
   highlight();
-  setStatus(`Loaded preset: ${name}`);
+  resetOutput();
 }
 
 runBtn.addEventListener("click", () => { void run(); });
-presetEl.addEventListener("change", () => loadPreset(presetEl.value));
+presetEl.addEventListener("change", () => {
+  void stopCurrent();
+  loadPreset(presetEl.value);
+});
+
+// Ctrl+Enter (or Cmd+Enter) runs the current code, like the website playground.
+// A capture listener on `document` fires before any other page shortcut.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      void run();
+    }
+  },
+  { capture: true },
+);
 
 loadPreset(presetEl.value);
-setOutput("Press Run to execute the Python scene.");
+resetOutput();
 
 // --- embed ------------------------------------------------------------------
 // Builds a paste-ready <iframe> pointing at ./embed.html with the current code
@@ -497,7 +535,7 @@ let embedGeneration = 0;
 
 async function generateEmbed() {
   const generation = ++embedGeneration;
-  embedStatusEl.textContent = "生成中… / Generating…";
+  embedStatusEl.textContent = "Generating…";
   embedSnippetEl.value = "";
   embedWarningEl.hidden = true;
   const width = Math.max(1, Math.round(Number(embedWidthEl.value) || 960));
@@ -512,14 +550,14 @@ async function generateEmbed() {
     embedSnippetEl.value = snippet;
     if (url.length > MAX_EMBED_URL) {
       embedWarningEl.textContent =
-        `URL 约 ${url.length} 字符，超过 ${MAX_EMBED_URL}；部分平台可能截断。建议缩短代码或降低画质。`;
+        `The URL is about ${url.length} characters, over ${MAX_EMBED_URL}; some platforms may truncate it. Shorten the code or choose a lower quality.`;
       embedWarningEl.hidden = false;
     }
-    embedStatusEl.textContent = `URL ${url.length} 字符`;
+    embedStatusEl.textContent = `URL ${url.length} characters`;
   } catch (error) {
     if (generation !== embedGeneration) return;
-    embedStatusEl.textContent = "生成失败 / Failed";
-    setOutput(error?.stack ?? String(error), true);
+    embedStatusEl.textContent = "Failed";
+    logOutput("error", error?.stack ?? String(error));
     console.error(error);
   }
 }
@@ -563,5 +601,5 @@ embedCopyEl.addEventListener("click", async () => {
       copied = false;
     }
   }
-  embedStatusEl.textContent = copied ? "已复制 / Copied" : "复制失败，请手动选择文本";
+  embedStatusEl.textContent = copied ? "Copied" : "Copy failed — select the text manually";
 });

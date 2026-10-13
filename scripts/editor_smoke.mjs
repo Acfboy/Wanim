@@ -44,7 +44,9 @@ function startServer() {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const preset = argv[0] && !argv[0].startsWith("--") ? argv[0] : "sin";
+  // Default to a preset whose final frame still has content on the canvas
+  // (SquareToCircle ends with FadeOut, i.e. a black canvas).
+  const preset = argv[0] && !argv[0].startsWith("--") ? argv[0] : "pointcloud";
   const outIndex = argv.indexOf("--out");
   const out = outIndex >= 0 ? resolve(argv[outIndex + 1]) : null;
   const codeIndex = argv.indexOf("--code");
@@ -86,8 +88,10 @@ async function main() {
       await cdp.send("Profiler.start");
     }
     await page.click("#run");
+    // The playground-style output pane marks the run's terminal line with
+    // `.output-done` (`●` prefix) / `.output-error` (`✗` prefix).
     await page.waitForFunction(
-      "['Done.','Error.'].includes(document.getElementById('status').textContent)",
+      "document.querySelector('#output .output-done, #output .output-error') !== null",
       null,
       { timeout: timeoutMs },
     );
@@ -96,7 +100,9 @@ async function main() {
       await writeFile(profilePath, JSON.stringify(profile));
       console.log(`wrote profile -> ${profilePath}`);
     }
-    const status = await page.textContent("#status");
+    const failed = await page.evaluate(
+      () => document.querySelector("#output .output-error") !== null,
+    );
     const output = await page.textContent("#output");
     const nonBlank = await page.evaluate(() => {
       const canvas = document.getElementById("stage");
@@ -115,11 +121,11 @@ async function main() {
       const seconds = Number(fpsMatch[2]);
       console.log(`live: ${frames} frames in ${seconds.toFixed(2)} s (${(frames / seconds).toFixed(1)} fps)`);
     }
-    console.log(`status: ${status.trim()}`);
+    console.log(`status: ${failed ? "Error." : "Done."}`);
     console.log(output.trim());
     console.log(`lit pixels: ${nonBlank}`);
     if (errors.length) console.error("browser errors:\n" + errors.join("\n"));
-    const ok = status.startsWith("Done") && nonBlank > 100;
+    const ok = !failed && nonBlank > 100;
     process.exit(ok ? 0 : 1);
   } finally {
     await browser.close();

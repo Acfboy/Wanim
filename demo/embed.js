@@ -2,7 +2,7 @@
 //
 // The Python source travels in the URL fragment (`#c=<token>[&q=...]`),
 // which is never sent to the server.  The token is produced by the editor's
-// "嵌入 / Embed" dialog (`wanim.build_embed_hash`) and decoded here.
+// "Embed" dialog (`wanim.build_embed_hash`) and decoded here.
 //
 // postMessage protocol (see also `demo/index.html` and the dynmath player):
 //
@@ -87,7 +87,7 @@ async function stopCurrent() {
 
 async function run() {
   if (code === null) {
-    const message = "URL 中缺少 #c=<code> 参数。";
+    const message = "Missing #c=<code> in the URL.";
     showOverlay(message, true);
     post("error", { error: message });
     return;
@@ -163,14 +163,14 @@ post("ready", {});
 
 const token = params.get("c");
 if (token === null || token === "") {
-  const message = "URL 中缺少 #c=<code> 参数。";
+  const message = "Missing #c=<code> in the URL.";
   showOverlay(message, true);
   post("error", { error: message });
 } else {
   try {
     code = await wanim.decode_embed_code(token);
   } catch (error) {
-    const message = `无法解码嵌入代码：${messageOf(error)}`;
+    const message = `Could not decode the embedded code: ${messageOf(error)}`;
     showOverlay(message, true);
     post("error", { error: message });
   }
