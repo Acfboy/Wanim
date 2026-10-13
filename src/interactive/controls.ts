@@ -60,9 +60,11 @@ export interface InteractiveControl {
   /**
    * Optional hover notification, delivered while the pointer moves over the
    * control and no drag is in progress. Controls that draw a hover highlight
-   * implement it; the scene ignores controls that do not.
+   * implement it; the scene ignores controls that do not. The world-space
+   * pointer position is passed along when available, so a control can restrict
+   * the highlight to a sub-part (e.g. a slider's knob).
    */
-  set_hovered?(hovered: boolean): void;
+  set_hovered?(hovered: boolean, point?: readonly number[]): void;
 }
 
 /** Duck-typed check that `mobject` is an interactive control. */
@@ -151,6 +153,12 @@ export interface PathSliderOptions {
   knob_opacity?: number;
   /** Knob radius (world units). */
   knob_radius?: number;
+  /**
+   * Scale factor applied to the knob while the pointer hovers it or the slider
+   * is being dragged. Ignored while a mobject is attached (the knob is hidden
+   * then). Defaults to 1.25.
+   */
+  knob_active_scale?: number;
   /** Extra pick radius around the track (world units). */
   hit_radius?: number;
   /** Treat the path as a loop, wrapping the value across the seam. */
@@ -179,6 +187,7 @@ export class PathSlider extends VGroup implements InteractiveControl {
   track_opacity: number;
   knob_opacity: number;
   knob_radius: number;
+  knob_active_scale: number;
   hit_radius: number;
   // NOTE: shadows the inherited `VMobject.is_closed()` method with the
   // interactive flag. PathSlider's own algorithms use the flag; the slider
@@ -190,10 +199,16 @@ export class PathSlider extends VGroup implements InteractiveControl {
   knob: Dot;
   /** Mobjects currently parented to the knob via {@link attach}. */
   attached: Mobject[] = [];
+  /** Whether the pointer currently hovers the knob itself (not the track). */
+  hovered = false;
   private _value: number;
   /** Arc-length proportion along the path; the source of truth for the knob. */
   private _t = 0;
   private _lastDragPoint: number[] | null = null;
+  /** Whether a press on this slider is in progress. */
+  private _grabbing = false;
+  /** Scale factor currently applied to the knob (1 when at rest). */
+  private _knob_scale = 1;
 
   constructor(path: VMobject, options: PathSliderOptions = {}) {
     super();
@@ -205,6 +220,7 @@ export class PathSlider extends VGroup implements InteractiveControl {
       track_opacity = 1,
       knob_opacity = 1,
       knob_radius = 0.12,
+      knob_active_scale = 1.25,
       hit_radius = 0.3,
       is_closed = false,
     } = options;
@@ -218,6 +234,7 @@ export class PathSlider extends VGroup implements InteractiveControl {
     this.track_opacity = track_opacity;
     this.knob_opacity = knob_opacity;
     this.knob_radius = knob_radius;
+    this.knob_active_scale = knob_active_scale > 0 ? knob_active_scale : 1;
     this.hit_radius = hit_radius;
     this.is_closed = is_closed;
     this._value = low;
@@ -265,6 +282,10 @@ export class PathSlider extends VGroup implements InteractiveControl {
    */
   attach(mobject: Mobject): this {
     if (this.attached.includes(mobject)) return this;
+    // Scale the knob back to its resting size before adopting the child:
+    // `scale` walks the whole family, so a still-grown knob would resize the
+    // attached mobject too.
+    this._set_knob_scale(1);
     this.attached.push(mobject);
     this.knob.add(mobject);
     this._update_knob_visibility();
@@ -285,6 +306,7 @@ export class PathSlider extends VGroup implements InteractiveControl {
       this.attached = this.attached.filter((candidate) => candidate !== mobject);
     }
     this._update_knob_visibility();
+    this._apply_knob_scale();
     return this;
   }
 
@@ -300,15 +322,12 @@ export class PathSlider extends VGroup implements InteractiveControl {
       const first = samples[0]!;
       if (distanceToSegment(point, last, first) <= this.hit_radius) return true;
     }
-    const knobCenter = this.knob.get_center();
-    const knobRadius = Math.max(this.hit_radius, this.knob_radius * 2);
-    return (
-      Math.hypot((point[0] ?? 0) - (knobCenter[0] ?? 0), (point[1] ?? 0) - (knobCenter[1] ?? 0)) <=
-      knobRadius
-    );
+    return this._hit_knob(point);
   }
 
   on_press(point: readonly number[], _context: InteractiveContext): void {
+    this._grabbing = true;
+    this._apply_knob_scale();
     const [low, high] = this.value_range;
     const t = this._proportion_from_point(point);
     this.set_value(low + t * (high - low));
@@ -333,6 +352,44 @@ export class PathSlider extends VGroup implements InteractiveControl {
 
   on_release(): void {
     this._lastDragPoint = null;
+    this._grabbing = false;
+    this._apply_knob_scale();
+  }
+
+  /**
+   * Update the knob's hover state (called by the scene on pointer motion).
+   * The knob only grows while the pointer is within its pick radius; hovering
+   * elsewhere on the track leaves it at its resting size.
+   */
+  set_hovered(hovered: boolean, point?: readonly number[]): void {
+    const next = Boolean(hovered) && point !== undefined && this._hit_knob(point);
+    if (this.hovered === next) return;
+    this.hovered = next;
+    this._apply_knob_scale();
+  }
+
+  /** Whether `point` falls within the knob's pick radius. */
+  private _hit_knob(point: readonly number[]): boolean {
+    const center = this.knob.get_center();
+    const radius = Math.max(this.hit_radius, this.knob_radius * 2);
+    return Math.hypot((point[0] ?? 0) - (center[0] ?? 0), (point[1] ?? 0) - (center[1] ?? 0)) <= radius;
+  }
+
+  /**
+   * Grow the knob while the pointer hovers it or the slider is being dragged.
+   * No-op while a mobject is attached, so the attached mobject (the visible
+   * knob then) is never resized.
+   */
+  private _apply_knob_scale(): void {
+    const active = this.attached.length === 0 && (this._grabbing || this.hovered);
+    this._set_knob_scale(active ? this.knob_active_scale : 1);
+  }
+
+  /** Scale the knob (about its own centre) to `target` times its base size. */
+  private _set_knob_scale(target: number): void {
+    if (target === this._knob_scale) return;
+    this.knob.scale(target / this._knob_scale, this.knob.get_center());
+    this._knob_scale = target;
   }
 
   private _update_knob_visibility(): void {

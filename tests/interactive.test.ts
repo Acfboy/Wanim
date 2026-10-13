@@ -158,6 +158,108 @@ describe("Slider", () => {
     expect(slider.is_hit([5, 0, 0])).toBe(false);
   });
 
+  test("the knob grows while hovered or dragged, not while hovering the track", () => {
+    const slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0], value_range: [0, 1] });
+    const rest = slider.knob.get_width();
+
+    // Hovering the track away from the knob leaves it at its resting size.
+    slider.set_hovered(true, [0, 0, 0]);
+    expect(slider.hovered).toBe(false);
+    expect(slider.knob.get_width()).toBeCloseTo(rest, 9);
+
+    // Hovering the knob grows it.
+    slider.set_hovered(true, slider.knob.get_center());
+    expect(slider.hovered).toBe(true);
+    expect(slider.knob.get_width()).toBeCloseTo(rest * 1.25, 6);
+
+    // Moving back onto the track shrinks it again.
+    slider.set_hovered(true, [-1, 0, 0]);
+    expect(slider.hovered).toBe(false);
+    expect(slider.knob.get_width()).toBeCloseTo(rest, 6);
+
+    slider.set_hovered(false);
+    expect(slider.knob.get_width()).toBeCloseTo(rest, 6);
+
+    // Grabbing anywhere on the track grows the knob, even away from it...
+    const context = { host: { live: false } as unknown as InteractiveHost, camera: new Camera() };
+    slider.on_press([-1.5, 0, 0], context);
+    expect(slider.knob.get_width()).toBeCloseTo(rest * 1.25, 6);
+    // ...and releasing returns it to rest.
+    slider.on_release();
+    expect(slider.knob.get_width()).toBeCloseTo(rest, 6);
+  });
+
+  test("knob_active_scale configures the growth; attach keeps the knob at rest", () => {
+    const slider = new Slider({
+      start: [-2, 0, 0],
+      end: [2, 0, 0],
+      value_range: [0, 1],
+      knob_active_scale: 2,
+    });
+    const rest = slider.knob.get_width();
+    slider.set_hovered(true, slider.knob.get_center());
+    expect(slider.knob.get_width()).toBeCloseTo(rest * 2, 6);
+    slider.set_hovered(false);
+
+    // The marker is smaller than the grown knob so a stray scale on the knob
+    // family would show up in the knob's own bounding-box width.
+    const marker = new Circle(0.05);
+    marker.move_to(slider.knob.get_center());
+    const markerWidth = marker.get_width();
+    slider.attach(marker);
+    slider.set_hovered(true, slider.knob.get_center());
+    expect(slider.hovered).toBe(true);
+    expect(slider.knob.get_width()).toBeCloseTo(rest, 9);
+    expect(marker.get_width()).toBeCloseTo(markerWidth, 9);
+
+    // Detaching while still hovered restores the growth on the bare knob.
+    slider.unattach();
+    expect(slider.knob.get_width()).toBeCloseTo(rest * 2, 6);
+  });
+
+  test("InteractiveScene grows the knob only while the pointer is on it", async () => {
+    class KnobScene extends InteractiveScene {
+      slider!: Slider;
+      blueprint(): void {
+        this.slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0] });
+        this.add(this.slider);
+      }
+    }
+    const host = new FakeHost();
+    const scene = new KnobScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+    const rest = scene.slider.knob.get_width();
+
+    // On the track but not on the knob: hovered, yet at its resting size.
+    host.drag([-1.4, 0, 0]);
+    expect(scene.slider.hovered).toBe(false);
+    expect(scene.slider.knob.get_width()).toBeCloseTo(rest, 9);
+
+    host.drag([-2, 0, 0]);
+    expect(scene.slider.hovered).toBe(true);
+    expect(scene.slider.knob.get_width()).toBeCloseTo(rest * 1.25, 6);
+
+    host.drag([0, 0, 0]);
+    expect(scene.slider.hovered).toBe(false);
+    expect(scene.slider.knob.get_width()).toBeCloseTo(rest, 6);
+
+    // Grab the track, drag, and release off the track: the knob must not stay
+    // grown after the grab ends.
+    host.press([-1.5, 0, 0]);
+    expect(scene.slider.knob.get_width()).toBeCloseTo(rest * 1.25, 6);
+    host.drag([-0.5, 0, 0]);
+    host.release([-0.5, 1, 0]);
+    expect(scene.slider.hovered).toBe(false);
+    expect(scene.slider.knob.get_width()).toBeCloseTo(rest, 6);
+
+    host.click("next");
+    await host.advance(1);
+    host.click("next");
+    await host.advance(1);
+    await done;
+  });
+
   test("opacity options, attach hides the knob and follows the value", () => {
     const slider = new Slider({
       start: [-2, 0, 0],
