@@ -568,7 +568,7 @@ describe("Rectangle.__init__", () => {
     const r = new Rectangle();
     expect(r.width).toBe(4.0);
     expect(r.height).toBe(2.0);
-    const verts = r.get_vertices();
+    const verts = pointRows(r.get_vertices(), 3);
     expect(verts.length).toBe(4);
     const expected = [[2.0, 1.0, 0.0], [-2.0, 1.0, 0.0], [-2.0, -1.0, 0.0], [2.0, -1.0, 0.0]];
     for (let i = 0; i < 4; i += 1) {

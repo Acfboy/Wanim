@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import { Arrow3D } from "../src/mobject/three_d/three_dimensions.js";
 import {
   SVGMobject,
@@ -55,17 +56,27 @@ function toRows(v: unknown): number[][] {
   if (arr.length > 0 && typeof arr[0] === "number")
     return [(arr as unknown[]).map(Number)];
   return (arr as unknown[][]).map((r) =>
-    Array.isArray(r) ? r.map(Number) : [Number(r)],
+    Array.isArray(r)
+      ? r.map(Number)
+      : r !== null && typeof r === "object" && "toArray" in (r as object)
+        ? ((r as { toArray(): unknown }).toArray() as unknown[]).map(Number)
+        : [Number(r)],
   );
 }
 
 function expectRowsClose(actual: unknown, expected: number[][], tol = 1e-6): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
   const rows = toRows(actual);
   expect(rows.length).toBe(expected.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(rows[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(rows[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(rows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(rows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -202,9 +213,9 @@ describe("TipableVMobject tip helpers", () => {
     expect(tip.constructor.name).toBe("ArrowTriangleFilledTip");
     // Positioned at the arrow end (within tip-length tolerance).
     const end = a.get_end();
-    const tipStart = (tip as unknown as { get_start(): number[] }).get_start();
-    expect(tipStart.length).toBe(3);
-    expect(end.length).toBe(3);
+    const tipStart = (tip as unknown as { get_start(): unknown }).get_start();
+    expect(pointRows(tipStart, 3)[0]!.length).toBe(3);
+    expect(pointRows(end, 3)[0]!.length).toBe(3);
   });
 
   it("add_tip(at_start=True) installs a start tip", () => {

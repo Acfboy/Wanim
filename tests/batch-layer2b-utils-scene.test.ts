@@ -114,8 +114,8 @@ describe("bezier_remap", () => {
       [[[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]]],
       3,
     );
-    expect(result).toHaveLength(3);
-    const flat = result.map((curve) => curve.map((point) => point.map(Number)));
+    expect(result.shape[0]).toBe(3);
+    const flat = (result.toArray() as number[][][]).map((curve) => curve.map((point) => point.map(Number)));
     const expected = [
       [[0, 0, 0], [1 / 3, 0, 0], [2 / 3, 0, 0], [1, 0, 0]],
       [[1, 0, 0], [4 / 3, 0, 0], [5 / 3, 0, 0], [2, 0, 0]],

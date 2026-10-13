@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import { mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,8 +68,18 @@ function flat(value: unknown): number[] {
       : value;
   const out: number[] = [];
   const walk = (x: unknown): void => {
-    if (Array.isArray(x)) for (const e of x) walk(e);
-    else out.push(Number(x));
+    if (Array.isArray(x)) {
+      for (const e of x) walk(e);
+    } else if (
+      x !== null &&
+      typeof x === "object" &&
+      "toArray" in (x as object) &&
+      typeof (x as { toArray?: unknown }).toArray === "function"
+    ) {
+      walk((x as { toArray(): unknown }).toArray());
+    } else {
+      out.push(Number(x));
+    }
   };
   walk(raw);
   return out;
@@ -651,7 +662,7 @@ describe("ThreeDAxes._set_axis_shading", () => {
     // [[5.25, 0.175, 0], [-5.25, -0.175, 0]].
     expect(fam.get_sheen_factor()).toBe(0.2);
     expect(
-      (fam.get_gradient_start_and_end_points() as number[][]).map((p) => p.map((v) => Math.round(v * 1e6) / 1e6)),
+      (fam.get_gradient_start_and_end_points() as unknown[]).map((p) => (pointRows(p, 3)[0] ?? []).map((v) => Math.round(v * 1e6) / 1e6)),
     ).toEqual([[5.25, 0.175, 0], [-5.25, -0.175, 0]]);
     // Explicit re-bind is idempotent.
     axes._set_axis_shading();

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import { array, type NDArray } from "numpy-ts";
 import { VGroup, VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import {
@@ -333,7 +334,7 @@ describe("ThreeDAxes.__init__ (python ground truth)", () => {
 
   it("point_to_coords inverts all three axes", () => {
     const td = new ThreeDAxes();
-    const back = td.point_to_coords([0.875, 2.1, 2.4375]);
+    const back = pointRows(td.point_to_coords([0.875, 2.1, 2.4375]), 3)[0] ?? [];
     expect(back.length).toBe(3);
     expect(close(back[0] ?? NaN, 1, 1e-9)).toBe(true);
     expect(close(back[1] ?? NaN, 2, 1e-9)).toBe(true);

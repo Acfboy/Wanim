@@ -30,14 +30,20 @@ function close(a: number, b: number, tol = 1e-9): boolean {
 }
 
 function expectRowsClose(actual: NDArray, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
   const rows = (actual.toArray() as unknown[][]).map((r) =>
     (r as unknown[]).map(Number),
   );
   expect(rows.length).toBe(expected.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(rows[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(rows[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(rows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(rows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }

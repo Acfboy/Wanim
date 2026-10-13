@@ -40,12 +40,21 @@ function expectClose(actual: number, expected: number, tol = 1e-9): void {
   expect(close(actual, expected, tol)).toBe(true);
 }
 
-function expectRowsClose(actual: number[][], expected: number[][], tol = 1e-9): void {
-  expect(actual.length).toBe(expected.length);
+function expectRowsClose(actual: number[][] | { toArray(): unknown }, expected: number[][], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
+  const actualRows = (Array.isArray(actual) ? actual : ((actual as { toArray(): unknown }).toArray() as unknown[])).map(
+    (row) => (Array.isArray(row) ? row : (row as { toArray(): unknown }).toArray()),
+  ) as number[][];
+  expect(actualRows.length).toBe(expectedRows.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(actual[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(actual[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(actualRows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(actualRows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -569,8 +578,8 @@ describe("Axes.point_to_coords", () => {
     //   ax.point_to_coords([[0,0,0],[1,0,0]])
     //   -> [[5.0, 2.22e-16], [7.0, 2.22e-16]].
     const ax = new Axes([0, 10, 2], [-1, 1, 1], 5, 5);
-    const coords = ax.point_to_coords([[0, 0, 0], [1, 0, 0]] as unknown as readonly number[]) as unknown as number[][];
-    expect(Array.isArray(coords) && Array.isArray(coords[0])).toBe(true);
+    const coords = ax.point_to_coords([[0, 0, 0], [1, 0, 0]] as unknown as readonly number[]);
+    expect(coords.shape[0]).toBe(2);
     expectRowsClose(coords, [[5.0, 0.0], [7.0, 0.0]], 1e-9);
     const plane = new NumberPlane([0, 10, 2], [-1, 1, 1], 5, 5);
     expectRowsClose(

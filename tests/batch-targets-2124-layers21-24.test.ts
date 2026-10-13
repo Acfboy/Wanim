@@ -50,17 +50,27 @@ function toRows(v: unknown): number[][] {
   if (arr.length > 0 && typeof arr[0] === "number")
     return [(arr as unknown[]).map(Number)];
   return (arr as unknown[][]).map((r) =>
-    Array.isArray(r) ? r.map(Number) : [Number(r)],
+    Array.isArray(r)
+      ? r.map(Number)
+      : r !== null && typeof r === "object" && "toArray" in (r as object)
+        ? ((r as { toArray(): unknown }).toArray() as unknown[]).map(Number)
+        : [Number(r)],
   );
 }
 
 function expectRowsClose(actual: unknown, expected: number[][], tol = 1e-6): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
   const rows = toRows(actual);
   expect(rows.length).toBe(expected.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(rows[i]?.length).toBe(expected[i]?.length);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(rows[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(rows[i]?.length).toBe(expectedRows[i]?.length);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(rows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }

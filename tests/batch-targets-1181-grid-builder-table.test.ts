@@ -15,6 +15,7 @@
 // defaults are only asserted to throw; all layout tests use MobjectTable with
 // an identity factory over Squares (no tex involved).
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 // NOTE (import order matters): the first VALUE import must reach
 // mobject.js before the animation modules (mobject <-> animation form a
 // pre-existing cycle that only resolves mobject-first; esbuild drops the
@@ -398,7 +399,7 @@ describe("Table basic layout (MobjectTable)", () => {
 
   it("computes cell polygons around entries", () => {
     const t = plainTable();
-    const verts = t.get_cell([1, 1]).get_vertices();
+    const verts = pointRows(t.get_cell([1, 1]).get_vertices(), 3);
     const want = [
       [-3.3, 2.8, 0],
       [0, 2.8, 0],
@@ -478,7 +479,7 @@ describe("Table labels, lines, colors and create", () => {
     expect(t.get_horizontal_lines().submobjects.length).toBe(2);
     expect(t.get_vertical_lines().submobjects.length).toBe(2);
     const starts = (t.get_horizontal_lines().submobjects as Mobject[]).map((l) =>
-      (l as unknown as { get_start(): number[] }).get_start(),
+      pointRows((l as unknown as { get_start(): unknown }).get_start(), 3)[0] ?? [0, 0, 0],
     );
     expectClose(starts[0]![0] ?? NaN, -4.95);
     expectClose(starts[0]![1] ?? NaN, 1.4);
@@ -487,7 +488,7 @@ describe("Table labels, lines, colors and create", () => {
 
   it("resolves labeled cell polygons", () => {
     const t = labeledTable();
-    const verts = t.get_cell([2, 2]).get_vertices();
+    const verts = pointRows(t.get_cell([2, 2]).get_vertices(), 3);
     const want = [
       [-1.65, 1.4, 0],
       [1.65, 1.4, 0],

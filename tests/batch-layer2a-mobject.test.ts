@@ -7,6 +7,7 @@
 // Float comparisons use 1e-9 absolute tolerance (values are O(1..10)).
 import { describe, expect, it, afterEach } from "vitest";
 import { array, type NDArray } from "numpy-ts";
+import { pointRows } from "../src/utils/arrays.js";
 import { Group, Mobject, setBackgroundRectangleFactory, setDefaultCameraFactory } from "../src/mobject/mobject.js";
 import {
   VMobject,
@@ -38,12 +39,18 @@ function expectVecClose(actual: ArrayLike<number> | NDArray, expected: readonly 
 }
 
 function expectRowsClose(actual: NDArray, expected: readonly (readonly number[])[], tol = 1e-9): void {
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
   const rows = rowsOf(actual);
   expect(rows).toHaveLength(expected.length);
   for (let i = 0; i < expected.length; i += 1) {
-    expect(rows[i]).toHaveLength(expected[i]?.length ?? 0);
-    for (let j = 0; j < (expected[i]?.length ?? 0); j += 1) {
-      expect(close(rows[i]?.[j] ?? NaN, expected[i]?.[j] ?? NaN, tol)).toBe(true);
+    expect(rows[i]).toHaveLength(expectedRows[i]?.length ?? 0);
+    for (let j = 0; j < (expectedRows[i]?.length ?? 0); j += 1) {
+      expect(close(rows[i]?.[j] ?? NaN, expectedRows[i]?.[j] ?? NaN, tol)).toBe(true);
     }
   }
 }
@@ -469,8 +476,8 @@ describe("Mobject.interpolate", () => {
     second.shift([1, 1, 0]);
     const result = square(2);
     result.interpolate(first, second, 0.25);
-    const c1 = first.get_center();
-    const c2 = second.get_center();
+    const c1 = pointRows(first.get_center(), 3)[0] ?? [0, 0, 0];
+    const c2 = pointRows(second.get_center(), 3)[0] ?? [0, 0, 0];
     const expected = c1.map((v, i) => v * 0.75 + (c2[i] ?? 0) * 0.25);
     expectVecClose(result.get_center(), expected);
     expect(result.get_fill_color().to_hex().toUpperCase()).toBe("#D5F0F6");
@@ -561,7 +568,7 @@ describe("VMobject.get_cubic_bezier_tuples", () => {
       [4, 0, 0],
     ]);
     const tuples = v.get_cubic_bezier_tuples();
-    expect(tuples).toHaveLength(1);
+    expect(tuples.shape[0]).toBe(1);
     expectRowsClose(array(tuples[0] ?? []) as NDArray, [
       [0, 0, 0],
       [1.3333333333333333, 0, 0],

@@ -113,8 +113,18 @@ function flat(value: unknown): number[] {
       : value;
   const out: number[] = [];
   const walk = (x: unknown): void => {
-    if (Array.isArray(x)) for (const e of x) walk(e);
-    else out.push(Number(x));
+    if (Array.isArray(x)) {
+      for (const e of x) walk(e);
+    } else if (
+      x !== null &&
+      typeof x === "object" &&
+      "toArray" in (x as object) &&
+      typeof (x as { toArray?: unknown }).toArray === "function"
+    ) {
+      walk((x as { toArray(): unknown }).toArray());
+    } else {
+      out.push(Number(x));
+    }
   };
   walk(raw);
   return out;
@@ -1250,7 +1260,7 @@ describe("integration", () => {
     expect(s(0.5)).toBeGreaterThan(0);
     expect(s(0.5)).toBeLessThan(1);
     const m = midpoint([cam.frame_width, 0, 0], [0, cam.frame_height, 0]);
-    expect(m.length).toBe(3);
+    expect(m.shape[0]).toBe(3);
   });
 
   it("space_ops + bezier: subdivided curve midpoint via find_intersection plane", () => {

@@ -69,7 +69,10 @@ function close(a: number, b: number, tol = 1e-9): boolean {
 }
 
 function centerClose(mob: VMobject, expected: number[], tol = 1e-6): boolean {
-  const c = mob.get_center();
+  const center = mob.get_center();
+  const c: number[] = Array.isArray(center)
+    ? (center as number[])
+    : ((center as { toArray(): unknown }).toArray() as number[]);
   if (c.length !== expected.length) return false;
   return c.every((v, i) => close(v ?? NaN, expected[i] ?? NaN, tol));
 }

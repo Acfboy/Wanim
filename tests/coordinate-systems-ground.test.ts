@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import { VGroup, VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { Mobject } from "../src/mobject/mobject.js";
 import { Scene } from "../src/scene/scene.js";
@@ -127,7 +128,7 @@ describe("Axes ground truth (original manim)", () => {
 
   it("point_to_coords matches the original manim", () => {
     const a = new Axes([-3, 3, 1], [-2, 2, 1], 6, 4);
-    expect(a.point_to_coords([1, 1, 0]).map(Number)).toEqual([1, 1]);
+    expect((a.point_to_coords([1, 1, 0]) as unknown as { toArray(): number[] }).toArray().map(Number)).toEqual([1, 1]);
   });
 });
 

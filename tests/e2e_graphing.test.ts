@@ -16,6 +16,7 @@ import {
   ComplexPlane,
 } from "../src/mobject/graphing/coordinate_systems.js";
 import { NumberLine } from "../src/mobject/graphing/number_line.js";
+import { pointRows } from "../src/utils/arrays.js";
 import { BarChart } from "../src/mobject/graphing/probability.js";
 import { Graph, DiGraph } from "../src/mobject/graph.js";
 import { Dot } from "../src/mobject/geometry/arc.js";
@@ -40,7 +41,7 @@ function rows(value: unknown): number[][] {
 }
 
 function centerOf(mob: Mobject): number[] {
-  return mob.get_center().map(Number);
+  return pointRows(mob.get_center(), 3)[0] ?? [0, 0, 0];
 }
 
 describe("NumberLine include_tip (original manim: line shortened to tip.base)", () => {

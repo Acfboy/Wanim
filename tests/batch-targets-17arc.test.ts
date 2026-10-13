@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { pointRows } from "../src/utils/arrays.js";
 import {
   AnnularSector,
   Annulus,
@@ -202,7 +203,7 @@ describe("Star", () => {
   it("default star matches python vertex groups and width", () => {
     const st = new Star(5);
     expect(st.get_vertex_groups().length).toBe(1);
-    expect(st.get_vertex_groups()[0]?.length).toBe(10);
+    expect(pointRows(st.get_vertex_groups()[0] ?? [], 3).length).toBe(10);
     expect(close(st.width, 1.9021130325903073)).toBe(true);
   });
   it("custom radii match python", () => {

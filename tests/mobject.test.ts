@@ -35,7 +35,13 @@ function expectNumbersClose(actual: unknown, expected: readonly number[], tolera
 }
 
 function expectRowsClose(actual: NDArray, expected: readonly (readonly number[])[], tolerance = 1e-12): void {
-  expect(Array.from(actual.shape)).toEqual([expected.length, expected[0]?.length ?? 0]);
+  const expectedRows = (Array.isArray(expected)
+    ? (expected as unknown[])
+    : ((expected as { toArray(): unknown }).toArray() as unknown[])
+  ).map((row) =>
+    Array.isArray(row) ? row : ((row as { toArray(): unknown }).toArray() as number[]),
+  ) as number[][];
+  expect(Array.from(actual.shape)).toEqual([expected.length, expectedRows[0]?.length ?? 0]);
   expectNumbersClose(actual, expected.flat(), tolerance);
 }
 

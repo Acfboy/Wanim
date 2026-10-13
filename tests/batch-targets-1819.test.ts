@@ -46,9 +46,12 @@ function close(actual: number, expected: number, tol = 1e-9): boolean {
   return Math.abs(actual - expected) / Math.max(1, Math.abs(expected)) < tol;
 }
 
-function closeArr(actual: ArrayLike<number>, expected: number[], tol = 1e-9): boolean {
-  if (actual.length !== expected.length) return false;
-  return expected.every((v, i) => close(actual[i] as number, v, tol));
+function closeArr(actual: ArrayLike<number> | { toArray(): unknown }, expected: number[], tol = 1e-9): boolean {
+  const values: ArrayLike<number> = Array.isArray(actual)
+    ? actual
+    : ((actual as { toArray(): unknown }).toArray() as ArrayLike<number>);
+  if (values.length !== expected.length) return false;
+  return expected.every((v, i) => close(values[i] as number, v, tol));
 }
 
 // ---------------------------------------------------------------------------
