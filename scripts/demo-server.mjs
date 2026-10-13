@@ -22,7 +22,7 @@ const here = resolve(fileURLToPath(import.meta.url), "..");
 const root = resolve(here, "..");
 const port = Number(process.argv[2] ?? 5174);
 
-const REQUIRED = ["wanim.browser.js", "bridge.browser.js", "py2js.browser.js", "py-runtime.browser.js", "rapydscript.js", "wanim-element.browser.js"].map(
+const REQUIRED = ["wanim.browser.js", "bridge.browser.js", "py2js.browser.js", "py-runtime.browser.js", "rapydscript.js", "wanim-element.browser.js", "editor.browser.js"].map(
   (name) => join(root, "dist", name),
 );
 if (REQUIRED.some((file) => !existsSync(file))) {

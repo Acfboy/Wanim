@@ -23,6 +23,10 @@ const py2js = await import("py2js");
 const wanim = await import("wanim");
 wanim.configure_fonts(wanim.DEFAULT_FONT_URLS);
 
+// The CodeMirror editor is bundled separately (source: demo/editor.js) so the
+// page does not need an import map entry for it.
+const { createEditor } = await import("../dist/editor.browser.js");
+
 // Target logical frame rate for live playback.  Yields to requestAnimationFrame
 // until at least 1000/TARGET_FPS ms have passed before computing the next frame.
 const TARGET_FPS = 30;
@@ -320,14 +324,16 @@ class InteractiveThreeDDemo(InteractiveThreeDScene):
 `,
 };
 
-const codeEl = document.getElementById("code");
-const gutterEl = document.getElementById("gutter");
-const highlightEl = document.getElementById("highlight");
-const highlightCodeEl = document.getElementById("highlight-code");
 const presetEl = document.getElementById("preset");
 const stage = document.getElementById("stage");
 const outputEl = document.getElementById("output");
 const runBtn = document.getElementById("run");
+
+// Same editor setup as the website playground (One Dark + Python).
+const editor = createEditor({
+  parent: document.getElementById("editor"),
+  doc: PRESETS[presetEl.value],
+});
 
 // --- output log --------------------------------------------------------------
 // One status line per event, playground style: › info, ● done, ✗ error.
@@ -355,53 +361,6 @@ function logOutput(kind, text) {
   while (outputEl.childElementCount > MAX_OUTPUT_LINES) outputEl.firstElementChild.remove();
   outputEl.scrollTop = outputEl.scrollHeight;
 }
-
-// --- syntax highlighting + line numbers --------------------------------------
-// Prism is loaded from a CDN; if that fails the textarea still works.  The
-// highlighted <pre> sits behind a transparent textarea and scrolls in sync.
-// The gutter is plain DOM (no plugin) and scrolls with the textarea too.
-function updateGutter() {
-  const lines = codeEl.value.split("\n").length;
-  let html = "";
-  for (let index = 1; index <= lines; index += 1) {
-    html += `<div class="gutter-line">${index}</div>`;
-  }
-  gutterEl.innerHTML = html;
-}
-
-function highlight() {
-  const code = codeEl.value;
-  const prism = window.Prism;
-  if (prism?.languages?.python) {
-    highlightCodeEl.innerHTML = prism.highlight(code, prism.languages.python, "python") + "\n";
-  } else {
-    highlightCodeEl.textContent = code + "\n";
-  }
-  updateGutter();
-  syncScroll();
-}
-
-function syncScroll() {
-  highlightEl.scrollTop = codeEl.scrollTop;
-  highlightEl.scrollLeft = codeEl.scrollLeft;
-  gutterEl.scrollTop = codeEl.scrollTop;
-}
-
-codeEl.addEventListener("input", highlight);
-codeEl.addEventListener("scroll", syncScroll);
-// Keep the highlighted layer in sync once Prism finishes loading.
-window.addEventListener("load", highlight);
-window.addEventListener("DOMContentLoaded", highlight);
-
-// Tab inserts spaces instead of moving focus (Python indentation).
-codeEl.addEventListener("keydown", (event) => {
-  if (event.key !== "Tab") return;
-  event.preventDefault();
-  const start = codeEl.selectionStart;
-  const end = codeEl.selectionEnd;
-  codeEl.setRangeText("    ", start, end, "end");
-  highlight();
-});
 
 // --- compiler --------------------------------------------------------------
 let rapydscriptPromise = null;
@@ -456,7 +415,7 @@ async function run() {
     // Presentation runs never call `scene_finished`, so `stats.totalMs` stays
     // 0 there; measure the wall-clock time (compile + live playback) instead.
     const startedAt = performance.now();
-    const promise = py2js.runPythonOnCanvas(codeEl.value, stage, {
+    const promise = py2js.runPythonOnCanvas(editor.getValue(), stage, {
       quality: QUALITY,
       realtime: true,
       fps: TARGET_FPS,
@@ -485,8 +444,7 @@ async function run() {
 function loadPreset(name) {
   const source = PRESETS[name];
   if (source === undefined) return;
-  codeEl.value = source;
-  highlight();
+  editor.setValue(source);
   resetOutput();
 }
 
@@ -512,6 +470,9 @@ document.addEventListener(
 
 loadPreset(presetEl.value);
 resetOutput();
+
+// Automation handle for scripts/editor_smoke.mjs (and browser consoles).
+window.__wanimDemo = { editor, run };
 
 // --- embed ------------------------------------------------------------------
 // Builds a paste-ready <iframe> pointing at ./embed.html with the current code
