@@ -276,7 +276,7 @@ export function center_of_mass(points: number[][] | NDArray): NDArray {
   return array(centerOfMassRows(points)) as NDArray;
 }
 
-export function angle_of_vector(vector: number[] | readonly number[] | NDArray | number[][]): number | number[] {
+export function angle_of_vector(vector: number[] | readonly number[] | NDArray | number[][]): number | NDArray {
   if (isNDArray(vector)) {
     const shape = (vector as NDArray).shape;
     if (shape.length > 1) {
@@ -288,7 +288,7 @@ export function angle_of_vector(vector: number[] | readonly number[] | NDArray |
       const raw = (vector as NDArray).toArray() as unknown[][];
       const xs = (Array.isArray(raw[0]) ? raw[0] : [raw[0]]).map(numeric);
       const ys = (Array.isArray(raw[1]) ? raw[1] : [raw[1]]).map(numeric);
-      return xs.map((x, index) => Math.atan2(ys[index] ?? 0, x));
+      return array(xs.map((x, index) => Math.atan2(ys[index] ?? 0, x))) as NDArray;
     }
     const flat = ((vector as NDArray).toArray() as unknown[]).map(numeric);
     return Math.atan2(flat[1] ?? 0, flat[0] ?? 0);
@@ -567,7 +567,7 @@ export function find_intersection(
   p1s: number[] | number[][] | NDArray,
   v1s: number[] | number[][] | NDArray,
   threshold = 1e-5,
-): number[] | number[][] {
+): NDArray | NDArray[] {
   const p0info = toRows(p0s as VectorInput);
   const v0info = toRows(v0s as VectorInput);
   const p1info = toRows(p1s as VectorInput);
@@ -596,14 +596,14 @@ export function find_intersection(
       .reduce((sum, value, i) => sum + value * (normal[i] ?? 0), 0) / denom;
     return p0.map((value, i) => value + along * (v0[i] ?? 0));
   });
-  // Single-line form (all inputs are flat 1-D vectors, e.g. manimgl-style
-  // `find_intersection(p0, v0, p1, v1)`): return the single point flat so it
-  // can be used directly as a corner. Explicitly batched `[[...]]` inputs
-  // keep the batched `[[...]]` return shape.
+  // Superset of manimce: manimgl accepts single (flat) lines as well
+  // (`find_intersection(p0, v0, p1, v1)`), so that form returns one point as
+  // an NDArray, directly usable as a corner. Batched inputs keep manimce's
+  // `list[Point3D]` shape: a list of NDArray points.
   if (p0info.single && v0info.single && p1info.single && v1info.single) {
-    return results[0] ?? [0, 0, 0];
+    return array(results[0] ?? [0, 0, 0]) as NDArray;
   }
-  return results;
+  return results.map((row) => array(row) as NDArray);
 }
 
 export function shoelace_direction(x_y: number[][] | NDArray): string {
