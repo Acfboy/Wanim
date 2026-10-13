@@ -9,10 +9,10 @@
  *  - without `slides_mode` only `blueprint` phases pause for the user, every
  *    other phase plays and continues on its own;
  *  - with `slides_mode` every phase pauses, and the previous-page /
- *    replay-page controls become available;
- *  - "previous" rewinds to the *previous segment* (the page before the current
- *    one, possibly in the previous scene), restoring the interactive controls'
- *    values so a blueprint remembers the user's input;
+ *    replay-page controls stay available *while an animation plays*: pressing
+ *    next skips the rest of the current segment, pressing replay restarts it;
+ *  - "previous" replays the previous segment from its start (a blueprint is
+ *    rebuilt with the user's remembered inputs, a construct plays again);
  *  - "replay" re-runs the current segment: a blueprint is rebuilt (clearing
  *    the user's input) and a construct replays its animation;
  *  - "restart" (driven from JS only) rebuilds the whole presentation.
@@ -23,15 +23,16 @@
  * A presentation owns its pacing: scenes get their scheduler attached
  * explicitly, so two presentations on one page never interfere.
  *
- * Pages are rebuilt from the start of their scene whenever the player moves
- * backwards, because a phase function is the only source of truth for the
- * scene state.  The rebuild is fast-forwarded (animations computed without
- * drawing or waiting); only the page being entered normally is drawn.
+ * Segments are always *executed* to be reached: moving forward runs the next
+ * phase on the live state; moving backwards rebuilds the scene from its start
+ * and fast-forwards earlier phases (computed without drawing or waiting), then
+ * plays the target segment normally.  A page is therefore always replayed
+ * from its beginning when navigated to, never frozen at its end.
  */
 import type { Scene } from "../scene/scene.js";
 import type { SceneConstructor } from "../renderer/scene_runner.js";
 import type { InteractiveHost } from "./host.js";
-import { is_thenable } from "../utils/scheduler.js";
+import { is_thenable, type RenderScheduler } from "../utils/scheduler.js";
 
 /** The kind of half a story step is made of. */
 export type PresentationPhaseKind = "blueprint" | "construct";
@@ -45,6 +46,17 @@ export interface PresentationPhase {
 /** What a paused page can ask the presentation to do next. */
 export type PresentationAction = "next" | "previous" | "replay" | "restart" | "abort";
 
+/**
+ * Accessible names (tooltips / aria-labels) for the navigation controls.  The
+ * icons carry the look; hosts render the label into their accessible name and
+ * the stable `data-wanim-action` attribute for automation.
+ */
+export const PRESENTATION_CONTROL_LABELS = {
+  previous: "Previous page",
+  replay: "Replay this segment",
+  next: "Next page",
+} as const;
+
 /** Observable presentation position/state, reported through `onStateChange`. */
 export interface PresentationState {
   /** Index of the active scene (0-based). */
@@ -53,11 +65,11 @@ export interface PresentationState {
   sceneCount: number;
   /** Class name of the active scene. */
   sceneName: string;
-  /** Index of the paused phase (0-based). */
+  /** Index of the current phase (0-based). */
   phaseIndex: number;
   /** Number of phases of the active scene. */
   phaseCount: number;
-  /** Kind of the paused phase. */
+  /** Kind of the current phase. */
   phaseKind: PresentationPhaseKind;
   /** Whether the run is in slides mode. */
   slidesMode: boolean;
@@ -69,6 +81,35 @@ export interface PresentationState {
   canPrevious: boolean;
   /** Whether the replay-page control is available. */
   canReplay: boolean;
+}
+
+/**
+ * Wraps the run's scheduler so the player can cancel a single phase (skip or
+ * restart the segment being played) without cancelling the whole run.  A run
+ * abort through the base scheduler still propagates.
+ */
+class PhaseScheduler implements RenderScheduler {
+  readonly async = true;
+  private phaseCancelled = false;
+
+  constructor(private readonly base: RenderScheduler) {}
+
+  get cancelled(): boolean {
+    return this.phaseCancelled || this.base.cancelled;
+  }
+
+  next_frame(): Promise<void> {
+    return this.base.next_frame();
+  }
+
+  cancel(): void {
+    this.phaseCancelled = true;
+  }
+
+  /** Re-enable playing after an interrupted segment. */
+  resume(): void {
+    this.phaseCancelled = false;
+  }
 }
 
 /**
@@ -100,8 +141,9 @@ export interface ScenePresentationOptions {
   /** Create (once per activation) the scene instance for a scene class. */
   createScene: (sceneClass: SceneConstructor) => Scene;
   /**
-   * Run in slides mode: pause after every phase, expose previous/replay.
-   * Defaults to `false` (only blueprints pause).
+   * Run in slides mode: pause after every phase, keep the navigation controls
+   * live during playback, expose previous/replay.  Defaults to `false` (only
+   * blueprints pause, and the next control appears only then).
    */
   slidesMode?: boolean;
   /**
@@ -131,17 +173,21 @@ export class ScenePresentation {
 
   private scene: Scene | null = null;
   private sceneIndex = -1;
+  private activeSceneIndex = -1;
   private phases: PresentationPhase[] = [];
   private phaseIndex = 0;
   private pending: PresentationAction | null = null;
   private abortRequested = false;
   private done = false;
   private running = false;
+  private visited = false;
+  private interrupted = false;
+  private phaseScheduler: PhaseScheduler | null = null;
   private readonly disposers: Array<() => void> = [];
   /**
    * Remembered interactive-control values per blueprint page, keyed
-   * `sceneIndex:phaseIndex`.  This is what makes "previous" return to a
-   * blueprint with the user's inputs intact.
+   * `sceneIndex:phaseIndex`.  This is what makes moving back to a blueprint
+   * return with the user's inputs intact.
    */
   private readonly controlValues = new Map<string, unknown[]>();
 
@@ -178,12 +224,12 @@ export class ScenePresentation {
 
   // --- external controls -----------------------------------------------------
 
-  /** Advance to the next page (finishes at the last page in slides mode). */
+  /** Advance to the next page (or skip the playing segment, slides mode). */
   next(): void {
     this.request("next");
   }
 
-  /** Rewind to the previous page (possibly the previous scene's last page). */
+  /** Replay the previous page from its start (maybe the previous scene's last). */
   previous(): void {
     if (!this.slidesMode) return;
     this.request("previous");
@@ -236,45 +282,57 @@ export class ScenePresentation {
     this.pending = null;
     this.controlValues.clear();
     this.install_controls();
+    this.sceneIndex = 0;
+    this.phaseIndex = 0;
+    this.visited = false;
+    this.interrupted = false;
     try {
-      await this.activate_scene(0);
-      await this.enter_phase(0, false);
-      while (!this.abortRequested && !this.done) {
-        const phase = this.phases[this.phaseIndex]!;
-        if (!this.should_pause(phase.kind)) {
-          if (!(await this.advance_phase())) {
+      for (;;) {
+        if (this.abortRequested) break;
+        if (this.scene === null || this.activeSceneIndex !== this.sceneIndex) {
+          await this.activate_scene(this.sceneIndex);
+        }
+        if (this.phases.length === 0) {
+          // An empty storyboard contributes no page: move on (or finish).
+          if (!this.advance_index()) {
             this.done = true;
             break;
           }
           continue;
         }
-        this.show_controls(phase.kind);
-        this.emit_state();
-        const action = await this.wait_for_action();
-        this.hide_controls();
-        if (this.abortRequested) break;
-        switch (action) {
-          case "abort":
-            this.abortRequested = true;
-            break;
-          case "next":
-            if (phase.kind === "blueprint") this.record_control_values();
-            if (!(await this.advance_phase())) {
+        if (!this.visited) {
+          // Enter the current page: run it (watching for navigation when the
+          // controls are live) and settle on its state.
+          const action = await this.visit_page(this.phaseIndex);
+          this.visited = true;
+          this.interrupted = action !== null;
+          if (action !== null) this.pending = action;
+          continue;
+        }
+        let action = this.take_action();
+        if (action === null) {
+          const phase = this.phases[this.phaseIndex]!;
+          if (this.should_pause(phase.kind)) {
+            this.show_controls(phase.kind);
+            action = await this.wait_for_action();
+            this.hide_controls();
+          } else {
+            if (!this.advance_index()) {
               this.done = true;
+              break;
             }
-            break;
-          case "previous":
-            if (phase.kind === "blueprint") this.record_control_values();
-            await this.step_back();
-            break;
-          case "replay":
-            await this.replay_phase();
-            break;
-          case "restart":
-            this.controlValues.clear();
-            await this.activate_scene(0);
-            await this.enter_phase(0, false);
-            break;
+            this.visited = false;
+            continue;
+          }
+        } else {
+          this.hide_controls();
+        }
+        const finished = await this.navigate(action, this.interrupted);
+        this.interrupted = false;
+        this.visited = false;
+        if (finished) {
+          this.done = true;
+          break;
         }
       }
     } finally {
@@ -289,15 +347,22 @@ export class ScenePresentation {
   }
 
   /**
-   * Register the overlay buttons and keyboard shortcuts.  The labels double as
-   * the buttons' accessible names; "进入下一步" is also what external tooling
-   * (the slides harness) looks for to drive a story.
+   * Register the overlay buttons and keyboard shortcuts.  The icons carry the
+   * look; the English labels become the buttons' accessible names/tooltips,
+   * and hosts tag the elements with `data-wanim-action` for automation (the
+   * slides harness drives stories through `[data-wanim-action="next"]`).
    */
   private install_controls(): void {
     this.hide_controls();
-    this.disposers.push(this.host.addButton("上一页", () => this.previous(), "previous"));
-    this.disposers.push(this.host.addButton("重播本段", () => this.replay(), "replay"));
-    this.disposers.push(this.host.addButton("进入下一步", () => this.next(), "next"));
+    this.disposers.push(
+      this.host.addButton(PRESENTATION_CONTROL_LABELS.previous, () => this.previous(), "previous"),
+    );
+    this.disposers.push(
+      this.host.addButton(PRESENTATION_CONTROL_LABELS.replay, () => this.replay(), "replay"),
+    );
+    this.disposers.push(
+      this.host.addButton(PRESENTATION_CONTROL_LABELS.next, () => this.next(), "next"),
+    );
     this.disposers.push(
       this.host.onKey({
         next: () => this.next(),
@@ -325,10 +390,20 @@ export class ScenePresentation {
     const scene = this.createScene(sceneClass);
     this.scene = scene;
     this.sceneIndex = index;
+    this.activeSceneIndex = index;
     this.reset_scene(scene);
     scene.setup();
     this.phases = this.phases_of(scene);
     this.phaseIndex = 0;
+    // Wrap the run's scheduler so one segment can be cancelled (skipped or
+    // restarted) without aborting the whole presentation.
+    const base = scene.run_scheduler;
+    if (base !== null) {
+      this.phaseScheduler = new PhaseScheduler(base);
+      scene.set_run_scheduler(this.phaseScheduler);
+    } else {
+      this.phaseScheduler = null;
+    }
     const interactive = as_interactive(scene);
     if (interactive !== null) interactive.attach_host(this.host);
     this.apply_control_theme(scene);
@@ -340,6 +415,8 @@ export class ScenePresentation {
     const scene = this.scene;
     if (scene === null) return;
     this.scene = null;
+    this.activeSceneIndex = -1;
+    this.phaseScheduler = null;
     as_interactive(scene)?.detach_host();
     this.disposeScene?.(scene);
   }
@@ -380,78 +457,73 @@ export class ScenePresentation {
   // --- page execution ----------------------------------------------------------
 
   /**
-   * Run the phase at `index` from the current (live) state and settle on it:
-   * blueprints restore remembered control values, one frame is drawn.
+   * Run the phase at `index` and settle on its final state.  In slides mode
+   * the navigation controls stay live while it runs, so the user can skip or
+   * restart the segment mid-playback.
    */
-  private async enter_phase(index: number, replay: boolean): Promise<void> {
+  private async visit_page(index: number): Promise<PresentationAction | null> {
+    const phase = this.phases[index];
+    const watch = this.slidesMode && this.host.live;
+    if (phase === undefined) return null;
+    if (watch) this.show_controls(phase.kind);
+    else this.hide_controls();
+    const action = await this.run_watching(() => this.run_page(index));
+    if (action !== null) this.hide_controls();
+    return action;
+  }
+
+  private async run_page(index: number): Promise<void> {
     const phase = this.phases[index]!;
     await this.run_phase(phase);
-    if (phase.kind === "blueprint" && !replay) this.restore_control_values(index);
+    if (phase.kind === "blueprint") this.restore_control_values(index);
     this.settle();
   }
 
   /**
-   * Rebuild the current scene from its start and fast-forward to `target`:
-   * earlier phases run without drawing and without waiting, the target
-   * `construct` also completes instantly unless `replay` is set (which lets
-   * the animation play), and target blueprints restore their values.
+   * Run `run` while polling for navigation requests.  Only used in slides
+   * mode with a live host: the request cancels the running play (its current
+   * animation finishes to its end, later animations of the segment are
+   * skipped), the phase function unwinds and the action is returned.
    */
-  private async rewind_to(target: number, replay: boolean): Promise<void> {
-    const scene = this.scene;
-    if (scene === null) return;
-    this.reset_scene(scene);
-    scene.setup();
-    this.phases = this.phases_of(scene);
-    for (let index = 0; index <= target; index += 1) {
-      const phase = this.phases[index]!;
-      const isTarget = index === target;
-      const skip = !isTarget || (phase.kind === "construct" && !replay);
-      if (skip) await this.run_phase_skipping(phase);
-      else await this.run_phase(phase);
-      if (phase.kind === "blueprint" && (!isTarget || !replay)) {
-        this.restore_control_values(index);
+  private async run_watching(run: () => Promise<void>): Promise<PresentationAction | null> {
+    if (!this.slidesMode || !this.host.live) {
+      await run();
+      return null;
+    }
+    let settled = false;
+    let failure: unknown = null;
+    const promise = run().then(
+      () => {
+        settled = true;
+      },
+      (error: unknown) => {
+        settled = true;
+        failure = error;
+      },
+    );
+    try {
+      for (;;) {
+        if (settled) {
+          if (failure !== null) throw failure;
+          return null;
+        }
+        const action = this.take_action();
+        if (action !== null) {
+          this.phaseScheduler?.cancel();
+          await promise;
+          if (failure !== null) throw failure;
+          return action;
+        }
+        if (this.abortRequested || this.scene?.run_aborted()) {
+          this.phaseScheduler?.cancel();
+          await promise;
+          return "abort";
+        }
+        await this.host.nextFrame();
       }
+    } finally {
+      this.phaseScheduler?.resume();
     }
-    this.phaseIndex = target;
-    this.settle();
-  }
-
-  private async replay_phase(): Promise<void> {
-    const phase = this.phases[this.phaseIndex]!;
-    if (phase.kind === "blueprint") {
-      // Replaying a blueprint starts from the page's default state: drop the
-      // remembered values so the rebuilt controls show their initial values.
-      this.controlValues.delete(this.value_key(this.phaseIndex));
-    }
-    await this.rewind_to(this.phaseIndex, true);
-  }
-
-  private async advance_phase(): Promise<boolean> {
-    if (this.phaseIndex + 1 < this.phases.length) {
-      this.phaseIndex += 1;
-      await this.enter_phase(this.phaseIndex, false);
-      return true;
-    }
-    if (this.sceneIndex + 1 < this.sceneClasses.length) {
-      await this.activate_scene(this.sceneIndex + 1);
-      await this.enter_phase(0, false);
-      return true;
-    }
-    return false;
-  }
-
-  private async step_back(): Promise<boolean> {
-    if (this.phaseIndex > 0) {
-      await this.rewind_to(this.phaseIndex - 1, false);
-      return true;
-    }
-    if (this.sceneIndex > 0) {
-      await this.activate_scene(this.sceneIndex - 1);
-      this.phaseIndex = this.phases.length - 1;
-      await this.rewind_to(this.phaseIndex, false);
-      return true;
-    }
-    return false;
   }
 
   private async run_phase(phase: PresentationPhase): Promise<void> {
@@ -506,13 +578,119 @@ export class ScenePresentation {
     }
   }
 
-  /** Tick the active page; called by the wait loop. */
+  /** Tick the active page; called while waiting for user input. */
   private tick(): void {
     const scene = this.scene;
     if (scene === null) return;
     const interactive = as_interactive(scene);
     if (interactive !== null) interactive.presentation_frame();
     else this.tick_plain_scene(scene);
+  }
+
+  // --- navigation -------------------------------------------------------------
+
+  /**
+   * Rebuild the current scene from its start and fast-forward the phases
+   * before `target`, then land on `target` (not yet visited).  Blueprint
+   * values are restored while fast-forwarding so the replay continues from the
+   * remembered inputs.
+   */
+  private async rewind_before(target: number): Promise<void> {
+    const scene = this.scene;
+    if (scene === null) return;
+    this.reset_scene(scene);
+    scene.setup();
+    this.phases = this.phases_of(scene);
+    for (let index = 0; index < target; index += 1) {
+      const phase = this.phases[index]!;
+      await this.run_phase_skipping(phase);
+      if (phase.kind === "blueprint") this.restore_control_values(index);
+    }
+    this.phaseIndex = Math.max(0, target);
+  }
+
+  /**
+   * Rebuild the scene and fast-forward through the target phase itself: used
+   * after the user skipped a playing segment, so the next page starts from the
+   * complete state of the current one.
+   */
+  private async settle_skipping(target: number): Promise<void> {
+    await this.rewind_before(target);
+    const phase = this.phases[target];
+    if (phase === undefined) return;
+    await this.run_phase_skipping(phase);
+    if (phase.kind === "blueprint") this.restore_control_values(target);
+  }
+
+  /** Move the page cursor forward without running anything. */
+  private advance_index(): boolean {
+    if (this.phaseIndex + 1 < this.phases.length) {
+      this.phaseIndex += 1;
+      return true;
+    }
+    if (this.sceneIndex + 1 < this.sceneClasses.length) {
+      this.sceneIndex += 1;
+      this.scene = null;
+      this.activeSceneIndex = -1;
+      this.phaseIndex = 0;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Apply a navigation action.  Returns `true` when the presentation is over
+   * (advanced past the last page).  The caller re-visits the target page.
+   */
+  private async navigate(action: PresentationAction, interrupted: boolean): Promise<boolean> {
+    switch (action) {
+      case "abort":
+        this.abortRequested = true;
+        return false;
+      case "next": {
+        const phase = this.phases[this.phaseIndex]!;
+        if (phase.kind === "blueprint") this.record_control_values();
+        // Skipping a playing segment jumps to its end state before the next
+        // page builds on it.
+        if (interrupted) await this.settle_skipping(this.phaseIndex);
+        if (!this.advance_index()) return true;
+        return false;
+      }
+      case "previous": {
+        const phase = this.phases[this.phaseIndex]!;
+        if (phase.kind === "blueprint") this.record_control_values();
+        if (this.phaseIndex > 0) {
+          await this.rewind_before(this.phaseIndex - 1);
+          return false;
+        }
+        if (this.sceneIndex > 0) {
+          this.sceneIndex -= 1;
+          this.scene = null;
+          this.activeSceneIndex = -1;
+          await this.activate_scene(this.sceneIndex);
+          await this.rewind_before(this.phases.length - 1);
+          return false;
+        }
+        return false;
+      }
+      case "replay": {
+        const phase = this.phases[this.phaseIndex]!;
+        if (phase.kind === "blueprint") {
+          // Replaying a blueprint starts from the page's default state: drop
+          // the remembered values so the rebuilt controls show init values.
+          this.controlValues.delete(this.value_key(this.phaseIndex));
+        }
+        await this.rewind_before(this.phaseIndex);
+        return false;
+      }
+      case "restart":
+        this.controlValues.clear();
+        this.sceneIndex = 0;
+        this.scene = null;
+        this.activeSceneIndex = -1;
+        await this.activate_scene(0);
+        return false;
+    }
   }
 
   // --- waiting / actions -------------------------------------------------------

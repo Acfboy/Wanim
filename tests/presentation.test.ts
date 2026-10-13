@@ -60,10 +60,11 @@ class FakeHost implements InteractiveHost {
     };
   }
 
-  addButton(label: string, onClick: () => void, _icon?: unknown): () => void {
-    this.buttons.set(label, onClick);
+  addButton(label: string, onClick: () => void, icon?: unknown): () => void {
+    const key = typeof icon === "string" ? icon : label;
+    this.buttons.set(key, onClick);
     return () => {
-      this.buttons.delete(label);
+      this.buttons.delete(key);
     };
   }
 
@@ -205,14 +206,14 @@ describe("ScenePresentation", () => {
     expect(host.visible.get("next")).toBe(true);
     expect(host.visible.get("previous")).toBe(false);
 
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     // Construct ran and flowed straight into scene 2's blueprint.
     expect(factory.created[0]!.constructs).toBe(1);
     expect(controller.state.sceneIndex).toBe(1);
     expect(controller.state.phaseKind).toBe("blueprint");
 
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     expect(factory.created[1]!.constructs).toBe(1);
     await run;
@@ -244,7 +245,7 @@ describe("ScenePresentation", () => {
     expect(first.slider.get_value()).toBe(10);
 
     // Next: the construct pauses in slides mode.
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     expect(controller.state.phaseKind).toBe("construct");
     expect(first.constructs).toBe(1);
@@ -252,42 +253,160 @@ describe("ScenePresentation", () => {
 
     // Previous: rebuild the blueprint with the remembered input.  Rewinding
     // within a scene reuses its instance (the state is rebuilt from scratch).
-    host.click("上一页");
+    host.click("previous");
     await host.advance(2);
     expect(controller.state.phaseKind).toBe("blueprint");
     expect(first.slider).not.toBe(sliderBefore);
     expect(first.slider.get_value()).toBe(10);
 
     // Replay the blueprint: inputs are cleared back to the initial value.
-    host.click("重播本段");
+    host.click("replay");
     await host.advance(2);
     expect(first.slider.get_value()).toBe(1);
 
     // Forward again: the construct replays (second run on this instance).
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     expect(first.constructs).toBe(2);
 
     // Next from the last phase of scene 1 enters scene 2's blueprint.
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     expect(controller.state.sceneIndex).toBe(1);
     expect(controller.state.phaseKind).toBe("blueprint");
 
     // Previous on the first page of scene 2 goes back to scene 1's last page.
-    host.click("上一页");
+    host.click("previous");
     await host.advance(2);
     expect(controller.state.sceneIndex).toBe(0);
     expect(controller.state.phaseKind).toBe("construct");
 
     // Forward returns to scene 2's blueprint.
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     expect(controller.state.sceneIndex).toBe(1);
     expect(controller.state.phaseKind).toBe("blueprint");
 
     controller.abort();
     await host.advance(1);
+    await run;
+  });
+
+  test("previous replays the target construct from its start", async () => {
+    const host = new FakeHost();
+    const skips: boolean[] = [];
+    const factory: Factory = {
+      created: [],
+      create: (sceneClass: SceneConstructor) => {
+        const renderer = makeRenderer();
+        const setSkip = renderer.set_skip_animations.bind(renderer);
+        renderer.set_skip_animations = (skip: boolean): void => {
+          skips.push(skip);
+          setSkip(skip);
+        };
+        const scene = new sceneClass({ renderer, host });
+        if (scene instanceof InteractiveScene) factory.created.push(scene);
+        return scene;
+      },
+    };
+    const counts = [0, 0, 0];
+    class ThreeConstructs extends InteractiveScene {
+      setup(): void {
+        this.set_storyboard([
+          [null, () => { counts[0] += 1; }],
+          [null, () => { counts[1] += 1; }],
+          [null, () => { counts[2] += 1; }],
+        ]);
+      }
+    }
+    const controller = new ScenePresentation([ThreeConstructs], {
+      host,
+      slidesMode: true,
+      createScene: factory.create,
+    });
+    const run = controller.run();
+    await host.advance(2);
+    host.click("next");
+    await host.advance(2);
+    host.click("next");
+    await host.advance(2);
+    expect(controller.state.phaseIndex).toBe(2);
+    expect(counts).toEqual([1, 1, 1]);
+
+    // Previous on c2 must replay c1 from its start (c1 runs normally, only c0
+    // is fast-forwarded).
+    skips.length = 0;
+    host.click("previous");
+    await host.advance(3);
+    expect(controller.state.phaseIndex).toBe(1);
+    expect(counts).toEqual([2, 2, 1]);
+    expect(skips.filter(Boolean).length).toBe(1);
+
+    controller.abort();
+    await host.advance(1);
+    await run;
+  });
+
+  test("slides controls stay live during playback: next skips, replay restarts", async () => {
+    const host = new FakeHost();
+    let release: (() => void) | null = null;
+    let constructs = 0;
+    let secondPage = 0;
+    class SlowScene extends InteractiveScene {
+      setup(): void {
+        this.set_storyboard([
+          [null, () => {
+            constructs += 1;
+            if (this.renderer?.skip_animations === true) return;
+            return new Promise<void>((resolve) => {
+              release = resolve;
+            });
+          }],
+          [null, () => { secondPage += 1; }],
+        ]);
+      }
+    }
+    const factory = interactiveFactory(host);
+    const controller = new ScenePresentation([SlowScene], {
+      host,
+      slidesMode: true,
+      createScene: factory.create,
+    });
+    const run = controller.run();
+    await host.advance(2);
+
+    // The first segment is still playing, yet the controls are available.
+    expect(constructs).toBe(1);
+    expect(host.visible.get("next")).toBe(true);
+    expect(host.visible.get("replay")).toBe(true);
+
+    // "next" during playback skips the rest of the segment and advances.
+    host.click("next");
+    await host.advance(1);
+    expect(controller.state.phaseIndex).toBe(0);
+    release?.();
+    await host.advance(4);
+    expect(secondPage).toBe(1);
+    expect(controller.state.phaseIndex).toBe(1);
+
+    // "replay" during playback restarts the segment from its beginning.
+    host.click("previous");
+    await host.advance(3);
+    expect(controller.state.phaseIndex).toBe(0);
+    const before = constructs;
+    host.click("replay");
+    await host.advance(1);
+    release?.();
+    await host.advance(4);
+    expect(constructs).toBe(before + 1);
+    expect(controller.state.phaseIndex).toBe(0);
+
+    // Let the in-flight segment settle before aborting (in the browser the
+    // scheduler cancellation unwinds a real animation; this fake phase waits
+    // on a deferred the test owns).
+    release?.();
+    controller.abort();
+    await host.advance(3);
     await run;
   });
 
@@ -301,7 +420,7 @@ describe("ScenePresentation", () => {
     });
     const run = controller.run();
     await host.advance(1);
-    host.click("进入下一步");
+    host.click("next");
     await host.advance(2);
     expect(controller.state.phaseKind).toBe("construct");
 

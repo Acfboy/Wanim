@@ -399,6 +399,9 @@ export class DomInteractiveHost implements InteractiveHost {
     button.setAttribute("aria-label", label);
     if (icon !== undefined) {
       applyIcon(button, icon);
+      // Stable automation hook: scripts/tests select `[data-wanim-action]`
+      // instead of matching localized labels.
+      button.setAttribute("data-wanim-action", icon);
       const previous = this.iconButtons.get(icon);
       if (previous !== undefined) {
         previous.replaceWith(button);
