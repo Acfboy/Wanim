@@ -502,7 +502,7 @@ async function generateEmbed() {
   const width = Math.max(1, Math.round(Number(embedWidthEl.value) || 960));
   const height = Math.max(1, Math.round(Number(embedHeightEl.value) || 540));
   try {
-    const hash = await wanim.build_embed_hash(codeEl.value, {
+    const hash = await wanim.build_embed_hash(editor.getValue(), {
       quality: embedQualityEl.value,
     });
     const url = new URL("embed.html", location.href).href + hash;
