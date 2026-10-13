@@ -107,6 +107,9 @@ function ensureStyles(container: ParentNode): void {
   if (container.querySelector("#wanim-interactive-styles") !== null) return;
   const style = document.createElement("style");
   style.id = "wanim-interactive-styles";
+  // Append into the caller's scope, not always the document head: a canvas
+  // inside a shadow root needs its own copy, because document styles do not
+  // cross the shadow boundary.
   style.textContent = `
 .wanim-interactive-controls {
   display: flex;
@@ -160,7 +163,7 @@ function ensureStyles(container: ParentNode): void {
   transform: translateX(-50%);
 }
 `;
-  document.head.appendChild(style);
+  container.appendChild(style);
 }
 
 /**
