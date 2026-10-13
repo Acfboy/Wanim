@@ -482,18 +482,21 @@ export class InteractiveScene extends Scene {
 
   /**
    * Move the hover highlight to `control` (or clear it with `null`). Only
-   * controls implementing the optional `set_hovered` are notified.
+   * controls implementing the optional `set_hovered` are notified. `point` is
+   * forwarded on every call (not only on a control change) so a control can
+   * track which of its sub-parts the pointer is over (e.g. a slider knob).
    */
-  private set_hovered_control(control: (Mobject & InteractiveControl) | null): void {
-    if (control === this._hoveredControl) return;
-    this._hoveredControl?.set_hovered?.(false);
-    this._hoveredControl = control;
-    control?.set_hovered?.(true);
+  private set_hovered_control(control: (Mobject & InteractiveControl) | null, point?: readonly number[]): void {
+    if (control !== this._hoveredControl) {
+      this._hoveredControl?.set_hovered?.(false);
+      this._hoveredControl = control;
+    }
+    control?.set_hovered?.(true, point);
   }
 
   /** Re-evaluate which control the pointer is over. */
   private update_hover(point: readonly number[]): void {
-    this.set_hovered_control(this.find_control_at(point));
+    this.set_hovered_control(this.find_control_at(point), point);
   }
 
   /** Drop any active hover highlight (phase change, pointer leave, teardown). */
@@ -519,7 +522,7 @@ export class InteractiveScene extends Scene {
       this.on_background_pointer_down(point, event);
       return;
     }
-    this.set_hovered_control(control);
+    this.set_hovered_control(control, point);
     this._activeControl = control;
     control.on_press(point, { host: this.interactive_host, camera: this.camera });
   }
@@ -538,6 +541,10 @@ export class InteractiveScene extends Scene {
     if (this._activeControl !== null) {
       this._activeControl.on_release();
       this._activeControl = null;
+      // Hover updates are suspended while a drag is active, so re-evaluate the
+      // hover at the release point instead of leaving pre-drag state behind
+      // (e.g. a knob grown from hovering it before the drag started).
+      if (event !== undefined) this.update_hover(this.point_from_event(this.interactive_host, event));
       return;
     }
     if (this._phaseKind !== "blueprint") return;
