@@ -3,7 +3,7 @@ import { isNDArray, numeric, type ComplexPoint } from "./arrays.js";
 import { DOWN, OUT, PI, RIGHT, TAU, UP } from "../constants.js";
 import { adjacent_pairs } from "./iterables.js";
 
-type VectorInput = NDArray | number[] | number[][] | readonly number[];
+type VectorInput = NDArray | number[] | number[][] | readonly number[] | ReadonlyArray<NDArray | number[] | readonly number[]>;
 
 function toRows(value: VectorInput): { rows: number[][]; single: boolean } {
   if (isNDArray(value)) {
@@ -40,7 +40,7 @@ export function norm_squared(v: number[] | readonly number[] | NDArray): number 
   return flat.reduce((sum, value) => sum + value * value, 0);
 }
 
-export function cross(
+function crossRows(
   v1: number[] | readonly number[] | NDArray,
   v2: number[] | readonly number[] | NDArray,
 ): number[] {
@@ -53,7 +53,26 @@ export function cross(
   ];
 }
 
-export function normalize(
+/**
+ * Internal flat fast path of :func:`cross`: same values, returned as a plain
+ * `number[]`.  Public callers must use `cross`, which wraps the result in an
+ * `NDArray` to match manim's `np.cross`.
+ */
+export function _cross_flat(
+  v1: number[] | readonly number[] | NDArray,
+  v2: number[] | readonly number[] | NDArray,
+): number[] {
+  return crossRows(v1, v2);
+}
+
+export function cross(
+  v1: number[] | readonly number[] | NDArray,
+  v2: number[] | readonly number[] | NDArray,
+): NDArray {
+  return array(crossRows(v1, v2)) as NDArray;
+}
+
+function normalizeRows(
   vect: number[] | readonly number[] | NDArray,
   fall_back?: number[] | readonly number[] | NDArray | null,
 ): number[] {
@@ -66,21 +85,40 @@ export function normalize(
   return new Array(flat.length).fill(0);
 }
 
+/**
+ * Internal flat fast path of :func:`normalize`: same values, returned as a
+ * plain `number[]`.  Public callers must use `normalize`, which wraps the
+ * result in an `NDArray` to match manim's `normalize`.
+ */
+export function _normalize_flat(
+  vect: number[] | readonly number[] | NDArray,
+  fall_back?: number[] | readonly number[] | NDArray | null,
+): number[] {
+  return normalizeRows(vect, fall_back);
+}
+
+export function normalize(
+  vect: number[] | readonly number[] | NDArray,
+  fall_back?: number[] | readonly number[] | NDArray | null,
+): NDArray {
+  return array(normalizeRows(vect, fall_back)) as NDArray;
+}
+
 export function cartesian_to_spherical(
   vec: number[] | readonly number[] | NDArray,
-): number[] {
+): NDArray {
   const flat = toRows(vec as VectorInput).rows[0] ?? [0, 0, 0];
   const norm = Math.sqrt(
     flat.reduce((sum, value) => sum + value * value, 0),
   );
-  if (norm === 0) return [0, 0, 0];
+  if (norm === 0) return array([0, 0, 0]) as NDArray;
   const r = norm;
   const phi = Math.acos((flat[2] ?? 0) / r);
   const theta = Math.atan2(flat[1] ?? 0, flat[0] ?? 0);
-  return [r, theta, phi];
+  return array([r, theta, phi]) as NDArray;
 }
 
-export function cross2d(a: VectorInput, b: VectorInput): number | number[] {
+export function cross2d(a: VectorInput, b: VectorInput): number | NDArray {
   const left = toRows(a);
   const right = toRows(b);
   if (left.single && right.single) {
@@ -95,7 +133,7 @@ export function cross2d(a: VectorInput, b: VectorInput): number | number[] {
     const v = right.rows[right.single ? 0 : index] ?? [0, 0];
     result.push((u[0] ?? 0) * (v[1] ?? 0) - (u[1] ?? 0) * (v[0] ?? 0));
   }
-  return result;
+  return array(result) as NDArray;
 }
 
 export function normalize_along_axis(arr: NDArray, axis: number): NDArray {
@@ -181,7 +219,7 @@ export function quaternion_mult(...quats: Quaternion[]): number[] | number[][] {
   return result;
 }
 
-export function quaternion_conjugate(quaternion: Quaternion): number[] {
+function quaternionConjugateRows(quaternion: Quaternion): number[] {
   const result = quatRows(quaternion);
   for (let index = 1; index < result.length; index += 1) {
     result[index] = -(result[index] ?? 0);
@@ -189,22 +227,31 @@ export function quaternion_conjugate(quaternion: Quaternion): number[] {
   return result;
 }
 
+/** Internal flat fast path of :func:`quaternion_conjugate`. */
+export function _quaternion_conjugate_flat(quaternion: Quaternion): number[] {
+  return quaternionConjugateRows(quaternion);
+}
+
+export function quaternion_conjugate(quaternion: Quaternion): NDArray {
+  return array(quaternionConjugateRows(quaternion)) as NDArray;
+}
+
 export function R3_to_complex(point: readonly number[] | number[] | NDArray): ComplexPoint {
   const rows = quatRows(point as number[]);
   return { re: rows[0] ?? 0, im: rows[1] ?? 0 };
 }
 
-export function complex_to_R3(complex_num: ComplexPoint | readonly [number, number] | number): number[] {
+export function complex_to_R3(complex_num: ComplexPoint | readonly [number, number] | number): NDArray {
   if (typeof complex_num === "number") {
-    return [complex_num, 0, 0];
+    return array([complex_num, 0, 0]) as NDArray;
   }
   if (Array.isArray(complex_num)) {
-    return [complex_num[0] ?? 0, complex_num[1] ?? 0, 0];
+    return array([complex_num[0] ?? 0, complex_num[1] ?? 0, 0]) as NDArray;
   }
-  return [(complex_num as ComplexPoint).re ?? 0, (complex_num as ComplexPoint).im ?? 0, 0];
+  return array([(complex_num as ComplexPoint).re ?? 0, (complex_num as ComplexPoint).im ?? 0, 0]) as NDArray;
 }
 
-export function center_of_mass(points: number[][] | NDArray): number[] {
+function centerOfMassRows(points: number[][] | NDArray): number[] {
   if (isNDArray(points)) {
     const result = average(points as never, 0, undefined) as unknown;
     if (isNDArray(result)) {
@@ -218,6 +265,15 @@ export function center_of_mass(points: number[][] | NDArray): number[] {
   }
   const dim = Math.max(...rows.map((row) => row.length));
   return Array.from({ length: dim }, (_, index) => rows.reduce((sum, row) => sum + (row[index] ?? 0), 0) / rows.length);
+}
+
+/** Internal flat fast path of :func:`center_of_mass`. */
+export function _center_of_mass_flat(points: number[][] | NDArray): number[] {
+  return centerOfMassRows(points);
+}
+
+export function center_of_mass(points: number[][] | NDArray): NDArray {
+  return array(centerOfMassRows(points)) as NDArray;
 }
 
 export function angle_of_vector(vector: number[] | readonly number[] | NDArray | number[][]): number | number[] {
@@ -358,7 +414,7 @@ export function quaternion_from_angle_axis(
 ): number[] {
   const normalized = axis_normalized
     ? quatRows(axis as Quaternion)
-    : normalize(axis as number[] | readonly number[] | NDArray);
+    : normalizeRows(axis as number[] | readonly number[] | NDArray);
   const half = angle / 2;
   const s = Math.sin(half);
   return [Math.cos(half), ...normalized.map((value) => s * value)];
@@ -366,27 +422,40 @@ export function quaternion_from_angle_axis(
 
 export function angle_axis_from_quaternion(
   quaternion: Quaternion,
-): [number, number[]] {
+): [number, NDArray] {
   const flat = quatRows(quaternion);
-  const axis = normalize(flat.slice(1), [1, 0, 0]);
+  const axis = normalizeRows(flat.slice(1), [1, 0, 0]);
   let angle = 2 * Math.acos(flat[0] ?? 0);
   if (angle > TAU / 2) {
     angle = TAU - angle;
   }
-  return [angle, axis];
+  return [angle, array(axis) as NDArray];
 }
 
-export function rotation_matrix_transpose_from_quaternion(
-  quat: Quaternion,
-): number[][] {
-  const quat_inv = quaternion_conjugate(quat);
+function rotationMatrixTransposeRowsFromQuaternion(quat: Quaternion): number[][] {
+  const quat_inv = quaternionConjugateRows(quat);
   return [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(
     (basis) => (quaternion_mult(quat, [0, ...basis], quat_inv) as number[]).slice(1),
   );
 }
 
+/** Internal flat fast path of :func:`rotation_matrix_transpose_from_quaternion`. */
+export function _rotation_matrix_transpose_from_quaternion_flat(
+  quat: Quaternion,
+): number[][] {
+  return rotationMatrixTransposeRowsFromQuaternion(quat);
+}
+
+export function rotation_matrix_transpose_from_quaternion(
+  quat: Quaternion,
+): NDArray[] {
+  return rotationMatrixTransposeRowsFromQuaternion(quat).map(
+    (row) => array(row) as NDArray,
+  );
+}
+
 export function rotation_matrix_from_quaternion(quat: Quaternion): NDArray {
-  const rows = rotation_matrix_transpose_from_quaternion(quat);
+  const rows = rotationMatrixTransposeRowsFromQuaternion(quat);
   return array(transposeRows(rows)) as NDArray;
 }
 
@@ -415,13 +484,13 @@ function transposeNDArray(matrix: NDArray): NDArray {
 }
 
 export function z_to_vector(vector: VectorInput): NDArray {
-  const axis_z = normalize(vector as number[] | readonly number[] | NDArray);
-  let axis_y = normalize(cross(axis_z, [...RIGHT]));
-  let axis_x = cross(axis_y, axis_z);
+  const axis_z = normalizeRows(vector as number[] | readonly number[] | NDArray);
+  let axis_y = normalizeRows(crossRows(axis_z, [...RIGHT]));
+  let axis_x = crossRows(axis_y, axis_z);
   if (Math.hypot(...axis_y) === 0) {
     // The vector passed just so happened to be in the x direction.
-    axis_x = normalize(cross([...UP], axis_z));
-    axis_y = cross(axis_x, axis_z).map((value) => -value);
+    axis_x = normalizeRows(crossRows([...UP], axis_z));
+    axis_y = crossRows(axis_x, axis_z).map((value) => -value);
   }
   return array([
     [axis_x[0] ?? 0, axis_y[0] ?? 0, axis_z[0] ?? 0],
@@ -434,8 +503,8 @@ export function angle_between_vectors(
   v1: VectorInput,
   v2: VectorInput,
 ): number {
-  const a = normalize(v1 as number[] | readonly number[] | NDArray);
-  const b = normalize(v2 as number[] | readonly number[] | NDArray);
+  const a = normalizeRows(v1 as number[] | readonly number[] | NDArray);
+  const b = normalizeRows(v2 as number[] | readonly number[] | NDArray);
   const diff = Math.hypot(...a.map((value, index) => value - (b[index] ?? 0)));
   const sum = Math.hypot(...a.map((value, index) => value + (b[index] ?? 0)));
   return 2 * Math.atan2(diff, sum);
@@ -443,25 +512,34 @@ export function angle_between_vectors(
 
 export function complex_func_to_R3_func(
   complex_func: (value: ComplexPoint) => ComplexPoint | number,
-): (point: readonly number[] | number[] | NDArray) => number[] {
+): (point: readonly number[] | number[] | NDArray) => NDArray {
   return (p) => complex_to_R3(complex_func(R3_to_complex(p)));
+}
+
+function midpointRows(point1: VectorInput, point2: VectorInput): number[] {
+  const rows = [
+    toRows(point1).rows[0] ?? [],
+    toRows(point2).rows[0] ?? [],
+  ];
+  return centerOfMassRows(rows);
+}
+
+/** Internal flat fast path of :func:`midpoint`. */
+export function _midpoint_flat(point1: VectorInput, point2: VectorInput): number[] {
+  return midpointRows(point1, point2);
 }
 
 export function midpoint(
   point1: VectorInput,
   point2: VectorInput,
-): number[] {
-  const rows = [
-    toRows(point1).rows[0] ?? [],
-    toRows(point2).rows[0] ?? [],
-  ];
-  return center_of_mass(rows);
+): NDArray {
+  return array(midpointRows(point1, point2)) as NDArray;
 }
 
 export function line_intersection(
   line1: VectorInput,
   line2: VectorInput,
-): number[] {
+): NDArray {
   const first = toRows(line1).rows;
   const second = toRows(line2).rows;
   if ([...first, ...second].some((point) => (point[2] ?? 0) !== 0)) {
@@ -472,15 +550,15 @@ export function line_intersection(
   );
   const [a1 = [0, 0, 1], b1 = [0, 0, 1]] = padded[0] ?? [];
   const [a2 = [0, 0, 1], b2 = [0, 0, 1]] = padded[1] ?? [];
-  const l1 = cross(a1, b1);
-  const l2 = cross(a2, b2);
-  const [x = 0, y = 0, z = 0] = cross(l1, l2);
+  const l1 = crossRows(a1, b1);
+  const l2 = crossRows(a2, b2);
+  const [x = 0, y = 0, z = 0] = crossRows(l1, l2);
   if (z === 0) {
     throw valueError(
       "The lines are parallel, there is no unique intersection point.",
     );
   }
-  return [x / z, y / z, 0];
+  return array([x / z, y / z, 0]) as NDArray;
 }
 
 export function find_intersection(
@@ -508,7 +586,7 @@ export function find_intersection(
     const v0 = v0rows[index] ?? [];
     const p1 = p1rows[index] ?? [];
     const v1 = v1rows[index] ?? [];
-    const normal = cross(v1, cross(v0, v1));
+    const normal = crossRows(v1, crossRows(v0, v1));
     const denom = Math.max(
       v0.reduce((sum, value, i) => sum + value * (normal[i] ?? 0), 0),
       threshold,
@@ -570,7 +648,7 @@ export function earclip_triangulation(verts: number[][] | NDArray, ring_ends: nu
     const j_range = groups[1] ?? [];
     // Closest point on the attached rings to an estimated midpoint of the
     // detached rings.
-    const tmp_j_vert = midpoint(
+    const tmp_j_vert = midpointRows(
       vertRows[j_range[0] ?? 0] ?? [],
       vertRows[j_range[Math.floor(j_range.length / 2)] ?? 0] ?? [],
     );
@@ -754,25 +832,42 @@ function earcut_single_ring(verts2d: number[][]): number[] {
   return result;
 }
 
-export function perpendicular_bisector(
+function perpendicularBisectorRows(
   line: Array<number[] | readonly number[] | NDArray>,
   norm_vector: number[] | readonly number[] | NDArray = OUT,
 ): number[][] {
   const [p1 = [0, 0, 0], p2 = [0, 0, 0]] = line;
   const a = toRows(p1 as VectorInput).rows[0] ?? [];
   const b = toRows(p2 as VectorInput).rows[0] ?? [];
-  const direction = cross(
+  const direction = crossRows(
     a.map((v, k) => v - (b[k] ?? 0)),
     toRows(norm_vector as VectorInput).rows[0] ?? [],
   );
-  const m = midpoint(a, b);
+  const m = midpointRows(a, b);
   return [
     m.map((v, k) => v + (direction[k] ?? 0)),
     m.map((v, k) => v - (direction[k] ?? 0)),
   ];
 }
 
-export function get_unit_normal(
+/** Internal flat fast path of :func:`perpendicular_bisector`. */
+export function _perpendicular_bisector_flat(
+  line: Array<number[] | readonly number[] | NDArray>,
+  norm_vector: number[] | readonly number[] | NDArray = OUT,
+): number[][] {
+  return perpendicularBisectorRows(line, norm_vector);
+}
+
+export function perpendicular_bisector(
+  line: Array<number[] | readonly number[] | NDArray>,
+  norm_vector: number[] | readonly number[] | NDArray = OUT,
+): NDArray[] {
+  return perpendicularBisectorRows(line, norm_vector).map(
+    (row) => array(row) as NDArray,
+  );
+}
+
+function getUnitNormalRows(
   v1: number[] | readonly number[] | NDArray,
   v2: number[] | readonly number[] | NDArray,
   tol = 1e-6,
@@ -793,7 +888,7 @@ export function get_unit_normal(
     // Normal scenario: v1 and v2 are both non-null.
     const u1 = np_v1.map((value) => value / div1);
     const u2 = np_v2.map((value) => value / div2);
-    const cp = cross(u1, u2);
+    const cp = crossRows(u1, u2);
     const cp_norm = Math.sqrt(norm_squared(cp));
     if (cp_norm > tol) return cp.map((value) => value / cp_norm);
     // Otherwise, v1 and v2 were aligned.
@@ -816,6 +911,23 @@ export function get_unit_normal(
   // Because the norm(u) == 0 case was filtered in the beginning, there is
   // no need to check if the norm of cp is 0.
   return cp.map((value) => value / cp_norm);
+}
+
+/** Internal flat fast path of :func:`get_unit_normal`. */
+export function _get_unit_normal_flat(
+  v1: number[] | readonly number[] | NDArray,
+  v2: number[] | readonly number[] | NDArray,
+  tol = 1e-6,
+): number[] {
+  return getUnitNormalRows(v1, v2, tol);
+}
+
+export function get_unit_normal(
+  v1: number[] | readonly number[] | NDArray,
+  v2: number[] | readonly number[] | NDArray,
+  tol = 1e-6,
+): NDArray {
+  return array(getUnitNormalRows(v1, v2, tol)) as NDArray;
 }
 
 export function compass_directions(
@@ -853,16 +965,16 @@ export function regularVertices(
 
 export function spherical_to_cartesian(
   spherical: number[] | readonly number[] | NDArray,
-): number[] {
+): NDArray {
   const flat = toRows(spherical as VectorInput).rows[0] ?? [0, 0, 0];
   const r = flat[0] ?? 0;
   const theta = flat[1] ?? 0;
   const phi = flat[2] ?? 0;
-  return [
+  return array([
     r * Math.cos(theta) * Math.sin(phi),
     r * Math.sin(theta) * Math.sin(phi),
     r * Math.cos(phi),
-  ];
+  ]) as NDArray;
 }
 
 export function thick_diagonal(dim: number, thickness = 2): NDArray {

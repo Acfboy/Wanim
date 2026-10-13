@@ -2,7 +2,7 @@ import { add, array, concatenate, multiply, subtract, type NDArray } from "numpy
 import { MethodWithArgs } from "../data_structures.js";
 import { DEFAULT_MOBJECT_TO_EDGE_BUFFER, DEFAULT_MOBJECT_TO_MOBJECT_BUFFER, DL, DOWN, IN, LEFT, MED_SMALL_BUFF, ORIGIN, OUT, RIGHT, TAU, UP } from "../constants.js";
 import { BLACK, ManimColor, WHITE, color_gradient, interpolate_color, type ParsableManimColor } from "../utils/color/core.js";
-import { angle_between_vectors, cross, normalize, rotation_matrix } from "../utils/space_ops.js";
+import { angle_between_vectors, _cross_flat, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { MultiAnimationOverrideException } from "../utils/exceptions.js";
 import { remove_list_redundancies } from "../utils/iterables.js";
 import { bump_mobject_geometry_epoch, bump_mobject_structure_epoch } from "../utils/render_epoch.js";
@@ -1139,28 +1139,37 @@ export class Mobject {
     this.save_image(name);
   }
 
-  get_center(): number[] {
+  get_center(): NDArray {
     return this.get_critical_point(Array.from({ length: this.dim }, () => 0));
   }
 
-  get_center_of_mass(): number[] {
+  get_center_of_mass(): NDArray {
     const all = pointRows(this.get_all_points(), this.dim);
-    if (all.length === 0) return Array.from({ length: this.dim }, () => NaN);
-    return Array.from(
+    if (all.length === 0) return array(Array.from({ length: this.dim }, () => NaN)) as NDArray;
+    return array(Array.from(
       { length: this.dim },
       (_, index) => all.reduce((sum, point) => sum + (point[index] ?? 0), 0) / all.length,
-    );
+    )) as NDArray;
   }
 
-  getCenterOfMass(): number[] {
+  getCenterOfMass(): NDArray {
     return this.get_center_of_mass();
   }
 
-  getCenter(): number[] {
+  getCenter(): NDArray {
     return this.get_center();
   }
 
-  get_critical_point(direction: readonly number[] | NDArray): number[] {
+  get_critical_point(direction: readonly number[] | NDArray): NDArray {
+    return array(this._get_critical_point_flat(direction)) as NDArray;
+  }
+
+  /**
+   * Internal flat fast path of `get_critical_point`: same values, returned as
+   * a plain `number[]`.  Hot per-frame layout code (move_to and friends) uses
+   * this to avoid the fixed NDArray construction cost.
+   */
+  _get_critical_point_flat(direction: readonly number[] | NDArray): number[] {
     const result = Array.from({ length: this.dim }, () => 0);
     const boundary = this.get_points_defining_boundary();
     const directionValues = Array.isArray(direction) && (direction.length === 0 || typeof (direction as readonly unknown[])[0] === "number")
@@ -1197,15 +1206,15 @@ export class Mobject {
     return result;
   }
 
-  getCriticalPoint(direction: readonly number[] = ORIGIN): number[] {
+  getCriticalPoint(direction: readonly number[] = ORIGIN): NDArray {
     return this.get_critical_point(direction);
   }
 
-  get_left(): number[] { return this.get_critical_point([-1, 0, 0]); }
-  get_right(): number[] { return this.get_critical_point([1, 0, 0]); }
-  get_top(): number[] { return this.get_critical_point([0, 1, 0]); }
-  get_bottom(): number[] { return this.get_critical_point([0, -1, 0]); }
-  get_center_point(): number[] { return this.get_center(); }
+  get_left(): NDArray { return this.get_critical_point([-1, 0, 0]); }
+  get_right(): NDArray { return this.get_critical_point([1, 0, 0]); }
+  get_top(): NDArray { return this.get_critical_point([0, 1, 0]); }
+  get_bottom(): NDArray { return this.get_critical_point([0, -1, 0]); }
+  get_center_point(): NDArray { return this.get_center(); }
 
   get_coord(dim: number, direction: readonly number[] | NDArray = ORIGIN): number {
     const directionValues = pointRows(direction, this.dim)[0] ?? [];
@@ -1393,7 +1402,7 @@ export class Mobject {
         if ((abs_vect[index] ?? 0) > (abs_vect[dim] ?? 0)) dim = index;
       }
       const max_val = (space_lengths[dim] ?? 0) - buff;
-      const edge_center = this.get_edge_center(vect);
+      const edge_center = this._get_critical_point_flat(vect);
       const dot = edge_center.reduce((sum, value, index) => sum + value * ((vect as readonly number[])[index] ?? 0), 0);
       if (dot > max_val) {
         this.to_edge(vect, buff);
@@ -1403,16 +1412,16 @@ export class Mobject {
   }
 
   is_off_screen(): boolean {
-    if ((this.get_left()[0] ?? 0) > Number(config.get("frame_x_radius") ?? 7.111111111111111)) {
+    if ((this._get_critical_point_flat([-1, 0, 0])[0] ?? 0) > Number(config.get("frame_x_radius") ?? 7.111111111111111)) {
       return true;
     }
-    if ((this.get_right()[0] ?? 0) < -Number(config.get("frame_x_radius") ?? 7.111111111111111)) {
+    if ((this._get_critical_point_flat([1, 0, 0])[0] ?? 0) < -Number(config.get("frame_x_radius") ?? 7.111111111111111)) {
       return true;
     }
-    if ((this.get_bottom()[1] ?? 0) > Number(config.get("frame_y_radius") ?? 4)) {
+    if ((this._get_critical_point_flat([0, -1, 0])[1] ?? 0) > Number(config.get("frame_y_radius") ?? 4)) {
       return true;
     }
-    const rv: boolean = (this.get_top()[1] ?? 0) < -Number(config.get("frame_y_radius") ?? 4);
+    const rv: boolean = (this._get_critical_point_flat([0, 1, 0])[1] ?? 0) < -Number(config.get("frame_y_radius") ?? 4);
     return rv;
   }
 
@@ -1425,7 +1434,8 @@ export class Mobject {
   }
 
   put_start_and_end_on(start: readonly number[] | NDArray, end: readonly number[] | NDArray): this {
-    const [current_start, current_end] = this.get_start_and_end();
+    const current_start = this._get_start_flat();
+    const current_end = this._get_end_flat();
     const current_vector = subtractPoints(current_end, current_start, this.dim);
     if (current_vector.every((value) => value === 0)) {
       console.warn(
@@ -1436,7 +1446,7 @@ export class Mobject {
       return this;
     }
     const target_vector = subtractPoints(vector(end, this.dim), vector(start, this.dim), this.dim);
-    const cross_product = cross(current_vector, target_vector);
+    const cross_product = _cross_flat(current_vector, target_vector);
     const axis = norm(cross_product) !== 0
       ? normalize(cross_product)
       : [...OUT];
@@ -1453,8 +1463,8 @@ export class Mobject {
     return this;
   }
 
-  get_zenith(): number[] { return this.get_edge_center(OUT); }
-  get_nadir(): number[] { return this.get_edge_center(IN); }
+  get_zenith(): NDArray { return this.get_edge_center(OUT); }
+  get_nadir(): NDArray { return this.get_edge_center(IN); }
 
   match_dim_size(mobject: Mobject, dim: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
     const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
@@ -1499,7 +1509,7 @@ export class Mobject {
   align_to(mobject_or_point: Mobject | readonly number[] | NDArray, direction: readonly number[] | NDArray = ORIGIN): this {
     let point: number[];
     if (mobject_or_point instanceof Mobject) {
-      point = mobject_or_point.get_critical_point(direction);
+      point = mobject_or_point._get_critical_point_flat(direction);
     } else {
       point = vector(mobject_or_point, this.dim);
     }
@@ -1534,10 +1544,11 @@ export class Mobject {
     outer_color: ParsableManimColor = BLACK,
   ): this {
     const resolved_center = center === undefined || center === null
-      ? this.get_center()
+      ? (pointRows(this.get_center(), this.dim)[0] ?? [])
       : vector(center, this.dim);
     for (const mob of this.family_members_with_points()) {
-      let t = norm(subtractPoints(mob.get_center(), resolved_center, this.dim)) / radius;
+      const mobCenter = pointRows(mob.get_center(), this.dim)[0] ?? [];
+      let t = norm(subtractPoints(mobCenter, resolved_center, this.dim)) / radius;
       t = Math.min(t, 1);
       const mob_color = interpolate_color(
         new ManimColor(inner_color), new ManimColor(outer_color), t,
@@ -1551,7 +1562,7 @@ export class Mobject {
     const point_func = point_to_num_func ?? ((point: number[]): number => point[0] ?? 0);
     let key_func = submob_func;
     if (key_func === null || key_func === undefined) {
-      key_func = (m: Mobject): number => point_func(m.get_center());
+      key_func = (m: Mobject): number => point_func(pointRows(m.get_center(), this.dim)[0] ?? []);
     }
     const resolved = key_func;
     this.submobjects.sort((a, b) => {
@@ -1575,7 +1586,8 @@ export class Mobject {
   }
 
   set_z_index_by_z_Point3D(): this {
-    const z_coord = this.get_center()[this.get_center().length - 1] ?? 0;
+    const center = pointRows(this.get_center(), this.dim)[0] ?? [];
+    const z_coord = center[center.length - 1] ?? 0;
     this.set_z_index(z_coord);
     return this;
   }
@@ -1615,7 +1627,7 @@ export class Mobject {
     if (resolved_about_edge !== undefined && resolved_about_edge !== null) assertFinite(vector(resolved_about_edge, this.dim));
     const center = resolved_about_point !== undefined && resolved_about_point !== null
       ? vector(resolved_about_point, this.dim)
-      : this.get_critical_point(resolved_about_edge ?? ORIGIN);
+      : this._get_critical_point_flat(resolved_about_edge ?? ORIGIN);
     const dim = this.dim;
     // NOTE: Python `scale` does `scale_factor * points` with numpy
     // broadcasting, so a vector factor like `[2.0, 0.7, 1.0]` scales each
@@ -1755,19 +1767,19 @@ export class Mobject {
   ): this {
     let target: number[];
     if (pointOrMobject instanceof Mobject) {
-      target = pointOrMobject.get_critical_point(alignedEdge);
+      target = pointOrMobject._get_critical_point_flat(alignedEdge);
     } else {
       target = vector(pointOrMobject, this.dim);
     }
     assertFinite(target);
-    const pointToAlign = this.get_critical_point(alignedEdge);
+    const pointToAlign = this._get_critical_point_flat(alignedEdge);
     const mask = vector(coorMask, this.dim);
     assertFinite(mask);
     const delta = subtractPoints(target, pointToAlign, this.dim).map((value, index) => value * (mask[index] ?? 1));
     return this.shift(delta);
   }
 
-  center(): this { return this.shift(scalePoint(this.get_center(), -1)); }
+  center(): this { return this.shift(scalePoint(pointRows(this.get_center(), this.dim)[0] ?? [], -1)); }
   move_to_origin(): this { return this.move_to(ORIGIN); }
   set_x(value: number, direction: readonly number[] | NDArray = ORIGIN): this { return this.set_coord(value, 0, direction); }
   set_y(value: number, direction: readonly number[] | NDArray = ORIGIN): this { return this.set_coord(value, 1, direction); }
@@ -1806,7 +1818,7 @@ export class Mobject {
     const sign = directionValues.map((value) => Math.sign(value));
     const frameRadii = [Number(config.get("frame_x_radius") ?? 7.111111111111111), Number(config.get("frame_y_radius") ?? 4), 0];
     const targetPoint = sign.map((value, index) => value * (frameRadii[index] ?? 0));
-    const pointToAlign = this.get_critical_point(direction);
+    const pointToAlign = this._get_critical_point_flat(direction);
     const directionScaled = directionValues.map((value) => buffNumber * value);
     let shiftValue = targetPoint.map((value, index) => value - (pointToAlign[index] ?? 0) - (directionScaled[index] ?? 0));
     shiftValue = shiftValue.map((value, index) => value * Math.abs(sign[index] ?? 0));
@@ -1827,7 +1839,7 @@ export class Mobject {
     const dim = this.dim;
     const center = about_point !== undefined && about_point !== null
       ? vector(about_point, dim)
-      : this.get_critical_point(about_edge ?? ORIGIN);
+      : this._get_critical_point_flat(about_edge ?? ORIGIN);
     const cx = center[0] ?? 0;
     const cy = center[1] ?? 0;
     const cz = center[2] ?? 0;
@@ -1892,7 +1904,7 @@ export class Mobject {
   stretch(factor: number, dim: number, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null): this {
     const center = about_point !== undefined && about_point !== null
       ? vector(about_point, this.dim)
-      : this.get_critical_point(about_edge ?? ORIGIN);
+      : this._get_critical_point_flat(about_edge ?? ORIGIN);
     // Fast path: one flat pass per member (`(p[dim] - c) * f + c`), matching
     // `apply_points_function_about_point`'s op order without the per-row
     // numpy round trip.  `stretch_to_fit_*` runs per live bar/rectangle in
@@ -2034,7 +2046,7 @@ export class Mobject {
     const dim = this.dim;
     const center = resolved_point !== undefined && resolved_point !== null
       ? vector(resolved_point, dim)
-      : this.get_critical_point(resolved_edge ?? ORIGIN);
+      : this._get_critical_point_flat(resolved_edge ?? ORIGIN);
     // Fast path: apply the (dim x dim) matrix row-wise on the flat backing
     // store, mirroring `apply_points_function_about_point`'s numpy op order.
     const m00 = full_matrix[0]?.[0] ?? 0; const m01 = full_matrix[0]?.[1] ?? 0; const m02 = full_matrix[0]?.[2] ?? 0;
@@ -2091,7 +2103,7 @@ export class Mobject {
   }
 
   apply_function_to_position(func: (point: number[]) => number[] | NDArray): this {
-    this.move_to(func(this.get_center()));
+    this.move_to(func(pointRows(this.get_center(), this.dim)[0] ?? []));
     return this;
   }
 
@@ -2156,23 +2168,32 @@ export class Mobject {
 
   set_points(points: unknown): this { return this.copy_array_from(points); }
 
-  get_start(): number[] { this.throw_error_if_no_points("get_start"); return pointAt(this.points, 0, this.dim); }
-  get_end(): number[] { this.throw_error_if_no_points("get_end"); return pointAt(this.points, this.get_num_points() - 1, this.dim); }
+  get_start(): NDArray { return array(this._get_start_flat()) as NDArray; }
+  get_end(): NDArray { return array(this._get_end_flat()) as NDArray; }
   get_midpoint(): NDArray { return this.point_from_proportion(0.5); }
 
-  get_start_and_end(): [number[], number[]] {
+  /**
+   * Internal flat fast path of `get_start` / `get_end`: same values, returned
+   * as a plain `number[]`.  Hot per-frame code (line geometry, camera
+   * fitting, interpolation) reads these without paying the NDArray
+   * construction cost.
+   */
+  _get_start_flat(): number[] { this.throw_error_if_no_points("get_start"); return pointAt(this.points, 0, this.dim); }
+  _get_end_flat(): number[] { this.throw_error_if_no_points("get_end"); return pointAt(this.points, this.get_num_points() - 1, this.dim); }
+
+  get_start_and_end(): [NDArray, NDArray] {
     return [this.get_start(), this.get_end()];
   }
 
-  get_edge_center(direction: readonly number[] | NDArray): number[] {
+  get_edge_center(direction: readonly number[] | NDArray): NDArray {
     return this.get_critical_point(direction);
   }
 
-  get_corner(direction: readonly number[] | NDArray): number[] {
+  get_corner(direction: readonly number[] | NDArray): NDArray {
     return this.get_critical_point(direction);
   }
 
-  get_boundary_point(direction: readonly number[] | NDArray): number[] {
+  get_boundary_point(direction: readonly number[] | NDArray): NDArray {
     const allPoints = pointRows(this.get_points_defining_boundary(), this.dim);
     const directionValues = pointFrom(direction, this.dim).toArray() as number[];
     let bestIndex = 0;
@@ -2185,7 +2206,7 @@ export class Mobject {
         bestIndex = index;
       }
     }
-    return [...(allPoints[bestIndex] ?? Array.from({ length: this.dim }, () => 0))];
+    return array(allPoints[bestIndex] ?? Array.from({ length: this.dim }, () => 0)) as NDArray;
   }
 
   point_from_proportion(alpha: number): NDArray {
@@ -2663,7 +2684,7 @@ export class Mobject {
       const targetAligner = resolvedIndexOfSubmobjectToAlign !== null && resolvedIndexOfSubmobjectToAlign !== undefined
         ? (mob.__getitem__(resolvedIndexOfSubmobjectToAlign) as Mobject)
         : mob;
-      targetPoint = targetAligner.get_critical_point(
+      targetPoint = targetAligner._get_critical_point_flat(
         addPoints(npAlignedEdge, npDirection, this.dim),
       );
     } else {
@@ -2677,7 +2698,7 @@ export class Mobject {
     } else {
       aligner = this;
     }
-    const pointToAlign = aligner.get_critical_point(
+    const pointToAlign = aligner._get_critical_point_flat(
       subtractPoints(npAlignedEdge, npDirection, this.dim),
     );
     const mask = vector(resolvedCoorMask, this.dim);
@@ -2791,7 +2812,7 @@ export class Mobject {
 
   setZIndex(value: number, family = true): this { return this.set_z_index(value, family); }
 
-  get_z_index_reference_point(): number[] { return this.get_center(); }
+  get_z_index_reference_point(): NDArray { return this.get_center(); }
 
   throw_error_if_no_points(methodName = "method"): void {
     if (!this.has_no_points()) return;
@@ -2897,7 +2918,11 @@ export class Mobject {
         false,
       );
     }
-    this.shift(subtractPoints(other.get_center(), this.get_center(), this.dim));
+    this.shift(subtractPoints(
+      pointRows(other.get_center(), this.dim)[0] ?? [],
+      pointRows(this.get_center(), this.dim)[0] ?? [],
+      this.dim,
+    ));
     return this;
   }
 

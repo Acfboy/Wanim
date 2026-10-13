@@ -2,7 +2,7 @@ import { array, type NDArray } from "numpy-ts";
 import { _cContiguousRows } from "./arrays.js";
 import { OUT, PI } from "../constants.js";
 import { interpolate } from "./bezier.js";
-import { cross, normalize, rotation_matrix } from "./space_ops.js";
+import { _cross_flat, normalize, rotation_matrix } from "./space_ops.js";
 
 export type PathFuncType = (
   start_points: NDArray,
@@ -180,7 +180,7 @@ export function path_along_arc(
     );
     if (arc_angle !== Math.PI) {
       const crossRows = vects.map((vect) =>
-        cross(unit_axis, vect.map((value) => value / 2.0)),
+        _cross_flat(unit_axis, vect.map((value) => value / 2.0)),
       );
       const tanHalf = Math.tan(arc_angle / 2);
       centers = centers.map((center, index) =>

@@ -177,7 +177,8 @@ export class LabeledLine extends Line {
     );
 
     // Compute Label Position
-    const [line_start, line_end] = this.get_start_and_end();
+    const line_start = this._get_start_flat();
+    const line_end = this._get_end_flat();
     const new_vec = subtractPoints(line_end, line_start, this.dim).map(
       (value) => value * (resolved_position ?? 0.5),
     );

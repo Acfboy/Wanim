@@ -119,7 +119,7 @@ export interface GrowArrowOptions extends TransformOptions {
 
 export class GrowArrow extends GrowFromPoint {
   constructor(
-    arrow: Mobject & { get_start(): number[] },
+    arrow: Mobject & { get_start(): NDArray },
     pointColorOrOptions: ParsableManimColor | null | GrowArrowOptions = null,
     options: GrowArrowOptions = {},
   ) {

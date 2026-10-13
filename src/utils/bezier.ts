@@ -851,7 +851,12 @@ export function subdivide_bezier(
   return beziers.flat();
 }
 
-export function partial_bezier_points(
+/**
+ * Internal flat fast path of :func:`partial_bezier_points`: same values,
+ * returned as `number[][]`.  Public callers must use `partial_bezier_points`,
+ * which wraps the result in an `NDArray` to match manim.
+ */
+export function _partial_bezier_points_flat(
   points: number[][] | NDArray,
   a: number,
   b: number,
@@ -940,7 +945,20 @@ export function partial_bezier_points(
   return arr;
 }
 
-export function bezier_remap(
+export function partial_bezier_points(
+  points: number[][] | NDArray,
+  a: number,
+  b: number,
+): NDArray {
+  return array(_partial_bezier_points_flat(points, a, b)) as NDArray;
+}
+
+/**
+ * Internal flat fast path of :func:`bezier_remap`: same values, returned as
+ * `number[][][]`.  Public callers must use `bezier_remap`, which wraps the
+ * result in an `NDArray` to match manim.
+ */
+export function _bezier_remap_flat(
   bezier_tuples: number[][][] | NDArray,
   new_number_of_curves: number,
 ): number[][][] {
@@ -977,6 +995,13 @@ export function bezier_remap(
     }
   });
   return result;
+}
+
+export function bezier_remap(
+  bezier_tuples: number[][][] | NDArray,
+  new_number_of_curves: number,
+): NDArray {
+  return array(_bezier_remap_flat(bezier_tuples, new_number_of_curves)) as NDArray;
 }
 
 export function point_lies_on_bezier(

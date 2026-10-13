@@ -1,7 +1,7 @@
 import { array, type NDArray } from "numpy-ts";
 import { ORIGIN, UP } from "../../constants.js";
 import { pointRows } from "../../utils/arrays.js";
-import { get_unit_normal } from "../../utils/space_ops.js";
+import { _get_unit_normal_flat } from "../../utils/space_ops.js";
 import type { VMobject } from "../types/vectorized_mobject.js";
 
 function normOf(values: number[] | NDArray): number {
@@ -82,7 +82,7 @@ export function get_3d_vmob_unit_normal(vmob: VMobject, point_index: number): ND
   const ip3 = i < n_points - 3 ? i + 3 : 3;
   const pPlus = rows[ip3] ?? [...ORIGIN];
   const pMinus = rows[im3] ?? [...ORIGIN];
-  const unit_normal = get_unit_normal(
+  const unit_normal = _get_unit_normal_flat(
     pPlus.map((value, index) => value - (center[index] ?? 0)),
     pMinus.map((value, index) => value - (center[index] ?? 0)),
   );

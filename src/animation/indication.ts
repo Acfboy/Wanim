@@ -1,3 +1,4 @@
+import { array, type NDArray } from "numpy-ts";
 import { Animation, classDefaultsOf, smooth, type AnimationOptions, type RateFunction } from "./animation.js";
 import { AnimationGroup, Succession, type AnimationGroupOptions } from "./composition.js";
 import { Create, ShowPartial, Uncreate, type ShowPartialOptions } from "./creation.js";
@@ -13,9 +14,9 @@ import { Rectangle } from "../mobject/geometry/polygram.js";
 import { SurroundingRectangle } from "../mobject/geometry/shape_matchers.js";
 import { config } from "../_config/utils.js";
 import { interpolate, inverse_interpolate } from "../utils/bezier.js";
-import { cloneNumericArray, linspace } from "../utils/arrays.js";
+import { cloneNumericArray, isNDArray, linspace, pointRows } from "../utils/arrays.js";
 import { there_and_back, wiggle } from "../utils/rate_functions.js";
-import { normalize } from "../utils/space_ops.js";
+import { _normalize_flat } from "../utils/space_ops.js";
 import { GREY, ManimColor, WHITE, type ParsableManimColor } from "../utils/color/core.js";
 import { DEFAULT_STROKE_WIDTH, ORIGIN, RIGHT, SMALL_BUFF, TAU, UP } from "../constants.js";
 
@@ -138,7 +139,9 @@ export class Flash extends AnimationGroup {
       ...rest
     } = options;
     void _ll; void _nl; void _fr; void _lw; void _c; void _tw; void _rt;
-    const resolvedPoint = point instanceof Mobject ? [...point.get_center()] : [...point];
+    const resolvedPoint = point instanceof Mobject
+      ? (pointRows(point.get_center(), point.dim)[0] ?? [0, 0, 0])
+      : [...point];
     // NOTE: Python assigns these pre-super().__init__ attributes (point,
     // color, line_length, ..., run_time) before delegating; TS requires
     // super() first, so locals carry the values until assignment below.
@@ -285,9 +288,9 @@ export class ApplyWave extends Homotopy {
     run_time = 2,
     options: AnimationOptions = {},
   ) {
-    const x_min = mobject.get_left()[0] ?? 0;
-    const x_max = mobject.get_right()[0] ?? 0;
-    const vect = normalize([...direction]).map((value) => value * amplitude);
+    const x_min = mobject._get_critical_point_flat([-1, 0, 0])[0] ?? 0;
+    const x_max = mobject._get_critical_point_flat([1, 0, 0])[0] ?? 0;
+    const vect = _normalize_flat([...direction]).map((value) => value * amplitude);
 
     const wave = (t: number): number => {
       // Mirrored looks better in the way the wave is used.
@@ -377,14 +380,20 @@ export class Wiggle extends Animation {
     this.rotate_about_point = rotate_about_point === null || rotate_about_point === undefined ? null : [...rotate_about_point];
   }
 
-  get_scale_about_point(): number[] {
-    if (this.scale_about_point === null) return this.mobject.get_center();
-    return this.scale_about_point;
+  get_scale_about_point(): NDArray {
+    return this.aboutPointNDArray(this.scale_about_point);
   }
 
-  get_rotate_about_point(): number[] {
-    if (this.rotate_about_point === null) return this.mobject.get_center();
-    return this.rotate_about_point;
+  get_rotate_about_point(): NDArray {
+    return this.aboutPointNDArray(this.rotate_about_point);
+  }
+
+  private aboutPointNDArray(point: readonly number[] | null): NDArray {
+    if (point === null) {
+      const center = this.mobject.get_center();
+      return (isNDArray(center) ? (center as NDArray).copy() : array(center as number[])) as NDArray;
+    }
+    return array(point as readonly number[]) as NDArray;
   }
 
   override interpolate_submobject(submobject: Mobject, startingSubmobject: Mobject, alpha: number): void {

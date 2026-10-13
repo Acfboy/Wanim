@@ -14,7 +14,7 @@ import {
   UP,
 } from "../../constants.js";
 import { norm, pointRows, subtractPoints } from "../../utils/arrays.js";
-import { angle_of_vector, cross, line_intersection, normalize } from "../../utils/space_ops.js";
+import { angle_of_vector, cross, line_intersection, normalize, _normalize_flat } from "../../utils/space_ops.js";
 import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
 import { Mobject } from "../mobject.js";
 import { DashedVMobject, VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
@@ -149,7 +149,7 @@ export class Line extends TipableVMobject {
     const rough_end = this._pointify(end);
     const start_rows = pointRows(rough_start, this.dim)[0] ?? [0, 0, 0];
     const end_rows = pointRows(rough_end, this.dim)[0] ?? [0, 0, 0];
-    const vect = normalize(subtractPoints(end_rows, start_rows, this.dim));
+    const vect = _normalize_flat(subtractPoints(end_rows, start_rows, this.dim));
     // Now that we know the direction between them, we can find the
     // appropriate boundary point from start and end, if they're mobjects
     this.start = this._pointify(start, vect);
@@ -178,7 +178,8 @@ export class Line extends TipableVMobject {
   }
 
   override put_start_and_end_on(start: readonly number[] | NDArray, end: readonly number[] | NDArray): this {
-    const [curr_start, curr_end] = this.get_start_and_end();
+    const curr_start = this._get_start_flat();
+    const curr_end = this._get_end_flat();
     if (curr_start.every((value, index) => value === (curr_end[index] ?? 0))) {
       // TODO, any problems with resetting these attrs?
       this.start = array([...pointRows(start, this.dim)[0] ?? [0, 0, 0]]) as NDArray;
@@ -223,11 +224,13 @@ export class Line extends TipableVMobject {
     return super.put_start_and_end_on(start, end);
   }
 
-  get_vector(): number[] {
-    return subtractPoints(this.get_end(), this.get_start(), this.dim);
+  get_vector(): NDArray {
+    const start = pointRows(this.get_start(), this.dim)[0] ?? [0, 0, 0];
+    const end = pointRows(this.get_end(), this.dim)[0] ?? [0, 0, 0];
+    return array(subtractPoints(end, start, this.dim)) as NDArray;
   }
 
-  get_unit_vector(): number[] {
+  get_unit_vector(): NDArray {
     return normalize(this.get_vector());
   }
 
@@ -235,16 +238,16 @@ export class Line extends TipableVMobject {
     return angle_of_vector(this.get_vector()) as number;
   }
 
-  get_projection(point: readonly number[] | NDArray): number[] {
-    const start = this.get_start();
-    const end = this.get_end();
-    const unit_vect = normalize(subtractPoints(end, start, this.dim));
+  get_projection(point: readonly number[] | NDArray): NDArray {
+    const start = pointRows(this.get_start(), this.dim)[0] ?? [0, 0, 0];
+    const end = pointRows(this.get_end(), this.dim)[0] ?? [0, 0, 0];
+    const unit_vect = _normalize_flat(subtractPoints(end, start, this.dim));
     const point_rows = pointRows(point, this.dim)[0] ?? [0, 0, 0];
     const dot = subtractPoints(point_rows, start, this.dim).reduce(
       (sum, value, index) => sum + value * (unit_vect[index] ?? 0),
       0,
     );
-    return start.map((value, index) => value + dot * (unit_vect[index] ?? 0));
+    return array(start.map((value, index) => value + dot * (unit_vect[index] ?? 0))) as NDArray;
   }
 
   get_slope(): number {
@@ -370,20 +373,26 @@ export class DashedLine extends Line {
     );
   }
 
-  override get_start(): number[] {
-    if (this.submobjects.length > 0) {
-      return (this.submobjects[0] as Mobject).get_start();
-    } else {
-      return super.get_start();
-    }
+  override get_start(): NDArray {
+    return array(this._get_start_flat()) as NDArray;
   }
 
-  override get_end(): number[] {
+  override _get_start_flat(): number[] {
     if (this.submobjects.length > 0) {
-      return (this.submobjects[this.submobjects.length - 1] as Mobject).get_end();
-    } else {
-      return super.get_end();
+      return (this.submobjects[0] as Mobject)._get_start_flat();
     }
+    return super._get_start_flat();
+  }
+
+  override get_end(): NDArray {
+    return array(this._get_end_flat()) as NDArray;
+  }
+
+  override _get_end_flat(): number[] {
+    if (this.submobjects.length > 0) {
+      return (this.submobjects[this.submobjects.length - 1] as Mobject)._get_end_flat();
+    }
+    return super._get_end_flat();
   }
 
   get_first_handle(): number[] {
@@ -467,8 +476,8 @@ export class Arrow extends Line {
     return Math.min(this.tip_length, max_ratio * this.get_length());
   }
 
-  get_normal_vector(): number[] {
-    const [p0 = [0, 0, 0], p1 = [0, 0, 0], p2 = [0, 0, 0]] = (this.tip as ArrowTip).get_start_anchors().slice(0, 3);
+  get_normal_vector(): NDArray {
+    const [p0 = [0, 0, 0], p1 = [0, 0, 0], p2 = [0, 0, 0]] = pointRows((this.tip as ArrowTip).get_start_anchors(), this.dim).slice(0, 3);
     return normalize(cross(
       subtractPoints(p2, p1, this.dim),
       subtractPoints(p1, p0, this.dim),
@@ -749,17 +758,17 @@ export class Angle extends VMobject {
     this.elbow = elbow;
     let inter: number[];
     try {
-      inter = line_intersection(
+      inter = pointRows(line_intersection(
         [line1.get_start(), line1.get_end()],
         [line2.get_start(), line2.get_end()],
-      );
+      ), this.dim)[0] ?? [0, 0, 0];
     } catch {
       const lines_are_in_xy_plane = [line1, line2].every((line) =>
-        [line.get_start(), line.get_end()].every((point) => point[2] === 0),
+        [line._get_start_flat(), line._get_end_flat()].every((point) => point[2] === 0),
       );
       const cross_z = ((): number => {
-        const v1 = line1.get_vector();
-        const v2 = line2.get_vector();
+        const v1 = pointRows(line1.get_vector(), 3)[0] ?? [0, 0, 0];
+        const v2 = pointRows(line2.get_vector(), 3)[0] ?? [0, 0, 0];
         return (v1[0] ?? 0) * (v2[1] ?? 0) - (v1[1] ?? 0) * (v2[0] ?? 0);
       })();
       if (!(lines_are_in_xy_plane && cross_z === 0)) throw new Error(
@@ -776,14 +785,14 @@ export class Angle extends VMobject {
     if (radius === null || radius === undefined) {
       const dist_1 = norm(
         subtractPoints(
-          (this.quadrant[0] === 1 ? line1.get_end() : line1.get_start()),
+          (this.quadrant[0] === 1 ? line1._get_end_flat() : line1._get_start_flat()),
           inter,
           this.dim,
         ),
       );
       const dist_2 = norm(
         subtractPoints(
-          (this.quadrant[1] === 1 ? line2.get_end() : line2.get_start()),
+          (this.quadrant[1] === 1 ? line2._get_end_flat() : line2._get_start_flat()),
           inter,
           this.dim,
         ),
@@ -798,8 +807,8 @@ export class Angle extends VMobject {
       resolved_radius = radius;
     }
 
-    const unit1 = line1.get_unit_vector();
-    const unit2 = line2.get_unit_vector();
+    const unit1 = pointRows(line1.get_unit_vector(), 3)[0] ?? [0, 0, 0];
+    const unit2 = pointRows(line2.get_unit_vector(), 3)[0] ?? [0, 0, 0];
     const anchor_angle_1 = inter.map(
       (value, index) => value + (this.quadrant[0] ?? 0) * resolved_radius * (unit1[index] ?? 0),
     );
@@ -842,7 +851,7 @@ export class Angle extends VMobject {
           resolved_dot_radius = dot_radius;
         }
         const right_dot = new Dot([...ORIGIN], resolved_dot_radius, 0, 1.0, dot_color);
-        const center = angle_mobject.get_center();
+        const center = pointRows(angle_mobject.get_center(), this.dim)[0] ?? [0, 0, 0];
         const diff = subtractPoints(center, inter, this.dim);
         const diff_norm = norm(diff);
         const dot_anchor = inter.map(
@@ -944,13 +953,13 @@ export class Vector extends Arrow {
     const shiftDir = [...end];
     if ((shiftDir[0] ?? 0) >= 0) {
       // Pointing right.
-      const left = label.get_left();
+      const left = pointRows(label.get_left(), this.dim)[0] ?? [0, 0, 0];
       shiftDir[0] -= (left[0] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (LEFT[0] as number);
       shiftDir[1] -= (left[1] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (LEFT[1] as number);
       shiftDir[2] -= (left[2] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (LEFT[2] as number);
     } else {
       // Pointing left.
-      const right = label.get_right();
+      const right = pointRows(label.get_right(), this.dim)[0] ?? [0, 0, 0];
       shiftDir[0] -= (right[0] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (RIGHT[0] as number);
       shiftDir[1] -= (right[1] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (RIGHT[1] as number);
       shiftDir[2] -= (right[2] ?? 0) + DEFAULT_MOBJECT_TO_MOBJECT_BUFFER * (RIGHT[2] as number);

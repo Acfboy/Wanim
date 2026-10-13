@@ -413,7 +413,9 @@ export class ApplyPointwiseFunctionToCenter extends ApplyPointwiseFunction {
   }
 
   override begin(): void {
-    this.method_args = [(this.function as (center: number[]) => unknown)(this.mobject.get_center())];
+    this.method_args = [(this.function as (center: number[]) => unknown)(
+      pointRows(this.mobject.get_center(), this.mobject.dim)[0] ?? [0, 0, 0],
+    )];
     super.begin();
   }
 }

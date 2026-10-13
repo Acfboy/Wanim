@@ -5,7 +5,7 @@ import { isNDArray, norm, numeric, pointRows, scalePoint, subtractPoints } from 
 import { interpolate } from "../../utils/bezier.js";
 import { merge_dicts_recursively } from "../../utils/config_ops.js";
 import { WHITE, type ParsableManimColor } from "../../utils/color/core.js";
-import { angle_of_vector, normalize } from "../../utils/space_ops.js";
+import { angle_of_vector, _normalize_flat } from "../../utils/space_ops.js";
 import { VGroup, VMobject } from "../types/vectorized_mobject.js";
 import { Mobject, isPlainOptionsObject } from "../mobject.js";
 import { Line } from "../geometry/line.js";
@@ -254,8 +254,9 @@ export class NumberLine extends VGroup {
     ]);
     // NOTE: Python tests `if self.length:` (falsy for None *and* 0).
     if (this.length) {
-      const [lineStart, lineEnd] = this.get_start_and_end();
-      const baseLength = norm(subtractPoints(lineEnd, lineStart, this.dim));
+      const endpoints = this._ensure_endpoints_flat();
+      const dim = endpoints.length / 2;
+      const baseLength = norm(subtractPoints(endpoints.slice(dim), endpoints.slice(0, dim), this.dim));
       this.scale(this.length / baseLength);
       this.unit_size = this.get_unit_size();
     } else {
@@ -336,19 +337,27 @@ export class NumberLine extends VGroup {
     return this.start_tip !== undefined && this.submobjects.includes(this.start_tip as unknown as VMobject);
   }
 
-  override get_start(): number[] {
-    if (this.has_start_tip()) {
-      return (this.start_tip as ArrowTip).get_start();
-    }
-    return super.get_start();
+  override get_start(): NDArray {
+    return array(this._get_start_flat()) as NDArray;
   }
 
-  override get_end(): number[] {
+  override get_end(): NDArray {
+    return array(this._get_end_flat()) as NDArray;
+  }
+
+  override _get_start_flat(): number[] {
+    if (this.has_start_tip()) {
+      return pointRows((this.start_tip as ArrowTip).get_start(), this.dim)[0] ?? [];
+    }
+    return super._get_start_flat();
+  }
+
+  override _get_end_flat(): number[] {
     if (this.has_tip()) {
       const tip = this.tip as ArrowTip;
-      return tip.get_start();
+      return pointRows(tip.get_start(), this.dim)[0] ?? [];
     }
-    return super.get_end();
+    return super._get_end_flat();
   }
 
   // Cached flat endpoints of the baseline: `[sx, sy, sz, ex, ey, ez]`.
@@ -381,8 +390,8 @@ export class NumberLine extends VGroup {
     ) {
       return cache.flat;
     }
-    const start = this.get_start();
-    const end = this.get_end();
+    const start = this._get_start_flat();
+    const end = this._get_end_flat();
     const dim = Math.max(start.length, end.length, this.dim);
     const flat = new Array<number>(dim * 2);
     for (let i = 0; i < dim; i += 1) {
@@ -393,10 +402,10 @@ export class NumberLine extends VGroup {
     return flat;
   }
 
-  override get_start_and_end(): [number[], number[]] {
+  override get_start_and_end(): [NDArray, NDArray] {
     const flat = this._ensure_endpoints_flat();
     const dim = flat.length / 2;
-    return [flat.slice(0, dim), flat.slice(dim)];
+    return [array(flat.slice(0, dim)) as NDArray, array(flat.slice(dim)) as NDArray];
   }
 
   static _decimal_places_from_step(step: number): number {
@@ -563,29 +572,37 @@ export class NumberLine extends VGroup {
   }
 
   get_angle(): number {
-    const [start, end] = this.get_start_and_end();
+    const [start, end] = this._endpointRows();
     return angle_of_vector(subtractPoints(end, start, this.dim)) as number;
   }
 
-  get_unit_vector(): number[] {
-    const [start, end] = this.get_start_and_end();
-    return normalize(subtractPoints(end, start, this.dim)).map(
-      (value) => value * this.unit_size,
-    );
+  get_unit_vector(): NDArray {
+    const [start, end] = this._endpointRows();
+    return array(
+      _normalize_flat(subtractPoints(end, start, this.dim)).map(
+        (value) => value * this.unit_size,
+      ),
+    ) as NDArray;
   }
 
-  get_projection(point: readonly number[] | NDArray): number[] {
+  get_projection(point: readonly number[] | NDArray): NDArray {
     // NOTE: mirrors Line.get_projection (Python NumberLine is a Line, so it
     // inherits this); this port extends VGroup, so the same projection onto
     // the baseline is computed here.
-    const [start, end] = this.get_start_and_end();
-    const unit_vect = normalize(subtractPoints(end, start, this.dim));
+    const [start, end] = this._endpointRows();
+    const unit_vect = _normalize_flat(subtractPoints(end, start, this.dim));
     const pointRowsValue = pointRows(point, this.dim)[0] ?? [0, 0, 0];
     const dot = subtractPoints(pointRowsValue, start, this.dim).reduce(
       (sum, value, index) => sum + value * (unit_vect[index] ?? 0),
       0,
     );
-    return start.map((value, index) => value + dot * (unit_vect[index] ?? 0));
+    return array(start.map((value, index) => value + dot * (unit_vect[index] ?? 0))) as NDArray;
+  }
+
+  private _endpointRows(): [number[], number[]] {
+    const flat = this._ensure_endpoints_flat();
+    const dim = flat.length / 2;
+    return [flat.slice(0, dim), flat.slice(dim)];
   }
 
   get_tick_marks(): VGroup {
@@ -613,9 +630,9 @@ export class NumberLine extends VGroup {
   }
 
   point_to_number(point: number[] | number[][] | NDArray): number | NDArray {
-    const [start, end] = this.get_start_and_end();
+    const [start, end] = this._endpointRows();
     const span = subtractPoints(end, start, this.dim);
-    const unit_vect = normalize(span);
+    const unit_vect = _normalize_flat(span);
     const denom = span.reduce((sum, value, index) => sum + value * (unit_vect[index] ?? 0), 0);
     const rows = pointRows(point, this.dim);
     const proportions = rows.map((row) => {
@@ -708,7 +725,7 @@ export class NumberLine extends VGroup {
           : numeric(pointRows(scaled, 1)[0]?.[0] ?? 0);
       return array(this._interpolate_points_flat((value - x_min) / span)) as NDArray;
     }
-    const [start, end] = this.get_start_and_end();
+    const [start, end] = this._endpointRows();
     // NOTE: one alpha per input value (np.vstack semantics); flatten any
     // nesting element-wise rather than reading a single point row.
     const flat: number[] = [];
@@ -743,7 +760,7 @@ export class NumberLine extends VGroup {
     // NOTE: Python calls self.get_length() (Line.get_length); this port's
     // NumberLine extends VGroup (not Line), so the length is computed
     // inline from the endpoints instead.
-    const [start, end] = this.get_start_and_end();
+    const [start, end] = this._endpointRows();
     const length = norm(subtractPoints(end, start, this.dim));
     const val: number = length / ((this.x_range[1] ?? 0) - (this.x_range[0] ?? 0));
     return val;

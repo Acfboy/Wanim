@@ -1,5 +1,5 @@
 import { Mobject } from "../../mobject/mobject.js";
-import { normalize } from "../../utils/space_ops.js";
+import { _normalize_flat } from "../../utils/space_ops.js";
 import { clip } from "../../utils/simple_functions.js";
 import { isNDArray, pointRows } from "../../utils/arrays.js";
 import { RIGHT } from "../../constants.js";
@@ -140,7 +140,7 @@ export function always_shift<M extends Mobject>(
   const directionArray = isNDArray(direction)
     ? (pointRows(direction, 3)[0] ?? [0, 0, 0])
     : [...direction];
-  const unit = normalize(directionArray);
+  const unit = _normalize_flat(directionArray);
   mobject.add_updater((m: Mobject, dt: number) => {
     m.shift(unit.map((value) => dt * rate * value));
   });

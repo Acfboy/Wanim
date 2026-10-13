@@ -105,7 +105,7 @@ export interface CanvasCamera {
   pixel_height: number;
   frame_width: number;
   frame_height: number;
-  frame_center: readonly number[];
+  frame_center: NDArray;
   cairo_line_width_multiple: number;
   transform_points_pre_display(mobject: VMobject, points: NDArray): NDArray;
   /** World->device mapping in fractional pixels (real `Camera` method; the
@@ -1153,7 +1153,7 @@ export function isThreeDFrame(frame: MJSONFrame): boolean {
  */
 export function configureFrameCamera(camera: CanvasCamera, frame: MJSONFrame): void {
   const cam = frame.cam;
-  camera.frame_center = cam.fc;
+  camera.frame_center = array(cam.fc) as NDArray;
   camera.frame_width = cam.fw;
   camera.frame_height = cam.fh;
   if (!isThreeDFrame(frame) || !(camera instanceof ThreeDCamera)) return;

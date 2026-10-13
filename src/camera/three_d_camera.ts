@@ -182,7 +182,7 @@ function readRgbaRow(data: ArrayLike<number>, index: number): number[] {
 function zReferenceDotFlat(mob: Mobject, rx: number, ry: number, rz: number): number {
   const center = bboxCenterFlat((mob as { points?: unknown }).points);
   if (center === null) {
-    const fallback = mob.get_z_index_reference_point();
+    const fallback = pointRows(mob.get_z_index_reference_point(), 3)[0] ?? [0, 0, 0];
     return (fallback[0] ?? 0) * rx + (fallback[1] ?? 0) * ry + (fallback[2] ?? 0) * rz;
   }
   return center[0]! * rx + center[1]! * ry + center[2]! * rz;
@@ -457,19 +457,20 @@ export class ThreeDCamera extends Camera {
     this.reset_rotation_matrix();
   }
 
-  override get frame_center(): readonly number[] {
+  override get frame_center(): NDArray {
     if (this._frame_center_point === undefined) {
-      return this._pending_frame_center ?? ORIGIN;
+      return array(this._pending_frame_center ?? ORIGIN) as NDArray;
     }
-    return pointRows(this._frame_center_point.points, 3)[0] ?? [0, 0, 0];
+    return array(pointRows(this._frame_center_point.points, 3)[0] ?? [0, 0, 0]) as NDArray;
   }
 
-  override set frame_center(value: readonly number[]) {
+  override set frame_center(value: readonly number[] | NDArray) {
+    const row = pointRows(value, 3)[0] ?? [0, 0, 0];
     if (this._frame_center_point === undefined) {
-      this._pending_frame_center = value;
+      this._pending_frame_center = row;
       return;
     }
-    this._frame_center_point.move_to(value as readonly number[]);
+    this._frame_center_point.move_to(row);
   }
 
   override capture_mobjects(mobjects: Iterable<Mobject>, options: CaptureOptions = {}): void {
@@ -740,7 +741,9 @@ export class ThreeDCamera extends Camera {
       if (row0[0] === row1[0] && row0[1] === row1[1] && row0[2] === row1[2] && row0[3] === row1[3]) {
         info = { colors: [row0], gradient: false, start: [0, 0, 0], end: [0, 0, 0] };
       } else {
-        const [startPoint, endPoint] = vm.get_gradient_start_and_end_points();
+        const [startPoint, endPoint] = vm.get_gradient_start_and_end_points().map(
+          (point) => pointRows(point, 3)[0] ?? [0, 0, 0],
+        ) as [number[], number[]];
         info = { colors: [row0, row1], gradient: true, start: startPoint, end: endPoint };
       }
     }
@@ -965,7 +968,7 @@ export class ThreeDCamera extends Camera {
   }
 
   project_points(points: NDArray): NDArray {
-    const frame_center = this.frame_center;
+    const frame_center = pointRows(this.frame_center, 3)[0] ?? [0, 0, 0];
     const focal_distance = this.get_focal_distance();
     const zoom = this.get_zoom();
     const rotRows = this._rotation_rows;
@@ -1015,7 +1018,7 @@ export class ThreeDCamera extends Camera {
     if (flat === null || flat.rowDim < 3) return null;
     const { data, rowDim, rowCount } = flat;
     if (rowCount === 0) return { data: new Float64Array(0), rowDim: 2, rowCount: 0 };
-    const frame_center = this.frame_center;
+    const frame_center = pointRows(this.frame_center, 3)[0] ?? [0, 0, 0];
     const focal = this.get_focal_distance();
     const zoom = this.get_zoom();
     const [r0, r1, r2] = this._rotation_rows;
@@ -1058,7 +1061,7 @@ export class ThreeDCamera extends Camera {
 
   /** Project a single world point without any NDArray allocation. */
   project_point_flat(point: readonly number[]): [number, number] {
-    const frame_center = this.frame_center;
+    const frame_center = pointRows(this.frame_center, 3)[0] ?? [0, 0, 0];
     const x = (point[0] ?? 0) - (frame_center[0] ?? 0);
     const y = (point[1] ?? 0) - (frame_center[1] ?? 0);
     const z = (point[2] ?? 0) - (frame_center[2] ?? 0);

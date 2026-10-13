@@ -1,4 +1,4 @@
-import type { NDArray } from "numpy-ts";
+import { array, type NDArray } from "numpy-ts";
 import {
   DEFAULT_FONT_SIZE,
   DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
@@ -106,8 +106,8 @@ export class Brace extends VMobjectFromSVGPath {
     // is [x, y]), so the faithful JS form is atan2(x, y) — not atan2(y, x).
     const angle = -Math.atan2(directionRow[0] ?? 0, directionRow[1] ?? 0) + Math.PI;
     mobject.rotate(-angle, [...OUT], [...ORIGIN]);
-    const left = mobject.get_corner(addPoints(DOWN, LEFT, 3));
-    const right = mobject.get_corner(addPoints(DOWN, RIGHT, 3));
+    const left = pointRows(mobject.get_corner(addPoints(DOWN, LEFT, 3)), 3)[0] ?? [0, 0, 0];
+    const right = pointRows(mobject.get_corner(addPoints(DOWN, RIGHT, 3)), 3)[0] ?? [0, 0, 0];
     const target_width = (right[0] ?? 0) - (left[0] ?? 0);
     const linear_section_length = Math.max(
       0,
@@ -129,7 +129,7 @@ export class Brace extends VMobjectFromSVGPath {
     });
     this.buff = buff;
     this.flip([...RIGHT]);
-    const bottom = this.get_bottom();
+    const bottom = pointRows(this.get_bottom(), this.dim)[0] ?? [0, 0, 0];
     const rows = pointRows(this.points, this.dim);
     let bestIndex = 0;
     let bestDistance = Infinity;
@@ -145,7 +145,7 @@ export class Brace extends VMobjectFromSVGPath {
     }
     this._tip_point_index = bestIndex;
     this.stretch_to_fit_width(target_width);
-    const upLeft = this.get_corner(addPoints(UP, LEFT, 3));
+    const upLeft = pointRows(this.get_corner(addPoints(UP, LEFT, 3)), 3)[0] ?? [0, 0, 0];
     this.shift([
       (left[0] ?? 0) - (upLeft[0] ?? 0) + this.buff * (DOWN[0] as number),
       (left[1] ?? 0) - (upLeft[1] ?? 0) + this.buff * (DOWN[1] as number),
@@ -203,16 +203,16 @@ export class Brace extends VMobjectFromSVGPath {
     return texMob;
   }
 
-  get_tip(): number[] {
-    return pointAt(this.points, this._tip_point_index, this.dim);
+  get_tip(): NDArray {
+    return array(pointAt(this.points, this._tip_point_index, this.dim)) as NDArray;
   }
 
   get_direction(): any {
     // NOTE: Python's Brace shadows VMobject.get_direction (which returns the
     // winding direction "CW"/"CCW") with an incompatible vector return type;
     // the `any` return type carries that shadowing into TS.
-    const tip = this.get_tip();
-    const center = this.get_center();
+    const tip = pointAt(this.points, this._tip_point_index, this.dim);
+    const center = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
     const vect = tip.map((value, dim) => value - (center[dim] ?? 0));
     const norm = Math.hypot(...vect);
     return vect.map((value) => value / norm);
