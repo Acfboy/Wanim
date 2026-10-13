@@ -453,7 +453,7 @@ git clone https://github.com/Acfboy/Wanim.git
 cd Wanim
 pnpm install
 pnpm build:demo    # type-check, bundle the browser runtime, compile rapydscript, build the element
-pnpm demo          # editor at http://localhost:5174/demo/
+pnpm demo          # playground-style editor at http://localhost:5174/demo/
 ```
 
 `build:demo` clones rapydscript-ng at a pinned commit and applies

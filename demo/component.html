@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -76,12 +76,12 @@
 <body>
 <header>
   <h1><code>&lt;wanim-scene&gt;</code> web component</h1>
-  <p>零配置把 manim Python 场景嵌进任意网页 · <a href="./index.html">← 编辑器 demo</a></p>
+  <p>Zero-config embedding of manim Python scenes into any web page · <a href="./index.html">← editor demo</a></p>
 </header>
 
 <main>
   <section class="card">
-    <h2>1. 图形场景（autoplay，内联 <code>&lt;script type="text/x-python"&gt;</code>）</h2>
+    <h2>1. Shape scene (autoplay, inline <code>&lt;script type="text/x-python"&gt;</code>)</h2>
     <wanim-scene id="shapes" quality="-qm">
       <script type="text/x-python">
 from manim import *
@@ -97,11 +97,11 @@ class SquareToCircle(Scene):
         self.play(FadeOut(square))
       </script>
     </wanim-scene>
-    <p class="note">场景结束后触发 <code>wanim-done</code> 事件。</p>
+    <p class="note">The element emits <code>wanim-done</code> when the scene finishes.</p>
   </section>
 
   <section class="card">
-    <h2>2. MathTex 场景（MathJax 首次用到才下载）</h2>
+    <h2>2. MathTex scene (MathJax is downloaded on first use)</h2>
     <wanim-scene id="tex" quality="-qm">
       <script type="text/x-python">
 from manim import *
@@ -116,7 +116,7 @@ class Formula(Scene):
   </section>
 
   <section class="card">
-    <h2>3. InteractiveScene（shadow DOM 内的按钮栏 + 外部 <code>el.next()</code>）</h2>
+    <h2>3. InteractiveScene (shadow-DOM button bar + external <code>el.next()</code>)</h2>
     <wanim-scene id="interactive" quality="-qm">
       <script type="text/x-python">
 from manim import *
@@ -157,15 +157,15 @@ class InteractiveDemo(InteractiveScene):
       <button id="next-btn">el.next()</button>
       <button id="restart-btn" class="secondary">el.restart()</button>
     </div>
-    <p class="note">canvas 下方的按钮栏由 DomInteractiveHost 插入 shadow root 内；拖动滑块 / 编辑数字后点「进入下一步」或外部按钮结束场景。</p>
+    <p class="note">The button bar below the canvas is inserted into the shadow root by DomInteractiveHost; drag the slider / edit the number, then press Next (or an external button) to finish the scene.</p>
   </section>
 
   <section class="card">
-    <h2>4. 属性 / 事件 API（<code>autoplay="false"</code>）</h2>
+    <h2>4. Property / event API (<code>autoplay="false"</code>)</h2>
     <wanim-scene id="api" quality="-qm" autoplay="false"></wanim-scene>
     <div class="controls">
-      <button id="assign-run">el.code = … 并 await el.run()</button>
-      <button id="bad-code" class="secondary">坏代码（wanim-error）</button>
+      <button id="assign-run">el.code = … then await el.run()</button>
+      <button id="bad-code" class="secondary">Bad code (wanim-error)</button>
       <button id="stop" class="secondary">stop()</button>
     </div>
     <pre id="log"></pre>
@@ -238,7 +238,7 @@ for (const id of ["shapes", "tex", "interactive"]) {
   el.addEventListener("wanim-done", () => log(`#${id} done`));
   el.addEventListener("wanim-error", (event) => log(`#${id} error: ${event.detail.error?.message ?? event.detail.error}`));
 }
-log("页面上没有 rapydscript / mathjax 请求 —— 首次运行前只加载了 element bundle。");
+log("No rapydscript / MathJax requests on this page — only the element bundle is loaded before the first run.");
 </script>
 </body>
 </html>

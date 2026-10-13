@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>wanim · manim Python in the browser</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" />
+<title>wanim · Playground</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
 <link rel="stylesheet" href="./style.css" />
 <script type="importmap">
 {
@@ -17,11 +17,29 @@
 </script>
 </head>
 <body>
-<main>
-  <section class="editor-col">
-    <div class="bar">
-      <label class="bar-label" for="preset">示例 / Example</label>
-      <select id="preset" title="example scene">
+<main class="root">
+  <div class="split">
+    <section class="editor-pane">
+      <div class="editor">
+        <div id="gutter" class="gutter" aria-hidden="true"></div>
+        <pre id="highlight" aria-hidden="true"><code id="highlight-code" class="language-python"></code></pre>
+        <textarea id="code" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" aria-label="Python source"></textarea>
+      </div>
+    </section>
+
+    <section class="right-pane">
+      <div class="preview">
+        <canvas id="stage" width="1280" height="720"></canvas>
+      </div>
+      <div id="output" class="output" role="log" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <div class="bar">
+    <span class="app-title">wanim Playground</span>
+    <label class="select-wrap">
+      <span class="select-label">Example</span>
+      <select id="preset" title="Example scene">
         <option value="square">SquareToCircle</option>
         <option value="opening">OpeningManim</option>
         <option value="unitcircle">Sine from Unit Circle</option>
@@ -32,44 +50,34 @@
         <option value="interactive">Interactive Controls</option>
         <option value="interactive3d">Interactive 3D Orbit</option>
       </select>
-      <a class="bar-label" style="margin-left:auto" href="./component.html" title="zero-config web component demo">&lt;wanim-scene&gt; demo →</a>
+    </label>
+    <a class="bar-link" href="./component.html" title="Zero-config web component demo">&lt;wanim-scene&gt; demo →</a>
+    <span class="hint">Ctrl+Enter to run</span>
+    <div class="actions">
+      <button id="embed" class="ghost-button" type="button" title="Generate an iframe snippet pointing at a minimal player page">Embed</button>
+      <button id="run" class="run-button" type="button" title="Run the scene (Ctrl+Enter)">Run</button>
     </div>
-    <div class="editor">
-      <pre id="highlight" aria-hidden="true"><code id="highlight-code" class="language-python"></code></pre>
-      <textarea id="code" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
-    </div>
-    <div class="bar bar-bottom">
-      <button id="run" class="primary">运行 / Run</button>
-      <button id="embed" title="generate an iframe snippet pointing at a minimal player page">嵌入 / Embed</button>
-      <span id="status">Idle.</span>
-    </div>
-  </section>
-
-  <section class="stage-col">
-    <div class="canvas-wrap">
-      <canvas id="stage" width="1280" height="720"></canvas>
-    </div>
-    <pre id="output"></pre>
-  </section>
+  </div>
 </main>
 
-<!-- "嵌入 / Embed" dialog: builds an iframe snippet pointing at ./embed.html
-     with the compressed code in the URL fragment. -->
+<!-- "Embed" dialog: builds an iframe snippet pointing at ./embed.html with the
+     compressed code in the URL fragment. -->
 <div id="embed-modal" class="modal-backdrop" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-label="嵌入 / Embed">
-    <h2>嵌入 / Embed</h2>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Embed">
+    <h2>Embed</h2>
     <p class="modal-note">
-      生成一段指向 <code>embed.html</code> 的 <code>&lt;iframe&gt;</code> 代码；
-      Python 代码压缩后放在 URL fragment（<code>#c=…</code>）里，不会发送给服务器。
+      Builds an <code>&lt;iframe&gt;</code> snippet pointing at <code>embed.html</code>;
+      the Python code is compressed into the URL fragment (<code>#c=…</code>) and
+      never sent to a server.
     </p>
     <div class="embed-grid">
-      <label>宽 / Width
+      <label>Width
         <input id="embed-width" type="number" min="160" step="10" value="960" />
       </label>
-      <label>高 / Height
+      <label>Height
         <input id="embed-height" type="number" min="90" step="10" value="540" />
       </label>
-      <label>画质 / Quality
+      <label>Quality
         <select id="embed-quality">
           <option value="-ql">-ql 480p</option>
           <option value="-qm" selected>-qm 720p</option>
@@ -78,13 +86,13 @@
         </select>
       </label>
     </div>
-    <textarea id="embed-snippet" readonly spellcheck="false" placeholder="生成中…"></textarea>
+    <textarea id="embed-snippet" readonly spellcheck="false" placeholder="Generating…"></textarea>
     <div id="embed-warning" class="embed-warning" hidden></div>
     <div class="modal-actions">
       <span id="embed-status" class="modal-note"></span>
       <span class="grow"></span>
-      <button id="embed-copy">复制 / Copy</button>
-      <button id="embed-close" class="primary">关闭 / Close</button>
+      <button id="embed-copy" class="ghost-button" type="button">Copy</button>
+      <button id="embed-close" class="run-button" type="button">Close</button>
     </div>
   </div>
 </div>
