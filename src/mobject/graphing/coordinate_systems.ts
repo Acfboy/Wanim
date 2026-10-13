@@ -259,12 +259,12 @@ export class CoordinateSystem extends VGroup {
   }
 
   c2p(...coords: (number | number[] | NDArray)[]): NDArray { return this.coords_to_point(...coords); }
-  p2c(point: readonly number[]): number[] { return this.point_to_coords(point); }
+  p2c(point: readonly number[]): NDArray { return this.point_to_coords(point); }
   polar_to_point(radius: number, azimuth: number): NDArray {
     return this.coords_to_point(radius * Math.cos(azimuth), radius * Math.sin(azimuth));
   }
   point_to_polar(point: readonly number[]): [number, number] {
-    const [x = 0, y = 0] = this.point_to_coords(point);
+    const [x = 0, y = 0] = this._point_to_coords_flat(point) as number[];
     return [Math.sqrt(x ** 2 + y ** 2), Math.atan2(y, x)];
   }
   pr2pt(radius: number, azimuth: number): NDArray {
@@ -273,7 +273,18 @@ export class CoordinateSystem extends VGroup {
   pt2pr(point: readonly number[]): [number, number] {
     return this.point_to_polar(point);
   }
-  point_to_coords(_point: readonly number[]): number[] {
+  point_to_coords(_point: readonly number[]): NDArray {
+    const error = new Error("CoordinateSystem.point_to_coords must be implemented by a subclass.");
+    error.name = "NotImplementedError";
+    throw error;
+  }
+
+  /**
+   * Internal flat fast path of `point_to_coords`: same values, returned as a
+   * plain `number[]` (or `number[][]` for a list of points).  Hot per-frame
+   * code reads coordinates without paying the NDArray construction cost.
+   */
+  _point_to_coords_flat(_point: readonly number[]): number[] | number[][] {
     const error = new Error("CoordinateSystem.point_to_coords must be implemented by a subclass.");
     error.name = "NotImplementedError";
     throw error;
@@ -739,7 +750,7 @@ export class CoordinateSystem extends VGroup {
     const alpha = binary_search(
       (a: number) => {
         const proportion_point = pointRows((graph as VMobject).point_from_proportion(a), 3)[0] ?? [0, 0, 0];
-        return this.point_to_coords(proportion_point)[0] ?? 0;
+        return (this._point_to_coords_flat(proportion_point) as number[])[0] ?? 0;
       },
       x,
       0,
@@ -748,8 +759,8 @@ export class CoordinateSystem extends VGroup {
     if (alpha !== null) {
       return (graph as VMobject).point_from_proportion(alpha);
     }
-    const startX = this.p2c((graph as VMobject).get_start())[0];
-    const endX = this.p2c((graph as VMobject).get_end())[0];
+    const startX = this.p2c((graph as VMobject)._get_start_flat())[0];
+    const endX = this.p2c((graph as VMobject)._get_end_flat())[0];
     const error = new Error(
       `x=${x} not located in the range of the graph ([${startX}, ${endX}])`,
     );
@@ -962,7 +973,7 @@ export class CoordinateSystem extends VGroup {
 
       // checks if the rectangle is under the x-axis
       let fill: ManimColor = rect_color;
-      if ((this.p2c(pointRows(graph_point, 3)[0] ?? [0, 0, 0])[1] ?? 0) < y_point && show_signed_area) {
+      if (((this._point_to_coords_flat(pointRows(graph_point, 3)[0] ?? [0, 0, 0]) as number[])[1] ?? 0) < y_point && show_signed_area) {
         fill = invert_color(rect_color);
       }
 
@@ -1035,7 +1046,7 @@ export class CoordinateSystem extends VGroup {
     const filterInRange = (rows: number[][]): number[][] => {
       if (rows.length === 0) return rows;
       try {
-        const coords = this.point_to_coords(rows as unknown as number[]);
+        const coords = this._point_to_coords_flat(rows as unknown as number[]);
         if (Array.isArray(coords) && coords.length === rows.length && Array.isArray(coords[0])) {
           const coordRows = coords as unknown as number[][];
           return rows.filter((_, index) => {
@@ -1047,7 +1058,7 @@ export class CoordinateSystem extends VGroup {
         /* fall through to the per-point path */
       }
       return rows.filter((point) => {
-        const x = this.point_to_coords(point)[0] ?? 0;
+        const x = (this._point_to_coords_flat(point) as number[])[0] ?? 0;
         return a <= x && x <= b;
       });
     };
@@ -1289,7 +1300,7 @@ export class CoordinateSystem extends VGroup {
     return this.coords_to_point(...items);
   }
 
-  __rmatmul__(point: number[] | readonly number[] | NDArray): number[] {
+  __rmatmul__(point: number[] | readonly number[] | NDArray): NDArray {
     return this.point_to_coords(point as readonly number[]);
   }
 }
@@ -1598,7 +1609,11 @@ export class Axes extends CoordinateSystem {
     return array(transposed) as NDArray;
   }
 
-  override point_to_coords(point: readonly number[]): number[] {
+  override point_to_coords(point: readonly number[]): NDArray {
+    return array(this._point_to_coords_flat(point)) as NDArray;
+  }
+
+  override _point_to_coords_flat(point: readonly number[]): number[] | number[][] {
     // Mirrors Python Axes.point_to_coords: one number per axis via
     // `axis.point_to_number(point)` (transposed for a list of points).
     const axes = this.get_axes().submobjects;
@@ -1892,7 +1907,7 @@ export class NumberPlane extends Axes {
     const lines1 = new VGroup();
     const lines2 = new VGroup();
     const line = new Line(axis_parallel_to.get_start(), axis_parallel_to.get_end());
-    const unit_vector_axis_perp_to = axis_perpendicular_to.get_unit_vector();
+    const unit_vector_axis_perp_to = pointRows(axis_perpendicular_to.get_unit_vector(), this.dim)[0] ?? [0, 0, 0];
     const perp_range = (axis_perpendicular_to as unknown as { x_range: number[] }).x_range;
     let x_min = perp_range?.[0] ?? 0;
     let x_max = perp_range?.[1] ?? 0;
@@ -2553,7 +2568,7 @@ export class PolarPlane extends Axes {
       throw error;
     }
     // NOTE: mirrors `self.get_right()[0]` (the plane's right edge).
-    const right_x = this.get_right()[0] ?? 0;
+    const right_x = this._get_critical_point_flat([1, 0, 0])[0] ?? 0;
     const a_points = resolved_a.map((i) => ({
       label: i,
       point: [
@@ -2755,7 +2770,7 @@ export class ComplexPlane extends NumberPlane {
   }
 
   point_to_number(point: readonly number[]): ComplexPoint {
-    const [x = 0, y = 0] = this.point_to_coords(point);
+    const [x = 0, y = 0] = this._point_to_coords_flat(point) as number[];
     return { re: x, im: y };
   }
 

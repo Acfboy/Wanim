@@ -81,10 +81,10 @@ const glyph_info_map = new WeakMap<VMobject, GlyphInfo>();
 /** Measure a glyph prototype once; the hot path then works from these numbers
  * instead of re-scanning the (many) SVG points through the ndarray helpers. */
 function measure_glyph(mob: VMobject): GlyphInfo {
-  const left = mob.get_critical_point([-1, 0, 0]);
-  const right = mob.get_critical_point([1, 0, 0]);
-  const down = mob.get_critical_point([0, -1, 0]);
-  const up = mob.get_critical_point([0, 1, 0]);
+  const left = mob._get_critical_point_flat([-1, 0, 0]);
+  const right = mob._get_critical_point_flat([1, 0, 0]);
+  const down = mob._get_critical_point_flat([0, -1, 0]);
+  const up = mob._get_critical_point_flat([0, 1, 0]);
   let fullMinX = Infinity;
   let fullMaxX = -Infinity;
   let fullMinY = Infinity;

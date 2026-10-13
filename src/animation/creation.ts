@@ -544,10 +544,10 @@ export class SpiralIn extends Animation {
       ...rest
     } = options;
     const shapesCopy = shapes.copy();
-    const shapeCenter = [...shapes.get_center()];
+    const shapeCenter = pointRows(shapes.get_center(), shapes.dim)[0] ?? [0, 0, 0];
     for (const shape of shapes) {
       const state = shape as unknown as SpiralShapeState;
-      const finalPosition = [...shape.get_center()];
+      const finalPosition = pointRows(shape.get_center(), shape.dim)[0] ?? [0, 0, 0];
       state.final_position = finalPosition;
       state.initial_position = addPoints(
         finalPosition,

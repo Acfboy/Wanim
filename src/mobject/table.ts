@@ -11,6 +11,7 @@
 // mobject-first direction avoids a TDZ error (pre-existing cycle).
 import { VGroup, VMobject } from "./types/vectorized_mobject.js";
 import { ORIGIN } from "../constants.js";
+import { pointRows } from "../utils/arrays.js";
 import type { Animation, AnimationClass } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
 import { Create, Write } from "../animation/creation.js";
@@ -316,16 +317,16 @@ export class Table extends VGroup {
   }
 
   _add_horizontal_lines(): this {
-    const anchorLeft = (this.get_left()[0] ?? 0) - 0.5 * this.h_buff;
-    const anchorRight = (this.get_right()[0] ?? 0) + 0.5 * this.h_buff;
+    const anchorLeft = (pointRows(this.get_left(), this.dim)[0]?.[0] ?? 0) - 0.5 * this.h_buff;
+    const anchorRight = (pointRows(this.get_right(), this.dim)[0]?.[0] ?? 0) + 0.5 * this.h_buff;
     const lineGroup = new VGroup();
     const lineOptions = () => ({ ...(this.line_config as Record<string, unknown>) }) as LineOptions;
     if (this.include_outer_lines) {
-      let anchor = ((this.get_rows().__getitem__(0) as VGroup).get_top()[1] ?? 0) + 0.5 * this.v_buff;
+      let anchor = (pointRows((this.get_rows().__getitem__(0) as VGroup).get_top(), this.dim)[0]?.[1] ?? 0) + 0.5 * this.v_buff;
       let line = new Line([anchorLeft, anchor, 0], [anchorRight, anchor, 0], lineOptions());
       lineGroup.add(line);
       this.add(line);
-      anchor = ((this.get_rows().__getitem__(-1) as VGroup).get_bottom()[1] ?? 0) - 0.5 * this.v_buff;
+      anchor = (pointRows((this.get_rows().__getitem__(-1) as VGroup).get_bottom(), this.dim)[0]?.[1] ?? 0) - 0.5 * this.v_buff;
       line = new Line([anchorLeft, anchor, 0], [anchorRight, anchor, 0], lineOptions());
       lineGroup.add(line);
       this.add(line);
@@ -333,9 +334,9 @@ export class Table extends VGroup {
     if (this.include_inner_lines) {
       const rows = this.get_rows();
       for (let k = 0; k < this.mob_table.length - 1; k += 1) {
-        const anchor = ((rows.__getitem__(k + 1) as VGroup).get_top()[1] ?? 0) + 0.5 * (
-          ((rows.__getitem__(k) as VGroup).get_bottom()[1] ?? 0) -
-          ((rows.__getitem__(k + 1) as VGroup).get_top()[1] ?? 0)
+        const anchor = (pointRows((rows.__getitem__(k + 1) as VGroup).get_top(), this.dim)[0]?.[1] ?? 0) + 0.5 * (
+          (pointRows((rows.__getitem__(k) as VGroup).get_bottom(), this.dim)[0]?.[1] ?? 0) -
+          (pointRows((rows.__getitem__(k + 1) as VGroup).get_top(), this.dim)[0]?.[1] ?? 0)
         );
         const line = new Line([anchorLeft, anchor, 0], [anchorRight, anchor, 0], lineOptions());
         lineGroup.add(line);
@@ -348,17 +349,17 @@ export class Table extends VGroup {
 
   _add_vertical_lines(): this {
     const rows = this.get_rows();
-    const anchorTop = (rows.get_top()[1] ?? 0) + 0.5 * this.v_buff;
-    const anchorBottom = (rows.get_bottom()[1] ?? 0) - 0.5 * this.v_buff;
+    const anchorTop = (pointRows(rows.get_top(), this.dim)[0]?.[1] ?? 0) + 0.5 * this.v_buff;
+    const anchorBottom = (pointRows(rows.get_bottom(), this.dim)[0]?.[1] ?? 0) - 0.5 * this.v_buff;
     const lineGroup = new VGroup();
     const lineOptions = () => ({ ...(this.line_config as Record<string, unknown>) }) as LineOptions;
     if (this.include_outer_lines) {
       const columns = this.get_columns();
-      let anchor = ((columns.__getitem__(0) as VGroup).get_left()[0] ?? 0) - 0.5 * this.h_buff;
+      let anchor = (pointRows((columns.__getitem__(0) as VGroup).get_left(), this.dim)[0]?.[0] ?? 0) - 0.5 * this.h_buff;
       let line = new Line([anchor, anchorTop, 0], [anchor, anchorBottom, 0], lineOptions());
       lineGroup.add(line);
       this.add(line);
-      anchor = ((columns.__getitem__(-1) as VGroup).get_right()[0] ?? 0) + 0.5 * this.h_buff;
+      anchor = (pointRows((columns.__getitem__(-1) as VGroup).get_right(), this.dim)[0]?.[0] ?? 0) + 0.5 * this.h_buff;
       line = new Line([anchor, anchorTop, 0], [anchor, anchorBottom, 0], lineOptions());
       lineGroup.add(line);
       this.add(line);
@@ -366,9 +367,9 @@ export class Table extends VGroup {
     if (this.include_inner_lines) {
       const columns = this.get_columns();
       for (let k = 0; k < ((this.mob_table[0] as VMobject[] | undefined)?.length ?? 0) - 1; k += 1) {
-        const anchor = ((columns.__getitem__(k + 1) as VGroup).get_left()[0] ?? 0) + 0.5 * (
-          ((columns.__getitem__(k) as VGroup).get_right()[0] ?? 0) -
-          ((columns.__getitem__(k + 1) as VGroup).get_left()[0] ?? 0)
+        const anchor = (pointRows((columns.__getitem__(k + 1) as VGroup).get_left(), this.dim)[0]?.[0] ?? 0) + 0.5 * (
+          (pointRows((columns.__getitem__(k) as VGroup).get_right(), this.dim)[0]?.[0] ?? 0) -
+          (pointRows((columns.__getitem__(k + 1) as VGroup).get_left(), this.dim)[0]?.[0] ?? 0)
         );
         const line = new Line([anchor, anchorBottom, 0], [anchor, anchorTop, 0], lineOptions());
         lineGroup.add(line);
@@ -491,26 +492,14 @@ export class Table extends VGroup {
   get_cell(pos: readonly number[] = [1, 1], kwargs: Record<string, unknown> = {}): Polygon {
     const row = this.get_rows().__getitem__((pos[0] ?? 1) - 1) as VGroup;
     const col = this.get_columns().__getitem__((pos[1] ?? 1) - 1) as VGroup;
-    const edgeUL = [
-      (col.get_left()[0] ?? 0) - this.h_buff / 2,
-      (row.get_top()[1] ?? 0) + this.v_buff / 2,
-      0,
-    ];
-    const edgeUR = [
-      (col.get_right()[0] ?? 0) + this.h_buff / 2,
-      (row.get_top()[1] ?? 0) + this.v_buff / 2,
-      0,
-    ];
-    const edgeDL = [
-      (col.get_left()[0] ?? 0) - this.h_buff / 2,
-      (row.get_bottom()[1] ?? 0) - this.v_buff / 2,
-      0,
-    ];
-    const edgeDR = [
-      (col.get_right()[0] ?? 0) + this.h_buff / 2,
-      (row.get_bottom()[1] ?? 0) - this.v_buff / 2,
-      0,
-    ];
+    const colLeft = pointRows(col.get_left(), this.dim)[0]?.[0] ?? 0;
+    const colRight = pointRows(col.get_right(), this.dim)[0]?.[0] ?? 0;
+    const rowTop = pointRows(row.get_top(), this.dim)[0]?.[1] ?? 0;
+    const rowBottom = pointRows(row.get_bottom(), this.dim)[0]?.[1] ?? 0;
+    const edgeUL = [colLeft - this.h_buff / 2, rowTop + this.v_buff / 2, 0];
+    const edgeUR = [colRight + this.h_buff / 2, rowTop + this.v_buff / 2, 0];
+    const edgeDL = [colLeft - this.h_buff / 2, rowBottom - this.v_buff / 2, 0];
+    const edgeDR = [colRight + this.h_buff / 2, rowBottom - this.v_buff / 2, 0];
     return new Polygon(edgeUL, edgeUR, edgeDR, edgeDL, kwargs);
   }
 

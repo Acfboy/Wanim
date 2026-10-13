@@ -130,7 +130,7 @@ export class VectorField extends VGroup {
     const step_size = dt / substeps;
     for (let index = 0; index < substeps; index += 1) {
       if (pointwise) mob.apply_function((point) => addPoints(point, runge_kutta(point, step_size), 3));
-      else mob.shift(runge_kutta(mob.get_center(), step_size));
+      else mob.shift(runge_kutta(pointRows(mob.get_center(), 3)[0] ?? [0, 0, 0], step_size));
     }
     return this;
   }

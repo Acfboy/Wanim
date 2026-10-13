@@ -51,7 +51,7 @@ export class _Fade extends Transform {
           : target_position;
         shiftVector = subtractPoints(
           pointRows(target, mobject.dim)[0] ?? [0, 0, 0],
-          mobject.get_center(),
+          pointRows(mobject.get_center(), mobject.dim)[0] ?? [0, 0, 0],
           mobject.dim,
         );
         point_target = true;

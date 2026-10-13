@@ -35,7 +35,7 @@
  * Canvas2D fallback instead.
  */
 import { array } from "numpy-ts";
-import { _cContiguousRows } from "../utils/arrays.js";
+import { _cContiguousRows, pointRows } from "../utils/arrays.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
 import { ThreeDCamera, _cornerNormalsFlat, type MobjectBaseColors, type BaseColorInfo } from "../camera/three_d_camera.js";
 import { computeSubpathRangesFlat } from "./canvas.js";
@@ -979,7 +979,7 @@ export class WebGLThreeDRenderer {
     const frameHeight = camera.frame_height;
     const widthMult = pixelWidth / frameWidth;
     const heightMult = pixelHeight / frameHeight;
-    const frameCenter = camera.frame_center;
+    const frameCenter = pointRows(camera.frame_center, 3)[0] ?? [0, 0, 0];
     const [r0, r1, r2] = camera.get_rotation_rows();
     const lightRows = _cContiguousRows(camera.light_source.points);
     const light: [number, number, number] = lightRows !== null && lightRows.rowCount > 0

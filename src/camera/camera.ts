@@ -1,7 +1,7 @@
 import { array, copyto, zeros, type NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
 import { ManimColor, color_to_int_rgba, type ParsableManimColor } from "../utils/color/core.js";
-import { asArray, pointRows } from "../utils/arrays.js";
+import { asArray, isNDArray, pointRows } from "../utils/arrays.js";
 import { ORIGIN } from "../constants.js";
 import { Mobject, setDefaultCameraFactory } from "../mobject/mobject.js";
 import { VMobject } from "../mobject/types/vectorized_mobject.js";
@@ -117,7 +117,7 @@ export class Camera {
   // NOTE: frame geometry is exposed via accessors (not plain fields) so
   // that MovingCamera can override them with frame-backed properties,
   // mirroring the Python @property definitions.
-  private _frame_center!: readonly number[];
+  private _frame_center!: NDArray;
   private _frame_height = 0;
   private _frame_width = 0;
 
@@ -150,12 +150,14 @@ export class Camera {
     return Object.assign(Object.create(Object.getPrototypeOf(this)), this);
   }
 
-  get frame_center(): readonly number[] {
+  get frame_center(): NDArray {
     return this._frame_center;
   }
 
-  set frame_center(value: readonly number[]) {
-    this._frame_center = value;
+  set frame_center(value: readonly number[] | NDArray) {
+    this._frame_center = (
+      isNDArray(value) ? (value as NDArray).copy() : array(value as number[])
+    ) as NDArray;
   }
 
   get frame_height(): number {
@@ -312,10 +314,10 @@ export class Camera {
     const fh = this.frame_height;
     const fw = this.frame_width;
     return !(
-      (mobject.get_right()[0] ?? 0) < (fc[0] ?? 0) - fw / 2 ||
-      (mobject.get_bottom()[1] ?? 0) > (fc[1] ?? 0) + fh / 2 ||
-      (mobject.get_left()[0] ?? 0) > (fc[0] ?? 0) + fw / 2 ||
-      (mobject.get_top()[1] ?? 0) < (fc[1] ?? 0) - fh / 2
+      (mobject._get_critical_point_flat([1, 0, 0])[0] ?? 0) < (fc[0] ?? 0) - fw / 2 ||
+      (mobject._get_critical_point_flat([0, -1, 0])[1] ?? 0) > (fc[1] ?? 0) + fh / 2 ||
+      (mobject._get_critical_point_flat([-1, 0, 0])[0] ?? 0) > (fc[0] ?? 0) + fw / 2 ||
+      (mobject._get_critical_point_flat([0, 1, 0])[1] ?? 0) < (fc[1] ?? 0) - fh / 2
     );
   }
 

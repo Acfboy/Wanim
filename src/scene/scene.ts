@@ -9,7 +9,7 @@ import { pointRows } from "../utils/arrays.js";
 import { extract_mobject_family_members } from "../utils/family.js";
 import { list_difference_update, list_update } from "../utils/iterables.js";
 import { flatten_iterable_parameters } from "../utils/parameter_parsing.js";
-import { cross, normalize, rotation_matrix } from "../utils/space_ops.js";
+import { _cross_flat, normalize, rotation_matrix } from "../utils/space_ops.js";
 import { Animation, Wait, prepare_animation } from "../animation/animation.js";
 import { AnimationGroup } from "../animation/composition.js";
 import { EndSceneEarlyException, RerunSceneException } from "../utils/exceptions.js";
@@ -1530,7 +1530,7 @@ export class Scene {
     } else if (buttons === 4) {
       const camera_x_axis = mat44Column(this.camera.model_matrix as NDArray, 0);
       const horizontal_shift_vector = camera_x_axis.map((value) => -(delta[0] ?? 0) * value);
-      const outCross = cross([...OUT], camera_x_axis);
+      const outCross = _cross_flat([...OUT], camera_x_axis);
       const vertical_shift_vector = outCross.map((value) => -(delta[1] ?? 0) * value);
       const total_shift_vector = horizontal_shift_vector.map(
         (value, index) => value + (vertical_shift_vector[index] ?? 0),
@@ -1600,7 +1600,7 @@ export class Scene {
       // Rotation off of the z axis.
       const camera_position = vec3(this.camera.get_position());
       const camera_y_axis = mat44Column(this.camera.model_matrix as NDArray, 1);
-      const axis_of_rotation = normalize(cross(camera_y_axis, camera_position));
+      const axis_of_rotation = normalize(_cross_flat(camera_y_axis, camera_position));
       let rotation = rotation_matrix(delta[1] ?? 0, axis_of_rotation, true);
       const maximum_polar_angle = this.camera.maximum_polar_angle as number;
       const minimum_polar_angle = this.camera.minimum_polar_angle as number;
@@ -1639,7 +1639,7 @@ export class Scene {
       // Right click drag.
       const camera_x_axis = mat44Column(this.camera.model_matrix as NDArray, 0);
       const horizontal_shift_vector = camera_x_axis.map((value) => -(delta[0] ?? 0) * value);
-      const outCross = cross([...OUT], camera_x_axis);
+      const outCross = _cross_flat([...OUT], camera_x_axis);
       const vertical_shift_vector = outCross.map((value) => -(delta[1] ?? 0) * value);
       const total_shift_vector = horizontal_shift_vector.map(
         (value, index) => value + (vertical_shift_vector[index] ?? 0),

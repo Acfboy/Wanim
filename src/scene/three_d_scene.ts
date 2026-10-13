@@ -1,4 +1,5 @@
 import { config } from "../_config/utils.js";
+import { pointRows } from "../utils/arrays.js";
 import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { DEGREES, RendererType } from "../constants.js";
 import type { Animation } from "../animation/animation.js";
@@ -430,7 +431,8 @@ export class SpecialThreeDScene extends ThreeDScene {
       // raises AttributeError.
       const tickMarks = (axis.get_tick_marks() as { submobjects: Array<Record<string, any>> }).submobjects;
       for (const tick of tickMarks) {
-        tick.add(new VectorizedPoint(((tick.get_center() as number[]) ?? []).map((v) => 1.5 * v)));
+        const tickCenter = pointRows(tick.get_center(), 3)[0] ?? [];
+        tick.add(new VectorizedPoint(tickCenter.map((v) => 1.5 * v)));
       }
     }
     return axes as unknown as ThreeDAxes;

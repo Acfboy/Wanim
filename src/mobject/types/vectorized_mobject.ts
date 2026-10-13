@@ -3,7 +3,7 @@ import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
 import { Mobject, _rawMobject, assertFinitePoints, hasNonFinite, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows, _readFlatStore, _flatStoreSlots } from "../../utils/arrays.js";
-import { bezier, bezier_remap, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, partial_bezier_points, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
+import { bezier, _bezier_remap_flat, get_smooth_cubic_bezier_handle_points_rows, integer_interpolate, interpolate, _partial_bezier_points_flat, proportions_along_bezier_curve_for_point } from "../../utils/bezier.js";
 import { shoelace_direction, rotate_vector, rotation_matrix } from "../../utils/space_ops.js";
 import { resize_array, stretch_array_to_length, tuplify, make_even } from "../../utils/iterables.js";
 import { CapStyleType, LEFT, ORIGIN, OUT, PI, RendererType, RIGHT, UL, UP } from "../../constants.js";
@@ -560,31 +560,34 @@ export class VMobject extends Mobject {
     return this.sheen_factor;
   }
 
-  get_gradient_start_and_end_points(): [number[], number[]] {
+  get_gradient_start_and_end_points(): [NDArray, NDArray] {
     if (this.shade_in_3d) {
-      return [get3dVmobStartCorner(this), get3dVmobEndCorner(this)];
+      return [
+        array(get3dVmobStartCorner(this)) as NDArray,
+        array(get3dVmobEndCorner(this)) as NDArray,
+      ];
     }
-    const direction = this.get_sheen_direction();
-    const c = this.get_center();
+    const direction = pointRows(this.get_sheen_direction(), this.dim)[0] ?? [0, 0, 0];
+    const c = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
     const cols = [RIGHT, UP, OUT].map((vect) => {
-      const edge = this.get_edge_center(vect);
+      const edge = pointRows(this.get_edge_center(vect), this.dim)[0] ?? [0, 0, 0];
       return edge.map((value, index) => value - (c[index] ?? 0));
     });
     const offset = [0, 1, 2].map((i) =>
       cols.reduce((sum, col, j) => sum + (col[i] ?? 0) * (direction[j] ?? 0), 0),
     );
     return [
-      c.map((value, index) => value - (offset[index] ?? 0)),
-      c.map((value, index) => value + (offset[index] ?? 0)),
+      array(c.map((value, index) => value - (offset[index] ?? 0))) as NDArray,
+      array(c.map((value, index) => value + (offset[index] ?? 0))) as NDArray,
     ];
   }
 
-  getGradientStartAndEndPoints(): [number[], number[]] {
+  getGradientStartAndEndPoints(): [NDArray, NDArray] {
     return this.get_gradient_start_and_end_points();
   }
 
-  get_sheen_direction(): number[] {
-    return [...this.sheen_direction];
+  get_sheen_direction(): NDArray {
+    return array([...this.sheen_direction]) as NDArray;
   }
 
   rotate_sheen_direction(angle: number, axis: number[] | readonly number[] | NDArray = [...OUT], family = true): this {
@@ -813,7 +816,7 @@ export class VMobject extends Mobject {
     return this.set_sheen(factor, direction, family);
   }
 
-  getSheenDirection(): number[] {
+  getSheenDirection(): NDArray {
     return this.get_sheen_direction();
   }
 
@@ -1829,7 +1832,7 @@ export class VMobject extends Mobject {
     return this.clear_points();
   }
 
-  get_anchors_and_handles(): [number[][], number[][], number[][], number[][]] {
+  get_anchors_and_handles(): [NDArray, NDArray, NDArray, NDArray] {
     const nppcc = this.n_points_per_cubic_curve;
     const all = rows(this.points, this.dim);
     const out: [number[][], number[][], number[][], number[][]] = [[], [], [], []];
@@ -1840,10 +1843,15 @@ export class VMobject extends Mobject {
       }
       out[i] = part;
     }
-    return out;
+    return [
+      array(out[0]) as NDArray,
+      array(out[1]) as NDArray,
+      array(out[2]) as NDArray,
+      array(out[3]) as NDArray,
+    ];
   }
 
-  getAnchorsAndHandles(): [number[][], number[][], number[][], number[][]] {
+  getAnchorsAndHandles(): [NDArray, NDArray, NDArray, NDArray] {
     return this.get_anchors_and_handles();
   }
 
@@ -1939,7 +1947,9 @@ export class VMobject extends Mobject {
       if (vmob.get_num_points() < this.n_points_per_cubic_curve) {
         continue;
       }
-      const [a1, h1, h2, a2] = vmob.get_anchors_and_handles();
+      const [a1, h1, h2, a2] = vmob.get_anchors_and_handles().map(
+        (part) => pointRows(part, this.dim),
+      ) as [number[][], number[][], number[][], number[][]];
       // Python tolerates overflow through PhaseFlow/apply_function (it only
       // emits RuntimeWarning and keeps inf/nan points; the Camera collapses
       // them to the origin at draw time). Do the same here: when the current
@@ -1997,29 +2007,48 @@ export class VMobject extends Mobject {
     return this.scale_handle_to_anchor_distances(factor);
   }
 
-  get_start_anchors(): number[][] {
-    const result: number[][] = [];
-    for (let index = 0; index < this.get_num_points(); index += this.n_points_per_cubic_curve) {
-      const point = pointAt(this.points, index, this.dim);
-      result.push(point);
-    }
-    return result;
+  get_start_anchors(): NDArray {
+    const flat = this._get_start_anchors_flat();
+    return (flat.length === 0
+      ? array([]).reshape(0, this.dim)
+      : array(flat).reshape(flat.length / this.dim, this.dim)) as NDArray;
   }
 
-  get_end_anchors(): number[][] {
-    const result: number[][] = [];
+  /** Internal flat fast path of `get_start_anchors` (row-major `number[]`). */
+  _get_start_anchors_flat(): number[] {
+    const flat: number[] = [];
+    for (let index = 0; index < this.get_num_points(); index += this.n_points_per_cubic_curve) {
+      const point = pointAt(this.points, index, this.dim);
+      for (const value of point) flat.push(value);
+    }
+    return flat;
+  }
+
+  get_end_anchors(): NDArray {
+    const flat = this._get_end_anchors_flat();
+    return (flat.length === 0
+      ? array([]).reshape(0, this.dim)
+      : array(flat).reshape(flat.length / this.dim, this.dim)) as NDArray;
+  }
+
+  /** Internal flat fast path of `get_end_anchors` (row-major `number[]`). */
+  _get_end_anchors_flat(): number[] {
+    const flat: number[] = [];
     const nppcc = this.n_points_per_cubic_curve;
     const count = this.get_num_points();
     for (let index = nppcc - 1; index < count; index += nppcc) {
-      result.push(pointAt(this.points, index, this.dim));
+      const point = pointAt(this.points, index, this.dim);
+      for (const value of point) flat.push(value);
     }
-    return result;
+    return flat;
   }
 
-  get_anchors(): number[][] {
-    if (this.get_num_points() === 1) return rows(this.points, this.dim);
-    const starts = this.get_start_anchors();
-    const ends = this.get_end_anchors();
+  get_anchors(): NDArray[] {
+    if (this.get_num_points() === 1) {
+      return [array(rows(this.points, this.dim)[0] ?? []) as NDArray];
+    }
+    const starts = pointRows(this.get_start_anchors(), this.dim);
+    const ends = pointRows(this.get_end_anchors(), this.dim);
     // NOTE: Python returns list(chain(zip(s, e, strict=True))): interleaved
     // start/end anchors (length 2 * num_curves), not just the starts.
     if (starts.length !== ends.length) {
@@ -2029,10 +2058,10 @@ export class VMobject extends Mobject {
       error.name = "ValueError";
       throw error;
     }
-    const result: number[][] = [];
+    const result: NDArray[] = [];
     for (let index = 0; index < starts.length; index += 1) {
-      result.push(starts[index] ?? []);
-      result.push(ends[index] ?? []);
+      result.push(array(starts[index] ?? []) as NDArray);
+      result.push(array(ends[index] ?? []) as NDArray);
     }
     return result;
   }
@@ -2161,7 +2190,9 @@ export class VMobject extends Mobject {
         continue;
       }
       for (const anchor of vmob.get_anchors()) {
-        for (let column = 0; column < dim; column += 1) flat.push(numeric(anchor[column] ?? 0));
+        for (let column = 0; column < dim; column += 1) {
+          flat.push(numeric((anchor as unknown as ArrayLike<unknown>)[column] ?? 0));
+        }
       }
     }
     if (flat.length === 0) return array([]).reshape(0, dim) as NDArray;
@@ -2179,7 +2210,11 @@ export class VMobject extends Mobject {
    * `get_critical_point` (via `move_to`) many times per frame, so this scans
    * min/max for all axes in one walk without materialising the boundary.
    */
-  override get_critical_point(direction: readonly number[] | NDArray): number[] {
+  override get_critical_point(direction: readonly number[] | NDArray): NDArray {
+    return array(this._get_critical_point_flat(direction)) as NDArray;
+  }
+
+  override _get_critical_point_flat(direction: readonly number[] | NDArray): number[] {
     const dim = this.dim;
     if (
       !(
@@ -2187,7 +2222,7 @@ export class VMobject extends Mobject {
         && (direction.length === 0 || typeof (direction as readonly unknown[])[0] === "number")
       )
     ) {
-      return super.get_critical_point(direction);
+      return super._get_critical_point_flat(direction);
     }
     const directionValues = direction as readonly number[];
     const nppcc = this.n_points_per_cubic_curve;
@@ -2238,7 +2273,8 @@ export class VMobject extends Mobject {
         continue;
       }
       for (const anchor of (mobject as VMobject).get_anchors()) {
-        consider(numeric(anchor[0] ?? 0), numeric(anchor[1] ?? 0), numeric(anchor[2] ?? 0));
+        const row = anchor as unknown as ArrayLike<unknown>;
+        consider(numeric(row[0] ?? 0), numeric(row[1] ?? 0), numeric(row[2] ?? 0));
       }
     }
     if (finite0 === 0 && finite1 === 0 && finite2 === 0) return Array.from({ length: dim }, () => 0);
@@ -2389,12 +2425,12 @@ export class VMobject extends Mobject {
     const source = other === this ? rows(other.points, this.dim).map((row) => [...row]) : rows(other.points, this.dim);
     const slice = (curve: number): number[][] => source.slice(nppc * curve, nppc * (curve + 1));
     if (lower_index === upper_index) {
-      this.points = asPoints(partial_bezier_points(slice(lower_index), lower_residue, upper_residue), this.dim);
+      this.points = asPoints(_partial_bezier_points_flat(slice(lower_index), lower_residue, upper_residue), this.dim);
     } else {
       const result: number[][] = [
-        ...partial_bezier_points(slice(lower_index), lower_residue, 1),
+        ..._partial_bezier_points_flat(slice(lower_index), lower_residue, 1),
         ...source.slice(nppc * (lower_index + 1), nppc * upper_index),
-        ...partial_bezier_points(slice(upper_index), 0, upper_residue),
+        ..._partial_bezier_points_flat(slice(upper_index), 0, upper_residue),
       ];
       this.points = asPoints(result, this.dim);
     }
@@ -2533,7 +2569,7 @@ export class VMobject extends Mobject {
     const nppc = this.n_points_per_curve;
     const pointRow = pointRows(point, this.dim)[0] ?? new Array(this.dim).fill(0);
     if (n_points % nppc !== 0) {
-      const anchors = this.get_start_anchors();
+      const anchors = pointRows(this.get_start_anchors(), this.dim);
       const last_anchor = anchors[anchors.length - 1] ?? new Array(this.dim).fill(0);
       const closure: number[][] = Array.from(
         { length: nppc - (n_points % nppc) },
@@ -2550,8 +2586,8 @@ export class VMobject extends Mobject {
     return array(this.gen_cubic_bezier_tuples_from_points(points)) as NDArray;
   }
 
-  get_cubic_bezier_tuples(): number[][][] {
-    return this.gen_cubic_bezier_tuples_from_points(this.points);
+  get_cubic_bezier_tuples(): NDArray {
+    return this.get_cubic_bezier_tuples_from_points(this.points);
   }
 
   *_gen_subpaths_from_points(
@@ -2652,7 +2688,7 @@ export class VMobject extends Mobject {
     const bezier_tuples = this.gen_cubic_bezier_tuples_from_points(points);
     const current_number_of_curves = bezier_tuples.length;
     const new_number_of_curves = current_number_of_curves + n;
-    const new_bezier_tuples = bezier_remap(bezier_tuples, new_number_of_curves);
+    const new_bezier_tuples = _bezier_remap_flat(bezier_tuples, new_number_of_curves);
     return array(new_bezier_tuples.flat().map((point) => point.slice(0, this.dim))) as NDArray;
   }
 

@@ -228,11 +228,11 @@ export class Matrix extends VMobject {
     for (let i = 0; i < rows; i += 1) {
       for (let j = 0; j < cols; j += 1) {
         const cell = matrix[i]![j]!;
-        const anchor = cell.get_critical_point(this.element_alignment_corner);
-        const left = cell.get_left()[0] ?? 0;
-        const right = cell.get_right()[0] ?? 0;
-        const bottom = cell.get_bottom()[1] ?? 0;
-        const top = cell.get_top()[1] ?? 0;
+        const anchor = cell._get_critical_point_flat(this.element_alignment_corner);
+        const left = cell._get_critical_point_flat([-1, 0, 0])[0] ?? 0;
+        const right = cell._get_critical_point_flat([1, 0, 0])[0] ?? 0;
+        const bottom = cell._get_critical_point_flat([0, -1, 0])[1] ?? 0;
+        const top = cell._get_critical_point_flat([0, 1, 0])[1] ?? 0;
         const anchorX = anchor[0] ?? 0;
         const anchorY = anchor[1] ?? 0;
         leftExtents[j] = Math.max(leftExtents[j]!, anchorX - left);

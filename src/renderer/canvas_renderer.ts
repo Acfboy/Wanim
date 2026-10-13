@@ -31,6 +31,7 @@ import {
   type MJSONDocument,
   type MJSONFrame,
 } from "./canvas.js";
+import type { NDArray } from "numpy-ts";
 import {
   JSONCairoRenderer,
   serialize_frame,
@@ -85,7 +86,7 @@ export interface CanvasRenderStats {
 }
 
 interface MutableCamera extends CanvasCamera {
-  frame_center: readonly number[];
+  frame_center: NDArray;
   frame_width: number;
   frame_height: number;
   background_color: { to_hex(): string };

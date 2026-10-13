@@ -1,4 +1,4 @@
-import type { NDArray } from "numpy-ts";
+import { array, type NDArray } from "numpy-ts";
 import { config } from "../_config/utils.js";
 import { DOWN, LEFT, ORIGIN, RIGHT, UP } from "../constants.js";
 import { ManimColor, WHITE } from "../utils/color/core.js";
@@ -105,10 +105,10 @@ export class MovingCamera extends Camera {
     frame.stretch_to_fit_width(value);
   }
 
-  override get frame_center(): readonly number[] {
+  override get frame_center(): NDArray {
     const frame = (this as { frame?: Mobject }).frame;
     if (frame === undefined) {
-      return this._pending_frame_center ?? [...ORIGIN];
+      return array(this._pending_frame_center ?? [...ORIGIN]) as NDArray;
     }
     return frame.get_center();
   }
@@ -205,26 +205,26 @@ export class MovingCamera extends Camera {
 
       // initialize scene critical points with first mobjects critical points
       if (!bounding_box_located) {
-        scene_critical_x_left = m.get_critical_point(LEFT)[0] ?? 0;
-        scene_critical_x_right = m.get_critical_point(RIGHT)[0] ?? 1;
-        scene_critical_y_up = m.get_critical_point(UP)[1] ?? 1;
-        scene_critical_y_down = m.get_critical_point(DOWN)[1] ?? 0;
+        scene_critical_x_left = m._get_critical_point_flat(LEFT)[0] ?? 0;
+        scene_critical_x_right = m._get_critical_point_flat(RIGHT)[0] ?? 1;
+        scene_critical_y_up = m._get_critical_point_flat(UP)[1] ?? 1;
+        scene_critical_y_down = m._get_critical_point_flat(DOWN)[1] ?? 0;
         bounding_box_located = true;
       } else {
-        if ((m.get_critical_point(LEFT)[0] ?? 0) < scene_critical_x_left) {
-          scene_critical_x_left = m.get_critical_point(LEFT)[0] ?? scene_critical_x_left;
+        if ((m._get_critical_point_flat(LEFT)[0] ?? 0) < scene_critical_x_left) {
+          scene_critical_x_left = m._get_critical_point_flat(LEFT)[0] ?? scene_critical_x_left;
         }
 
-        if ((m.get_critical_point(RIGHT)[0] ?? 0) > scene_critical_x_right) {
-          scene_critical_x_right = m.get_critical_point(RIGHT)[0] ?? scene_critical_x_right;
+        if ((m._get_critical_point_flat(RIGHT)[0] ?? 0) > scene_critical_x_right) {
+          scene_critical_x_right = m._get_critical_point_flat(RIGHT)[0] ?? scene_critical_x_right;
         }
 
-        if ((m.get_critical_point(UP)[1] ?? 0) > scene_critical_y_up) {
-          scene_critical_y_up = m.get_critical_point(UP)[1] ?? scene_critical_y_up;
+        if ((m._get_critical_point_flat(UP)[1] ?? 0) > scene_critical_y_up) {
+          scene_critical_y_up = m._get_critical_point_flat(UP)[1] ?? scene_critical_y_up;
         }
 
-        if ((m.get_critical_point(DOWN)[1] ?? 0) < scene_critical_y_down) {
-          scene_critical_y_down = m.get_critical_point(DOWN)[1] ?? scene_critical_y_down;
+        if ((m._get_critical_point_flat(DOWN)[1] ?? 0) < scene_critical_y_down) {
+          scene_critical_y_down = m._get_critical_point_flat(DOWN)[1] ?? scene_critical_y_down;
         }
       }
     }

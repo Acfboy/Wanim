@@ -99,7 +99,7 @@ const TIP_POSITIONED_BASE = new WeakMap<ArrowTip, number[]>();
 
 function computeTipGeometryMeta(tip: ArrowTip): TipGeometryMeta {
   const rows = pointRows(tip.points, tip.dim).map((row) => [...row]);
-  const center = [...tip.get_center()];
+  const center = pointRows(tip.get_center(), tip.dim)[0] ?? [0, 0, 0];
   const tipPoint = rows[0] !== undefined ? [...rows[0]] : [0, 0, 0];
   const base = pointRows(tip.base, tip.dim)[0] ?? [0, 0, 0];
   const vect = tipPoint.map((value, index) => value - (base[index] ?? 0));
@@ -252,13 +252,13 @@ export class TipableVMobject extends VMobject {
     let anchor: number[];
     let handle: number[];
     if (at_start) {
-      anchor = this.get_start();
+      anchor = this._get_start_flat();
       handle = this.get_first_handle();
     } else {
       handle = this.get_last_handle();
-      anchor = this.get_end();
+      anchor = this._get_end_flat();
     }
-    const angles = cartesian_to_spherical(subtractPoints(handle, anchor, this.dim));
+    const angles = cartesian_to_spherical(subtractPoints(handle, anchor, this.dim)).toArray() as number[];
     const meta = TIP_GEOMETRY_META.get(tip);
     // 2D fast path: for points in the plane (elevation angle == PI/2) the
     // vertical rotation `rotate(-(PI/2) + PI/2, axis)` is the identity, so the
@@ -419,25 +419,30 @@ export class TipableVMobject extends VMobject {
     return pointAt(this.points, count - 2, this.dim);
   }
 
-  override get_end(): number[] {
-    if (this.has_tip()) {
-      return (this.tip as ArrowTip).get_start();
-    } else {
-      return super.get_end();
-    }
+  override get_end(): NDArray {
+    return array(this._get_end_flat()) as NDArray;
   }
 
-  override get_start(): number[] {
-    if (this.has_start_tip()) {
-      return (this.start_tip as ArrowTip).get_start();
-    } else {
-      return super.get_start();
+  override _get_end_flat(): number[] {
+    if (this.has_tip()) {
+      return pointRows((this.tip as ArrowTip).get_start(), this.dim)[0] ?? [];
     }
+    return super._get_end_flat();
+  }
+
+  override get_start(): NDArray {
+    return array(this._get_start_flat()) as NDArray;
+  }
+
+  override _get_start_flat(): number[] {
+    if (this.has_start_tip()) {
+      return pointRows((this.start_tip as ArrowTip).get_start(), this.dim)[0] ?? [];
+    }
+    return super._get_start_flat();
   }
 
   get_length(): number {
-    const [start, end] = this.get_start_and_end();
-    return norm(subtractPoints(start, end, this.dim));
+    return norm(subtractPoints(this._get_start_flat(), this._get_end_flat(), this.dim));
   }
 }
 
@@ -560,12 +565,12 @@ export class Arc extends TipableVMobject {
     this.set_anchors_and_handles(anchors.slice(0, -1), handles1, handles2, anchors.slice(1));
   }
 
-  get_arc_center(warning = true): number[] {
+  get_arc_center(warning = true): NDArray {
     const [a1 = [0, 0, 0], h1 = [0, 0, 0], h2 = [0, 0, 0], a2 = [0, 0, 0]] = pointRows(this.points, this.dim).slice(0, 4);
     if (a1.every((value, index) => value === (a2[index] ?? 0))) {
       // For a1 and a2 to lie at the same point arc radius must be zero.
       // Thus arc_center will also lie at that point.
-      return [...a1];
+      return array([...a1]) as NDArray;
     }
     // Tangent vectors.
     const t1 = subtractPoints(h1, a1, this.dim);
@@ -581,13 +586,13 @@ export class Arc extends TipableVMobject {
     } catch {
       if (warning) console.warn("Can't find Arc center, using ORIGIN instead");
       this._failed_to_get_center = true;
-      return [...ORIGIN];
+      return array([...ORIGIN]) as NDArray;
     }
   }
 
   move_arc_center_to(point: readonly number[] | NDArray): this {
     const target = Array.isArray(point) ? [...point].map(Number) : (pointRows(point, this.dim)[0] ?? [0, 0, 0]);
-    const center = this.get_arc_center();
+    const center = pointRows(this.get_arc_center(), this.dim)[0] ?? [0, 0, 0];
     this.shift(target.map((value, index) => value - (center[index] ?? 0)));
     return this;
   }
@@ -595,7 +600,8 @@ export class Arc extends TipableVMobject {
   stop_angle(): number {
     const all = pointRows(this.points, this.dim);
     const last = all[all.length - 1] ?? [0, 0, 0];
-    const raw = Number(angle_of_vector(subtractPoints(last, this.get_arc_center(), this.dim)));
+    const center = pointRows(this.get_arc_center(), this.dim)[0] ?? [0, 0, 0];
+    const raw = Number(angle_of_vector(subtractPoints(last, center, this.dim)));
     // NOTE: Python `%` is floored modulo; JS `%` is truncated. Use the
     // floored form so negative angles wrap the same way.
     return (((raw % TAU) + TAU) % TAU);
@@ -658,10 +664,10 @@ export class Circle extends Arc {
     const a = pointRows(p1, 3)[0] ?? [0, 0, 0];
     const b = pointRows(p2, 3)[0] ?? [0, 0, 0];
     const c = pointRows(p3, 3)[0] ?? [0, 0, 0];
-    const center = line_intersection(
+    const center = pointRows(line_intersection(
       perpendicular_bisector([a, b]),
       perpendicular_bisector([b, c]),
-    );
+    ), 3)[0] ?? [0, 0, 0];
     const radius = norm(subtractPoints(a, center, 3));
     return new Circle(radius, options).shift(center);
   }
@@ -1036,7 +1042,7 @@ export class ArcBetweenPoints extends Arc {
     }
     this.put_start_and_end_on(start, end);
     if (radius === null || radius === undefined) {
-      const center = this.get_arc_center(false);
+      const center = pointRows(this.get_arc_center(false), this.dim)[0] ?? [0, 0, 0];
       if (!this._failed_to_get_center) {
         const start_row = pointRows(start, this.dim)[0] ?? [0, 0, 0];
         this.radius = norm(subtractPoints(start_row, center, this.dim));
@@ -1063,14 +1069,14 @@ export class TangentialArc extends ArcBetweenPoints {
     options: TangentialArcOptions = {},
   ) {
     const { angle = TAU / 4, ...rest } = options;
-    const intersection_point = line_intersection(
+    const intersection_point = pointRows(line_intersection(
       [line1.get_start(), line1.get_end()],
       [line2.get_start(), line2.get_end()],
-    );
+    ), 3)[0] ?? [0, 0, 0];
     const [s1 = 1, s2 = 1] = [...corner];
     // Get unit vector for specified directions
-    const line1_unit = line1.get_unit_vector();
-    const line2_unit = line2.get_unit_vector();
+    const line1_unit = pointRows(line1.get_unit_vector(), 3)[0] ?? [0, 0, 0];
+    const line2_unit = pointRows(line2.get_unit_vector(), 3)[0] ?? [0, 0, 0];
     const unit_vector1 = line1_unit.map((value) => (s1 ?? 1) * value);
     const unit_vector2 = line2_unit.map((value) => (s2 ?? 1) * value);
     const corner_angle = angle_between_vectors(unit_vector1, unit_vector2);

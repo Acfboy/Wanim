@@ -4,7 +4,7 @@ import { IN, LEFT, ORIGIN, OUT, PI, RIGHT, TAU, UP, DOWN, X_AXIS, Y_AXIS, Z_AXIS
 import { DEFAULT_DOT_RADIUS, LineJointType } from "../../constants.js";
 import { config } from "../../_config/utils.js";
 import { RendererType } from "../../constants.js";
-import { normalize, z_to_vector, cross, perpendicular_bisector } from "../../utils/space_ops.js";
+import { _cross_flat, _normalize_flat, _perpendicular_bisector_flat, z_to_vector } from "../../utils/space_ops.js";
 import { BLUE, BLUE_D, BLUE_E, LIGHT_GREY, ManimColor, WHITE, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import type { ThreeDAxes } from "../graphing/coordinate_systems.js";
 import { Mobject } from "../mobject.js";
@@ -252,9 +252,9 @@ export class Surface extends VGroup {
 
     for (const mob of this.family_members_with_points()) {
       const midpoint = mob.get_midpoint();
-      const axis_value = axes.point_to_coords(
+      const axis_value = (axes._point_to_coords_flat(
         (pointRows(midpoint, 3)[0] ?? [0, 0, 0]) as readonly number[],
-      )[axis] ?? 0;
+      ) as number[])[axis] ?? 0;
       if (axis_value <= (pivots[0] ?? 0)) {
         mob.set_color(new_colors[0] as ParsableManimColor);
       } else if (axis_value >= (pivots[pivots.length - 1] ?? 0)) {
@@ -634,11 +634,11 @@ export class Cone extends Surface {
     return conePoint(u, v, this.theta);
   }
 
-  get_start(): number[] {
+  get_start(): NDArray {
     return this.start_point.get_center();
   }
 
-  get_end(): number[] {
+  get_end(): NDArray {
     return this.end_point.get_center();
   }
 
@@ -690,7 +690,7 @@ export class Cone extends Surface {
     const scale = norm(direction_row);
     const normalized_direction = direction_row.map((value) => value * scale);
 
-    const start = this.base_circle.get_center();
+    const start = pointRows(this.base_circle.get_center(), 3)[0] ?? [0, 0, 0];
     const end = start.map((value, index) => value + (normalized_direction[index] ?? 0) * this.new_height);
     this.start_point = new VectorizedPoint(start);
     this.end_point = new VectorizedPoint(end);
@@ -1006,7 +1006,7 @@ export class Line3D {
     const rough_end = flatPoint(this.pointify(end));
     this.vect = rough_end.map((value, index) => value - (rough_start[index] ?? 0));
     this.length = Math.hypot(...this.vect);
-    this.direction = normalize(this.vect);
+    this.direction = _normalize_flat(this.vect);
     // NOTE: Python also rebuilds Cylinder geometry here (super().__init__
     // with height/radius/direction) and shifts to the midpoint; the TS port
     // is a lightweight stub that only tracks the endpoint attributes.
@@ -1043,7 +1043,7 @@ export class Line3D {
     options: { thickness?: number; color?: ParsableManimColor | null; resolution?: number | [number, number] } = {},
   ): Line3D {
     const np_point = pointRows(isNDArray(point) ? (point as NDArray).copy() : [...(point as readonly number[])], 3)[0] ?? [0, 0, 0];
-    const vect = normalize(line.vect);
+    const vect = _normalize_flat(line.vect);
     return new Line3D(
       np_point.map((value, index) => value + (vect[index] ?? 0) * length / 2),
       np_point.map((value, index) => value - (vect[index] ?? 0) * length / 2),
@@ -1062,15 +1062,15 @@ export class Line3D {
     const np_point = pointRows(isNDArray(point) ? (point as NDArray).copy() : [...(point as readonly number[])], 3)[0] ?? [0, 0, 0];
     const startRows = pointRows(line.start, 3)[0] ?? [0, 0, 0];
     const diff = np_point.map((value, index) => value - (startRows[index] ?? 0));
-    const normVec = cross(line.vect, diff);
+    const normVec = _cross_flat(line.vect, diff);
     if (normVec.every((value) => value === 0)) {
       const error = new Error("Could not find the perpendicular.");
       error.name = "ValueError";
       throw error;
     }
 
-    const [bisStart, bisEnd] = perpendicular_bisector([line.start, line.end], normVec);
-    const bisVect = normalize(
+    const [bisStart, bisEnd] = _perpendicular_bisector_flat([line.start, line.end], normVec);
+    const bisVect = _normalize_flat(
       (bisEnd ?? []).map((value, index) => value - ((bisStart ?? [])[index] ?? 0)),
     );
     return new Line3D(

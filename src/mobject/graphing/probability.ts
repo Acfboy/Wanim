@@ -491,10 +491,10 @@ export class BarChart extends Axes {
       let bar_lim: number[];
       let aligned_edge: readonly number[];
       if (chart_val > 0) {
-        bar_lim = bar.get_bottom();
+        bar_lim = pointRows(bar.get_bottom(), bar.dim)[0] ?? [0, 0, 0];
         aligned_edge = [...DOWN];
       } else {
-        bar_lim = bar.get_top();
+        bar_lim = pointRows(bar.get_top(), bar.dim)[0] ?? [0, 0, 0];
         aligned_edge = [...UP];
       }
 

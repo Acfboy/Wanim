@@ -25,6 +25,7 @@ import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Dot } from "../mobject/geometry/arc.js";
 import { Line } from "../mobject/geometry/line.js";
 import { isPlainOptionsBag, Rectangle, RoundedRectangle } from "../mobject/geometry/polygram.js";
+import { pointRows } from "../utils/arrays.js";
 import { Text } from "../mobject/text/text_mobject.js";
 import { DecimalMatrix, type MatrixOptions } from "../mobject/matrix.js";
 import { DecimalTable, type TableData, type TableOptions } from "../mobject/table.js";
@@ -370,7 +371,7 @@ export class PathSlider extends VGroup implements InteractiveControl {
 
   /** Whether `point` falls within the knob's pick radius. */
   private _hit_knob(point: readonly number[]): boolean {
-    const center = this.knob.get_center();
+    const center = pointRows(this.knob.get_center(), 3)[0] ?? [0, 0, 0];
     const radius = Math.max(this.hit_radius, this.knob_radius * 2);
     return Math.hypot((point[0] ?? 0) - (center[0] ?? 0), (point[1] ?? 0) - (center[1] ?? 0)) <= radius;
   }
@@ -688,10 +689,10 @@ export class Switch extends VGroup implements InteractiveControl {
   }
 
   is_hit(point: readonly number[]): boolean {
-    const left = this.track.get_left();
-    const right = this.track.get_right();
-    const bottom = this.track.get_bottom();
-    const top = this.track.get_top();
+    const left = pointRows(this.track.get_left(), 3)[0] ?? [0, 0, 0];
+    const right = pointRows(this.track.get_right(), 3)[0] ?? [0, 0, 0];
+    const bottom = pointRows(this.track.get_bottom(), 3)[0] ?? [0, 0, 0];
+    const top = pointRows(this.track.get_top(), 3)[0] ?? [0, 0, 0];
     const pad = this.track_height * 0.25;
     const [x, y] = point2d(point);
     return (
@@ -715,7 +716,7 @@ export class Switch extends VGroup implements InteractiveControl {
     const on = this._value;
     this.track.set_fill(on ? this.accent_color : GREY_C, 1);
     this.knob.set_fill(WHITE, 1);
-    const center = this.track.get_center();
+    const center = pointRows(this.track.get_center(), 3)[0] ?? [0, 0, 0];
     const quarter = this.track_width / 4;
     const x = (center[0] ?? 0) + (on ? quarter : -quarter);
     this.knob.move_to([x, center[1] ?? 0, center[2] ?? 0]);
@@ -821,10 +822,10 @@ export class Chip extends VGroup implements InteractiveControl {
   }
 
   is_hit(point: readonly number[]): boolean {
-    const left = this.box.get_left();
-    const right = this.box.get_right();
-    const bottom = this.box.get_bottom();
-    const top = this.box.get_top();
+    const left = pointRows(this.box.get_left(), 3)[0] ?? [0, 0, 0];
+    const right = pointRows(this.box.get_right(), 3)[0] ?? [0, 0, 0];
+    const bottom = pointRows(this.box.get_bottom(), 3)[0] ?? [0, 0, 0];
+    const top = pointRows(this.box.get_top(), 3)[0] ?? [0, 0, 0];
     const pad = this.box.height * 0.15;
     const [x, y] = point2d(point);
     return (
@@ -962,10 +963,10 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
   }
 
   is_hit(point: readonly number[]): boolean {
-    const left = this.get_left();
-    const right = this.get_right();
-    const bottom = this.get_bottom();
-    const top = this.get_top();
+    const left = pointRows(this.get_left(), 3)[0] ?? [0, 0, 0];
+    const right = pointRows(this.get_right(), 3)[0] ?? [0, 0, 0];
+    const bottom = pointRows(this.get_bottom(), 3)[0] ?? [0, 0, 0];
+    const top = pointRows(this.get_top(), 3)[0] ?? [0, 0, 0];
     const pad = Math.max(this.height, 0.2) * 0.4;
     const [x, y] = point2d(point);
     return (
@@ -1103,13 +1104,13 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     const displaySign = display.startsWith("+") || display.startsWith("-") ? 1 : 0;
     const textSign = text.startsWith("+") || text.startsWith("-") ? 1 : 0;
     const glyphIndex = index + displaySign - textSign;
-    const bottom = this.get_bottom();
+    const bottom = pointRows(this.get_bottom(), 3)[0] ?? [0, 0, 0];
     const y = bottom[1] ?? 0;
     if (glyphIndex >= glyphs.length) {
-      const right = glyphs[glyphs.length - 1]!.get_right();
+      const right = pointRows(glyphs[glyphs.length - 1]!.get_right(), 3)[0] ?? [0, 0, 0];
       return [right[0] ?? 0, y, 0];
     }
-    const left = glyphs[Math.max(0, glyphIndex)]!.get_left();
+    const left = pointRows(glyphs[Math.max(0, glyphIndex)]!.get_left(), 3)[0] ?? [0, 0, 0];
     return [left[0] ?? 0, y, 0];
   }
 
@@ -1159,10 +1160,10 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
       highlight = new Rectangle({ width: 1, height: 1, stroke_width: 0 });
       this.highlight = highlight;
     }
-    const left = this.get_left()[0] ?? 0;
-    const right = this.get_right()[0] ?? 0;
-    const bottom = this.get_bottom()[1] ?? 0;
-    const top = this.get_top()[1] ?? 0;
+    const left = pointRows(this.get_left(), 3)[0]?.[0] ?? 0;
+    const right = pointRows(this.get_right(), 3)[0]?.[0] ?? 0;
+    const bottom = pointRows(this.get_bottom(), 3)[0]?.[1] ?? 0;
+    const top = pointRows(this.get_top(), 3)[0]?.[1] ?? 0;
     const center = this.get_center();
     highlight.stretch_to_fit_width(Math.max(right - left, 1e-6));
     highlight.stretch_to_fit_height(Math.max(top - bottom, 1e-6));
@@ -1282,11 +1283,12 @@ export class InputDecimalMatrix extends DecimalMatrix {
     if (rightBracket !== undefined) {
       rightBracket.next_to(this.elements, [...RIGHT], this.bracket_h_buff);
     }
-    const newCenter = this.get_center();
+    const newCenter = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
+    const savedCenterRow = pointRows(savedCenter, this.dim)[0] ?? [0, 0, 0];
     this.shift([
-      (savedCenter[0] ?? 0) - (newCenter[0] ?? 0),
-      (savedCenter[1] ?? 0) - (newCenter[1] ?? 0),
-      (savedCenter[2] ?? 0) - (newCenter[2] ?? 0),
+      (savedCenterRow[0] ?? 0) - (newCenter[0] ?? 0),
+      (savedCenterRow[1] ?? 0) - (newCenter[1] ?? 0),
+      (savedCenterRow[2] ?? 0) - (newCenter[2] ?? 0),
     ]);
     return this;
   }
@@ -1325,11 +1327,12 @@ export class InputDecimalTable extends DecimalTable {
     this.remove(...this.horizontal_lines.submobjects, ...this.vertical_lines.submobjects);
     this._add_horizontal_lines();
     this._add_vertical_lines();
-    const newCenter = this.get_center();
+    const newCenter = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
+    const savedCenterRow = pointRows(savedCenter, this.dim)[0] ?? [0, 0, 0];
     this.shift([
-      (savedCenter[0] ?? 0) - (newCenter[0] ?? 0),
-      (savedCenter[1] ?? 0) - (newCenter[1] ?? 0),
-      (savedCenter[2] ?? 0) - (newCenter[2] ?? 0),
+      (savedCenterRow[0] ?? 0) - (newCenter[0] ?? 0),
+      (savedCenterRow[1] ?? 0) - (newCenter[1] ?? 0),
+      (savedCenterRow[2] ?? 0) - (newCenter[2] ?? 0),
     ]);
     return this;
   }

@@ -11,6 +11,7 @@ import { ManimColor, WHITE, color_gradient, type ParsableManimColor } from "../.
 import { VMobject, VGroup, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { SVGMobject, close_path_contours, type SVGMobjectOptions } from "../svg/svg_mobject.js";
 import { Dot } from "../geometry/arc.js";
+import { pointRows } from "../../utils/arrays.js";
 import { renderMarkupToSVGString } from "./pango/svg-renderer.js";
 
 export const TEXT_MOB_SCALE_FACTOR = 0.05;
@@ -764,7 +765,7 @@ export class Paragraph extends VGroup {
   lines_text!: Text;
   chars!: VGroup;
   lines!: [VMobject[], Array<string | null>];
-  lines_initial_positions: number[][] = [];
+  lines_initial_positions: NDArray[] = [];
 
   constructor(...args: Array<string | ParagraphOptions>) {
     // Last argument may be the options object (mirrors Python's **kwargs).
@@ -835,8 +836,9 @@ export class Paragraph extends VGroup {
     this.lines[1] = new Array(this.lines[0].length).fill(null);
     for (let line_no = 0; line_no < this.lines[0].length; line_no += 1) {
       const line = this.__getitem__(line_no) as VMobject;
-      const initial = this.lines_initial_positions[line_no] as number[];
-      line.move_to(this.get_center().map((value, index) => value + (initial[index] ?? 0)));
+      const initial = pointRows(this.lines_initial_positions[line_no] ?? [], this.dim)[0] ?? [];
+      const center = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
+      line.move_to(center.map((value, index) => value + (initial[index] ?? 0)));
     }
     return this;
   }
@@ -844,8 +846,9 @@ export class Paragraph extends VGroup {
   _set_line_to_initial_position(line_no: number): this {
     this.lines[1][line_no] = null;
     const line = this.__getitem__(line_no) as VMobject;
-    const initial = this.lines_initial_positions[line_no] as number[];
-    line.move_to(this.get_center().map((value, index) => value + (initial[index] ?? 0)));
+    const initial = pointRows(this.lines_initial_positions[line_no] ?? [], this.dim)[0] ?? [];
+    const center = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
+    line.move_to(center.map((value, index) => value + (initial[index] ?? 0)));
     return this;
   }
 

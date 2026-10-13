@@ -23,7 +23,7 @@ import { MathTex, Tex } from "../mobject/text/tex_mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Axes, CoordinateSystem, NumberPlane } from "../mobject/graphing/coordinate_systems.js";
 import { GREY, ManimColor, WHITE, type ParsableManimColor } from "../utils/color/core.js";
-import { angle_of_vector, normalize } from "../utils/space_ops.js";
+import { angle_of_vector, _normalize_flat } from "../utils/space_ops.js";
 
 export { CoordinateSystem };
 
@@ -317,16 +317,16 @@ export class VectorScene extends Scene {
     label_mob.add_background_rectangle();
 
     if (at_tip) {
-      const vect = normalize(vector.get_vector() as number[]) as number[];
+      const vect = _normalize_flat(vector.get_vector());
       label_mob.next_to(vector.get_end(), vect, SMALL_BUFF);
     } else {
       const angle = vector.get_angle();
       if (!rotate) label_mob.rotate(-angle, [...OUT], ORIGIN);
       if (direction === "left") {
-        const bottom = label_mob.get_bottom();
+        const bottom = pointRows(label_mob.get_bottom(), 3)[0] ?? [0, 0, 0];
         label_mob.shift(bottom.map((value, i) => -value + 0.1 * (UP[i] as number)));
       } else {
-        const top = label_mob.get_top();
+        const top = pointRows(label_mob.get_top(), 3)[0] ?? [0, 0, 0];
         label_mob.shift(top.map((value, i) => -value + 0.1 * (DOWN[i] as number)));
       }
       label_mob.rotate(angle, [...OUT], ORIGIN);
@@ -965,7 +965,7 @@ export class LinearTransformationScene extends VectorScene {
       if (m.target === null || m.target === undefined) {
         m.target = m.copy();
       }
-      const temp: number[] = m.get_center();
+      const temp: number[] = pointRows(m.get_center(), 3)[0] ?? [0, 0, 0];
       const target_point = func(temp);
       (m.target as Mobject).move_to(target_point);
     }

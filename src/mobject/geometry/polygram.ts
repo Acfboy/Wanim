@@ -1,7 +1,7 @@
 import { VGroup, VMobject, type VMobjectOptions } from "../types/vectorized_mobject.js";
 import { addPoints, isNDArray, norm, pointRows, scalePoint, subtractPoints } from "../../utils/arrays.js";
 import { adjacent_n_tuples, adjacent_pairs } from "../../utils/iterables.js";
-import { angle_between_vectors, normalize } from "../../utils/space_ops.js";
+import { angle_between_vectors, _normalize_flat } from "../../utils/space_ops.js";
 import { QuickHull, type Facet, type SubFacet } from "../../utils/qhull.js";
 import { DOWN, RIGHT, TAU, DL, DR, SMALL_BUFF, UL, UR } from "../../constants.js";
 import { BLUE, WHITE, type ParsableManimColor } from "../../utils/color/core.js";
@@ -28,8 +28,8 @@ export function set_grid_line_constructor(ctor: GridLineConstructor): void {
 // the geometry/line module on load (it already imports ArcBetweenPoints).
 export interface RoundCornersArc {
   points: NDArray;
-  get_end(): number[];
-  get_start(): number[];
+  get_end(): NDArray;
+  get_start(): NDArray;
   get_arc_length(): number;
 }
 
@@ -108,21 +108,21 @@ export class Polygram extends VMobject {
     }
   }
 
-  get_vertices(): number[][] {
+  get_vertices(): NDArray {
     return this.get_start_anchors();
   }
-  get_vertex_groups(): number[][][] {
-    const vertex_groups: number[][][] = [];
-    const starts = this.get_start_anchors();
-    const ends = this.get_end_anchors();
+  get_vertex_groups(): NDArray[] {
+    const vertex_groups: NDArray[] = [];
+    const starts = pointRows(this.get_start_anchors(), this.dim);
+    const ends = pointRows(this.get_end_anchors(), this.dim);
 
     // TODO: If any of the original vertex groups contained the starting
     // vertex N times, then .get_vertex_groups() splits it into N groups.
     let group: number[][] = [];
     for (let index = 0; index < starts.length; index += 1) {
       group.push(starts[index] ?? []);
-      if (this.consider_points_equals(ends[index], group[0])) {
-        vertex_groups.push(group.map((point) => [...point]));
+      if (this.consider_points_equals(ends[index] ?? [], group[0] ?? [])) {
+        vertex_groups.push(array(group.map((point) => [...point])) as NDArray);
         group = [];
       }
     }
@@ -147,7 +147,8 @@ export class Polygram extends VMobject {
 
     const new_points: number[][] = [];
 
-    for (const vertex_group of this.get_vertex_groups()) {
+    for (const vertex_group_nd of this.get_vertex_groups()) {
+      const vertex_group = pointRows(vertex_group_nd, this.dim);
       const arcs: RoundCornersArc[] = [];
 
       // Repeat the radius list as necessary in order to provide a radius
@@ -169,8 +170,8 @@ export class Polygram extends VMobject {
         const [v1 = [0, 0, 0], v2 = [0, 0, 0], v3 = [0, 0, 0]] = triples[index] ?? [];
         const vect1 = subtractPoints(v2, v1, this.dim);
         const vect2 = subtractPoints(v3, v2, this.dim);
-        const unit_vect1 = normalize(vect1);
-        const unit_vect2 = normalize(vect2);
+        const unit_vect1 = _normalize_flat(vect1);
+        const unit_vect2 = _normalize_flat(vect2);
 
         let corner_angle = angle_between_vectors(vect1, vect2);
         // Negative radius gives concave curves
@@ -526,7 +527,7 @@ export class Rectangle extends Polygon {
     this.stretch_to_fit_width(width);
     this.stretch_to_fit_height(height);
 
-    let v = this.get_vertices();
+    let v = pointRows(this.get_vertices(), this.dim);
     this.grid_lines = new VGroup();
 
     if (grid_xstep || grid_ystep) {
@@ -537,7 +538,7 @@ export class Rectangle extends Polygon {
           "TODO: Rectangle grid lines need line.ts to be imported (register Line via set_grid_line_constructor)",
         );
       }
-      v = this.get_vertices();
+      v = pointRows(this.get_vertices(), this.dim);
     }
     // NOTE: guarded non-null by the throw above whenever grid lines are built.
     const lineCtor = gridLineConstructor as GridLineConstructor;
@@ -624,7 +625,7 @@ export class Square extends Rectangle {
   }
 
   get side_length(): number {
-    const vertices = this.get_vertices();
+    const vertices = pointRows(this.get_vertices(), 3);
     return norm(subtractPoints(vertices[0] ?? [0, 0, 0], vertices[1] ?? [0, 0, 0], 3));
   }
 
