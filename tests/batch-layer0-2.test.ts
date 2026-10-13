@@ -237,10 +237,11 @@ describe("angle_of_vector", () => {
     expect(angle_of_vector([1, 1, 0])).toBeCloseTo(Math.PI / 4, 12);
   });
   it("handles (2,n) arrays column-wise", () => {
-    const out = angle_of_vector(array([[1, 0], [0, 1]])) as number[];
-    expect(out).toHaveLength(2);
-    expect(out[0]).toBeCloseTo(0, 12);
-    expect(out[1]).toBeCloseTo(Math.PI / 2, 12);
+    const out = angle_of_vector(array([[1, 0], [0, 1]]));
+    expect((out as { shape: number[] }).shape[0]).toBe(2);
+    const values = (out as { toArray(): number[] }).toArray();
+    expect(values[0]).toBeCloseTo(0, 12);
+    expect(values[1]).toBeCloseTo(Math.PI / 2, 12);
   });
   it("throws for degenerate (1,n) input", () => {
     expect(() => angle_of_vector(array([[1, 2, 3]]))).toThrow(

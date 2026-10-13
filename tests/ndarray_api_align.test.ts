@@ -5,7 +5,7 @@
 // `(path.get_start() == path.get_end()).all()`), so the container type is part
 // of the public contract.
 import { describe, expect, it } from "vitest";
-import { equal, multiply, NDArray } from "numpy-ts";
+import { array, equal, multiply, NDArray } from "numpy-ts";
 import { Mobject } from "../src/mobject/mobject.js";
 import { VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { Line, Arrow } from "../src/mobject/geometry/line.js";
@@ -17,9 +17,11 @@ import { NumberLine } from "../src/mobject/graphing/number_line.js";
 import { Axes } from "../src/mobject/graphing/coordinate_systems.js";
 import { Wiggle } from "../src/animation/indication.js";
 import {
+  angle_of_vector,
   cartesian_to_spherical,
   complex_to_R3,
   cross,
+  find_intersection,
   line_intersection,
   normalize,
 } from "../src/utils/space_ops.js";
@@ -193,6 +195,21 @@ describe("utils and animation return NDArray", () => {
     expectNDArray(
       line_intersection([[0, 0, 0], [1, 0, 0]], [[0, 0, 0], [0, 1, 0]]),
     );
+    expectNDArray(angle_of_vector(array([[1, 0], [0, 1]])));
+  });
+
+  it("find_intersection is a superset of manimce (flat point / batched list)", () => {
+    // manimgl-style single line: one NDArray point.
+    expectNDArray(find_intersection([0, 0, 0], [1, 0, 0], [0, 1, 0], [0, -1, 0]));
+    // manimce batched form: list of NDArray points.
+    const batch = find_intersection(
+      [[0, 0, 0]],
+      [[1, 0, 0]],
+      [[0, 1, 0]],
+      [[0, -1, 0]],
+    );
+    expect(Array.isArray(batch)).toBe(true);
+    for (const point of batch as NDArray[]) expectNDArray(point);
   });
 
   it("bezier helpers", () => {
