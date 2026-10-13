@@ -4,12 +4,18 @@
  * Wires an `InteractiveScene` to a real `<canvas>`:
  *  - pointer events on the canvas are converted to world-space points using the
  *    scene camera's frame geometry;
- *  - the two control buttons ("restart" / "next") live in a bar below the
- *    canvas. The bar is reused across runs so the buttons never disappear; the
- *    buttons are greyed out (disabled) while an action is unavailable;
+ *  - the overlay controls live in the bottom-right corner: a previous-page
+ *    (`<`), replay-page (`↻`) and next-page (`>`) icon, small and translucent
+ *    until hovered.  The icon colour adapts to the canvas backdrop (dark grey
+ *    on light backgrounds, light grey on dark ones) and unavailable slots stay
+ *    invisible so the controls never shift around;
  *  - `InputDecimalNumber` editing opens a transparent `<textarea>` laid exactly
  *    over the rendered number, so it looks like the number itself is being
  *    edited: the caret blinks in place and the rendered digits update live.
+ *
+ * Keyboard shortcuts are scoped: with several players on one page only the
+ * host whose canvas was last pressed reacts to right/left/up/space, so two
+ * animations never advance together.
  *
  * This module only touches `document` inside its methods, so importing it in a
  * non-DOM environment is safe; the class is simply never instantiated there.
@@ -51,41 +57,49 @@ function isBlockedNumberKey(event: KeyboardEvent, allowDecimalPoint: boolean): b
 /** One control bar per canvas, so re-runs reuse (never duplicate) the buttons. */
 const CONTROLS_BARS = new WeakMap<HTMLCanvasElement, HTMLElement>();
 
+/** Gap between the canvas' bottom-right corner and the control bar. */
+const CONTROLS_MARGIN = 10;
+
 /** Which host currently owns a control bar (so a stale run won't remove it). */
 const CONTROLS_OWNER = new WeakMap<HTMLElement, DomInteractiveHost>();
 
-const ENABLED_STYLE = {
-  background: "#0d3b66",
-  color: "#dbe9f7",
-  border: "1px solid #0d3b66",
-  cursor: "pointer",
-  opacity: "1",
-};
+/**
+ * Live hosts, for keyboard scoping: when several players share a page the
+ * shortcuts only reach the host whose canvas was last pressed (a newly created
+ * host takes over while it is the only one).
+ */
+const LIVE_HOSTS = new Set<DomInteractiveHost>();
+let ACTIVE_HOST: DomInteractiveHost | null = null;
 
-const DISABLED_STYLE = {
-  background: "#5c6b7a",
-  color: "#aeb9c4",
-  border: "1px solid #5c6b7a",
-  cursor: "not-allowed",
-  opacity: "1",
-};
+/** Icon names known to the control bar, in their fixed on-screen order. */
+const ICON_ORDER: InteractiveButtonIcon[] = ["previous", "replay", "next"];
 
-/** Small inline SVG icons (24x24 viewBox) for the control buttons. */
+/**
+ * SVG icon markup (24x24 viewBox), stroke-based so the icons stay crisp and
+ * inherit the theme colour through `currentColor`.
+ */
 const BUTTON_ICONS: Record<InteractiveButtonIcon, string> = {
-  restart: "M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
-  next: "M8 5v14l11-7z",
+  previous: '<path d="M15 5 8 12l7 7" />',
+  next: '<path d="M9 5l7 7-7 7" />',
+  replay:
+    '<polyline points="21 4 21 9.5 15.5 9.5" />' +
+    '<path d="M18.9 14.1a7.5 7.5 0 1 1-1.6-7.7L21 9.5" />',
+  restart:
+    '<polyline points="21 4 21 9.5 15.5 9.5" />' +
+    '<path d="M18.9 14.1a7.5 7.5 0 1 1-1.6-7.7L21 9.5" />',
 };
 
 function applyIcon(button: HTMLButtonElement, icon: InteractiveButtonIcon): void {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "14");
-  svg.setAttribute("height", "14");
-  svg.style.display = "block";
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", BUTTON_ICONS[icon]);
-  path.setAttribute("fill", "currentColor");
-  svg.appendChild(path);
+  svg.setAttribute("width", "20");
+  svg.setAttribute("height", "20");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.innerHTML = BUTTON_ICONS[icon];
   button.appendChild(svg);
 }
 
@@ -94,16 +108,40 @@ function ensureStyles(container: ParentNode): void {
   const style = document.createElement("style");
   style.id = "wanim-interactive-styles";
   style.textContent = `
+.wanim-interactive-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  z-index: 10;
+  color: #e8ebef;
+  transition: color .2s ease;
+}
+.wanim-interactive-controls.wanim-theme-light { color: #3a3f45; }
 .wanim-interactive-button {
-  padding: 6px;
-  width: 28px;
-  height: 28px;
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 5px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0;
-  font: inherit;
-  font-weight: 600;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: .38;
+  transition: opacity .15s ease, transform .12s ease;
+}
+.wanim-interactive-button:hover { opacity: .92; }
+.wanim-interactive-button:focus-visible { outline: 2px solid currentColor; outline-offset: -3px; }
+.wanim-interactive-button:active { transform: scale(.9); }
+.wanim-interactive-button:disabled { cursor: default; opacity: .18; }
+.wanim-interactive-button.wanim-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 .wanim-inline-editor {
   border: 0;
@@ -153,6 +191,8 @@ export class DomInteractiveHost implements InteractiveHost {
   private readonly canvas: HTMLCanvasElement;
   private readonly controls: HTMLElement;
   private readonly buttonEls: HTMLButtonElement[] = [];
+  private readonly iconButtons = new Map<InteractiveButtonIcon, HTMLButtonElement>();
+  private readonly buttonVisible = new Map<InteractiveButtonIcon, boolean>();
   private readonly disposers: Array<() => void> = [];
   private editor: HTMLTextAreaElement | null = null;
   private marker: HTMLDivElement | null = null;
@@ -162,6 +202,7 @@ export class DomInteractiveHost implements InteractiveHost {
   private editorOptions: TextEditOptions | null = null;
   private closing = false;
   private buttonsEnabled = true;
+  private resizeObserver: ResizeObserver | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -184,27 +225,66 @@ export class DomInteractiveHost implements InteractiveHost {
     } else {
       this.controls = document.createElement("div");
       this.controls.className = "wanim-interactive-controls";
-      this.controls.style.display = "flex";
-      this.controls.style.gap = "6px";
-      this.controls.style.zIndex = "10";
-      // Overlay the bottom-left corner of the canvas.
+      // Overlay the bottom-right corner of the canvas.
       const mount = controlContainerFor(canvas);
       const wrapper = mount instanceof HTMLElement ? mount : null;
       if (wrapper !== null) {
         if (getComputedStyle(wrapper).position === "static") wrapper.style.position = "relative";
         this.controls.style.position = "absolute";
-        this.controls.style.left = "8px";
-        this.controls.style.bottom = "8px";
+        this.controls.style.right = `${CONTROLS_MARGIN}px`;
+        this.controls.style.bottom = `${CONTROLS_MARGIN}px`;
         wrapper.appendChild(this.controls);
       } else {
         this.controls.style.position = "fixed";
-        this.controls.style.left = "8px";
-        this.controls.style.bottom = "8px";
+        this.controls.style.right = `${CONTROLS_MARGIN}px`;
+        this.controls.style.bottom = `${CONTROLS_MARGIN}px`;
         mount.appendChild(this.controls);
       }
       CONTROLS_BARS.set(canvas, this.controls);
     }
     CONTROLS_OWNER.set(this.controls, this);
+    this.watchCanvasLayout();
+    this.positionControls();
+    LIVE_HOSTS.add(this);
+    if (ACTIVE_HOST === null) ACTIVE_HOST = this;
+  }
+
+  /**
+   * Track the canvas' displayed box so the bar stays glued to the canvas'
+   * bottom-right *corner* even when the canvas is letterboxed inside a larger
+   * flex container (the demo page and the embed page both center it).  Without
+   * this the bar sits at the parent's corner, which can be outside the canvas
+   * on a differently coloured page background.
+   */
+  private watchCanvasLayout(): void {
+    if (typeof window === "undefined") return;
+    const relayout = (): void => this.positionControls();
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(relayout);
+      this.resizeObserver.observe(this.canvas);
+    }
+    window.addEventListener("resize", relayout);
+    // Capture-phase scroll: ancestor scrollers move the canvas without resizing.
+    window.addEventListener("scroll", relayout, true);
+    this.disposers.push(() => {
+      this.resizeObserver?.disconnect();
+      this.resizeObserver = null;
+      window.removeEventListener("resize", relayout);
+      window.removeEventListener("scroll", relayout, true);
+    });
+  }
+
+  /** Align the (absolute) control bar with the canvas' bottom-right corner. */
+  private positionControls(): void {
+    if (this.controls.style.position !== "absolute") return;
+    const parent = this.controls.parentElement;
+    if (parent === null) return;
+    const parentRect = parent.getBoundingClientRect();
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const right = Math.max(0, parentRect.right - canvasRect.right) + CONTROLS_MARGIN;
+    const bottom = Math.max(0, parentRect.bottom - canvasRect.bottom) + CONTROLS_MARGIN;
+    this.controls.style.right = `${Math.round(right)}px`;
+    this.controls.style.bottom = `${Math.round(bottom)}px`;
   }
 
   /**
@@ -221,6 +301,11 @@ export class DomInteractiveHost implements InteractiveHost {
       }
     }
     this.endTextEdit();
+    LIVE_HOSTS.delete(this);
+    if (ACTIVE_HOST === this) {
+      const next = LIVE_HOSTS.values().next();
+      ACTIVE_HOST = next.done ? null : (next.value ?? null);
+    }
     if (CONTROLS_OWNER.get(this.controls) === this) {
       CONTROLS_OWNER.delete(this.controls);
       CONTROLS_BARS.delete(this.canvas);
@@ -256,6 +341,9 @@ export class DomInteractiveHost implements InteractiveHost {
 
   onPointer(handlers: PointerHandlers): () => void {
     const down = (event: PointerEvent): void => {
+      // A press on this canvas makes it the keyboard owner among several
+      // players on the page.
+      ACTIVE_HOST = this;
       // Prevent the default focus change: opening the number editor focuses a
       // textarea, and the browser's implicit focus handling on pointerdown
       // would otherwise blur it immediately and close the editor.
@@ -309,11 +397,26 @@ export class DomInteractiveHost implements InteractiveHost {
     button.className = "wanim-interactive-button";
     button.title = label;
     button.setAttribute("aria-label", label);
-    if (icon !== undefined) applyIcon(button, icon);
-    else button.textContent = label;
+    if (icon !== undefined) {
+      applyIcon(button, icon);
+      const previous = this.iconButtons.get(icon);
+      if (previous !== undefined) {
+        previous.replaceWith(button);
+        const index = this.buttonEls.indexOf(previous);
+        if (index >= 0) this.buttonEls[index] = button;
+        else this.buttonEls.push(button);
+      } else {
+        this.buttonEls.push(button);
+      }
+      this.iconButtons.set(icon, button);
+      this.orderButtons();
+      this.applyButtonVisibility(icon);
+    } else {
+      button.textContent = label;
+      this.buttonEls.push(button);
+    }
     button.addEventListener("click", onClick);
-    this.controls.appendChild(button);
-    this.buttonEls.push(button);
+    if (icon === undefined) this.controls.appendChild(button);
     this.applyButtonStyle();
     // Keep the button resident; only its click handler is detached.
     const dispose = (): void => {
@@ -323,13 +426,30 @@ export class DomInteractiveHost implements InteractiveHost {
     return dispose;
   }
 
+  /**
+   * Show/hide one icon slot.  The slot keeps its place in the bar (hidden via
+   * `visibility`), so the remaining icons never move around.
+   */
+  setButtonVisible(icon: InteractiveButtonIcon, visible: boolean): void {
+    this.buttonVisible.set(icon, visible);
+    this.applyButtonVisibility(icon);
+    if (visible) this.positionControls();
+  }
+
+  /** Switch the icon colour for light/dark canvas backdrops. */
+  setControlTheme(dark: boolean): void {
+    this.controls.classList.toggle("wanim-theme-light", !dark);
+  }
+
   setButtonsEnabled(enabled: boolean): void {
     this.buttonsEnabled = enabled;
     this.applyButtonStyle();
+    if (enabled) this.positionControls();
   }
 
   onKey(handlers: KeyHandlers): () => void {
     const listener = (event: KeyboardEvent): void => {
+      if (ACTIVE_HOST !== this) return;
       if (this.editor !== null) return;
       if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
       const target = event.target as HTMLElement | null;
@@ -341,11 +461,15 @@ export class DomInteractiveHost implements InteractiveHost {
       ) {
         return;
       }
-      if (event.code === "Space") {
+      if (event.code === "Space" || event.key === "ArrowRight") {
         event.preventDefault();
         handlers.next();
-      } else if (event.key === "r" || event.key === "R") {
-        handlers.restart();
+      } else if (event.key === "ArrowLeft" && handlers.previous !== undefined) {
+        event.preventDefault();
+        handlers.previous();
+      } else if (event.key === "ArrowUp" && handlers.replay !== undefined) {
+        event.preventDefault();
+        handlers.replay();
       }
     };
     window.addEventListener("keydown", listener);
@@ -554,16 +678,27 @@ export class DomInteractiveHost implements InteractiveHost {
     });
   }
 
+  /** Put the icon buttons in their fixed slots (previous, replay, next). */
+  private orderButtons(): void {
+    for (const icon of ICON_ORDER) {
+      const button = this.iconButtons.get(icon);
+      if (button !== undefined) this.controls.appendChild(button);
+    }
+    for (const button of this.buttonEls) {
+      if (!this.controls.contains(button)) this.controls.appendChild(button);
+    }
+  }
+
+  private applyButtonVisibility(icon: InteractiveButtonIcon): void {
+    const button = this.iconButtons.get(icon);
+    if (button === undefined) return;
+    button.classList.toggle("wanim-hidden", this.buttonVisible.get(icon) === false);
+  }
+
   private applyButtonStyle(): void {
-    const style = this.buttonsEnabled ? ENABLED_STYLE : DISABLED_STYLE;
     for (const button of this.buttonEls) {
       if (!button.isConnected) continue;
       button.disabled = !this.buttonsEnabled;
-      button.style.background = style.background;
-      button.style.color = style.color;
-      button.style.border = style.border;
-      button.style.cursor = style.cursor;
-      button.style.opacity = style.opacity;
     }
   }
 

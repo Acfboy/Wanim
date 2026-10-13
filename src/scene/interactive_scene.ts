@@ -11,18 +11,27 @@
  *    re-applied every frame, so a slider's value can drive a shape.
  *  - After the user presses "next", `construct` runs with `add_updater`
  *    callbacks active and reactions disabled.
- *  - The scene never stops on its own: it keeps redrawing (a "preprint",
- *    i.e. an endless `play`) until the user presses "next" on the final phase,
- *    the render is aborted, or the scene is nested in a headless run.
+ *  - A scene run on its own is one single-scene presentation: the
+ *    {@link ScenePresentation} player drives its phases, so pausing behaviour,
+ *    buttons, keyboard shortcuts and navigation match multi-scene runs.
  *
  * Multiple blueprint/construct pairs can be scheduled with
- * {@link set_storyboard}; each pair is played in order, with the "next" button
- * advancing from a blueprint to its construct and then to the next pair.
+ * {@link set_storyboard}; each pair is played in order.
+ *
+ * The stepwise surface consumed by {@link ScenePresentation} (phase list, one
+ * phase execution, one interaction frame, control-value snapshots) is public
+ * but internal: user scenes implement `blueprint`/`construct`, not these.
  */
 import { Mobject } from "../mobject/mobject.js";
 import { Scene, type SceneConstructorOptions } from "./scene.js";
 import { isInteractiveControl, type InteractiveControl } from "../interactive/controls.js";
 import { NullInteractiveHost, type InteractiveHost } from "../interactive/host.js";
+import {
+  ScenePresentation,
+  type PresentationAction,
+  type PresentationPhase,
+} from "../interactive/presentation.js";
+import type { SceneConstructor } from "../renderer/scene_runner.js";
 import { is_thenable } from "../utils/scheduler.js";
 
 /** A callable story step; `null` means "skip this half". */
@@ -30,10 +39,7 @@ export type InteractiveStepFn = (() => unknown) | unknown;
 export type InteractiveStep = { blueprint: InteractiveStepFn; construct: InteractiveStepFn };
 
 type PhaseKind = "blueprint" | "construct";
-interface Phase {
-  kind: PhaseKind;
-  run: () => unknown;
-}
+type Phase = PresentationPhase;
 
 export interface InteractiveSceneOptions extends SceneConstructorOptions {
   /** Environment services; defaults to a headless {@link NullInteractiveHost}. */
@@ -45,7 +51,14 @@ export class InteractiveScene extends Scene {
   readonly is_interactive_scene = true;
   /** Host services (pointer mapping, buttons, inline editing). */
   interactive_host: InteractiveHost = new NullInteractiveHost();
+  /**
+   * Default for the player driving this scene directly (`render()`): pause
+   * after every phase.  A multi-scene presentation passes its own value.
+   */
+  slides_mode = false;
 
+  /** The presentation currently driving this scene, when there is one. */
+  private _presentation: ScenePresentation | null = null;
   private _storyboard: InteractiveStep[] | null = null;
   private _phaseKind: PhaseKind = "blueprint";
   private _activeControl: InteractiveControl | null = null;
@@ -55,6 +68,8 @@ export class InteractiveScene extends Scene {
   private _installed = false;
   private _requestNext = false;
   private _requestRestart = false;
+  private _requestPrevious = false;
+  private _requestReplay = false;
 
   constructor(options: InteractiveSceneOptions = {}) {
     super(options);
@@ -103,8 +118,12 @@ export class InteractiveScene extends Scene {
     return this.set_storyboard(steps);
   }
 
-  /** Request a full restart at the next frame boundary. */
+  /** Request advancement to the next page at the next frame boundary. */
   next_step(): void {
+    if (this._presentation !== null) {
+      this._presentation.next();
+      return;
+    }
     this._requestNext = true;
   }
 
@@ -112,14 +131,182 @@ export class InteractiveScene extends Scene {
     this.next_step();
   }
 
-  /** Request that the whole story restart from the first blueprint. */
+  /** Request a jump to the previous page (slides mode). */
+  previous_step(): void {
+    if (this._presentation !== null) {
+      this._presentation.previous();
+      return;
+    }
+    this._requestPrevious = true;
+  }
+
+  previousStep(): void {
+    this.previous_step();
+  }
+
+  /** Request a re-run of the current page (slides mode). */
+  replay_step(): void {
+    if (this._presentation !== null) {
+      this._presentation.replay();
+      return;
+    }
+    this._requestReplay = true;
+  }
+
+  replayStep(): void {
+    this.replay_step();
+  }
+
+  /** Request that the whole presentation restart from the first page. */
   restart(): void {
+    if (this._presentation !== null) {
+      this._presentation.restart();
+      return;
+    }
     this._requestRestart = true;
+  }
+
+  // --- presentation surface (consumed by ScenePresentation) -------------------
+
+  /** The scene's phases, in story order. */
+  presentation_phases(): Phase[] {
+    return this.build_phases();
+  }
+
+  /**
+   * Run one phase function to completion without pausing.  The player decides
+   * whether the phase pauses afterwards.
+   */
+  async presentation_run_phase(phase: Phase): Promise<void> {
+    if (this.is_aborted()) return;
+    this._phaseKind = phase.kind;
+    // A gesture must not survive a phase boundary: `move`/`up` events of an
+    // in-flight drag are ignored outside the blueprint phase, so clearing the
+    // state here is what stops a stale drag from jumping on the next frame.
+    this.on_interaction_reset();
+    // The phase (re)builds the scene's mobjects, so the cached control list and
+    // any hover highlight from the previous phase are stale.
+    this.clear_hover();
+    this._controlsCache = null;
+    const result = phase.run.call(this);
+    if (is_thenable(result)) await result;
+  }
+
+  /** One interaction frame: reactions/updaters + self updaters + draw. */
+  presentation_frame(): void {
+    this.tick();
+  }
+
+  /** Drop all scene state so phases can rebuild from scratch. */
+  presentation_reset(): void {
+    this.reset_interaction_state();
+  }
+
+  /** Snapshot the current value of every interactive control, in tree order. */
+  presentation_control_values(): unknown[] {
+    const values: unknown[] = [];
+    for (const control of this.interactive_controls()) {
+      try {
+        values.push(control.get_value());
+      } catch {
+        values.push(undefined);
+      }
+    }
+    return values;
+  }
+
+  /**
+   * Restore a snapshot produced by {@link presentation_control_values}.  The
+   * rebuilt controls are matched positionally (the same code recreates them in
+   * the same order); a control without `set_value` or a shorter snapshot is
+   * skipped.
+   */
+  presentation_set_control_values(values: unknown[]): void {
+    const controls = this.interactive_controls();
+    const count = Math.min(controls.length, values.length);
+    for (let index = 0; index < count; index += 1) {
+      const control = controls[index] as Mobject & InteractiveControl & { set_value?: (value: unknown) => unknown };
+      const value = values[index];
+      if (value === undefined || typeof control.set_value !== "function") continue;
+      try {
+        control.set_value(value);
+      } catch {
+        /* keep going: a stale value must not break the rebuild */
+      }
+    }
+  }
+
+  /**
+   * Take the pending navigation request set through the `*_step` methods, if
+   * any.  The player polls this so external JS can keep calling the
+   * scene-level methods.
+   */
+  requested_action(): PresentationAction | null {
+    if (this._requestRestart) {
+      this._requestRestart = false;
+      return "restart";
+    }
+    if (this._requestNext) {
+      this._requestNext = false;
+      return "next";
+    }
+    if (this._requestPrevious) {
+      this._requestPrevious = false;
+      return "previous";
+    }
+    if (this._requestReplay) {
+      this._requestReplay = false;
+      return "replay";
+    }
+    return null;
+  }
+
+  /** The kind of phase currently being displayed. */
+  get phase_kind(): PhaseKind {
+    return this._phaseKind;
+  }
+
+  /**
+   * Register the pointer/wheel handlers on `host`.  Buttons and keyboard
+   * shortcuts are owned by the presentation player (or by the embedder);
+   * attaching is idempotent so a rebuild of a scene can re-attach safely.
+   */
+  attach_host(host: InteractiveHost): void {
+    this.interactive_host = host;
+    if (this._installed) return;
+    this._installed = true;
+    this._disposers.push(
+      host.onPointer({
+        down: (event) => this.handle_pointer_down(this.point_from_event(host, event), event),
+        move: (event) => this.handle_pointer_move(this.point_from_event(host, event), event),
+        up: (event) => this.handle_pointer_up(event),
+        leave: () => this.clear_hover(),
+      }),
+    );
+    if (typeof host.onWheel === "function") {
+      this._disposers.push(host.onWheel((event) => this.handle_pointer_wheel(event)));
+    }
+  }
+
+  /** Detach the pointer/wheel handlers and any open inline editor. */
+  detach_host(): void {
+    for (const dispose of this._disposers.splice(0)) {
+      try {
+        dispose();
+      } catch {
+        /* ignore */
+      }
+    }
+    this._installed = false;
+    this.interactive_host.endTextEdit();
+    this._activeControl = null;
+    this.clear_hover();
+    this._controlsCache = null;
+    this.on_interaction_reset();
   }
 
   override render(preview = false): boolean | Promise<boolean> {
     this.capture_run_scheduler();
-    this.setup();
     const host = this.interactive_host ?? new NullInteractiveHost();
     const run = this.run_interactive(host);
     return run.then(
@@ -128,35 +315,24 @@ export class InteractiveScene extends Scene {
     );
   }
 
-  /** The interactive driver: run every phase until done/restart/abort. */
+  /**
+   * Drive this scene through the presentation player.  Used by {@link render}
+   * and available to embedders that own the event loop.
+   */
   async run_interactive(host: InteractiveHost = this.interactive_host): Promise<void> {
-    this.install_host(host);
+    const presentation = new ScenePresentation(
+      [this.constructor as unknown as SceneConstructor],
+      {
+        host,
+        slidesMode: this.slides_mode,
+        createScene: () => this,
+      },
+    );
+    this._presentation = presentation;
     try {
-      for (;;) {
-        const phases = this.build_phases();
-        let restart = false;
-        let stop = false;
-        for (const phase of phases) {
-          const action = await this.run_phase(phase, host);
-          if (action === "restart") {
-            restart = true;
-            break;
-          }
-          if (action === "finish" || action === "abort") {
-            stop = true;
-            break;
-          }
-        }
-        if (stop) break;
-        if (restart) {
-          this.reset_interaction_state();
-          continue;
-        }
-        break;
-      }
+      await presentation.run();
     } finally {
-      host.setButtonsEnabled(false);
-      this.uninstall_host();
+      this._presentation = null;
     }
   }
 
@@ -194,54 +370,6 @@ export class InteractiveScene extends Scene {
     if (target.__self__ === this) return () => target();
     // rapydscript methods are unbound prototype functions using `this` as self.
     return () => target.call(this);
-  }
-
-  private async run_phase(phase: Phase, host: InteractiveHost): Promise<"next" | "restart" | "abort" | "finish"> {
-    if (this.is_aborted()) return "abort";
-    this._phaseKind = phase.kind;
-    // A gesture must not survive a phase boundary: `move`/`up` events of an
-    // in-flight drag are ignored outside the blueprint phase, so clearing the
-    // state here is what stops a stale drag from jumping on the next frame.
-    this.on_interaction_reset();
-    // The phase (re)builds the scene's mobjects, so the cached control list and
-    // any hover highlight from the previous phase are stale.
-    this.clear_hover();
-    this._controlsCache = null;
-    // Buttons are unavailable while a phase function (typically a `play`
-    // animation) runs; they light up again once the scene is idle and the user
-    // can interact / advance.
-    host.setButtonsEnabled(false);
-    const result = phase.run.call(this);
-    if (is_thenable(result)) await result;
-    // The run may have been aborted while the phase ran (e.g. the user pressed
-    // the run button again); do not enter the interaction loop of a dead run.
-    if (this.is_aborted()) return "abort";
-    if (!host.live) {
-      // Headless: draw one frame for the phase and move on, so Node runs and
-      // tests terminate naturally.
-      this.tick();
-      return "next";
-    }
-    host.setButtonsEnabled(true);
-    const action = await this.interactive_loop(host);
-    host.setButtonsEnabled(false);
-    return action;
-  }
-
-  private async interactive_loop(host: InteractiveHost): Promise<"next" | "restart" | "abort"> {
-    for (;;) {
-      if (this._requestRestart) {
-        this._requestRestart = false;
-        return "restart";
-      }
-      if (this._requestNext) {
-        this._requestNext = false;
-        return "next";
-      }
-      if (this.is_aborted()) return "abort";
-      this.tick();
-      await host.nextFrame();
-    }
   }
 
   private tick(): void {
@@ -335,47 +463,6 @@ export class InteractiveScene extends Scene {
   /** Drop any active hover highlight (phase change, pointer leave, teardown). */
   private clear_hover(): void {
     this.set_hovered_control(null);
-  }
-
-  private install_host(host: InteractiveHost): void {
-    if (this._installed) return;
-    this._installed = true;
-    this._disposers.push(
-      host.onPointer({
-        down: (event) => this.handle_pointer_down(this.point_from_event(host, event), event),
-        move: (event) => this.handle_pointer_move(this.point_from_event(host, event), event),
-        up: (event) => this.handle_pointer_up(event),
-        leave: () => this.clear_hover(),
-      }),
-    );
-    if (typeof host.onWheel === "function") {
-      this._disposers.push(host.onWheel((event) => this.handle_pointer_wheel(event)));
-    }
-    this._disposers.push(host.addButton("从头再来", () => this.restart(), "restart"));
-    this._disposers.push(host.addButton("进入下一步", () => this.next_step(), "next"));
-    this._disposers.push(
-      host.onKey({
-        next: () => this.next_step(),
-        restart: () => this.restart(),
-      }),
-    );
-  }
-
-  private uninstall_host(): void {
-    for (const dispose of this._disposers) {
-      try {
-        dispose();
-      } catch {
-        /* ignore */
-      }
-    }
-    this._disposers = [];
-    this._installed = false;
-    this.interactive_host.endTextEdit();
-    this._activeControl = null;
-    this.clear_hover();
-    this._controlsCache = null;
-    this.on_interaction_reset();
   }
 
   /**

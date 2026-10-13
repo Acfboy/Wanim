@@ -504,7 +504,7 @@ describe("InteractiveScene", () => {
     await host.advance(1);
     const firstSlider = scene.slider;
 
-    host.click("从头再来");
+    scene.restart();
     await host.advance(2);
     expect(scene.slider).not.toBe(firstSlider);
     expect(scene.constructed).toBe(false);

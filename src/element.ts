@@ -52,9 +52,10 @@
  * | `compiler-src`     | —                   | rapydscript URL override                   |
  *
  * Methods: `run()` (async, resolves with the render stats), `stop()`,
- * `next()` (interactive scenes), `restart()` (re-runs).  Events (bubbling,
- * composed): `wanim-ready`, `wanim-run`, `wanim-scene` (detail.name),
- * `wanim-done` (detail.stats), `wanim-error` (detail.error).
+ * `next()` / `previous()` / `replay()` (drive the live presentation),
+ * `restart()` (re-runs).  Events (bubbling, composed): `wanim-ready`,
+ * `wanim-run`, `wanim-scene` (detail.name), `wanim-done` (detail.stats),
+ * `wanim-error` (detail.error).
  */
 
 /** Render statistics returned by `run()` (a subset of wanim's stats). */
@@ -84,10 +85,13 @@ interface Py2jsModule {
   };
 }
 
-/** Minimal shape of a live `InteractiveScene` as seen from the element. */
-interface InteractiveSceneLike {
-  next_step?: () => void;
+/** Minimal shape of the presentation controller as seen from the element. */
+interface PresentationControllerLike {
+  next?: () => void;
+  previous?: () => void;
+  replay?: () => void;
   restart?: () => void;
+  abort?: () => void;
 }
 
 const TAG_NAME = "wanim-scene";
@@ -291,7 +295,7 @@ export class WanimSceneElement extends HTMLElementBase {
   private controller: AbortController | null = null;
   private runPromise: Promise<WanimSceneStats> | null = null;
   private generation = 0;
-  private liveScene: InteractiveSceneLike | null = null;
+  private liveController: PresentationControllerLike | null = null;
   private loopTimer: ReturnType<typeof setTimeout> | null = null;
   private autoplayScheduled = false;
   private autoplayStarted = false;
@@ -406,21 +410,42 @@ export class WanimSceneElement extends HTMLElementBase {
     if (controller === null) return;
     this.controller = null;
     this.runPromise = null;
-    this.liveScene = null;
+    this.liveController = null;
     this.generation += 1;
     controller.abort();
     this.setStatus("");
   }
 
   /**
-   * Ask a live `InteractiveScene` to advance to the next story step.  Returns
-   * `false` when no interactive scene is running.
+   * Ask the live presentation to advance to the next page.  Returns `false`
+   * when no presentation is running.
    */
   next(): boolean {
-    const scene = this.liveScene;
-    if (scene === null || typeof scene.next_step !== "function") return false;
-    scene.next_step();
+    const controller = this.liveController;
+    if (controller === null || typeof controller.next !== "function") return false;
+    controller.next();
     return true;
+  }
+
+  /** Ask the live presentation to go back one page (slides mode). */
+  previous(): boolean {
+    const controller = this.liveController;
+    if (controller === null || typeof controller.previous !== "function") return false;
+    controller.previous();
+    return true;
+  }
+
+  /** Ask the live presentation to replay the current page (slides mode). */
+  replay(): boolean {
+    const controller = this.liveController;
+    if (controller === null || typeof controller.replay !== "function") return false;
+    controller.replay();
+    return true;
+  }
+
+  /** The live presentation controller, if a run is active. */
+  get presentation(): PresentationControllerLike | null {
+    return this.liveController;
   }
 
   /** Re-run the scene from the beginning (same as `run()`). */
@@ -610,7 +635,7 @@ export class WanimSceneElement extends HTMLElementBase {
     const generation = ++this.generation;
     const controller = new AbortController();
     this.controller = controller;
-    this.liveScene = null;
+    this.liveController = null;
     this.clearLoopTimer();
     this.setStatus("Loading…");
     this.dispatch("wanim-run", {});
@@ -653,12 +678,14 @@ export class WanimSceneElement extends HTMLElementBase {
           this.setStatus(`Running ${name}…`);
           this.dispatch("wanim-scene", { name });
         },
-        onSceneReady: (scene: unknown) => {
-          if (generation === this.generation) this.liveScene = scene as InteractiveSceneLike;
+        onController: (controller: unknown) => {
+          if (generation === this.generation) {
+            this.liveController = controller as PresentationControllerLike;
+          }
         },
       });
       if (generation !== this.generation) return this.emptyStats();
-      this.liveScene = null;
+      this.liveController = null;
       this.setStatus(`Done · ${result.stats.frames} frames`);
       this.dispatch("wanim-done", { stats: result.stats, sceneName: result.sceneName });
       if (this._loop) this.scheduleLoop();
