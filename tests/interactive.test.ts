@@ -518,6 +518,59 @@ describe("InteractiveScene", () => {
     await done;
   });
 
+  test("scene-level add_reaction runs each blueprint frame and receives the scene", async () => {
+    const host = new FakeHost();
+    const calls: Array<{ scene: InteractiveScene; value: number }> = [];
+    class SceneReactionScene extends InteractiveScene {
+      slider!: Slider;
+      override blueprint(): void {
+        this.slider = new Slider({
+          start: [-2, 0, 0],
+          end: [2, 0, 0],
+          value_range: [1, 3],
+          init_value: 1,
+        });
+        this.add(this.slider);
+        this.add_reaction((scene) => calls.push({ scene, value: this.slider.get_value() }));
+      }
+    }
+    const scene = new SceneReactionScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.scene === scene)).toBe(true);
+    expect(calls.at(-1)?.value).toBe(1);
+
+    // The reaction sees the slider's new value on the next blueprint frame.
+    host.press([2, 0, 0]);
+    host.release();
+    await host.advance(1);
+    expect(calls.at(-1)?.value).toBe(3);
+
+    // Construct phase: scene reactions are inert like every other reaction.
+    const before = calls.length;
+    host.click("next");
+    await host.advance(1);
+    expect(calls.length).toBe(before);
+
+    host.click("next");
+    await host.advance(1);
+    await done;
+  });
+
+  test("remove_reaction and its camelCase alias unregister a scene callback", () => {
+    const scene = new InteractiveScene({ renderer: makeRenderer() });
+    let calls = 0;
+    const reaction = (): void => {
+      calls += 1;
+    };
+    expect(scene.addReaction(reaction)).toBe(scene);
+    expect(scene.reactions.length).toBe(1);
+    expect(scene.removeReaction(reaction)).toBe(scene);
+    expect(scene.reactions.length).toBe(0);
+    expect(calls).toBe(0);
+  });
+
   test("updaters run during the construct phase", async () => {
     const host = new FakeHost();
     let updates = 0;

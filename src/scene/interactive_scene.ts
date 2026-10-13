@@ -8,7 +8,9 @@
  *
  *  - {@link blueprint} is to reactions what `construct` is to updaters: while a
  *    scene is in its blueprint phase, `Mobject.add_reaction(...)` callbacks are
- *    re-applied every frame, so a slider's value can drive a shape.
+ *    re-applied every frame, so a slider's value can drive a shape.  The scene
+ *    itself can also carry reactions through {@link add_reaction}, for global
+ *    refresh callbacks that do not belong to any single mobject.
  *  - After the user presses "next", `construct` runs with `add_updater`
  *    callbacks active and reactions disabled.
  *  - A scene run on its own is one single-scene presentation: the
@@ -56,6 +58,14 @@ export class InteractiveScene extends Scene {
    * after every phase.  A multi-scene presentation passes its own value.
    */
   slides_mode = false;
+  /**
+   * Scene-level reactions: each runs once per blueprint frame, after every
+   * mobject's own reactions, and receives the scene.  This is the
+   * `Scene.add_reaction` counterpart of `Mobject.add_reaction` for callbacks
+   * that are not attached to a shape (it replaces the empty-`VGroup` holder
+   * pattern).  Cleared together with the mobjects on restart/replay.
+   */
+  reactions: Array<(scene: InteractiveScene) => void> = [];
 
   /** The presentation currently driving this scene, when there is one. */
   private _presentation: ScenePresentation | null = null;
@@ -81,6 +91,31 @@ export class InteractiveScene extends Scene {
 
   /** Overridden by user scenes; runs while interactions are live. */
   blueprint(): void {}
+
+  /**
+   * Register a scene-level interaction reaction (same call shape as
+   * {@link Mobject.add_reaction}, but the callback receives this scene).  In
+   * the blueprint phase it is re-applied every frame, after the mobjects'
+   * reactions; it is inert during `construct`, like every reaction.
+   */
+  add_reaction(reaction: (scene: InteractiveScene) => void): this {
+    this.reactions.push(reaction);
+    return this;
+  }
+
+  addReaction(reaction: (scene: InteractiveScene) => void): this {
+    return this.add_reaction(reaction);
+  }
+
+  /** Remove a reaction registered through {@link add_reaction}. */
+  remove_reaction(reaction: (scene: InteractiveScene) => void): this {
+    this.reactions = this.reactions.filter((candidate) => candidate !== reaction);
+    return this;
+  }
+
+  removeReaction(reaction: (scene: InteractiveScene) => void): this {
+    return this.remove_reaction(reaction);
+  }
 
   /**
    * Adding/removing mobjects changes which interactive controls exist (slides
@@ -413,6 +448,7 @@ export class InteractiveScene extends Scene {
     for (const mobject of this.interactive_family()) {
       for (const reaction of mobject.reactions) reaction(mobject);
     }
+    for (const reaction of this.reactions) reaction(this);
   }
 
   private interactive_family(): Mobject[] {
@@ -553,6 +589,7 @@ export class InteractiveScene extends Scene {
     this.static_mobjects = [];
     this.animations = [];
     this.updaters = [];
+    this.reactions = [];
     this.last_t = 0;
     this._activeControl = null;
     this.clear_hover();
