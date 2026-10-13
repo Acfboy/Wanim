@@ -425,6 +425,16 @@ export class JSONCairoRenderer {
     this.file_writer = new _DummyFileWriter(this, _scene.constructor.name);
   }
 
+  /**
+   * Force animation skipping on/off.  `play()` resets `skip_animations` to the
+   * constructor value before every animation, so the presentation runner (which
+   * fast-forwards earlier pages while rebuilding a scene) updates both.
+   */
+  set_skip_animations(skip: boolean): void {
+    this.skip_animations = skip;
+    this._original_skipping_status = skip;
+  }
+
   play(scene: Scene, ...args: Array<unknown>): void | Promise<void> {
     // Reset skip_animations to the original state.
     this.skip_animations = this._original_skipping_status;

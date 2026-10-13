@@ -23,8 +23,14 @@ import {
   default_camera_class,
   type SceneConstructor,
 } from "./renderer/scene_runner.js";
+import type { Scene } from "./scene/scene.js";
 import { InteractiveScene } from "./scene/interactive_scene.js";
 import { DomInteractiveHost } from "./interactive/dom_host.js";
+import { NullInteractiveHost, type InteractiveHost } from "./interactive/host.js";
+import {
+  ScenePresentation,
+  type PresentationState,
+} from "./interactive/presentation.js";
 import {
   create_frame_scheduler,
   get_render_scheduler,
@@ -167,6 +173,9 @@ export async function render_scene_to_canvas(
     ? create_frame_scheduler({ fps: options.fps ?? 30 })
     : null;
   if (scheduler !== null) set_render_scheduler(scheduler);
+  // Attach explicitly as well: a concurrently started run replaces the global
+  // scheduler, and this scene must keep its own pacing/cancellation.
+  scene.set_run_scheduler(scheduler);
   const onAbort = (): void => scheduler?.cancel();
   options.signal?.addEventListener("abort", onAbort, { once: true });
   try {
@@ -186,6 +195,147 @@ export async function render_scene_to_canvas(
     stats: renderer.stats,
     frames: renderer.frames as unknown as MJSONFrame[],
     meta: make_meta(renderer.camera, renderer.stats.frames, renderer.num_plays),
+  };
+}
+
+export interface BrowserPresentationOptions extends BrowserRenderOptions {
+  /**
+   * Slide mode: pause after every phase and enable previous/replay.  Without
+   * it only blueprint phases pause and the story plays through.
+   */
+  slidesMode?: boolean;
+  /** Called each time a scene becomes active (fresh or rebuilt). */
+  onSceneActivated?: (scene: Scene, index: number, sceneClass: SceneConstructor) => void;
+  /** Called once with the navigation controller driving the presentation. */
+  onController?: (controller: ScenePresentation) => void;
+  /** Called whenever the presentation position/state changes. */
+  onStateChange?: (state: PresentationState) => void;
+}
+
+export interface BrowserPresentationResult extends BrowserRenderResult {
+  /** Navigation handle: `next()`, `previous()`, `replay()`, `restart()`. */
+  controller: ScenePresentation;
+}
+
+/**
+ * Play several Scene classes in order on one canvas as a single presentation.
+ *
+ * This is the multi-scene companion of {@link render_scene_to_canvas}:
+ *
+ *  - scenes are constructed lazily when they become active and rebuilt when a
+ *    navigation re-enters them;
+ *  - each presentation owns its scheduler, so several presentations on one
+ *    page run and abort independently;
+ *  - a DOM host draws the bottom-right navigation icons; the JS handle
+ *    (`onController` / the returned `controller`) exposes the same actions.
+ */
+export async function render_presentation_to_canvas(
+  sceneClasses: SceneConstructor[],
+  canvas: HTMLCanvasElement,
+  options: BrowserPresentationOptions = {},
+): Promise<BrowserPresentationResult> {
+  if (sceneClasses.length === 0) {
+    throw new Error("render_presentation_to_canvas requires at least one Scene class");
+  }
+  apply_quality(options.quality ?? "-qm");
+  const realtime = options.realtime ?? true;
+  const scheduler: RenderScheduler | null = realtime
+    ? create_frame_scheduler({ fps: options.fps ?? 30 })
+    : null;
+  const domHost = typeof document !== "undefined" ? new DomInteractiveHost(canvas) : null;
+  const host: InteractiveHost = domHost ?? new NullInteractiveHost();
+  let controller: ScenePresentation | null = null;
+  const onAbort = (): void => {
+    scheduler?.cancel();
+    controller?.abort();
+  };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+
+  const stats: CanvasRenderStats = {
+    frames: 0,
+    recordCount: 0,
+    extractMs: 0,
+    serializeMs: 0,
+    drawMs: 0,
+    playMs: 0,
+    totalMs: 0,
+  };
+  const frames: MJSONFrame[] = [];
+  const harvested = new WeakSet<Scene>();
+  let lastCamera: Camera | null = null;
+  let numPlays = 0;
+
+  const harvest = (scene: Scene): void => {
+    if (harvested.has(scene)) return;
+    harvested.add(scene);
+    const renderer = scene.renderer as CanvasSceneRenderer | null | undefined;
+    if (renderer === null || renderer === undefined) return;
+    numPlays += renderer.num_plays;
+    frames.push(...(renderer.frames as unknown as MJSONFrame[]));
+    for (const key of Object.keys(stats) as Array<keyof CanvasRenderStats>) {
+      stats[key] += renderer.stats[key];
+    }
+    renderer.dispose();
+  };
+
+  const createScene = (sceneClass: SceneConstructor): Scene => {
+    const cameraClass = default_camera_class(sceneClass);
+    const camera = new cameraClass();
+    if (options.background !== undefined) camera.background_color = options.background;
+    canvas.width = camera.pixel_width;
+    canvas.height = camera.pixel_height;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) throw new Error("2d canvas context unavailable");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = backgroundCss({
+      background_color: camera.background_color.to_hex(),
+      background_opacity: camera.background_opacity,
+    });
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const renderer = new CanvasSceneRenderer("", {
+      camera_class: cameraClass,
+      ctx,
+      drawFrames: options.drawFrames ?? true,
+      recordFrames: options.recordFrames ?? false,
+      abortSignal: options.signal,
+      onFrame: options.onProgress,
+      useWebGL: options.useWebGL,
+    });
+    if (options.background !== undefined) {
+      renderer.camera.background_color = options.background;
+    }
+    const scene = construct_scene(sceneClass, renderer as never);
+    // Attach the scheduler explicitly instead of installing a global one: a
+    // second presentation on the same page must not steal this run's pacing.
+    scene.set_run_scheduler(scheduler);
+    if (scene instanceof InteractiveScene) scene.interactive_host = host;
+    lastCamera = renderer.camera;
+    options.onSceneReady?.(scene);
+    return scene;
+  };
+
+  controller = new ScenePresentation(sceneClasses, {
+    host,
+    slidesMode: options.slidesMode ?? false,
+    createScene,
+    disposeScene: (scene) => harvest(scene),
+    onSceneActivated: (scene, index, sceneClass) =>
+      options.onSceneActivated?.(scene, index, sceneClass),
+    onStateChange: options.onStateChange,
+  });
+  options.onController?.(controller);
+  try {
+    await controller.run();
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    domHost?.dispose();
+  }
+  return {
+    stats,
+    frames,
+    meta: make_meta(lastCamera ?? new Camera(), stats.frames, numPlays),
+    controller,
   };
 }
 

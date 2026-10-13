@@ -55,12 +55,19 @@ export interface TextEditOptions {
 export interface KeyHandlers {
   /** Advance to the next story phase. */
   next: () => void;
-  /** Restart the whole story. */
-  restart: () => void;
+  /** Jump back to the previous page (slides mode); shortcut: left arrow. */
+  previous?: () => void;
+  /** Re-run the current page (slides mode); shortcut: up arrow. */
+  replay?: () => void;
+  /**
+   * Rebuild the whole presentation.  Kept for host compatibility but no
+   * longer bound to a key: whole-presentation replay is driven from JS.
+   */
+  restart?: () => void;
 }
 
 /** Icon names the host knows how to draw (fallback is the text label). */
-export type InteractiveButtonIcon = "restart" | "next";
+export type InteractiveButtonIcon = "previous" | "next" | "replay" | "restart";
 
 /** Environment services an {@link InteractiveScene} needs. */
 export interface InteractiveHost {
@@ -93,7 +100,23 @@ export interface InteractiveHost {
    * when the run is torn down (see `dispose` on the DOM host).
    */
   setButtonsEnabled(enabled: boolean): void;
-  /** Register keyboard shortcuts (space = next, r = restart). */
+  /**
+   * Show/hide one overlay icon button.  Hidden slots keep their position, so
+   * `previous`/`replay`/`next` never shift around as availability changes.
+   * Optional: hosts without a fixed button bar may ignore it.
+   */
+  setButtonVisible?(icon: InteractiveButtonIcon, visible: boolean): void;
+  /**
+   * Theme hint for overlay controls: `dark: true` means the canvas backdrop is
+   * dark (including dark grey), so icons should be drawn in a light grey.
+   * Optional: hosts without a control bar may ignore it.
+   */
+  setControlTheme?(dark: boolean): void;
+  /**
+   * Register keyboard shortcuts: space/right arrow = next, left arrow =
+   * previous, up arrow = replay.  The whole-presentation replay has no
+   * in-canvas shortcut.
+   */
   onKey(handlers: KeyHandlers): () => void;
   /** Open an inline editor anchored to `mobject`. */
   beginTextEdit(mobject: Mobject, camera: unknown, options: TextEditOptions): void;

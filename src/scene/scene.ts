@@ -351,7 +351,24 @@ export class Scene {
 
   /** Capture the currently installed scheduler; called when a render starts. */
   protected capture_run_scheduler(): void {
-    this._run_scheduler = get_render_scheduler();
+    // A scheduler explicitly attached for this run (multi-presentation
+    // isolation: several scenes playing on one page each own a scheduler) wins
+    // over the global one installed by the legacy single-scene runner.
+    if (this._run_scheduler === null) this._run_scheduler = get_render_scheduler();
+  }
+
+  /**
+   * Attach the scheduler governing this scene's run.  Presentation runners use
+   * this instead of the global `set_render_scheduler` so concurrent runs never
+   * steal each other's pacing/cancellation.
+   */
+  set_run_scheduler(scheduler: RenderScheduler | null): void {
+    this._run_scheduler = scheduler;
+  }
+
+  /** The scheduler attached with {@link set_run_scheduler}, if any. */
+  get run_scheduler(): RenderScheduler | null {
+    return this._run_scheduler;
   }
 
   /** True when this scene's run has been aborted at the scheduler level. */
