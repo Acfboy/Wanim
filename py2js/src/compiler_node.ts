@@ -1,6 +1,6 @@
 /**
  * Node entry point for the compiler half of `py2js`
- * (`wanimjs/py2js`).
+ * (`@wanimjs/wanim/py2js`).
  *
  * Exports the DOM-free Python source preprocessor and the compile-error
  * formatter: useful in Node for tooling (linting / transforming manim Python,
