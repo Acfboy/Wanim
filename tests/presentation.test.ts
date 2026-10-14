@@ -410,6 +410,83 @@ describe("ScenePresentation", () => {
     await run;
   });
 
+  test("a trailing blueprint parks: no next, restart still rebuilds it", async () => {
+    class ModelScene extends InteractiveScene {
+      slider!: Slider;
+      blueprint(): void {
+        this.slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0], value_range: [0, 10] });
+        this.add(this.slider);
+      }
+    }
+    const host = new FakeHost();
+    const factory = interactiveFactory(host);
+    const controller = new ScenePresentation([ModelScene], {
+      host,
+      createScene: factory.create,
+    });
+    const run = controller.run();
+    await host.advance(1);
+
+    // A blueprint-only scene is a live model: no next and no finished state.
+    expect(controller.state.phaseKind).toBe("blueprint");
+    expect(controller.state.canNext).toBe(false);
+    expect(host.visible.get("next")).toBe(false);
+    host.click("next");
+    await host.advance(2);
+    expect(controller.state.done).toBe(false);
+    const scene = factory.created[0] as ModelScene;
+    expect(scene.mobjects.length).toBe(1);
+
+    // The ignored "next" left the model live: interactions still work.
+    host.press([2, 0, 0]);
+    host.release();
+    await host.advance(1);
+    expect(scene.slider.get_value()).toBe(10);
+
+    // Programmatic restart rebuilds the model from scratch.
+    controller.restart();
+    await host.advance(2);
+    expect(factory.created.length).toBe(2);
+    expect((factory.created[1] as ModelScene).slider.get_value()).toBe(0);
+
+    controller.abort();
+    await host.advance(1);
+    await run;
+  });
+
+  test("slides: the last page parks instead of finishing on next", async () => {
+    const host = new FakeHost();
+    const factory = interactiveFactory(host);
+    const controller = new ScenePresentation([SliderScene], {
+      host,
+      slidesMode: true,
+      createScene: factory.create,
+    });
+    const run = controller.run();
+    await host.advance(1);
+    host.click("next");
+    await host.advance(2);
+    expect(controller.state.phaseKind).toBe("construct");
+    expect(controller.state.canNext).toBe(false);
+    expect(host.visible.get("next")).toBe(false);
+
+    // "next" on the last page is a no-op: the run stays on the construct.
+    host.click("next");
+    await host.advance(2);
+    expect(controller.state.done).toBe(false);
+    expect(controller.state.phaseKind).toBe("construct");
+
+    // The page's own controls still work: replay re-runs the construct.
+    expect(controller.state.canReplay).toBe(true);
+    host.click("replay");
+    await host.advance(2);
+    expect(factory.created[0]!.constructs).toBe(2);
+
+    controller.abort();
+    await host.advance(1);
+    await run;
+  });
+
   test("restart rebuilds from the first page", async () => {
     const host = new FakeHost();
     const factory = interactiveFactory(host);

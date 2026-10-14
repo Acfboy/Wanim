@@ -372,9 +372,7 @@ export class InteractiveScene extends Scene {
   }
 
   private build_phases(): Phase[] {
-    const steps: InteractiveStep[] =
-      this._storyboard ??
-      [{ blueprint: () => this.blueprint(), construct: () => this.construct() }];
+    const steps: InteractiveStep[] = this._storyboard ?? [this.default_step()];
     const phases: Phase[] = [];
     for (const step of steps) {
       const blueprint = this.to_thunk(step.blueprint);
@@ -397,6 +395,22 @@ export class InteractiveScene extends Scene {
       phases.unshift({ kind: "blueprint", run: () => this.blueprint() });
     }
     return phases;
+  }
+
+  /**
+   * The implicit `(blueprint, construct)` pair of a scene without a
+   * storyboard.  The construct half is only added when the subclass overrides
+   * `construct`: a blueprint-only scene is a live interactive model, and an
+   * implicit no-op construct would only add a fake page whose "next" ends the
+   * run.  The blueprint half is always kept (even as the base no-op) so a bare
+   * interactive scene, e.g. an orbit-only 3D model, still has a live page.
+   */
+  private default_step(): InteractiveStep {
+    const overridden = (this.construct as unknown) !== (Scene.prototype.construct as unknown);
+    return {
+      blueprint: () => this.blueprint(),
+      construct: overridden ? () => this.construct() : null,
+    };
   }
 
   private to_thunk(fn: InteractiveStepFn): (() => unknown) | null {

@@ -15,7 +15,12 @@
  *    rebuilt with the user's remembered inputs, a construct plays again);
  *  - "replay" re-runs the current segment: a blueprint is rebuilt (clearing
  *    the user's input) and a construct replays its animation;
- *  - "restart" (driven from JS only) rebuilds the whole presentation.
+ *  - "restart" (driven from JS only) rebuilds the whole presentation;
+ *  - the run never finishes through "next": on the last page (a trailing
+ *    blueprint in any mode, or the final page of a slides-mode run) "next" is
+ *    a no-op and the run parks there, with replay/previous/restart still
+ *    working.  Outside slides mode a trailing construct plays through and
+ *    finishes on its own, without a user action.
  *
  * The player is renderer/DOM agnostic: it drives a caller-provided
  * {@link InteractiveHost} and creates scenes through a caller-provided factory
@@ -650,6 +655,10 @@ export class ScenePresentation {
       case "next": {
         const phase = this.phases[this.phaseIndex]!;
         if (phase.kind === "blueprint") this.record_control_values();
+        // The last page never advances to a finished state: the run parks on
+        // it (take_action already ignores the request; this guards any path
+        // that bypasses it).
+        if (!this.has_next_phase()) return false;
         // Skipping a playing segment jumps to its end state before the next
         // page builds on it.
         if (interrupted) await this.settle_skipping(this.phaseIndex);
@@ -713,14 +722,18 @@ export class ScenePresentation {
   }
 
   private take_action(): PresentationAction | null {
+    let action: PresentationAction | null;
     if (this.pending !== null) {
-      const action = this.pending;
+      action = this.pending;
       this.pending = null;
-      return action;
+    } else {
+      const interactive = this.scene === null ? null : as_interactive(this.scene);
+      action = interactive?.requested_action() ?? null;
     }
-    const interactive = this.scene === null ? null : as_interactive(this.scene);
-    const action = interactive?.requested_action() ?? null;
     if (action === null) return null;
+    // The last page has nothing after it: "next" is a no-op rather than a
+    // finish, so the run parks there.
+    if (action === "next" && !this.has_next_phase()) return null;
     // Scene-level JS calls (`scene.previous_step()`) honour the same slides
     // mode gate as the player's own methods.
     if (!this.slidesMode && (action === "previous" || action === "replay")) return null;
@@ -752,11 +765,13 @@ export class ScenePresentation {
     return this.scene !== null && this.sceneIndex >= 0;
   }
 
+  /** Whether another phase follows the current one anywhere in the run. */
+  private has_next_phase(): boolean {
+    return this.phaseIndex + 1 < this.phases.length || this.sceneIndex + 1 < this.sceneClasses.length;
+  }
+
   private can_advance(): boolean {
-    if (this.phaseIndex + 1 < this.phases.length) return true;
-    if (this.sceneIndex + 1 < this.sceneClasses.length) return true;
-    // A trailing blueprint page still needs an affordance to finish the story.
-    return this.phases[this.phaseIndex]?.kind === "blueprint";
+    return this.has_next_phase();
   }
 
   private can_step_back(): boolean {
