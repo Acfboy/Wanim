@@ -1,109 +1,91 @@
-# wanimjs
+# Wanim
 
-**Manim Python in the browser, in one package.** `wanimjs` ships the
-whole Wanim stack with subpath exports:
+**manim, live in the browser — lightweight, fast, and interactive.**
 
-| Subpath | What it is |
-| --- | --- |
-| `wanimjs` | the manim-compatible **core** library (Node ESM + types); also exported as `wanimjs/core` |
-| `wanimjs/py2js` | the Python→JS **compiler** (Node-safe: preprocessor + error formatter) |
-| `wanimjs/py-runtime` | the Python **runtime** (Node-safe: rapydscript shims, `math`/`random`/`itertools` facades, preload planner) |
-| `wanimjs/bridge` | **compiler + runtime + DOM glue** (`runPythonOnCanvas`, `benchInteractiveScene`) — browser-only |
-| `wanimjs/browser` | prebuilt browser bundle of the core library (also `./browser/core`) |
-| `wanimjs/browser/py2js` | prebuilt browser bundle of the compiler |
-| `wanimjs/browser/py-runtime` | prebuilt browser bundle of the runtime |
-| `wanimjs/browser/bridge` | prebuilt browser bundle of the bridge (loads its siblings relatively) |
-| `wanimjs/browser/rapydscript` | the patched rapydscript-ng compiler (classic `<script>`, sets `globalThis.RapydScript`) |
-| `wanimjs/browser/element` | the `<wanim-scene>` custom element (lazy-loads the bridge) |
+Wanim lets almost unmodified [manim](https://www.manim.community/) Python run
+in the browser—lightweight, fast, and convenient—and with only minor code
+changes, turns those scenes into interactive presentations far more powerful
+than plain animation. Nothing for your readers to install: no Python, no
+LaTeX, no server, and no tens-of-megabytes Pyodide runtime. See examples in
+our [gallery](https://wanim.org/docs/gallery) and try it yourself in the
+[playground](https://wanim.org/playground).
 
-The bundles are already built; consumers never need esbuild/tsc to run a
-scene.  **`numpy-ts` is not bundled** — it is a regular `dependency` of this
-package and must be provided by your import map or bundler (see below).
-MathJax ships as an on-demand chunk, so TeX works in plain import-map pages
-without a bundler.
+Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro).
 
-## Zero-config browser embed
+## Features
 
-Serve the `browser/` directory (all files, including `chunks/`) and provide
-`numpy-ts` yourself — copy `numpy-ts.browser.js` from
-`node_modules/numpy-ts/dist/` next to the other files, or map it to a CDN:
+- **Stock manim API.** `Scene`, mobjects, `self.play`, `.animate`,
+  `ValueTracker`, `Transform`, `MathTex`, `ThreeDScene`, and the rest of the
+  common surface keep their Python names and keyword arguments.
+- **Real-time playback** on a Canvas2D backend. `self.wait()` is a real pause.
+- **Interactive scenes.** `InteractiveScene` separates a live `blueprint()`
+  (controls and reactions that run every frame) from `construct()` (an
+  ordinary animation script the reader advances to).
+- **Math and text without LaTeX.** `MathTex` and `Tex` use MathJax, loaded on
+  demand. Text uses open-licensed fonts.
+- **Embeddable.** A `<wanim-scene>` custom element, a code-in-URL iframe, and
+  a JavaScript API.
+
+## Comparison
+
+| Capability | **Wanim** | [manim-web](https://github.com/maloyan/manim-web) | [try.manim.community](https://try.manim.community/) | [studio.academa.ai](https://studio.academa.ai/) |
+| --- | :---: | :---: | :---: | :---: |
+| Runs the original manim Python code | ✅ | ❌ | ✅ | ✅ |
+| Lightweight, embeddable anywhere | ✅ | ✅ | ❌ | ❌ |
+| Real-time rendering in the browser | ✅ | ✅ | ❌ | ✅ |
+| Interactive demos and slides | ✅ | ❌ | ❌ | ❌ |
+
+## Installation
+
+```bash
+npm install wanimjs
+```
+
+Node.js 18 or newer is needed when using the package from Node. The embed
+helpers need a browser with `CompressionStream` (current Chrome, Edge,
+Firefox, and Safari).
+
+## Quick start
+
+### In a bundled app (Vite, webpack, esbuild, Rollup)
+
+```js
+import { runPythonOnCanvas } from "wanimjs/bridge";
+
+const source = `
+from manim import *
+
+class Hello(Scene):
+    def construct(self):
+        self.play(Write(Text("Hello, Wanim!")))
+        self.wait(0.5)
+`;
+
+await runPythonOnCanvas(source, document.querySelector("canvas"), {
+  quality: "-qm",   // 1280 x 720 at 30 fps
+  realtime: true,
+});
+```
+
+### With the `<wanim-scene>` element (no page script)
+
+Map `numpy-ts` in an import map, load the element bundle, and put Python in the
+tag:
 
 ```html
-<script src="./browser/rapydscript.js"></script>
 <script type="importmap">
 {
   "imports": {
-    "wanim": "./browser/wanim.browser.js",
-    "py2js": "./browser/bridge.browser.js",
-    "numpy-ts": "./browser/numpy-ts.browser.js"
+    "numpy-ts": "https://cdn.jsdelivr.net/npm/numpy-ts/dist/numpy-ts.browser.js"
   }
 }
 </script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/wanimjs/browser/wanim-element.browser.js"></script>
 
-<canvas id="stage" width="1280" height="720"></canvas>
-<script type="module">
-import { runPythonOnCanvas } from "py2js";
-
-await runPythonOnCanvas(
-  `from manim import *
-class SquareToCircle(Scene):
-    def construct(self):
-        circle = Circle().set_fill(PINK, opacity=0.5)
-        square = Square().rotate(PI / 4)
-        self.play(Create(square))
-        self.play(Transform(square, circle))
-        self.play(FadeOut(square))
-`,
-  document.getElementById("stage"),
-  { quality: "-qm" },
-);
-</script>
-```
-
-The bridge resolves `./py2js.browser.js`, `./py-runtime.browser.js` and
-`./wanim.browser.js` *relatively*, so only the import map entries your own
-code uses are required.  Keep the whole `browser/` directory together: the
-bridge checks `instanceof wanim.Scene`.
-
-### Providing numpy-ts
-
-- **numpy-ts** is needed for every run (the library's array type), and it
-  already ships a browser ESM (`numpy-ts/dist/numpy-ts.browser.js`): copy it
-  next to the other files and add the import-map entry above.  Load it before
-  wanim's first array operation; `configureWasm({ maxMemory })` is available if
-  you need a bigger WASM heap.  Keep a single shared copy — it owns the WASM
-  heap.
-
-**MathJax** needs nothing from you: the bundle always carries it as an
-on-demand chunk (`browser/chunks/mathjax_runtime-*.js`, fetched only when a
-scene actually typesets math), so import-map pages, CDNs and bundlers all work
-without an extra dependency to wire up.  Pages that only use shapes or plain
-text never download it.
-
-### Optional modules
-
-`MathTex`/`Tex`, the hand-drawn style and text fonts are on-demand:
-
-```js
-import { preload_submodules, submodule_status } from "wanim";
-
-await preload_submodules("mathjax");                    // before first TeX use
-await preload_submodules(["mathjax", "fonts"]);         // several at once
-submodule_status();                                     // { fonts, mathjax }
-```
-
-## `<wanim-scene>` web component
-
-For the smallest possible embed, load the element bundle from the same
-`browser/` directory and drop a `<wanim-scene>` into the page — no import map
-or page script required:
-
-```html
-<script type="module" src="/wanim/browser/wanim-element.browser.js"></script>
-
-<wanim-scene quality="-qm" autoplay>
+<wanim-scene quality="-qm">
   <script type="text/x-python">
 from manim import *
+
 class Demo(Scene):
     def construct(self):
         self.play(Create(Circle()))
@@ -111,91 +93,144 @@ class Demo(Scene):
 </wanim-scene>
 ```
 
-Importing the bundle only registers the element (and is a no-op under
-Node/SSR). `bridge.browser.js`, `rapydscript.js` and any optional module are
-fetched from the element bundle's own directory on first run (the element
-still needs `numpy-ts` from the import map, like the bridge).
+Serving the files yourself works the same way: copy the package's `browser/`
+directory (keep its `chunks/` subdirectory) and `numpy-ts.browser.js` from
+`node_modules/numpy-ts/dist/` onto your site, then point the URLs at them.
 
-For scripted use, assign `.code` and `await .run()`; all events bubble and
-cross shadow boundaries:
+## Interactive scenes
 
-```html
-<wanim-scene id="s" quality="-qm" autoplay="false"></wanim-scene>
-<script type="module">
-  const el = document.getElementById("s");
-  el.addEventListener("wanim-done", (e) => console.log(e.detail.stats));
-  el.addEventListener("wanim-error", (e) => console.error(e.detail.error));
-  el.code = "from manim import *\n...";
-  await el.run();
-</script>
+```python
+from manim import *
+
+class Interactive(InteractiveScene):
+    def blueprint(self):
+        axes = Axes(x_range=[-1, 8, 1], y_range=[-2, 2, 1], x_length=8, y_length=4)
+        circle = Circle(radius=0.5, color=BLUE, fill_opacity=0.6)
+
+        slider = Slider(
+            start=axes.c2p(1, -1.6), end=axes.c2p(7, -1.6),
+            value_range=(0.4, 2.5), init_value=1.0, color=YELLOW,
+        )
+        circle.add_reaction(lambda m: m.set_width(slider.get_value()))
+
+        switch = Switch(True).to_corner(UR, buff=0.8)
+        circle.add_reaction(lambda m: m.set_color(GREEN if switch.get_value() else RED))
+
+        self.add(axes, circle, slider, switch)
+
+    def construct(self):
+        hint = Text("Drag the slider, flip the switch", font_size=24)
+        self.play(FadeIn(hint.to_edge(DOWN)), run_time=0.8)
+        self.wait(0.5)
 ```
 
-| Attribute | Property | Meaning |
+Controls are ordinary mobjects, so they can be positioned and animated like any
+other:
+
+| Control | Reader interaction | `get_value()` returns |
 | --- | --- | --- |
-| `code` | `.code` | Python source (or a `<script type="text/x-python">` child / `src`) |
-| `quality` | `.quality` | manim quality flag, default `-qm` |
-| `background` | — | CSS colour override |
-| `fps` | — | realtime frame rate, default 30 |
-| `scene` | `.sceneName` | scene class name to run |
-| `src` | — | URL to fetch the Python source from |
-| `autoplay` | — | default true; `autoplay="false"` disables |
-| `loop` | — | re-run when a run finishes |
-| `preload-modules` | — | space-separated `mathjax fonts` to prefetch |
-| `compiler-src` | — | rapydscript URL override |
+| `Slider(start, end, value_range, init_value)` | drag along a segment | `float` |
+| `PathSlider(path, value_range, is_closed)` | drag along any curve | `float` |
+| `Switch(value)` | click to toggle | `bool` |
+| `InputDecimalNumber(value, num_decimal_places)` | type, or drag to scrub | `float` |
+| `InputInteger(value)` | type, or drag to scrub | `int` |
+| `InputDecimalMatrix(rows)` | edit cells; layout adjusts | cell values |
+| `InputDecimalTable(rows)` | edit cells; grid rebuilds | cell values |
 
-Methods: `run()` (async, resolves with the render stats), `stop()`, `next()`
-(advance a live `InteractiveScene`; returns `false` otherwise), `restart()`.
-Events: `wanim-ready`, `wanim-run`, `wanim-scene` (`detail.name`),
-`wanim-done` (`detail.stats`), `wanim-error` (`detail.error`).
+Other features:
 
-## Node and bundlers
+- `set_storyboard([[blueprint, construct], ...])` gives multi-step stories.
+- `wanim_config({"slides_mode": True})` pauses after every segment, for
+  lecture-style material.
+- Scenes that pause show previous, replay, and next controls. Keys:
+  `Space` or `→` next, `←` previous, `↑` replay.
+- `ThreeDScene` and `InteractiveThreeDScene` support drag-to-orbit and scroll
+  to zoom in idle blueprints.
 
-```js
-import * as wanim from "wanimjs";        // library
-import { MathTex } from "wanimjs";
+## Embedding
 
-await wanim.preload_submodules("mathjax");
-console.log(new MathTex("a^2 + b^2 = c^2").width > 0);
+- **`<wanim-scene>`** attributes: `code` or child `<script type="text/x-python">`,
+  `src`, `quality` (`-ql`, `-qm`, `-qh`, `-q4k`), `fps`, `scene`, `background`,
+  `autoplay`, `loop`, `preload-modules` (`mathjax fonts`). Methods: `run()`,
+  `stop()`, `next()`, `previous()`, `replay()`, `restart()`. Events:
+  `wanim-ready`, `wanim-run`, `wanim-scene`, `wanim-done`, `wanim-error`.
+- **Code in the URL fragment** for CMSs that accept only an iframe:
 
-// Node-safe halves of the Python pipeline (tooling, tests):
-import { preprocessImports, formatCompileError } from "wanimjs/py2js";
-import { createRuntimeCore, buildPythonMath } from "wanimjs/py-runtime";
+  ```js
+  import { build_embed_hash, build_embed_iframe } from "wanimjs";
+
+  const hash = await build_embed_hash(pythonSource, { quality: "-qm" });
+  const html = build_embed_iframe(`https://wanim.org/embed.html${hash}`, {
+    width: 960, height: 540, title: "Square to circle",
+  });
+  ```
+
+  The fragment is deflate-compressed and never sent to a server. The player
+  page is `demo/embed.html` in this repository; copy it as a starting point.
+
+## Package entry points
+
+| Import | Contents | Environment |
+| --- | --- | --- |
+| `wanimjs` | manim-compatible library, scenes, embed helpers | Node, bundlers |
+| `wanimjs/py2js` | Python to JavaScript compiler helpers | Node-safe |
+| `wanimjs/py-runtime` | rapydscript shims, `math`/`random`/`itertools` facades | Node-safe |
+| `wanimjs/bridge` | `runPythonOnCanvas`, `benchInteractiveScene` | Browser |
+| `wanimjs/browser/*` | prebuilt bundles (`element`, `rapydscript`, and others) | Browser |
+
+Supported Python imports are `manim`, `numpy` (mapped to numpy-ts), `random`,
+`math`, and `itertools`. Other imports fail with a readable error at compile
+time.
+
+## Compatibility notes
+
+- The API follows manim Community Edition v0.21. Where behaviour differs, the
+  test suite is the reference. Please open an issue with the scene if
+  something runs under manim but not here.
+- Output is a live `<canvas>`. Wanim does not write video files.
+- Math uses MathJax, not LaTeX. Common `MathTex` input works; unusual LaTeX
+  packages do not.
+- Glyph coverage depends on the fonts you configure. Fonts can be self-hosted
+  with `configure_fonts([...])`, called before the first scene runs.
+- Some relatively complex numpy usage is not supported yet. If you hit a common
+  pattern that should work, please open an issue.
+
+## Development
+
+Prerequisites: Node.js 20 or newer and [pnpm](https://pnpm.io/).
+
+```bash
+git clone https://github.com/Acfboy/Wanim.git
+cd Wanim
+pnpm install
+pnpm build:demo    # build the runtime, patched rapydscript-ng, element, and editor
+pnpm demo          # editor at http://localhost:5174/demo/
 ```
 
-The browser-only bridge (`runPythonOnCanvas`, `benchInteractiveScene`) lives
-under `wanimjs/bridge`, whose `browser` condition resolves to the
-prebuilt `browser/bridge.browser.js`; a bundler should keep `numpy-ts` a real
-dependency so it resolves normally.  TypeScript declarations for every
-subpath are included (`dist/*.d.ts`).
+`build:demo` clones rapydscript-ng at a pinned commit and applies
+`py2js/patches/rapydscript-ng.patch`, so the first build needs network access.
 
-## Files
+| Command | Purpose |
+| --- | --- |
+| `pnpm build` | compile the library to `dist/` |
+| `pnpm build:packages` | assemble the npm package in `packages-out/` |
+| `pnpm test` | library tests (Vitest) |
+| `pnpm test:py2js` | preprocessor, compiler-error, and runtime tests |
+| `pnpm typecheck` | TypeScript check without emitting |
+
+### Layout
 
 ```
-browser/
-  wanim.browser.js         library bundle (numpy-ts external)
-  py2js.browser.js         Python→JS compiler (rapydscript global)
-  py-runtime.browser.js    Python runtime shims (no external imports)
-  bridge.browser.js        compiler + runtime + DOM glue (numpy-ts external)
-  rapydscript.js           patched rapydscript-ng compiler (BSD-2-Clause)
-  wanim-element.browser.js <wanim-scene> custom element
-  chunks/                  on-demand MathJax (lazy, loaded on first TeX use)
-dist/                      Node ESM entries + TypeScript declarations
-src/_config/default.cfg    runtime config read by the Node build
-src/templates/             scene templates read by the Node build
+src/          manim-compatible library (mobject, animation, scene, interactive, renderer)
+py2js/        Python to JavaScript bridge and rapydscript-ng patch
+demo/         editor and iframe player
+scripts/      bundling, packaging, and demo server
+packaging/    package.json, README, and LICENSE for the npm package
+tests/        Vitest suites
 ```
-
-## Caveats
-
-- Do not mix copies of the bundles: the bridge checks `instanceof
-  wanim.Scene`, so the whole `browser/` directory must be served together.
-- `numpy-ts` must be a single shared module instance (it owns the WASM heap);
-  keep one import-map entry / one bundled copy.
-- The Python bridge supports `manim`, `numpy`, `random`, `math`, `itertools`;
-  any other Python import raises a friendly error.
-- Text fonts default to free CDN fonts (Tinos + Noto Serif SC); call
-  `configure_fonts([...])` to self-host.
 
 ## License
 
-MIT. Upstream dependencies keep their own licenses (numpy-ts MIT, MathJax
-Apache-2.0, opentype.js MIT, rapydscript-ng BSD-2-Clause).
+MIT. Third-party dependencies keep their own licences: numpy-ts (MIT),
+MathJax (Apache-2.0), opentype.js (MIT), and rapydscript-ng (BSD-2-Clause) for
+the patched compiler.
