@@ -9,6 +9,7 @@ import { Slider } from "../src/interactive/controls.js";
 import type { InteractiveHost, PointerHandlers, TextEditOptions } from "../src/interactive/host.js";
 import { default_camera_class } from "../src/renderer/scene_runner.js";
 import { InteractiveScene } from "../src/scene/interactive_scene.js";
+import { create_frame_scheduler } from "../src/utils/scheduler.js";
 import {
   InteractiveThreeDScene,
   ORBIT_MAX_PHI,
@@ -137,12 +138,20 @@ class Fake3DHost implements InteractiveHost {
   }
 }
 
-/** Drive the default blueprint/construct pair to completion. */
-async function finishStory(host: Fake3DHost, done: Promise<void> | void): Promise<void> {
-  host.click("next");
-  await host.advance(1);
-  host.click("next");
-  await host.advance(1);
+/**
+ * End a parked run: a scene with no page after its blueprint stays live and
+ * never finishes on its own, so the test cancels its run scheduler and lets
+ * the player notice the abort on the next frame.
+ */
+async function finishStory(
+  host: Fake3DHost,
+  scene: InteractiveScene,
+  done: Promise<void> | void,
+): Promise<void> {
+  const scheduler = create_frame_scheduler({ wait_for_frame: (cb) => setTimeout(cb, 0) });
+  scene.set_run_scheduler(scheduler);
+  scheduler.cancel();
+  await host.advance(2);
   await done;
 }
 
@@ -229,7 +238,7 @@ describe("InteractiveThreeDScene orbit", () => {
 
     expect(camera.get_theta()).toBeCloseTo(theta0 - 100 * 0.01, 9);
     expect(camera.get_phi()).toBeCloseTo(phi0 - 60 * 0.01, 9);
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 
   test("phi is clamped strictly inside (0, PI)", async () => {
@@ -248,7 +257,7 @@ describe("InteractiveThreeDScene orbit", () => {
     host.drag([5, 5, 0], 0, -5000);
     expect(camera.get_phi()).toBe(ORBIT_MAX_PHI);
     host.release();
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 
   test("disable_orbit_controls / orbit_controls clamp background gestures", async () => {
@@ -274,7 +283,7 @@ describe("InteractiveThreeDScene orbit", () => {
 
     scene.enable_orbit_controls();
     expect(scene.orbit_controls).toBe(true);
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 
   test("a control under the pointer wins over the orbit", async () => {
@@ -298,12 +307,18 @@ describe("InteractiveThreeDScene orbit", () => {
     expect(scene.slider.get_value()).toBeCloseTo(10, 9);
     expect(camera.get_theta()).toBeCloseTo(theta0, 12);
     host.release();
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 
   test("a phase transition drops an in-flight orbit drag", async () => {
+    class TwoPageScene extends InteractiveThreeDScene {
+      override construct(): void {}
+    }
     const host = new Fake3DHost();
-    const scene = new InteractiveThreeDScene({ renderer: makeRenderer3D(), host });
+    const scene = new TwoPageScene({ renderer: makeRenderer3D(), host });
+    // Slides mode keeps the run alive on the construct page, so the drag can
+    // be observed after the transition.
+    scene.slides_mode = true;
     scene.orbit_sensitivity = 0.01;
     scene.set_camera_orientation(70 * DEGREES, -45 * DEGREES);
     const camera = scene.camera as ThreeDCamera;
@@ -315,11 +330,11 @@ describe("InteractiveThreeDScene orbit", () => {
     const theta1 = camera.get_theta();
     // Advance to the construct phase without releasing the pointer.
     host.click("next");
-    await host.advance(1);
+    await host.advance(2);
     host.drag([5, 5, 0], 400, 0);
     expect(camera.get_theta()).toBeCloseTo(theta1, 12);
     host.release();
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 });
 
@@ -341,7 +356,7 @@ describe("InteractiveThreeDScene zoom", () => {
     expect(camera.get_zoom()).toBe(ORBIT_MIN_ZOOM);
     for (let index = 0; index < 50; index += 1) host.wheel(-1000);
     expect(camera.get_zoom()).toBe(ORBIT_MAX_ZOOM);
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 
   test("wheel deltaMode lines/pages are normalized to pixels", async () => {
@@ -357,7 +372,7 @@ describe("InteractiveThreeDScene zoom", () => {
     const zoom1 = camera.get_zoom();
     host.wheel(1, 2);
     expect(camera.get_zoom()).toBeCloseTo(zoom1 * Math.exp(-100 * 0.0015), 9);
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 });
 
@@ -395,6 +410,6 @@ describe("InteractiveThreeDScene headless", () => {
     host.drag([5, 5, 0], 100, 100);
     host.wheel(100);
     host.release();
-    await finishStory(host, done);
+    await finishStory(host, scene, done);
   });
 });

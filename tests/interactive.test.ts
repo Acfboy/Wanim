@@ -51,6 +51,23 @@ function makeRenderer(): CanvasSceneRenderer {
   return new CanvasSceneRenderer("", { ctx: mockContext(), drawFrames: true, recordFrames: false });
 }
 
+/**
+ * End a parked run: a scene whose pages all pause never finishes on its own,
+ * so the test cancels its run scheduler and releases one frame for the player
+ * to notice the abort.
+ */
+async function endRun(
+  host: FakeHost,
+  scene: InteractiveScene,
+  done: Promise<unknown> | boolean,
+): Promise<void> {
+  const scheduler = create_frame_scheduler({ wait_for_frame: (cb) => setTimeout(cb, 0) });
+  scene.set_run_scheduler(scheduler);
+  scheduler.cancel();
+  await host.advance(1);
+  await done;
+}
+
 class FakeHost implements InteractiveHost {
   readonly live = true;
   handlers: PointerHandlers | null = null;
@@ -253,11 +270,8 @@ describe("Slider", () => {
     expect(scene.slider.hovered).toBe(false);
     expect(scene.slider.knob.get_width()).toBeCloseTo(rest, 6);
 
-    host.click("next");
-    await host.advance(1);
-    host.click("next");
-    await host.advance(1);
-    await done;
+    // A blueprint-only scene never advances past its live page.
+    await endRun(host, scene, done);
   });
 
   test("opacity options, attach hides the knob and follows the value", () => {
@@ -527,11 +541,7 @@ describe("InputDecimalNumber value_range, scrubbing and hover", () => {
     expect(scene.number.hovered).toBe(false);
     expect(scene.number.highlight?.get_fill_opacity()).toBe(0);
 
-    host.click("next");
-    await host.advance(1);
-    host.click("next");
-    await host.advance(1);
-    await done;
+    await endRun(host, scene, done);
   });
 });
 
@@ -600,6 +610,29 @@ describe("InteractiveScene", () => {
     expect(host.buttonsEnabled).toBe(false);
   });
 
+  test("a blueprint-only scene stays live and ignores next", async () => {
+    class ModelScene extends InteractiveScene {
+      slider!: Slider;
+      blueprint(): void {
+        this.slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0], value_range: [0, 1] });
+        this.add(this.slider);
+      }
+    }
+    const host = new FakeHost();
+    const scene = new ModelScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+    host.click("next");
+    await host.advance(1);
+    // The page survives and its controls keep working.
+    expect(scene.mobjects.length).toBe(1);
+    host.press([2, 0, 0]);
+    host.release();
+    await host.advance(1);
+    expect(scene.slider.get_value()).toBe(1);
+    await endRun(host, scene, done);
+  });
+
   test("restart rebuilds the whole story from the first blueprint", async () => {
     const host = new FakeHost();
     const scene = new DemoScene({ renderer: makeRenderer(), host });
@@ -635,6 +668,9 @@ describe("InteractiveScene", () => {
         this.add(this.slider);
         this.add_reaction((scene) => calls.push({ scene, value: this.slider.get_value() }));
       }
+      // An explicit construct keeps a phase after the blueprint, so the test
+      // can check that reactions go inert there.
+      override construct(): void {}
     }
     const scene = new SceneReactionScene({ renderer: makeRenderer(), host });
     const done = scene.render();
@@ -1044,11 +1080,7 @@ describe("InputDecimalMatrix", () => {
     host.editor?.onInput("42");
     expect(cell.get_value()).toBe(42);
 
-    host.click("next");
-    await host.advance(1);
-    host.click("next");
-    await host.advance(1);
-    await done;
+    await endRun(host, scene, done);
   });
 });
 
