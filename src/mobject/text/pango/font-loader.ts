@@ -1,7 +1,7 @@
 // Port of manim-wasm's PangoJS `font-loader.js` to Node/TypeScript.
 //
 // The reference implementation runs in the browser and loads fonts through
-// opentype.js' URL loader. In Node we load the bundled DejaVu Sans font (or a
+// opentype.js' URL loader. In Node we load the host's default font (or a
 // caller-provided `.ttf`/`.otf`) from disk and parse it with
 // `opentype.parse`. The glyph/run logic is otherwise unchanged.
 
@@ -23,23 +23,20 @@ const FONT_CACHE = new Map<string, Font>();
 /** True in a browser/worker (no synchronous filesystem). */
 const IS_BROWSER = typeof window !== "undefined" || typeof (globalThis as { importScripts?: unknown }).importScripts === "function";
 
-/**
- * Location of the default font.
- *
- * wanim does not bundle a font.  In Node the host's system font is used (see
- * {@link resolveDefaultFontPath}); in the browser this URL is fetched and the
- * demo server answers it with the host's default English font.
- */
-export const DEFAULT_FONT_PATH = new URL("./fonts/DejaVuSans.ttf", import.meta.url).pathname;
+/** True for http(s) URLs (fetched asynchronously on every platform). */
+function isRemoteUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
 
 /**
- * Font files bundled in the repository (Node default), in fallback order:
- * the first font that has a glyph for a character wins.  Times New Roman
- * covers Latin/ASCII, FZShuSong (方正书宋) covers CJK; together they mirror
- * the usual Chinese textbook convention of Times for Western text and a Song
- * face for Chinese.
+ * Location of the legacy single default font, relative to the bundle.
+ *
+ * wanim does not bundle a font.  In Node the host's system font is used (see
+ * {@link resolveDefaultFontPath}); in the browser this path is only tried as a
+ * last resort when nothing else loads (an embedder may serve a `fonts/`
+ * directory next to the bundle).
  */
-export const DEFAULT_FONT_FILES = ["TimesNewRoman.ttf", "FZShuSong-Z01S.ttf"];
+export const DEFAULT_FONT_PATH = new URL("./fonts/DejaVuSans.ttf", import.meta.url).pathname;
 
 /**
  * Browser default chain, served from free public CDNs (jsDelivr) and pinned to
@@ -52,7 +49,9 @@ export const DEFAULT_FONT_FILES = ["TimesNewRoman.ttf", "FZShuSong-Z01S.ttf"];
  *   The full Noto Serif SC OTF is 11.6 MB if more coverage is needed.
  *
  * Embedders can replace the chain with `configure_fonts([...])`; see
- * `getDefaultPangoRenderer` in ./svg-renderer.js.
+ * `getDefaultPangoRenderer` in ./svg-renderer.js.  In Node the same URLs can
+ * be preloaded with `preloadFonts` (async `fetch`); the synchronous load path
+ * then reads the warmed cache.
  */
 export const DEFAULT_FONT_URLS = [
   "https://cdn.jsdelivr.net/gh/google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/tinos/Tinos-Regular.ttf",
@@ -94,22 +93,19 @@ export function resolveDefaultFontPath(): string {
 }
 
 /**
- * Resolve the shipped default font chain.
+ * Resolve the default font chain.
  *
  * `WANIM_FONT` overrides the whole chain with a single file (used by the
  * differential tests, which pin DejaVu Sans).  `configure_fonts([...])` from
  * the package root is the embedder-facing equivalent and takes precedence over
  * everything here.  Otherwise the browser uses {@link DEFAULT_FONT_URLS} while
- * Node reads the repository fonts from `assets/fonts/`, falling back to the
- * host's default English font when that directory is absent (e.g. an installed
- * package without assets).
+ * Node renders with the host's default English font
+ * ({@link resolveDefaultFontPath}).
  */
 export function resolveDefaultFontPaths(): string[] {
   const envOverride = typeof process !== "undefined" ? process.env?.WANIM_FONT : undefined;
   if (envOverride) return [envOverride];
   if (IS_BROWSER) return [...DEFAULT_FONT_URLS];
-  const bundled = DEFAULT_FONT_FILES.map((file) => repoFontPath(file)).filter((file) => existsSync(file));
-  if (bundled.length > 0) return bundled;
   return [resolveDefaultFontPath()];
 }
 
@@ -117,11 +113,6 @@ export function resolveDefaultFontPaths(): string[] {
 export function resolveLegacyFontPath(): string {
   if (IS_BROWSER) return new URL(`./fonts/${LEGACY_FONT_FILE}`, import.meta.url).pathname;
   return resolveDefaultFontPath();
-}
-
-/** Absolute path of a font file shipped in the package-level `assets/fonts/`. */
-function repoFontPath(file: string): string {
-  return new URL(`../../../../assets/fonts/${file}`, import.meta.url).pathname;
 }
 
 /**
@@ -146,6 +137,12 @@ function readBinaryFileBrowser(url: string): ArrayBuffer {
 /** Read a binary file into an ArrayBuffer (fs in Node, XHR in the browser). */
 function readBinaryFile(filePath: string): ArrayBuffer {
   if (IS_BROWSER) return readBinaryFileBrowser(filePath);
+  if (isRemoteUrl(filePath)) {
+    throw new Error(
+      `wanim: cannot load the remote font ${filePath} synchronously in Node; ` +
+        'preload the chain first (e.g. preload_submodules("fonts")).',
+    );
+  }
   // `readFileSync(path, "base64")` returns a base64 string; decoding through
   // `atob` avoids depending on the Node `Buffer` type in this port.
   const base64 = readFileSync(path.resolve(filePath), { encoding: "base64" });
@@ -203,9 +200,9 @@ export function loadFontsSync(fontPaths: string[] = resolveDefaultFontPaths()): 
   return loadFontsFallbackSync(fontPaths);
 }
 
-/** Async binary read (browser `fetch`, Node `fs` read). */
+/** Async binary read (browser `fetch`, Node `fs` read or `fetch` for URLs). */
 async function readBinaryFileAsync(filePath: string): Promise<ArrayBuffer> {
-  if (IS_BROWSER) {
+  if (IS_BROWSER || isRemoteUrl(filePath)) {
     const response = await fetch(filePath);
     if (!response.ok) throw new Error(`Failed to load font ${filePath}: HTTP ${response.status}`);
     return response.arrayBuffer();
@@ -465,7 +462,7 @@ function selectFont(fonts: Font[], char: string): { font: Font; fontIndex: numbe
  * `runIndex` to each glyph so that per-run styles (colour, baseline shift)
  * can be resolved by the renderer/decorator. When more than one font is given,
  * each character is drawn with the first font in the chain that has a glyph
- * for it (Latin from Times, CJK from FZShuSong, ...).
+ * for it (Latin from the primary font, CJK from a fallback, ...).
  */
 export function getTextPaths(
   fonts: Font | Font[],

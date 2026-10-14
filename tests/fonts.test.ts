@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   configure_fonts,
   fontCache,
@@ -7,6 +7,7 @@ import {
   getTextPaths,
   loadFontSync,
   renderMarkupToSVGString,
+  DEFAULT_FONT_URLS,
 } from "../src/mobject/text/pango/index.js";
 // `preload_fonts` / `preloadFonts` are internal since the unified loader API
 // (`preload_submodules("fonts")`); tested here through their deep paths.
@@ -14,11 +15,17 @@ import { preloadFonts } from "../src/mobject/text/pango/font-loader.js";
 import { preload_fonts } from "../src/mobject/text/pango/svg-renderer.js";
 import { Text } from "../src/mobject/text/index.js";
 
-const LATIN = new URL("../assets/fonts/TimesNewRoman.ttf", import.meta.url).pathname;
-const CJK = new URL("../assets/fonts/FZShuSong-Z01S.ttf", import.meta.url).pathname;
+// The default chain is the browser pair (Tinos for Latin, Noto Serif SC for
+// Chinese) served from jsDelivr.  Node preloads URLs with `fetch` (see
+// `readBinaryFileAsync`), after which the synchronous load path reads the
+// warmed cache.  These tests therefore need network access.
+const LATIN = DEFAULT_FONT_URLS[0] as string;
+const CJK = DEFAULT_FONT_URLS[1] as string;
 
-// `tests/setup.ts` pins WANIM_FONT to the host's DejaVu Sans for the
-// differential tests, so the "restored" chain below is that single font.
+beforeAll(async () => {
+  await preloadFonts([LATIN, CJK]);
+});
+
 describe("configure_fonts", () => {
   afterEach(() => configure_fonts(null));
 
@@ -28,9 +35,6 @@ describe("configure_fonts", () => {
 
     const renderer = getDefaultPangoRenderer();
     expect(renderer.fonts).toHaveLength(2);
-    // Times' unitsPerEm is 2048, FZShuSong's is 256.
-    expect(renderer.fonts[0]?.unitsPerEm).toBe(2048);
-    expect(renderer.fonts[1]?.unitsPerEm).toBe(256);
 
     const glyphs = getTextPaths(renderer.fonts, "A中", 0, 0, 48);
     expect(glyphs.map((glyph) => glyph.char)).toEqual(["A", "中"]);
@@ -47,7 +51,7 @@ describe("configure_fonts", () => {
   });
 
   it("configure_fonts(null) restores the environment default", () => {
-    configure_fonts([LATIN, CJK]);
+    configure_fonts([LATIN]);
     configure_fonts(null);
     expect(getDefaultFontPaths()).toHaveLength(1);
     expect(getDefaultPangoRenderer().fonts).toHaveLength(1);
@@ -65,14 +69,15 @@ describe("preloadFonts", () => {
     const fonts = await preloadFonts([LATIN]);
     expect(fonts).toHaveLength(1);
     expect(fontCache.get(LATIN)).toBe(fonts[0]);
-    // A later synchronous load must hit the warmed cache, not the filesystem.
+    // A later synchronous load must hit the warmed cache, not the network.
     expect(loadFontSync(LATIN)).toBe(fonts[0]);
   });
 
   it("preload_fonts follows configure_fonts", async () => {
     configure_fonts([LATIN, CJK]);
     const fonts = await preload_fonts();
-    expect(fonts.map((font) => font.unitsPerEm)).toEqual([2048, 256]);
+    expect(fonts).toHaveLength(2);
+    expect(fonts.map((font) => font.unitsPerEm).every((units) => units > 0)).toBe(true);
   });
 
   it("rejects when nothing can be loaded in Node", async () => {

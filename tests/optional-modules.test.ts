@@ -5,8 +5,11 @@
 // is what makes the "not loaded yet" assertions possible: the shared setup
 // file already preloaded MathJax for the rest of the suite.
 import { describe, expect, it, vi } from "vitest";
+// The default chain's Latin font, fetched by the loader on Node (fetch in
+// `readBinaryFileAsync`); requires network access.
+import { DEFAULT_FONT_URLS } from "../src/mobject/text/pango/font-loader.js";
 
-const LATIN = new URL("../assets/fonts/TimesNewRoman.ttf", import.meta.url).pathname;
+const LATIN = DEFAULT_FONT_URLS[0] as string;
 
 describe("preload_submodules", () => {
   it("is a no-op when names are omitted or empty", async () => {

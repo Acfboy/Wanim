@@ -6,9 +6,8 @@
 // The page loads its browser bundles from `../dist/` (`dist/` is gitignored),
 // so the bundles are built first if they are missing.  The repository root is
 // served so the page can reach both `demo/` and `dist/` — including the
-// on-demand `dist/chunks/` (MathJax) that the wanim bundle imports
-// lazily; the shipped fonts are copied to `dist/fonts/` by `build:browser` and
-// served as static files.  Refresh the bundles with `pnpm build:demo`.
+// on-demand `dist/chunks/` (MathJax) that the wanim bundle imports lazily.
+// Refresh the bundles with `pnpm build:demo`.
 //
 // Usage: node scripts/demo-server.mjs [port]
 import { createServer } from "node:http";
