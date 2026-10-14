@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Assemble the publishable npm package into `packages-out/wanim/` (gitignored).
 //
-//   packages-out/wanim/   `wanimjs`: the tsc dist (core + Node entries),
+//   packages-out/wanim/   `@wanimjs/wanim`: the tsc dist (core + Node entries),
 //                         the zero-config browser bundles and the runtime
 //                         config/template resources, with subpath exports for
 //                         the py2js compiler, the py runtime and the bridge.
@@ -185,7 +185,7 @@ function copyPy2jsDist(target) {
     if (name === "browser.d.ts") {
       const rewritten = readFileSync(from, "utf8").replace(
         '"../../dist/index.js"',
-        '"wanimjs"',
+        '"@wanimjs/wanim"',
       );
       writeFileSync(join(target, "bridge.d.ts"), rewritten);
       continue;

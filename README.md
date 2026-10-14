@@ -37,7 +37,7 @@ Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro
 ## Installation
 
 ```bash
-npm install wanimjs
+npm install @wanimjs/wanim
 ```
 
 Node.js 18 or newer is needed when using the package from Node. The embed
@@ -49,7 +49,7 @@ Firefox, and Safari).
 ### In a bundled app (Vite, webpack, esbuild, Rollup)
 
 ```js
-import { runPythonOnCanvas } from "wanimjs/bridge";
+import { runPythonOnCanvas } from "@wanimjs/wanim/bridge";
 
 const source = `
 from manim import *
@@ -79,7 +79,7 @@ tag:
   }
 }
 </script>
-<script type="module" src="https://cdn.jsdelivr.net/npm/wanimjs/browser/wanim-element.browser.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@wanimjs/wanim/browser/wanim-element.browser.js"></script>
 
 <wanim-scene quality="-qm">
   <script type="text/x-python">
@@ -156,7 +156,7 @@ Other features:
 - **Code in the URL fragment** for CMSs that accept only an iframe:
 
   ```js
-  import { build_embed_hash, build_embed_iframe } from "wanimjs";
+  import { build_embed_hash, build_embed_iframe } from "@wanimjs/wanim";
 
   const hash = await build_embed_hash(pythonSource, { quality: "-qm" });
   const html = build_embed_iframe(`https://wanim.org/embed.html${hash}`, {
@@ -171,11 +171,11 @@ Other features:
 
 | Import | Contents | Environment |
 | --- | --- | --- |
-| `wanimjs` | manim-compatible library, scenes, embed helpers | Node, bundlers |
-| `wanimjs/py2js` | Python to JavaScript compiler helpers | Node-safe |
-| `wanimjs/py-runtime` | rapydscript shims, `math`/`random`/`itertools` facades | Node-safe |
-| `wanimjs/bridge` | `runPythonOnCanvas`, `benchInteractiveScene` | Browser |
-| `wanimjs/browser/*` | prebuilt bundles (`element`, `rapydscript`, and others) | Browser |
+| `@wanimjs/wanim` | manim-compatible library, scenes, embed helpers | Node, bundlers |
+| `@wanimjs/wanim/py2js` | Python to JavaScript compiler helpers | Node-safe |
+| `@wanimjs/wanim/py-runtime` | rapydscript shims, `math`/`random`/`itertools` facades | Node-safe |
+| `@wanimjs/wanim/bridge` | `runPythonOnCanvas`, `benchInteractiveScene` | Browser |
+| `@wanimjs/wanim/browser/*` | prebuilt bundles (`element`, `rapydscript`, and others) | Browser |
 
 Supported Python imports are `manim`, `numpy` (mapped to numpy-ts), `random`,
 `math`, and `itertools`. Other imports fail with a readable error at compile

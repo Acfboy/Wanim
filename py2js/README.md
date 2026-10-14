@@ -65,5 +65,5 @@ specifier (the sibling bundles stay relative; the package ships them side by
 side in `browser/`). The DOM-free toolbox is exported from
 `src/compiler_node.ts` (preprocessing, error formatting) and
 `src/runtime_node.ts` (preload planning, runtime shims, Python facades) — the
-Node entries of the `wanimjs/py2js` and `wanimjs/py-runtime`
+Node entries of the `@wanimjs/wanim/py2js` and `@wanimjs/wanim/py-runtime`
 subpaths.
