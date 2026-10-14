@@ -1,7 +1,7 @@
 // Differential text tests compare wanim's layout against Python manim rendered
-// on this host with DejaVu Sans (`Text(..., font="sans")`).  Pin the legacy
-// single font through the same override the demo scripts use, so the shipped
-// Times New Roman + FZShuSong chain does not change those reference numbers.
+// on this host with DejaVu Sans (`Text(..., font="sans")`).  Pin the host's
+// default font through the same override the demo scripts use, so the
+// environment's font chain never changes those reference numbers.
 import { expect } from "vitest";
 import { resolveDefaultFontPath } from "../src/mobject/text/pango/font-loader.js";
 import { preload_mathjax } from "../src/mobject/text/mathjax.js";

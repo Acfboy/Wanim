@@ -34,12 +34,13 @@ built-in chain.
 
 ## Node
 
-`resolveDefaultFontPaths()` reads the repository fonts in
-[`assets/fonts`](../../../../../assets/fonts) — Times New Roman (Latin) and
-FZShuSong (方正书宋, CJK). If the directory is missing it falls back to the
-host's default English font (DejaVu Sans, Liberation Sans, Noto Sans, Arial).
-`WANIM_FONT=/path/to/font.ttf` overrides the whole chain with a single file
-(the differential tests pin DejaVu Sans this way).
+`resolveDefaultFontPaths()` renders with the host's default English font
+(DejaVu Sans, Liberation Sans, Noto Sans, Arial; see `SYSTEM_FONT_CANDIDATES`
+in [`../font-loader.ts`](../font-loader.ts)). `WANIM_FONT=/path/to/font.ttf`
+overrides the whole chain with a single file (the differential tests pin DejaVu
+Sans this way). The browser chain works in Node too: preload the URLs once
+(e.g. `preload_submodules("fonts", { fonts: DEFAULT_FONT_URLS })`) and the
+synchronous render path then reads the cached fonts.
 
 ## Other
 

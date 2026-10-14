@@ -19,7 +19,6 @@ export {
   resolveDefaultFontPaths,
   resolveLegacyFontPath,
   DEFAULT_FONT_PATH,
-  DEFAULT_FONT_FILES,
   DEFAULT_FONT_URLS,
   LEGACY_FONT_FILE,
   getFontMetrics,
