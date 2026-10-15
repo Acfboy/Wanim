@@ -9,6 +9,9 @@ LaTeX, no server, and no tens-of-megabytes Pyodide runtime. See examples in
 our [gallery](https://wanim.org/docs/gallery) and try it yourself in the
 [playground](https://wanim.org/playground).
 
+[![The Fourier transform winding machine, recreated in Wanim](assets/playground-fourier.png)](https://wanim.org/playground?id=4be3ae8d&show=1)
+_A recreation of 3b1b's stunning Fourier transform visualization_, [click to try it live.](https://wanim.org/playground?id=4be3ae8d&show=1)
+
 Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro).
 
 ## Features
@@ -45,6 +48,18 @@ helpers need a browser with `CompressionStream` (current Chrome, Edge,
 Firefox, and Safari).
 
 ## Quick start
+
+### In the browser — nothing to install
+
+Open the [playground](https://wanim.org/playground), pick an example, and press
+**Run** (Ctrl+Enter). Every example is real manim Python you can edit and re-run
+instantly; more ready-made scenes live in the
+[gallery](https://wanim.org/docs/gallery).
+
+Happy with a scene? Press **Share**: the dialog hands you a short link to the
+editor, a full-screen presentation link (`?show=1`, with replay and keyboard
+shortcuts), and a ready-to-paste iframe snippet for embedding the animation in
+any page.
 
 ### In a bundled app (Vite, webpack, esbuild, Rollup)
 
