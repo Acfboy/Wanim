@@ -69,6 +69,36 @@ index 7c28645..d5e1f03 100644
          return ans
  
  
+diff --git a/src/baselib-builtins.pyj b/src/baselib-builtins.pyj
+index fc6322b..adc15e3 100644
+--- a/src/baselib-builtins.pyj
++++ b/src/baselib-builtins.pyj
+@@ -19,6 +19,14 @@ def ρσ_print():
+ 
+ 
+ def ρσ_int(val, base):
++    # wanim: Python bool is a subclass of int, so int(True) is 1 and
++    # int(False) is 0 (e.g. `index = int((prime % 4) == 3)`).  Without this,
++    # parseInt(true) is NaN and every int() over a comparison raises
++    # ValueError.
++    if jstype(val) is 'boolean':
++        if base is not undefined:
++            raise TypeError("int() can't convert non-string with explicit base")
++        return 1 if val else 0
+     if jstype(val) is 'number':
+         ans = val | 0
+     else:
+@@ -30,6 +38,10 @@ def ρσ_int(val, base):
+ 
+ 
+ def ρσ_float(val):
++    # wanim: float(True) is 1.0, float(False) is 0.0 (same bool pitfall as
++    # ρσ_int above: parseFloat(true) is NaN).
++    if jstype(val) is 'boolean':
++        return 1 if val else 0
+     if jstype(val) is 'number':
+         ans = val
+     else:
 diff --git a/src/baselib-internal.pyj b/src/baselib-internal.pyj
 index e0ec495..ed23bcf 100644
 --- a/src/baselib-internal.pyj
@@ -197,38 +227,8 @@ index e0ec495..ed23bcf 100644
  def ρσ_setitem(obj, key, val):
      if obj.__setitem__:
          obj.__setitem__(key, val)
-diff --git a/src/baselib-builtins.pyj b/src/baselib-builtins.pyj
-index fc6322b..adc15e3 100644
---- a/src/baselib-builtins.pyj
-+++ b/src/baselib-builtins.pyj
-@@ -19,6 +19,14 @@ def ρσ_print():
-
-
- def ρσ_int(val, base):
-+    # wanim: Python bool is a subclass of int, so int(True) is 1 and
-+    # int(False) is 0 (e.g. `index = int((prime % 4) == 3)`).  Without this,
-+    # parseInt(true) is NaN and every int() over a comparison raises
-+    # ValueError.
-+    if jstype(val) is 'boolean':
-+        if base is not undefined:
-+            raise TypeError("int() can't convert non-string with explicit base")
-+        return 1 if val else 0
-     if jstype(val) is 'number':
-         ans = val | 0
-     else:
-@@ -30,6 +38,10 @@ def ρσ_int(val, base):
-
-
- def ρσ_float(val):
-+    # wanim: float(True) is 1.0, float(False) is 0.0 (same bool pitfall as
-+    # ρσ_int above: parseFloat(true) is NaN).
-+    if jstype(val) is 'boolean':
-+        return 1 if val else 0
-     if jstype(val) is 'number':
-         ans = val
-     else:
 diff --git a/src/output/functions.pyj b/src/output/functions.pyj
-index 341df63..62bc4ac 100644
+index 341df63..a0e9032 100644
 --- a/src/output/functions.pyj
 +++ b/src/output/functions.pyj
 @@ -3,7 +3,8 @@
@@ -287,7 +287,6 @@ index 341df63..62bc4ac 100644
              if not is_first:
                  output.print('.concat(')
              if expr.is_array:
--                expr.value.print(output)
 +                # A starred call argument may be any Python iterable (a list,
 +                # tuple, generator, map/filter/zip/enumerate result, dict,
 +                # string, ...), but the `.apply`/`.concat` below need a true
@@ -300,13 +299,13 @@ index 341df63..62bc4ac 100644
 +                # (including strings) into a true array.  Plain arrays just
 +                # pay one extra copy.
 +                output.print('Array.from(ρσ_Iterable(')
-+                expr.value.print(output)
+                 expr.value.print(output)
 +                output.print('))')
                  i += 1
              else:
                  output.print('[')
 diff --git a/src/output/loops.pyj b/src/output/loops.pyj
-index b38e56f..90c0769 100644
+index b38e56f..4a9c37f 100644
 --- a/src/output/loops.pyj
 +++ b/src/output/loops.pyj
 @@ -4,10 +4,30 @@ from __python__ import hash_literals
@@ -809,7 +808,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..e51e92a 100644
+index 5533155..0ccb7ab 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -1130,7 +1129,25 @@ index 5533155..e51e92a 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2381,6 +2572,18 @@ def create_parser_ctx(
+@@ -2152,6 +2343,17 @@ def create_parser_ctx(
+                 has_non_const_keys = True
+             expect(':')
+             obj_val = await expression(False)
++            # NOTE (wanim): a tuple value parses to an AST_Seq, which codegen
++            # prints as a bare comma expression in an object literal
++            # (`ρσ_d["k"] = a, b`): the JS comma operator then collapses
++            # the value to its last element.  Wrap it in an array here, the
++            # same way the `for` head does.
++            if is_node_type(obj_val, AST_Seq):
++                obj_val = new AST_Array({
++                    'start': obj_val.start,
++                    'elements': obj_val.to_array(),
++                    'end': obj_val.end
++                })
+             a.push(new AST_ObjectKeyVal({
+                 'start': start,
+                 'key': left,
+@@ -2381,6 +2583,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1149,7 +1166,7 @@ index 5533155..e51e92a 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2591,7 @@ def create_parser_ctx(
+@@ -2388,12 +2602,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1163,7 +1180,7 @@ index 5533155..e51e92a 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2497,12 +2695,24 @@ def create_parser_ctx(
+@@ -2497,12 +2706,24 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1190,7 +1207,7 @@ index 5533155..e51e92a 100644
              S.in_parenthesized_expr = prev_parens
              return ret
  
-@@ -2711,12 +2921,25 @@ def create_parser_ctx(
+@@ -2711,12 +2932,25 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1219,7 +1236,7 @@ index 5533155..e51e92a 100644
          if commas:
              left = v'[ expr ]'
              while is_(
-@@ -2853,6 +3076,8 @@ def create_parser_ctx(
+@@ -2853,6 +3087,8 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -1228,7 +1245,7 @@ index 5533155..e51e92a 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3211,92 @@ def create_parser_ctx(
+@@ -2986,6 +3222,92 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -1321,7 +1338,7 @@ index 5533155..e51e92a 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3310,16 @@ async def parse(text, options):
+@@ -2999,6 +3321,16 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
