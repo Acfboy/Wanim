@@ -2748,6 +2748,82 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return -a;
   }
 
+  // --- Python bitwise operators (numpy elementwise) ------------------------
+  //
+  // Plain JS `&`/`|`/`^`/`~` run ToInt32 on their operands, so a boolean
+  // NDArray mask (`(arr > 0)`) coerces to `0`/`-1`: `(a > 0) ^ (b > 0)`
+  // silently computed the scalar `0` and the follow-up
+  // `is_light[:, None]` failed with "object is not subscriptable with
+  // multiple indices" (stereographic projection scene).  The patched
+  // compiler routes these four operators through
+  // `ρσ_op_bitand`/`ρσ_op_bitor`/`ρσ_op_bitxor`/`ρσ_op_invert` when
+  // `operator_overloading` is on (see `py2js/patches/rapydscript-ng.patch`).
+  // Python semantics with a numpy fast path:
+  //
+  //   - `__and__`/`__or__`/`__xor__`/`__invert__` dunders are honored first;
+  //   - NDArray operands delegate to numpy-ts
+  //     `bitwise_and`/`bitwise_or`/`bitwise_xor`/`invert` with broadcasting
+  //     (boolean arrays keep numpy's bool dtype, where `~` is the logical
+  //     invert and `^` is xor);
+  //   - two booleans yield a Python bool (`True & False` is `False`);
+  //   - otherwise fall back to the plain JS operator, so integer bit flags
+  //     and any other value behave exactly as before.
+  //
+  // NOTE: rapydscript parses `&`/`|`/`^` with JavaScript precedence (`&`
+  // binds *looser* than `==`), unlike Python; an unparenthesized mix such as
+  // `a & b == c` is parsed as `a & (b == c)` both before and after this
+  // change.  The numpy idiom always parenthesizes: `(a > 0) & (b > 0)`.
+  function bitwiseScalar(op: "&" | "|" | "^", a: Any, b: Any): Any {
+    if (typeof a === "boolean" && typeof b === "boolean") {
+      if (op === "&") return a && b;
+      if (op === "|") return a || b;
+      return a !== b;
+    }
+    if (op === "&") return a & b;
+    if (op === "|") return a | b;
+    return a ^ b;
+  }
+
+  function pythonBitwise(op: "&" | "|" | "^", a: Any, b: Any): Any {
+    const dunder = op === "&" ? "__and__" : op === "|" ? "__or__" : "__xor__";
+    const reflected = op === "&" ? "__rand__" : op === "|" ? "__ror__" : "__rxor__";
+    if (a !== null && a !== undefined && typeof a[dunder] === "function") return a[dunder](b);
+    if (b !== null && b !== undefined && typeof b[reflected] === "function") return b[reflected](a);
+    const npName = op === "&" ? "bitwise_and" : op === "|" ? "bitwise_or" : "bitwise_xor";
+    const fn = (np as Any)[npName];
+    if (isNdArray(a) || isNdArray(b)) {
+      if (typeof fn === "function") return scalarize(fn(asNd(a), asNd(b)));
+    }
+    if (isArrayLike(a) && isArrayLike(b)) {
+      const r = elementwise(a as Any, b as Any, (x, y) => bitwiseScalar(op, x, y));
+      if (r !== undefined) return r;
+      if (typeof fn === "function") return scalarize(fn(asNd(a), asNd(b)));
+    }
+    if (isArrayLike(a) && typeof b === "number") return (a as Any).map((v: Any) => bitwiseScalar(op, v, b));
+    if (typeof a === "number" && isArrayLike(b)) return (b as Any).map((v: Any) => bitwiseScalar(op, a, v));
+    return bitwiseScalar(op, a, b);
+  }
+
+  function pythonBitAnd(a: Any, b: Any): Any {
+    return pythonBitwise("&", a, b);
+  }
+
+  function pythonBitOr(a: Any, b: Any): Any {
+    return pythonBitwise("|", a, b);
+  }
+
+  function pythonBitXor(a: Any, b: Any): Any {
+    return pythonBitwise("^", a, b);
+  }
+
+  function pythonInvert(a: Any): Any {
+    if (a !== null && a !== undefined && typeof a.__invert__ === "function") return a.__invert__();
+    if (typeof a === "boolean") return !a;
+    if (isNdArray(a)) return scalarize(np.invert(a));
+    if (isArrayLike(a)) return (a as Any).map((v: Any) => (typeof v === "boolean" ? !v : ~v));
+    return ~a;
+  }
+
   // --- Python comparisons (numpy elementwise) ------------------------------
   //
   // rapydscript emits `<`/`>`/`<=`/`>=` as plain JS operators, which cannot
@@ -6455,6 +6531,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     globals.ρσ_op_mod = pythonMod;
     globals.ρσ_op_pow = pythonPow;
     globals.ρσ_op_neg = pythonNeg;
+    globals.ρσ_op_bitand = pythonBitAnd;
+    globals.ρσ_op_bitor = pythonBitOr;
+    globals.ρσ_op_bitxor = pythonBitXor;
+    globals.ρσ_op_invert = pythonInvert;
     globals.ρσ_op_lt = pythonLt;
     globals.ρσ_op_gt = pythonGt;
     globals.ρσ_op_le = pythonLe;
@@ -6551,6 +6631,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     pythonMod,
     pythonPow,
     pythonNeg,
+    pythonBitAnd,
+    pythonBitOr,
+    pythonBitXor,
+    pythonInvert,
     pythonLt,
     pythonGt,
     pythonLe,

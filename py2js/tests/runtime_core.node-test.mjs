@@ -846,6 +846,48 @@ check("nested np.where matches the kinked() scene helper", () => {
   assert.deepEqual(kinked(np.linspace(-3, 3, 5)).tolist(), [0, -0.5, 0, 0.5, 0]);
 });
 
+check("bitwise helpers keep numpy boolean masks elementwise (stereographic scene)", () => {
+  const np = ndCore.buildNumpy();
+  const x = np.arange(6);
+  const a = ndCore.pythonGt(x, 2); // [F,F,F,T,T,T]
+  const b = ndCore.pythonLt(x, 4); // [T,T,T,T,F,F]
+  assert.equal(a.dtype, "bool");
+  // `sign_x ^ sign_y ^ sign_z` must chain elementwise, not coerce to 0.
+  const chained = ndCore.pythonBitXor(ndCore.pythonBitXor(a, b), a);
+  assert.equal(chained.dtype, "bool");
+  assert.deepEqual(chained.tolist(), [1, 1, 1, 1, 0, 0]);
+  assert.deepEqual(ndCore.pythonBitAnd(a, b).tolist(), [0, 0, 0, 1, 0, 0]);
+  assert.deepEqual(ndCore.pythonBitOr(a, b).tolist(), [1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(ndCore.pythonInvert(a).tolist(), [1, 1, 1, 0, 0, 0]);
+  // `is_light[:, None]` in the stereographic scene then broadcasts against
+  // the 3-channel colors in `np.where`.
+  const mask2d = ndCore.wanGetItem(chained, ndCore.wanSlice(null, null), null);
+  assert.deepEqual(mask2d.shape, [6, 1]);
+  const colors = np.where(mask2d, np.asarray([1, 2, 3]), np.asarray([4, 5, 6]));
+  assert.deepEqual(colors.shape, [6, 3]);
+  assert.deepEqual(colors.tolist()[0], [1, 2, 3]);
+});
+
+check("bitwise helpers fall back to Python scalars and integers", () => {
+  assert.equal(ndCore.pythonBitXor(true, false), true);
+  assert.equal(ndCore.pythonBitAnd(true, false), false);
+  assert.equal(ndCore.pythonBitOr(false, false), false);
+  assert.equal(ndCore.pythonInvert(true), false);
+  assert.equal(ndCore.pythonBitAnd(6, 3), 2);
+  assert.equal(ndCore.pythonBitOr(4, 1), 5);
+  assert.equal(ndCore.pythonBitXor(6, 3), 5);
+  assert.equal(ndCore.pythonInvert(0), -1);
+  assert.deepEqual(ndCore.pythonBitAnd([6, 3], [3, 3]), [2, 3]);
+});
+
+check("bitwise op helpers are exposed to compiled scenes as globals", () => {
+  const runtime = ndCore.buildRuntime();
+  assert.equal(typeof runtime.globals["ρσ_op_bitand"], "function");
+  assert.equal(typeof runtime.globals["ρσ_op_bitor"], "function");
+  assert.equal(typeof runtime.globals["ρσ_op_bitxor"], "function");
+  assert.equal(typeof runtime.globals["ρσ_op_invert"], "function");
+});
+
 check("np.interp accepts scalar x and plain lists (numpy-ts does not)", () => {
   const np = ndCore.buildNumpy();
   assert.equal(np.interp(0.5, np.asarray([0, 1, 2]), np.asarray([10, 20, 30])), 15);
