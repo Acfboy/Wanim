@@ -10,7 +10,9 @@
  *  - `is_hit(point)` does hit testing in world coordinates;
  *  - `on_press` / `on_drag` / `on_release` mutate the control's value;
  *  - `get_value()` reads it back, so other mobjects can react to it in a
- *    blueprint `add_reaction` callback.
+ *    blueprint `add_reaction` callback;
+ *  - `on_input(listener)` observes user-originated value changes (the
+ *    programmatic `set_value` path stays silent; see {@link InputListener}).
  *
  * The controls deliberately keep their interaction geometry (a slider's track,
  * a switch's bounding box) as world-space data captured at construction time:
@@ -25,7 +27,7 @@ import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
 import { Dot } from "../mobject/geometry/arc.js";
 import { Line } from "../mobject/geometry/line.js";
 import { isPlainOptionsBag, Rectangle, RoundedRectangle } from "../mobject/geometry/polygram.js";
-import { pointRows } from "../utils/arrays.js";
+import { pointRows, type ComplexPoint } from "../utils/arrays.js";
 import { Text } from "../mobject/text/text_mobject.js";
 import { DecimalMatrix, type MatrixOptions } from "../mobject/matrix.js";
 import { DecimalTable, type TableData, type TableOptions } from "../mobject/table.js";
@@ -71,6 +73,55 @@ export interface InteractiveControl {
 /** Duck-typed check that `mobject` is an interactive control. */
 export function isInteractiveControl(value: unknown): value is Mobject & InteractiveControl {
   return Boolean(value) && (value as { [INTERACTIVE_CONTROL]?: unknown })[INTERACTIVE_CONTROL] === true;
+}
+
+/**
+ * Callback registered through `on_input`.
+ *
+ * Receives the control itself, the value before the user gesture and the value
+ * after it.  Only user-originated changes fire it: `set_value` (or `toggle`)
+ * called programmatically stays silent, so writing control values back from a
+ * blueprint reaction never echoes into the listener.  A listener should update
+ * shared state only; writing to other controls belongs in a scene reaction
+ * (which then runs after all input listeners for the frame).
+ *
+ * NOTE (sync timing): listeners run synchronously inside the input path
+ * (`on_press` / `on_drag` / the inline editor's input callback), i.e. outside
+ * the scene's frame tick.  Browser hosts dispatch pointer and editor events
+ * between animation frames, so a listener always completes before the next
+ * frame's reactions run; there is deliberately no frame-batched dispatch.
+ * Should a future host invoke control handlers from inside a reaction, the
+ * listener would run mid-tick instead of before it.
+ */
+export type InputListener = (control: Mobject, previous: unknown, next: unknown) => void;
+
+/** Whether a user gesture produced a real value change. */
+function inputValueChanged(previous: unknown, next: unknown): boolean {
+  if (previous === next) return false;
+  if (
+    typeof previous === "object" &&
+    previous !== null &&
+    typeof next === "object" &&
+    next !== null
+  ) {
+    const before = previous as Partial<ComplexPoint>;
+    const after = next as Partial<ComplexPoint>;
+    if (typeof before.re === "number" && typeof after.re === "number") {
+      return before.re !== after.re || (before.im ?? 0) !== (after.im ?? 0);
+    }
+  }
+  return true;
+}
+
+/** Fire `listeners` for a user-originated value change (no-op when unchanged). */
+function emitInput(
+  control: Mobject,
+  listeners: readonly InputListener[],
+  previous: unknown,
+  next: unknown,
+): void {
+  if (listeners.length === 0 || !inputValueChanged(previous, next)) return;
+  for (const listener of listeners) listener(control, previous, next);
 }
 
 function point2d(point: readonly number[]): [number, number] {
@@ -200,6 +251,8 @@ export class PathSlider extends VGroup implements InteractiveControl {
   knob: Dot;
   /** Mobjects currently parented to the knob via {@link attach}. */
   attached: Mobject[] = [];
+  /** Listeners registered through {@link PathSlider.on_input}. */
+  input_listeners: InputListener[] = [];
   /** Whether the pointer currently hovers the knob itself (not the track). */
   hovered = false;
   private _value: number;
@@ -278,6 +331,15 @@ export class PathSlider extends VGroup implements InteractiveControl {
   }
 
   /**
+   * Register a listener for user-originated value changes. See
+   * {@link InputListener} for the callback contract and its timing.
+   */
+  on_input(listener: InputListener): this {
+    this.input_listeners.push(listener);
+    return this;
+  }
+
+  /**
    * Parent `mobject` to the knob so it moves with the slider value. The knob
    * becomes transparent so only the attached mobject is visible.
    */
@@ -330,8 +392,10 @@ export class PathSlider extends VGroup implements InteractiveControl {
     this._grabbing = true;
     this._apply_knob_scale();
     const [low, high] = this.value_range;
+    const previous = this._value;
     const t = this._proportion_from_point(point);
     this.set_value(low + t * (high - low));
+    emitInput(this, this.input_listeners, previous, this._value);
     this._lastDragPoint = [point[0] ?? 0, point[1] ?? 0, point[2] ?? 0];
   }
 
@@ -345,8 +409,10 @@ export class PathSlider extends VGroup implements InteractiveControl {
     const dy = (point[1] ?? 0) - (last[1] ?? 0);
     const total = this._total_length();
     if (total > 0 && (dx !== 0 || dy !== 0)) {
+      const previous = this._value;
       const [tangentX, tangentY] = this._tangent_at(this._t);
       this._set_proportion(this._t + (dx * tangentX + dy * tangentY) / total);
+      emitInput(this, this.input_listeners, previous, this._value);
     }
     this._lastDragPoint = [point[0] ?? 0, point[1] ?? 0, point[2] ?? 0];
   }
@@ -637,6 +703,8 @@ export class Switch extends VGroup implements InteractiveControl {
   track_width: number;
   track_height: number;
   accent_color: ParsableManimColor;
+  /** Listeners registered through {@link Switch.on_input}. */
+  input_listeners: InputListener[] = [];
   private _value: boolean;
 
   constructor(valueOrOptions: boolean | SwitchOptions = false, options: SwitchOptions = {}) {
@@ -688,6 +756,15 @@ export class Switch extends VGroup implements InteractiveControl {
     return this.set_value(!this._value);
   }
 
+  /**
+   * Register a listener for user-originated value changes. See
+   * {@link InputListener} for the callback contract and its timing.
+   */
+  on_input(listener: InputListener): this {
+    this.input_listeners.push(listener);
+    return this;
+  }
+
   is_hit(point: readonly number[]): boolean {
     const left = pointRows(this.track.get_left(), 3)[0] ?? [0, 0, 0];
     const right = pointRows(this.track.get_right(), 3)[0] ?? [0, 0, 0];
@@ -704,7 +781,9 @@ export class Switch extends VGroup implements InteractiveControl {
   }
 
   on_press(_point: readonly number[], _context: InteractiveContext): void {
+    const previous = this._value;
     this.toggle();
+    emitInput(this, this.input_listeners, previous, this._value);
   }
 
   on_drag(_point: readonly number[], _context: InteractiveContext): void {}
@@ -759,6 +838,8 @@ export class Chip extends VGroup implements InteractiveControl {
   unselected_fill: ParsableManimColor;
   unselected_stroke: ParsableManimColor;
   stroke_width: number;
+  /** Listeners registered through {@link Chip.on_input}. */
+  input_listeners: InputListener[] = [];
   private _value: boolean;
 
   constructor(
@@ -821,6 +902,15 @@ export class Chip extends VGroup implements InteractiveControl {
     return this.set_value(!this._value);
   }
 
+  /**
+   * Register a listener for user-originated value changes. See
+   * {@link InputListener} for the callback contract and its timing.
+   */
+  on_input(listener: InputListener): this {
+    this.input_listeners.push(listener);
+    return this;
+  }
+
   is_hit(point: readonly number[]): boolean {
     const left = pointRows(this.box.get_left(), 3)[0] ?? [0, 0, 0];
     const right = pointRows(this.box.get_right(), 3)[0] ?? [0, 0, 0];
@@ -837,7 +927,9 @@ export class Chip extends VGroup implements InteractiveControl {
   }
 
   on_press(_point: readonly number[], _context: InteractiveContext): void {
+    const previous = this._value;
     this.toggle();
+    emitInput(this, this.input_listeners, previous, this._value);
   }
 
   on_drag(_point: readonly number[], _context: InteractiveContext): void {}
@@ -891,12 +983,8 @@ const SCRUB_START_PIXELS = 4;
 export class InputDecimalNumber extends DecimalNumber implements InteractiveControl {
   readonly [INTERACTIVE_CONTROL] = true;
   editing = false;
-  /**
-   * Called after a successful edit updates the value (every keystroke while
-   * editing, every scrub step while dragging, and again on commit). `null`
-   * means "no change handler".
-   */
-  on_change: (() => void) | null = null;
+  /** Listeners registered through {@link InputDecimalNumber.on_input}. */
+  input_listeners: InputListener[] = [];
   /** Inclusive `[low, high]` bound, or `null` when the number is unbounded. */
   value_range: [number, number] | null;
   drag_pixels: number;
@@ -944,6 +1032,16 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
 
   override get_value(): DecimalNumberValue {
     return super.get_value();
+  }
+
+  /**
+   * Register a listener for user-originated value changes: every keystroke
+   * while editing, every scrub step while dragging, and the commit. See
+   * {@link InputListener} for the callback contract and its timing.
+   */
+  on_input(listener: InputListener): this {
+    this.input_listeners.push(listener);
+    return this;
   }
 
   /**
@@ -1015,8 +1113,9 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     // from the boundary responds immediately. In-range integer quantization
     // keeps the fraction (0.8 stays 0.8 until the next step crosses 1).
     if (clamped !== quantized) this._scrub_value = clamped;
+    const previous = this.get_value();
     this.set_value(clamped);
-    this.on_change?.();
+    emitInput(this, this.input_listeners, previous, this.get_value());
     this._last_drag_point = [...point3d(point)];
   }
 
@@ -1068,8 +1167,9 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
     this._edit_text = text;
     const value = Number.parseFloat(text);
     if (Number.isFinite(value)) {
+      const previous = this.get_value();
       this.set_value(value);
-      this.on_change?.();
+      emitInput(this, this.input_listeners, previous, this.get_value());
     }
   }
 
@@ -1228,13 +1328,13 @@ function inputDecimalNumberElement(
   return new InputDecimalNumber(item as DecimalNumberValue, config as DecimalNumberOptions);
 }
 
-/** Register `relayout` as the change handler of every interactive cell. */
+/** Register `relayout` as an input listener of every interactive cell. */
 function attachRelayout(cells: VMobject[][], relayout: () => void): void {
   for (const row of cells) {
     for (const cell of row) {
-      if (isInteractiveControl(cell)) {
-        (cell as unknown as { on_change: (() => void) | null }).on_change = relayout;
-      }
+      if (!isInteractiveControl(cell)) continue;
+      const interactive = cell as unknown as { on_input?: (listener: InputListener) => unknown };
+      interactive.on_input?.(relayout);
     }
   }
 }

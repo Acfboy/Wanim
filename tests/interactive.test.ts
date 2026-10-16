@@ -7,6 +7,7 @@ import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
 import { DecimalNumber } from "../src/mobject/text/numbers.js";
 import { YELLOW } from "../src/utils/color/index.js";
 import {
+  Chip,
   InputDecimalMatrix,
   InputDecimalNumber,
   InputDecimalTable,
@@ -973,22 +974,102 @@ describe("InputInteger", () => {
   });
 });
 
-describe("InputDecimalNumber on_change", () => {
-  test("fires after every successful edit (and not on unparsable text)", () => {
+describe("on_input", () => {
+  /** World-space vertical distance matching `pixels` on screen. */
+  function worldPixels(camera: Camera, pixels: number): number {
+    return pixels / (camera.pixel_height / camera.frame_height);
+  }
+
+  test("slider reports user press/drag changes, and set_value stays silent", () => {
+    const slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0], value_range: [0, 10], init_value: 0 });
+    const events: Array<[unknown, unknown, unknown]> = [];
+    slider.on_input((control, previous, next) => events.push([control, previous, next]));
+    const context = controlContext(new FakeHost());
+
+    // Pressing the middle of the track is a user change (0 -> 5).
+    slider.on_press([0, 0, 0], context);
+    expect(events.length).toBe(1);
+    expect(events[0]![0]).toBe(slider);
+    expect(events[0]![1]).toBe(0);
+    expect(events[0]![2]).toBeCloseTo(5, 12);
+
+    // Dragging right increases the value.
+    slider.on_drag([0.5, 0, 0], context);
+    expect(events.length).toBe(2);
+    expect(events[1]![1]).toBeCloseTo(5, 12);
+    expect(events[1]![2] as number).toBeGreaterThan(5);
+    slider.on_release();
+
+    // Programmatic writes never fire the listeners.
+    slider.set_value(1);
+    expect(events.length).toBe(2);
+
+    // Several listeners run in registration order.
+    const order: string[] = [];
+    const other = new Slider({ start: [-1, 0, 0], end: [1, 0, 0], value_range: [0, 1] });
+    other.on_input(() => order.push("first"));
+    other.on_input(() => order.push("second"));
+    other.on_press([1, 0, 0], context);
+    expect(order).toEqual(["first", "second"]);
+  });
+
+  test("switch and chip only fire for clicks, not for toggle()/set_value()", () => {
+    const toggle = new Switch(false);
+    const chip = new Chip("chip");
+    const toggles: boolean[] = [];
+    const chips: boolean[] = [];
+    toggle.on_input((_control, _previous, next) => toggles.push(Boolean(next)));
+    chip.on_input((_control, _previous, next) => chips.push(Boolean(next)));
+    const context = controlContext(new FakeHost());
+
+    toggle.on_press([0, 0, 0], context);
+    chip.on_press([0, 0, 0], context);
+    expect(toggles).toEqual([true]);
+    expect(chips).toEqual([true]);
+
+    toggle.toggle();
+    chip.set_value(false);
+    expect(toggles).toEqual([true]);
+    expect(chips).toEqual([true]);
+  });
+
+  test("InputDecimalNumber fires on scrub steps and text edits only when the value changes", () => {
     const host = new FakeHost();
-    const number = new InputDecimalNumber(0);
-    let changes = 0;
-    number.on_change = () => {
-      changes += 1;
-    };
-    number.on_press([0, 0, 0], controlContext(host));
+    const camera = new Camera();
+    const number = new InputDecimalNumber(0, { value_range: [0, 10], drag_pixels: 100, drag_span: 10 });
+    const events: Array<[unknown, unknown]> = [];
+    number.on_input((_control, previous, next) => events.push([previous, next]));
+    const cx = number.get_center()[0] ?? 0;
+    const cy = number.get_center()[1] ?? 0;
+
+    number.on_press([cx, cy, 0], { host, camera });
+    // 20 px up = +2.
+    number.on_drag([cx, cy + worldPixels(camera, 20), 0], { host, camera });
+    expect(events).toEqual([[0, 2]]);
     number.on_release();
-    host.editor?.onInput("2.5");
-    expect(changes).toBe(1);
-    host.editor?.onInput("not a number");
-    expect(changes).toBe(1);
-    host.editor?.onCommit("3");
-    expect(changes).toBe(2);
+
+    // A text edit fires with the parsed value...
+    number.on_press([cx, cy, 0], { host, camera });
+    number.on_release();
+    host.editor?.onInput("7.5");
+    expect(events).toEqual([
+      [0, 2],
+      [2, 7.5],
+    ]);
+    // ...unparsable text does not, and neither does re-committing the same value.
+    host.editor?.onInput("nope");
+    host.editor?.onCommit("7.5");
+    expect(events).toEqual([
+      [0, 2],
+      [2, 7.5],
+    ]);
+
+    // Programmatic writes stay silent.
+    number.set_value(3);
+    expect(events).toEqual([
+      [0, 2],
+      [2, 7.5],
+    ]);
   });
 });
 
@@ -1133,6 +1214,7 @@ describe("InputDecimalTable", () => {
   });
 
   test("repeated relayouts replace the previous lines instead of stacking them", () => {
+    const host = new FakeHost();
     const table = new InputDecimalTable(
       [
         [1, 2],
@@ -1147,8 +1229,9 @@ describe("InputDecimalTable", () => {
 
     const cell = table.mob_table[0]![0]!;
     for (const value of [10, 20, 30]) {
-      cell.set_value(value);
-      (cell as unknown as { on_change?: () => void }).on_change?.();
+      cell.on_press(cell.get_center(), controlContext(host));
+      cell.on_release();
+      host.editor?.onInput(String(value));
       expect(lineCount()).toBe(initialLines);
       expect(table.submobjects.length).toBe(initialSubmobjects);
     }
