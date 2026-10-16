@@ -1584,14 +1584,18 @@ export function desugarNumpySubscripts(source: string): string {
 // higher-precedence `**` chains (`a * b @ c` -> `__wan_matmul(a * b, c)`)
 // while the right operand absorbs `**`/unary/postfix only
 // (`a @ b * c` -> `__wan_matmul(a, b) * c`, `a @ -b` keeps the sign).
-// Anything that does not parse cleanly (decorators, strings, comments,
-// `@@`, f-string interpolations, `#`-commented gaps, ...) is left untouched
-// so the compiler still reports it instead of being silently miscompiled.
+// Anything that does not parse cleanly (decorators, strings, `@@`,
+// f-string interpolations, ...) is left untouched so the compiler still
+// reports it instead of being silently miscompiled.  A trailing `#` comment
+// does not block a parse: at bracket depth 0 it ends the logical line (and
+// with it the operand); inside brackets the next line is inspected, and
+// only a trailer (`.attr`, `(`, `[`) or `**` power -- which would continue
+// the operand -- makes the parse bail.
 //
-// Known limitations: like the other
-// desugars this is a source-level heuristic, not a full parser — an `@`
-// inside an f-string `{...}` interpolation is not rewritten, and an `@=`
-// target with side effects (`a[i()] @= b`) is evaluated twice.
+// Known limitations: like the other desugars this is a source-level
+// heuristic, not a full parser — an `@` inside an f-string `{...}`
+// interpolation is not rewritten, and an `@=` target with side effects
+// (`a[i()] @= b`) is evaluated twice.
 
 /** Global runtime helper (see `runtime_core.ts`) used by the desugared code. */
 export const WANIM_MATMUL_HELPER = "__wan_matmul";
@@ -1843,6 +1847,62 @@ function matmulParseUnitBackward(
 }
 
 /**
+ * Decide whether the `#` that stopped {@link matmulGapForward} at `i` (its
+ * null return) also ends the operand {@link matmulParseRight} is parsing.
+ * At bracket depth 0 a comment ends the logical line, so it does.  Inside
+ * brackets the operand may still continue on a later line -- as a trailer
+ * (`.attr`, `(`, `[`) or a `**` power, which bind tighter than `@` -- in
+ * which case the parse must conservatively bail; anything else (`+`, `*`,
+ * `@`, closers, EOF, ...) binds no tighter and lets the operand end at the
+ * comment (`a @ b  # note`), which is how the common trailing comment is
+ * handled.
+ */
+function matmulCommentEndsOperand(
+  text: string,
+  i: number,
+  allowNewline: boolean,
+): boolean {
+  // Mirror `matmulGapForward` to find what actually stopped the gap.
+  let comment = -1;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (isHorizontalSpace(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === "\\" && (text[i + 1] === "\n" || text[i + 1] === "\r")) {
+      if (isEscaped(text, i)) return false; // gap failed for another reason
+      i += text[i + 1] === "\r" && text[i + 2] === "\n" ? 3 : 2;
+      continue;
+    }
+    if (ch === "\n" || ch === "\r") break; // newline: no comment in the gap
+    if (ch === "#") comment = i;
+    break;
+  }
+  if (comment === -1) return false;
+  if (!allowNewline) return true;
+  // Inside brackets, look at the first code character after the comment
+  // (skipping the rest of the comment line, blank lines and comment-only
+  // lines) to see whether the operand continues there.
+  let j = comment + 1;
+  for (;;) {
+    while (j < text.length && text[j] !== "\n" && text[j] !== "\r") j += 1;
+    while (
+      j < text.length &&
+      (text[j] === "\n" || text[j] === "\r" || isHorizontalSpace(text[j]!))
+    ) {
+      j += 1;
+    }
+    if (j < text.length && text[j] === "#") continue;
+    break;
+  }
+  if (j >= text.length) return true;
+  const ch = text[j]!;
+  if (ch === "." || ch === "(" || ch === "[") return false;
+  return !(text.startsWith("**", j) && text[j + 2] !== "*");
+}
+
+/**
  * Parse one right-hand operand forward: exclusive end index, or null.  The
  * operand absorbs postfix trailers (`.attr`, calls, subscripts) and `**`
  * powers, but stops before same-precedence `*`/`/`/`//`/`%` and everything
@@ -1891,7 +1951,11 @@ function matmulParseRight(
   }
   for (;;) {
     const h = matmulGapForward(text, i, allowNewline);
-    if (h === null) return null;
+    if (h === null) {
+      // `matmulGapForward` fails only on a `#` comment (or an escaped
+      // backslash-newline); see `matmulCommentEndsOperand`.
+      return matmulCommentEndsOperand(text, i, allowNewline) ? i : null;
+    }
     const t = text[h] ?? "";
     if (t === ".") {
       let k = matmulGapForward(text, h + 1, allowNewline);
