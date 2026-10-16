@@ -808,7 +808,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..0ccb7ab 100644
+index 5533155..ca1f562 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -1180,7 +1180,47 @@ index 5533155..0ccb7ab 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2497,12 +2706,24 @@ def create_parser_ctx(
+@@ -2439,14 +2648,16 @@ def create_parser_ctx(
+         if not expr.parens and get_class_in_scope(expr):
+             # this is an object being created using a class
+             call_args = await func_call_list()
+-            ret = await subscripts(new AST_New({
++            # NOTE (wanim): the argument list (and its closing paren) is done;
++            # restore the flag before any trailing subscript so a slice-store
++            # RHS (`new X()[:] = v`) does not parse as parenthesized.
++            S.in_parenthesized_expr = prev_parens
++            return await subscripts(new AST_New({
+                 'start': start,
+                 'expression': expr,
+                 'args': call_args,
+                 'end': prev()
+             }), True)
+-            S.in_parenthesized_expr = prev_parens
+-            return ret
+         else:
+             if is_node_type(expr, AST_Dot):
+                 c = get_class_in_scope(expr.expression)
+@@ -2456,7 +2667,9 @@ def create_parser_ctx(
+                 funcname = expr
+ 
+                 classcall_args = await func_call_list()
+-                ret = await subscripts(new AST_ClassCall({
++                # NOTE (wanim): see the comment on the `AST_New` branch.
++                S.in_parenthesized_expr = prev_parens
++                return await subscripts(new AST_ClassCall({
+                     'start': start,
+                     'class': expr.expression,
+                     'method': funcname.property,
+@@ -2464,8 +2677,6 @@ def create_parser_ctx(
+                     'args': classcall_args,
+                     'end': prev()
+                 }), True)
+-                S.in_parenthesized_expr = prev_parens
+-                return ret
+             elif is_node_type(expr, AST_SymbolRef):
+                 tmp_ = expr.name
+                 if tmp_ is 'jstype':
+@@ -2497,14 +2708,30 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1203,11 +1243,18 @@ index 5533155..0ccb7ab 100644
 +                # against the real-time renderer while looking synchronous.
 +                S.functions[-1].is_async = True
 +                call_node = new AST_Await({'value': call_node})
-+            ret = await subscripts(call_node, True)
++            # NOTE (wanim): the argument list (and its closing paren) is done;
++            # restore the flag before any trailing subscript.  Leaving it set
++            # made the RHS of a trailing slice-store (`f()[:] = v`) parse as
++            # parenthesized, so `expression(True)` kept consuming the
++            # newline and reported a spurious "Unexpected token: eof".
              S.in_parenthesized_expr = prev_parens
-             return ret
+-            return ret
++            return await subscripts(call_node, True)
  
-@@ -2711,12 +2932,25 @@ def create_parser_ctx(
+     async def get_attr(expr, allow_calls):
+         next()
+@@ -2711,12 +2938,25 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1236,7 +1283,7 @@ index 5533155..0ccb7ab 100644
          if commas:
              left = v'[ expr ]'
              while is_(
-@@ -2853,6 +3087,8 @@ def create_parser_ctx(
+@@ -2853,6 +3093,8 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -1245,7 +1292,7 @@ index 5533155..0ccb7ab 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3222,92 @@ def create_parser_ctx(
+@@ -2986,6 +3228,92 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -1338,7 +1385,7 @@ index 5533155..0ccb7ab 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3321,16 @@ async def parse(text, options):
+@@ -2999,6 +3327,16 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
