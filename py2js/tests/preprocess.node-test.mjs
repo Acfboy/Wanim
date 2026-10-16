@@ -519,6 +519,46 @@ check("matmul desugar leaves unparseable @ for the compiler", () => {
   );
 });
 
+check("matmul desugar handles trailing comments", () => {
+  assert.equal(
+    desugarMatmul("q_locals = sphere_points_mat @ R  # same as (R.T @ Q.T).T\n"),
+    "q_locals = __wan_matmul(sphere_points_mat, R)  # same as (R.T @ Q.T).T\n",
+  );
+  assert.equal(
+    desugarMatmul("x = a @ b# note: a @ b\n"),
+    "x = __wan_matmul(a, b)# note: a @ b\n",
+  );
+  assert.equal(
+    desugarMatmul("x = a @ b ** 2  # note\n"),
+    "x = __wan_matmul(a, b ** 2)  # note\n",
+  );
+  assert.equal(
+    desugarMatmul("x @= M  # note\n"),
+    "x = __wan_matmul(x, M)  # note\n",
+  );
+});
+
+check("matmul desugar resolves bracket comments by the next line", () => {
+  assert.equal(
+    desugarMatmul("x = (a @ b  # note\n)\n"),
+    "x = (__wan_matmul(a, b)  # note\n)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = (a @ b  # note\n     + c)\n"),
+    "x = (__wan_matmul(a, b)  # note\n     + c)\n",
+  );
+  // A trailer or `**` power on the next line continues the operand; the
+  // parse must bail rather than cut it at the comment.
+  assert.equal(
+    desugarMatmul("x = (a @ b  # note\n     .c)\n"),
+    "x = (a @ b  # note\n     .c)\n",
+  );
+  assert.equal(
+    desugarMatmul("x = (a @ b  # note\n     ** c)\n"),
+    "x = (a @ b  # note\n     ** c)\n",
+  );
+});
+
 check("reversed desugar rewrites bare reversed() calls", () => {
   assert.equal(
     desugarReversedBuiltin("for name, part in zip(names, reversed(parts)):\n"),
