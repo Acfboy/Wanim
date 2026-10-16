@@ -500,7 +500,7 @@ index b38e56f..4a9c37f 100644
                      body_out.assign(self.init)
                      body_out.print(itervar)
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..144b0b6 100644
+index a16673a..c99755d 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
 @@ -12,8 +12,33 @@ from output.loops import unpack_tuple
@@ -589,7 +589,7 @@ index a16673a..144b0b6 100644
          output.print(']')
          return
      is_repeatable = is_node_type(prop, AST_SymbolRef)
-@@ -115,6 +167,12 @@ def print_unary_prefix(self, output):
+@@ -115,6 +167,21 @@ def print_unary_prefix(self, output):
      op = self.operator
      if op is 'delete':
          return print_delete(self.expression, output)
@@ -599,17 +599,29 @@ index a16673a..144b0b6 100644
 +            self.expression.print(output)
 +        )
 +        return
++    if output.options.operator_overloading and op is '~':
++        # Plain JS `~` runs ToInt32 on objects, so `~(arr > 0)` would be
++        # `-1`; the helper implements numpy's logical invert for boolean
++        # masks and bitwise not for integers (see the maps above).
++        output.print('ρσ_op_invert')
++        output.with_parens(def ():
++            self.expression.print(output)
++        )
++        return
      output.print(op)
      if /^[a-z]/i.test(op):
          output.space()
-@@ -211,9 +269,87 @@ function_ops = {
+@@ -211,9 +278,96 @@ function_ops = {
      'nin': '!ρσ_in',
  }
  
 +# Arithmetic and comparison operators that can be routed through the
 +# Python-semantics runtime helpers when `operator_overloading` is enabled.
 +# Comparisons need it for numpy: plain JS `<` coerces an NDArray to a
-+# primitive, so `(arr < p).sum()` fails (wanim error 204).
++# primitive, so `(arr < p).sum()` fails (wanim error 204).  The bitwise
++# operators need it for the same reason: plain JS `&`/`|`/`^` run ToInt32
++# on objects, so `(a > 0) ^ (b > 0)` silently becomes `0` and later
++# indexing fails (wanim error: stereographic projection scene).
 +op_overload_map = {
 +    '+': 'ρσ_op_add',
 +    '-': 'ρσ_op_sub',
@@ -622,6 +634,9 @@ index a16673a..144b0b6 100644
 +    '>': 'ρσ_op_gt',
 +    '<=': 'ρσ_op_le',
 +    '>=': 'ρσ_op_ge',
++    '&': 'ρσ_op_bitand',
++    '|': 'ρσ_op_bitor',
++    '^': 'ρσ_op_bitxor',
 +}
 +
 +compound_op_overload_map = {
@@ -631,6 +646,9 @@ index a16673a..144b0b6 100644
 +    '/=': 'ρσ_op_div',
 +    '%=': 'ρσ_op_mod',
 +    '**=': 'ρσ_op_pow',
++    '&=': 'ρσ_op_bitand',
++    '|=': 'ρσ_op_bitor',
++    '^=': 'ρσ_op_bitxor',
 +}
 +
  
@@ -691,7 +709,7 @@ index a16673a..144b0b6 100644
          output.print(function_ops[self.operator])
          output.with_parens(def ():
              self.left.print(output)
-@@ -363,6 +499,20 @@ def print_existential(self, output):
+@@ -363,6 +517,20 @@ def print_existential(self, output):
  
  
  def print_assignment(self, output):
@@ -712,7 +730,7 @@ index a16673a..144b0b6 100644
      flattened = False
      left = self.left
      if is_node_type(left, AST_Seq):
-@@ -372,7 +522,13 @@ def print_assignment(self, output):
+@@ -372,7 +540,13 @@ def print_assignment(self, output):
          flattened = flat.length > left.elements.length
          output.print('ρσ_unpack')
      else:
@@ -726,7 +744,7 @@ index a16673a..144b0b6 100644
      output.space()
      output.print(self.operator)
      output.space()
-@@ -460,14 +616,32 @@ def print_conditional(self, output, condition, consequent, alternative):
+@@ -460,14 +634,32 @@ def print_conditional(self, output, condition, consequent, alternative):
  def print_seq(output):
      self = this
      p = output.parent()
