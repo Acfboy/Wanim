@@ -47,6 +47,19 @@ CPython-compatible MT19937 port, and `src/python_math.ts`, a CPython-compatible
 other import into a friendly error, because the rest of the Python standard library is not
 available.
 
+The patch also adds the `python_extensions` parse option (used by
+`compilePython`), which makes the *parser* accept the Python constructs the
+baselib cannot express instead of the old source-text rewriting: tuple trailing
+commas, starred list/tuple displays, multi-`for` comprehensions, multi-line
+generator expressions, `@`/`@=` matrix multiplication, complex literals
+(`1.5j`), dotted/tuple `except` handlers, numpy multi-dim subscripts
+(`a[:, 1]`, `a[i, j] = v`) and identifiers that collide with JavaScript
+reserved words.  Constructs that need Python semantics the baselib lacks are
+lowered to `__wan_*` runtime calls (`__wan_getitem`, `__wan_spread`,
+`__wan_matmul`, `__wan_complex`, `__wan_abs`, `__wan_sum`,
+`__wan_reversed`, `__wan_dict_get`, `__wan_flatten1`,
+`__wan_setitem`/`__wan_slice`) implemented in `src/runtime_core.ts`.
+
 ## Tests
 
 ```bash
