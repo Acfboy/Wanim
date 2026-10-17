@@ -329,6 +329,27 @@ await check("reserved-word identifiers are renamed", async () => {
   assert.deepEqual(lines, ["5", "9"]);
 });
 
+await check("reserved words are accepted as parameter names", async () => {
+  const lines = await runPython(
+    [
+      "def f(new=1, do=2):",
+      "    return new + do",
+      "print(f(), f(new=3, do=4))",
+      "g = lambda m, old, new: old + new",
+      "print(g(1, 2, 3))",
+      "def h(*new):",
+      "    return len(new)",
+      "print(h(1, 2, 3))",
+      "class new:",
+      "    pass",
+      "d = new()",
+      "print(isinstance(d, new))",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(lines, ["3 7", "5", "3", "True"]);
+});
+
 await check("tuple branches of a conditional expression become arrays", async () => {
   const lines = await runPython(
     [
