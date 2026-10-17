@@ -1671,6 +1671,92 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
+   * Advanced indexing along axis 0: a boolean mask picks the matching rows
+   * (`pts[mask]`), an integer array picks rows by index (`a[[0, 2]]`).
+   * Returns `null` for keys that are neither (scalars, strings, slice bags)
+   * so callers can fall through to their own handling.
+   *
+   * Shared by the single-dim `__getitem__` dunder and the multi-dim
+   * `__wan_getitem`, which applies the remaining specs to the picked rows
+   * (`a[mask, 0]`, `a[idx, :]`, ... -- numpy advanced indexing).
+   */
+  function selectNdRows(recv: Any, key: Any): Any {
+    if (recv === null || recv === undefined) return null;
+    const recvShape = (recv as Any).shape as readonly number[] | undefined;
+    const ndim = Array.isArray(recvShape) ? recvShape.length : 0;
+    const rowLength = Array.isArray(recvShape) && recvShape.length > 0
+      ? (recvShape[0] as number)
+      : 0;
+    const isMaskKey =
+      isNdArray(key)
+        ? ((key as Any).shape as readonly number[]).length > 0
+          && ((key as Any).dtype === "bool" || (key as Any).dtype === "boolean")
+        : Array.isArray(key) && key.length > 0
+          && key.every((v: Any) => typeof v === "boolean");
+    const isIndexKey =
+      isNdArray(key)
+        ? ((key as Any).shape as readonly number[]).length > 0
+          && (key as Any).dtype !== "bool" && (key as Any).dtype !== "boolean"
+        : Array.isArray(key);
+    if (!isMaskKey && !isIndexKey) return null;
+    if (isMaskKey) {
+      // Boolean mask: numpy-ts `compress` accepts NDArray and plain-array
+      // masks along an axis, with a manual fallback for exotic receivers.
+      const compress = (recv as Any).compress;
+      if (typeof compress === "function") {
+        try {
+          return ndim <= 1 ? compress.call(recv, key) : compress.call(recv, key, 0);
+        } catch {
+          /* fall through to the manual fallback */
+        }
+      }
+      let maskList: Any[];
+      try {
+        maskList = isNdArray(key) ? (key as Any).tolist() : (key as Any[]).slice();
+      } catch {
+        maskList = [...(key as Iterable<Any>)];
+      }
+      const picked: Any[] = [];
+      for (let i = 0; i < maskList.length; i += 1) {
+        if (maskList[i]) picked.push((recv as Any)[i]);
+      }
+      try {
+        if (ndim <= 1) return (np as Any).asarray(picked);
+        return (np as Any).stack(picked, 0);
+      } catch {
+        return (np as Any).asarray(picked.map((row) => deepUnwrapNd(row)));
+      }
+    }
+    // Integer index array: `iindex`/`take` along axis 0.
+    const picker = (recv as Any).iindex ?? (recv as Any).take;
+    if (typeof picker === "function") {
+      try {
+        return ndim <= 1 && picker === (recv as Any).take && picker.length < 2
+          ? picker.call(recv, key)
+          : picker.call(recv, key, 0);
+      } catch {
+        /* fall through to the manual fallback */
+      }
+    }
+    let indexList: Any[];
+    try {
+      indexList = isNdArray(key) ? (key as Any).tolist() : (key as Any[]).slice();
+    } catch {
+      indexList = [...(key as Iterable<Any>)];
+    }
+    const picked = indexList.map((k) => {
+      const n = typeof k === "boolean" ? (k ? 1 : 0) : Math.trunc(Number(k));
+      return (recv as Any)[n < 0 ? n + rowLength : n];
+    });
+    try {
+      if (ndim <= 1) return (np as Any).asarray(picked);
+      return (np as Any).stack(picked, 0);
+    } catch {
+      return (np as Any).asarray(picked.map((row) => deepUnwrapNd(row)));
+    }
+  }
+
+  /**
    * Teach numpy-ts NDArrays the Python call shapes rapydscript emits.
    *
    * 1. `f(*arr, kw=...)` compiles to `arr.concat([kwbag])`, but NDArray has no
@@ -1974,11 +2060,6 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // NDArray/plain-array keys filter rows along axis 0 (`compress`), and
     // integer NDArray/plain-array keys pick rows (`iindex`/`take`).
     function ndSingleGetItem(recv: Any, key: Any): Any {
-      const recvShape = (recv as Any)?.shape as readonly number[] | undefined;
-      const ndim = Array.isArray(recvShape) ? recvShape.length : 0;
-      const rowLength = Array.isArray(recvShape) && recvShape.length > 0
-        ? (recvShape[0] as number)
-        : 0;
       // `None` (numpy `newaxis`): `a[None]` gains a leading size-1 axis.
       if (key === null || key === undefined) {
         try {
@@ -2011,63 +2092,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       if (typeof key === "number" || typeof key === "boolean") {
         return (recv as Any)[key as Any];
       }
-      // Row filter along axis 0 for boolean keys (numpy-ts `compress`
-      // accepts both NDArray and plain-array masks).
-      const selectMaskRows = (mask: Any): Any => {
-        const compress = (recv as Any).compress;
-        if (typeof compress === "function") {
-          try {
-            return ndim <= 1 ? compress.call(recv, mask) : compress.call(recv, mask, 0);
-          } catch {
-            /* fall through to the manual fallback */
-          }
-        }
-        let maskList: Any[];
-        try {
-          maskList = isNdArray(mask) ? (mask as Any).tolist() : (mask as Any[]).slice();
-        } catch {
-          maskList = [...(mask as Iterable<Any>)];
-        }
-        const picked: Any[] = [];
-        for (let i = 0; i < maskList.length; i += 1) {
-          if (maskList[i]) picked.push((recv as Any)[i]);
-        }
-        try {
-          if (ndim <= 1) return (np as Any).asarray(picked);
-          return (np as Any).stack(picked, 0);
-        } catch {
-          return (np as Any).asarray(picked.map((row) => deepUnwrapNd(row)));
-        }
-      };
-      // Row picking along axis 0 for integer keys.
-      const selectFancyRows = (indices: Any): Any => {
-        const picker = (recv as Any).iindex ?? (recv as Any).take;
-        if (typeof picker === "function") {
-          try {
-            return ndim <= 1 && picker === (recv as Any).take && picker.length < 2
-              ? picker.call(recv, indices)
-              : picker.call(recv, indices, 0);
-          } catch {
-            /* fall through to the manual fallback */
-          }
-        }
-        let indexList: Any[];
-        try {
-          indexList = isNdArray(indices) ? (indices as Any).tolist() : (indices as Any[]).slice();
-        } catch {
-          indexList = [...(indices as Iterable<Any>)];
-        }
-        const picked = indexList.map((k) => {
-          const n = typeof k === "boolean" ? (k ? 1 : 0) : Math.trunc(Number(k));
-          return (recv as Any)[n < 0 ? n + rowLength : n];
-        });
-        try {
-          if (ndim <= 1) return (np as Any).asarray(picked);
-          return (np as Any).stack(picked, 0);
-        } catch {
-          return (np as Any).asarray(picked.map((row) => deepUnwrapNd(row)));
-        }
-      };
+      // Mask / integer-array keys select rows along axis 0 (shared with the
+      // multi-dim `__wan_getitem` path, which then applies the remaining
+      // specs to the picked rows).
       if (isNdArray(key)) {
         const kshape = (key as Any).shape as readonly number[];
         if (kshape.length === 0) {
@@ -2075,16 +2102,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           if (typeof scalar === "boolean") return (recv as Any)[scalar ? 1 : 0];
           return (recv as Any)[scalar as Any];
         }
-        const dtype = (key as Any).dtype;
-        if (dtype === "bool" || dtype === "boolean") return selectMaskRows(key);
-        return selectFancyRows(key);
       }
-      if (Array.isArray(key)) {
-        if (key.length > 0 && key.every((v) => typeof v === "boolean")) {
-          return selectMaskRows(key);
-        }
-        return selectFancyRows(key);
-      }
+      const selected = selectNdRows(recv, key);
+      if (selected !== null) return selected;
       return (recv as Any)[key as Any];
     }
     try {
@@ -3331,6 +3351,49 @@ export function createRuntimeCore(deps: RuntimeDeps) {
           ...new Array<string>(fill).fill(":"),
           ...specs.slice(dot + 1),
         ];
+      }
+      // Advanced indexing: a boolean mask or integer-array first index picks
+      // rows along axis 0 (`eq_sphere[mask, 0]`, `a[idx, :]`, ...).
+      // numpy-ts' own `.slice` cannot take these specs (it called
+      // `.includes` on the mask and threw "A.includes is not a function").
+      if (finalSpecs.length > 0
+          && (Array.isArray(finalSpecs[0]) || isNdArray(finalSpecs[0]))) {
+        const selectedRows = selectNdRows(obj, finalSpecs[0]);
+        if (selectedRows !== null) {
+          const restSpecs = finalSpecs.slice(1);
+          if (restSpecs.length === 0) return selectedRows;
+          // numpy applies the remaining specs per selected row:
+          // `a[mask, 0]` is `[row[0] for row in a[mask]]`.  A lone numeric
+          // spec indexes the row directly -- numpy-ts' `.slice(n)` would
+          // treat it as a slice *start* and return the whole row.
+          let rowList: Any[];
+          try {
+            rowList = isNdArray(selectedRows)
+              ? (selectedRows as Any).tolist()
+              : Array.from(selectedRows as Iterable<Any>);
+          } catch {
+            rowList = Array.from(selectedRows as Iterable<Any>);
+          }
+          const applySpecs = (row: Any): Any => {
+            if (restSpecs.length === 1 && typeof restSpecs[0] === "number") {
+              const n = Math.trunc(restSpecs[0] as number);
+              const rowShape = (row as Any)?.shape as readonly number[] | undefined;
+              const len = Array.isArray(rowShape) ? rowShape[0] : undefined;
+              return (row as Any)[len !== undefined && n < 0 ? n + len : n];
+            }
+            return wanGetItem(row, ...restSpecs);
+          };
+          const mapped = rowList.map(applySpecs);
+          try {
+            if (mapped.length > 0
+                && (Array.isArray(mapped[0]) || isNdArray(mapped[0]))) {
+              return (np as Any).stack(mapped, 0);
+            }
+            return (np as Any).asarray(mapped);
+          } catch {
+            return (np as Any).asarray(mapped.map((v) => deepUnwrapNd(v)));
+          }
+        }
       }
       // `None` inside `[...]` is numpy's `newaxis`: `xs[None, :]` adds a
       // leading size-1 axis.  numpy-ts' `.slice` rejects the extra index
