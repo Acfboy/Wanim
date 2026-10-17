@@ -875,7 +875,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..36efb3c 100644
+index 5533155..8aad2c0 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -1623,7 +1623,209 @@ index 5533155..36efb3c 100644
  
      async def dict_comprehension(a, is_pydict, is_jshash):
          if a.length:
-@@ -2381,6 +2840,18 @@ def create_parser_ctx(
+@@ -2270,38 +2729,179 @@ def create_parser_ctx(
+         else:
+             return False
+ 
++    # --- numpy multi-dim subscript support -----------------------------------
++    #
++    # NOTE (wanim): rapydscript only parses a single index or `start:stop[:step]`
++    # slice per `[...]`.  Python/numpy code uses multi-dim subscripts
++    # (`a[:, 1]`, `a[1:2, 0]`, `a[..., 0]`) and stores through them
++    # (`a[:, 1] = v`, `a[:, 1] += v`); with `python_extensions` these are
++    # lowered here, where the object expression and every dimension are
++    # already parsed, to `__wan_getitem`/`__wan_setitem`/
++    # `__wan_slice` runtime calls.  No backwards source scan is needed, so
++    # nested subscripts, comments and strings inside dimensions are exact.
++
++    def slice_helper_call(bounds):
++        args = v'[]'
++        args.push(new AST_CallArg({
++            'value': (
++                new AST_Null() if bounds[0] is None else bounds[0]
++            ),
++            'is_array': False
++        }))
++        stop = bounds[1] if bounds.length > 1 else None
++        args.push(new AST_CallArg({
++            'value': new AST_Null() if stop is None else stop,
++            'is_array': False
++        }))
++        if bounds.length > 2:
++            step = bounds[2]
++            args.push(new AST_CallArg({
++                'value': new AST_Null() if step is None else step,
++                'is_array': False
++            }))
++        return new AST_Call({
++            'expression': new AST_SymbolRef({'name': '__wan_slice'}),
++            'args': new AST_CallArgs({
++                'args': args, 'kwargs': v'[]',
++                'kwarg_items': v'[]', 'starargs': False
++            }),
++            'end': prev()
++        })
++
++    def dim_node(dim):
++        if dim['kind'] is 'ellipsis':
++            return new AST_String({'value': '...'})
++        bounds = dim['bounds']
++        if dim['kind'] is 'index':
++            value = bounds[0]
++            if (is_node_type(value, AST_SymbolRef)
++                    and value.name is 'Ellipsis'):
++                return new AST_String({'value': '...'})
++            return value
++        return slice_helper_call(bounds)
++
++    def helper_call(name, args):
++        _ca = v'[]'
++        for arg in args:
++            _ca.push(new AST_CallArg({'value': arg, 'is_array': False}))
++        return new AST_Call({
++            'expression': new AST_SymbolRef({'name': name}),
++            'args': new AST_CallArgs({
++                'args': _ca, 'kwargs': v'[]',
++                'kwarg_items': v'[]', 'starargs': False
++            }),
++            'end': prev()
++        })
++
++    async def subscript_store(expr, dim_nodes, allow_calls):
++        # Called just after the `]` was consumed.  A following assignment
++        # operator stores through `__wan_setitem`; otherwise the subscript is
++        # a read through `__wan_getitem`.
++        if is_('operator') and ASSIGNMENT[S.token.value]:
++            op = S.token.value
++            next()
++            value = await expression(True)
++            if op is '=':
++                rhs = value
++            else:
++                # `a[..] op= v` -> `__wan_setitem(a, .., a[..] op v)`
++                rhs = new AST_Binary({
++                    'left': helper_call(
++                        '__wan_getitem', [expr].concat(dim_nodes)
++                    ),
++                    'operator': op.slice(0, -1),
++                    'right': value,
++                    'end': value.end
++                })
++            return await subscripts(
++                helper_call(
++                    '__wan_setitem',
++                    [expr].concat(dim_nodes).concat([rhs])
++                ),
++                allow_calls
++            )
++        return await subscripts(
++            helper_call('__wan_getitem', [expr].concat(dim_nodes)),
++            allow_calls
++        )
++
+     async def getitem(expr, allow_calls):
+         start = expr.start
+         next()
+         is_py_sub = S.scoped_flags.get('overload_getitem', False)
+-        slice_bounds = v'[]'
+-        is_slice = False
+-        if is_('punc', ':'):
+-            # slice [:n]
+-            slice_bounds.push(None)
+-        else:
+-            slice_bounds.push(await expression(False))
++        dims = v'[]'
++        while True:
++            bounds = v'[]'
++            is_slice = False
++            if options.python_extensions and is_('operator', '...'):
++                # Ellipsis: "all remaining dimensions"
++                next()
++                dims.push({'kind': 'ellipsis', 'bounds': bounds})
++            else:
++                if is_('punc', ':'):
++                    # slice [:n]
++                    bounds.push(None)
++                else:
++                    bounds.push(await expression(False))
+ 
+-        if is_('punc', ':'):
+-            # slice [n:m?]
+-            is_slice = True
+-            next()
+-            if is_('punc', ':'):
+-                slice_bounds.push(None)
+-            elif not is_('punc', ']'):
+-                slice_bounds.push(await expression(False))
++                if is_('punc', ':'):
++                    # slice [n:m?]
++                    is_slice = True
++                    next()
++                    if is_('punc', ':'):
++                        bounds.push(None)
++                    elif not is_('punc', ']') and not is_('punc', ','):
++                        bounds.push(await expression(False))
+ 
+-        if is_('punc', ':'):
+-            # slice [n:m:o?]
+-            next()
+-            if is_('punc', ']'):
+-                unexpected()
+-            else:
+-                slice_bounds.push(await expression(False))
++                if is_('punc', ':'):
++                    # slice [n:m:o?]
++                    next()
++                    if is_('punc', ']') or is_('punc', ','):
++                        unexpected()
++                    else:
++                        bounds.push(await expression(False))
++                dims.push({
++                    'kind': 'slice' if is_slice else 'index',
++                    'bounds': bounds
++                })
++            if is_('punc', ','):
++                if not options.python_extensions:
++                    unexpected()
++                next()
++                if is_('punc', ']'):
++                    break
++                continue
++            break
+ 
+         expect(']')
+ 
++        if options.python_extensions and (
++                dims.length > 1 or dims[0]['kind'] is 'ellipsis'):
++            dim_nodes = v'[]'
++            for dim in dims:
++                dim_nodes.push(dim_node(dim))
++            return await subscript_store(expr, dim_nodes, allow_calls)
++
++        slice_bounds = dims[0]['bounds']
++        is_slice = dims[0]['kind'] is 'slice'
++
+         if is_slice:
++            store_op = (
++                S.token.value
++                if (is_('operator') and ASSIGNMENT[S.token.value])
++                else None
++            )
++            # Stores rapydscript cannot express: a stepped slice store
++            # (`a[::2] = v` used to silently drop the step) and any augmented
++            # slice store (`a[i:j] += v` compiled to an invalid
++            # `ρσ_getslice(...) += v`).  Plain `a[i:j] = v` keeps the
++            # existing `ρσ_splice` path below.
++            if (options.python_extensions and not S.in_delete
++                    and store_op is not None
++                    and (slice_bounds.length is 3 or store_op is not '=')):
++                return await subscript_store(
++                    expr, [dim_node(dims[0])], allow_calls
++                )
+             if is_('operator', '='):
+                 # splice-assignment (arr[start:end] = ...)
+                 next()  # swallow the assignment
+@@ -2381,6 +2981,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1642,7 +1844,7 @@ index 5533155..36efb3c 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2859,7 @@ def create_parser_ctx(
+@@ -2388,12 +3000,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1656,7 +1858,7 @@ index 5533155..36efb3c 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2439,14 +2905,16 @@ def create_parser_ctx(
+@@ -2439,14 +3046,16 @@ def create_parser_ctx(
          if not expr.parens and get_class_in_scope(expr):
              # this is an object being created using a class
              call_args = await func_call_list()
@@ -1676,7 +1878,7 @@ index 5533155..36efb3c 100644
          else:
              if is_node_type(expr, AST_Dot):
                  c = get_class_in_scope(expr.expression)
-@@ -2456,7 +2924,9 @@ def create_parser_ctx(
+@@ -2456,7 +3065,9 @@ def create_parser_ctx(
                  funcname = expr
  
                  classcall_args = await func_call_list()
@@ -1687,7 +1889,7 @@ index 5533155..36efb3c 100644
                      'start': start,
                      'class': expr.expression,
                      'method': funcname.property,
-@@ -2464,8 +2934,6 @@ def create_parser_ctx(
+@@ -2464,8 +3075,6 @@ def create_parser_ctx(
                      'args': classcall_args,
                      'end': prev()
                  }), True)
@@ -1696,7 +1898,7 @@ index 5533155..36efb3c 100644
              elif is_node_type(expr, AST_SymbolRef):
                  tmp_ = expr.name
                  if tmp_ is 'jstype':
-@@ -2497,14 +2965,30 @@ def create_parser_ctx(
+@@ -2497,14 +3106,30 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1730,7 +1932,7 @@ index 5533155..36efb3c 100644
  
      async def get_attr(expr, allow_calls):
          next()
-@@ -2579,6 +3063,17 @@ def create_parser_ctx(
+@@ -2579,6 +3204,17 @@ def create_parser_ctx(
              return new AST_EmptyStatement({
                  'stype': '@', 'start': prev(), 'end': prev()
              })
@@ -1748,7 +1950,7 @@ index 5533155..36efb3c 100644
          if is_('operator') and UNARY_PREFIX[start.value]:
              next()
              is_parenthesized = is_('punc', '(')
-@@ -2614,6 +3109,12 @@ def create_parser_ctx(
+@@ -2614,6 +3250,12 @@ def create_parser_ctx(
          if no_in and (op is 'in' or op is 'nin'):
              op = None
  
@@ -1761,7 +1963,7 @@ index 5533155..36efb3c 100644
          prec = PRECEDENCE[op] if op is not None else None
          if prec is not None and prec > min_prec:
              next()
-@@ -2684,7 +3185,8 @@ def create_parser_ctx(
+@@ -2684,7 +3326,8 @@ def create_parser_ctx(
          start = S.token
          left = await maybe_conditional(no_in)
          val = S.token.value
@@ -1771,7 +1973,7 @@ index 5533155..36efb3c 100644
              if only_plain_assignment and val is not '=':
                  croak(
                      'Invalid assignment operator for chained assignment: '
-@@ -2711,22 +3213,53 @@ def create_parser_ctx(
+@@ -2711,22 +3354,53 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1828,7 +2030,7 @@ index 5533155..36efb3c 100644
                  if is_node_type(expr, AST_Assign):
                      left[-1] = left[-1].left
                      seq_cdr = await expression(True, no_in)
-@@ -2759,6 +3292,30 @@ def create_parser_ctx(
+@@ -2759,6 +3433,30 @@ def create_parser_ctx(
                      'end': peek()
                  })
  
@@ -1859,7 +2061,7 @@ index 5533155..36efb3c 100644
              return build_seq(left)
          return expr
  
-@@ -2853,6 +3410,10 @@ def create_parser_ctx(
+@@ -2853,6 +3551,10 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -1870,7 +2072,7 @@ index 5533155..36efb3c 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3547,219 @@ def create_parser_ctx(
+@@ -2986,6 +3688,219 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -2090,7 +2292,7 @@ index 5533155..36efb3c 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3773,24 @@ async def parse(text, options):
+@@ -2999,6 +3914,24 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -2115,7 +2317,7 @@ index 5533155..36efb3c 100644
          'module_cache_dir': '',
          # When True, continue parsing past syntax errors (used by the
          # LSP). See run_parser/block_.
-@@ -3036,6 +3828,9 @@ async def parse(text, options):
+@@ -3036,6 +3969,9 @@ async def parse(text, options):
          'in_comprehension': False,
          'in_parenthesized_expr': False,
          'in_delete': False,
@@ -2126,7 +2328,7 @@ index 5533155..36efb3c 100644
          'in_class': [False],
          'classes': [{}],
 diff --git a/src/tokenizer.pyj b/src/tokenizer.pyj
-index 36504ab..41c0e17 100644
+index 36504ab..aba418e 100644
 --- a/src/tokenizer.pyj
 +++ b/src/tokenizer.pyj
 @@ -71,6 +71,10 @@ OPERATORS = make_predicate([
@@ -2168,6 +2370,19 @@ index 36504ab..41c0e17 100644
  
      def read_hex_digits(count):
          ans = ''
+@@ -866,6 +881,12 @@ def tokenizer(raw_text, filename, recover_errors):
+ 
+     def handle_dot():
+         next()
++        # NOTE (wanim): Python's Ellipsis literal `...` (used as a numpy
++        # "all remaining dimensions" index).
++        if peek() is '.' and S.text.charAt(S.pos + 1) is '.':
++            next()
++            next()
++            return token('operator', '...')
+         return read_num('.') if is_digit(peek().charCodeAt(0)) else token(
+             'punc',
+             '.'
 diff --git a/tools/cli.mjs b/tools/cli.mjs
 index e0c8cad..9381dad 100644
 --- a/tools/cli.mjs
