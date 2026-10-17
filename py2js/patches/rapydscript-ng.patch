@@ -1,8 +1,28 @@
 diff --git a/src/ast.pyj b/src/ast.pyj
-index 7c28645..d5e1f03 100644
+index 7c28645..e1ea319 100644
 --- a/src/ast.pyj
 +++ b/src/ast.pyj
-@@ -802,23 +802,35 @@ class AST_Seq(AST_Node):
+@@ -592,6 +592,19 @@ class AST_Await(AST_Node):
+         )
+ 
+ 
++class AST_Starred(AST_Node):
++    'A starred expression (`*x`) inside a list/tuple display'
++    properties = {
++        'value': '[AST_Node] the expression being unpacked'
++    }
++
++    def _walk(self, visitor):
++        return visitor._visit(self, def ():
++            if self.value:
++                self.value._walk(visitor)
++        )
++
++
+ class AST_Throw(AST_Exit):
+     'A `throw` statement'
+ 
+@@ -802,23 +815,35 @@ class AST_Seq(AST_Node):
      }
  
      def to_array(self):
@@ -45,7 +65,7 @@ index 7c28645..d5e1f03 100644
  
      def _walk(self, visitor):
          return visitor._visit(self, def ():
-@@ -836,6 +848,10 @@ class AST_Seq(AST_Node):
+@@ -836,6 +861,10 @@ class AST_Seq(AST_Node):
  
      def from_array(self, array):
          # Should be called as a classmethod: AST_Seq.from_array()
@@ -56,7 +76,7 @@ index 7c28645..d5e1f03 100644
          if array.length is 0:
              return None
  
-@@ -846,12 +862,6 @@ class AST_Seq(AST_Node):
+@@ -846,12 +875,6 @@ class AST_Seq(AST_Node):
          for i in range(array.length - 1, -1, -1):
              ans = AST_Seq.cons(array[i], ans)
  
@@ -826,7 +846,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..ca1f562 100644
+index 5533155..e2d281d 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -837,7 +857,15 @@ index 5533155..ca1f562 100644
      AST_ArgsDef,
      AST_Array,
      AST_Assign,
-@@ -88,6 +89,7 @@ from ast import (
+@@ -59,6 +60,7 @@ from ast import (
+     AST_SetItem,
+     AST_Seq,
+     AST_SimpleStatement,
++    AST_Starred,
+     AST_Splice,
+     AST_String,
+     AST_Sub,
+@@ -88,6 +90,7 @@ from ast import (
      AST_Await,
      AST_Assert,
      AST_Existential,
@@ -845,7 +873,7 @@ index 5533155..ca1f562 100644
      is_node_type,
      TreeWalker
  )
-@@ -251,6 +253,23 @@ def create_parser_ctx(
+@@ -251,6 +254,23 @@ def create_parser_ctx(
      imported_module_ids, imported_modules,
      importing_modules, options
  ):
@@ -869,7 +897,7 @@ index 5533155..ca1f562 100644
      def next():
          S.prev = S.token
          if S.peeked.length:
-@@ -622,6 +641,10 @@ def create_parser_ctx(
+@@ -622,6 +642,10 @@ def create_parser_ctx(
              )
              return await simple_statement()
          elif tmp_ is 'keyword':
@@ -880,7 +908,7 @@ index 5533155..ca1f562 100644
              tmp_ = S.token.value
              next()
              if tmp_ is 'break':
-@@ -723,10 +746,14 @@ def create_parser_ctx(
+@@ -723,10 +747,14 @@ def create_parser_ctx(
              elif tmp_ is 'return':
                  if S.in_function is 0:
                      croak("'return' outside of function")
@@ -899,7 +927,7 @@ index 5533155..ca1f562 100644
                  ret_val = await return_()
                  return new AST_Return({'value': ret_val})
              elif tmp_ is 'await':
-@@ -814,8 +841,9 @@ def create_parser_ctx(
+@@ -814,8 +842,9 @@ def create_parser_ctx(
              croak("'yield' outside of function")
          if S.functions[-1].is_async:
              croak("'yield' not allowed in an async function")
@@ -911,7 +939,7 @@ index 5533155..ca1f562 100644
          S.functions[-1].is_generator = True
          is_yield_from = is_('keyword', 'from')
          if is_yield_from:
-@@ -830,13 +858,16 @@ def create_parser_ctx(
+@@ -830,13 +859,16 @@ def create_parser_ctx(
              init = await expression(True, True)
              # standardize AST_Seq into array now for consistency
              if is_node_type(init, AST_Seq):
@@ -934,7 +962,7 @@ index 5533155..ca1f562 100644
                  else:
                      tmp = [init]
                  init = new AST_Array({
-@@ -1418,6 +1449,7 @@ def create_parser_ctx(
+@@ -1418,6 +1450,7 @@ def create_parser_ctx(
          ctor = AST_Method if in_class else AST_Function
          return_annotation = None
          is_generator = v'[]'
@@ -942,7 +970,7 @@ index 5533155..ca1f562 100644
          docstrings = v'[]'
  
          fn_argnames = await (async def ():
-@@ -1584,7 +1616,11 @@ def create_parser_ctx(
+@@ -1584,7 +1617,11 @@ def create_parser_ctx(
              a = await block_(docstrings)
              S.in_function -= 1
              S.scoped_flags.pop()
@@ -955,7 +983,7 @@ index 5533155..ca1f562 100644
              S.classes.pop()
              S.in_class.pop()
              S.in_loop = loop
-@@ -1604,7 +1640,7 @@ def create_parser_ctx(
+@@ -1604,7 +1641,7 @@ def create_parser_ctx(
          })
          definition.return_annotation = return_annotation
          definition.is_generator = is_generator[0]
@@ -964,7 +992,7 @@ index 5533155..ca1f562 100644
          if is_node_type(definition, AST_Method):
              definition.static = staticmethod
              definition.is_getter = property_getter
-@@ -1652,6 +1688,97 @@ def create_parser_ctx(
+@@ -1652,6 +1689,97 @@ def create_parser_ctx(
          )
          return definition
  
@@ -1062,7 +1090,130 @@ index 5533155..ca1f562 100644
      async def if_():
          cond = await expression(True)
          body = await statement()
-@@ -1975,6 +2102,57 @@ def create_parser_ctx(
+@@ -1911,6 +2039,79 @@ def create_parser_ctx(
+         next()
+         return ret
+ 
++    # Starred-display support (see `maybe_unary` and `array_`).
++    def contains_starred(node):
++        if is_node_type(node, AST_Starred):
++            return True
++        if is_node_type(node, AST_Seq):
++            node = node.to_array()
++        if is_node_type(node, AST_Array):
++            node = node.elements
++        if Array.isArray(node):
++            for el in node:
++                if contains_starred(el):
++                    return True
++        return False
++
++    def display_elements(node):
++        if is_node_type(node, AST_Starred):
++            return [node]
++        if is_node_type(node, AST_Seq):
++            return node.to_array()
++        if is_node_type(node, AST_Array):
++            return node.elements
++        return [node]
++
++    def spread_call(value):
++        return new AST_Call({
++            'start': value.start,
++            'expression': new AST_SymbolRef({'name': '__wan_spread'}),
++            'args': new AST_CallArgs({
++                'args': [new AST_CallArg({
++                    'value': value, 'is_array': False
++                })],
++                'kwargs': v'[]', 'kwarg_items': v'[]', 'starargs': False
++            }),
++            'end': value.end
++        })
++
++    def build_starred_display(elements, start, end):
++        # `[a, *b, c]` -> `[].concat([a], __wan_spread(b), [c])`; plain
++        # `[].concat` (never wanim's overloaded `+`) keeps numeric vectors
++        # exact.  `__wan_spread` is the runtime helper with Python `[*x]`
++        # unpacking semantics (any iterable, fresh plain array).
++        args = v'[]'
++        group = v'[]'
++        def flush():
++            if group.length:
++                args.push(new AST_CallArg({
++                    'value': new AST_Array({'elements': group.slice()}),
++                    'is_array': False
++                }))
++                group.length = 0
++        for el in elements:
++            if is_node_type(el, AST_Starred):
++                flush()
++                args.push(new AST_CallArg({
++                    'value': spread_call(el.value), 'is_array': False
++                }))
++            else:
++                group.push(el)
++        flush()
++        return new AST_Call({
++            'start': start,
++            'expression': new AST_Dot({
++                'expression': new AST_Array({'elements': []}),
++                'property': 'concat',
++                'end': end
++            }),
++            'args': new AST_CallArgs({
++                'args': args, 'kwargs': v'[]',
++                'kwarg_items': v'[]', 'starargs': False
++            }),
++            'end': end
++        })
++
+     async def expr_atom(allow_calls):
+         if is_('operator', 'new'):
+             return await new_()
+@@ -1920,20 +2121,34 @@ def create_parser_ctx(
+             tmp_ = start.value
+             if tmp_ is '(':
+                 prev_parens = S.in_parenthesized_expr
++                prev_starred = S.allow_starred
+                 S.in_parenthesized_expr = True
++                S.allow_starred = True
+                 next()
+                 if is_('punc', ')'):
+                     next()
+                     S.in_parenthesized_expr = prev_parens
++                    S.allow_starred = prev_starred
+                     return new AST_Array({'elements': []})
+                 ex = await expression(True)
+                 if is_('keyword', 'for'):
++                    if contains_starred(ex):
++                        token_error(
++                            start,
++                            'iterable unpacking cannot be used'
++                            ' in a comprehension'
++                        )
+                     ret = await read_comprehension(
+                         new AST_GeneratorComprehension({'statement': ex}),
+                         ')'
+                     )
+                     S.in_parenthesized_expr = prev_parens
++                    S.allow_starred = prev_starred
+                     return ret
++                if contains_starred(ex):
++                    ex = build_starred_display(
++                        display_elements(ex), start, S.token
++                    )
+                 ex.start = start
+                 ex.end = S.token
+                 if is_node_type(ex, AST_SymbolRef):
+@@ -1943,6 +2158,7 @@ def create_parser_ctx(
+                 if is_node_type(ex, AST_UnaryPrefix):
+                     ex.parenthesized = True
+                 S.in_parenthesized_expr = prev_parens
++                S.allow_starred = prev_starred
+                 return await subscripts(ex, allow_calls)
+             elif tmp_ is '[':
+                 return await subscripts(await array_(), allow_calls)
+@@ -1975,6 +2191,57 @@ def create_parser_ctx(
              func.end = prev()
              return await subscripts(func, allow_calls)
  
@@ -1120,7 +1271,7 @@ index 5533155..ca1f562 100644
          if is_('keyword', 'await'):
              next()
              if S.in_function is 0 or not S.functions[-1].is_async:
-@@ -2047,6 +2225,7 @@ def create_parser_ctx(
+@@ -2047,6 +2314,7 @@ def create_parser_ctx(
                  'args': a, 'kwargs': kwargs,
                  'kwarg_items': kwarg_items, 'starargs': starargs
              })
@@ -1128,7 +1279,7 @@ index 5533155..ca1f562 100644
          single_comprehension = False
          while not is_('punc', ')') and not is_('eof'):
              if not first:
-@@ -2087,6 +2266,18 @@ def create_parser_ctx(
+@@ -2087,6 +2355,18 @@ def create_parser_ctx(
                          break
                      a.push(new AST_CallArg({'value': arg, 'is_array': False}))
              first = False
@@ -1147,7 +1298,44 @@ index 5533155..ca1f562 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2152,6 +2343,17 @@ def create_parser_ctx(
+@@ -2096,12 +2376,22 @@ def create_parser_ctx(
+ 
+     @embed_tokens
+     async def array_():
++        start = S.token
+         expect('[')
++        prev_starred = S.allow_starred
++        S.allow_starred = True
+         expr = []
+         if not is_('punc', ']'):
+             expr.push(await expression(False))
+             if is_('keyword', 'for'):
+                 # list comprehension
++                if contains_starred(expr[0]):
++                    token_error(
++                        start,
++                        'iterable unpacking cannot be used'
++                        ' in a comprehension'
++                    )
++                S.allow_starred = prev_starred
+                 return await read_comprehension(
+                     new AST_ListComprehension({'statement': expr[0]}),
+                     ']'
+@@ -2111,8 +2401,12 @@ def create_parser_ctx(
+                 expect(',')
+ 
+         arr_rest = await expr_list(']', True, True)
++        S.allow_starred = prev_starred
++        elements = expr.concat(arr_rest)
++        if contains_starred(elements):
++            return build_starred_display(elements, start, prev())
+         return new AST_Array({
+-            'elements': expr.concat(arr_rest)
++            'elements': elements
+         })
+ 
+     @embed_tokens
+@@ -2152,6 +2446,17 @@ def create_parser_ctx(
                  has_non_const_keys = True
              expect(':')
              obj_val = await expression(False)
@@ -1165,7 +1353,157 @@ index 5533155..ca1f562 100644
              a.push(new AST_ObjectKeyVal({
                  'start': start,
                  'key': left,
-@@ -2381,6 +2583,18 @@ def create_parser_ctx(
+@@ -2182,25 +2487,137 @@ def create_parser_ctx(
+         next()
+         return new AST_Set({'items': a, 'start': ostart, 'end': prev()})
+ 
++    # Multiple `for`/`if` clauses in a comprehension (see
++    # `read_comprehension`).  `__wan_flatten1` is the runtime helper that
++    # concatenates one level of nesting.
++    def make_comp_clause(comp, clause):
++        comp.init = clause.init
++        comp.name = clause.name
++        comp.object = clause.object
++        comp.condition = clause.condition
++        return comp
++
++    def flatten1_call(value):
++        return new AST_Call({
++            'start': value.start,
++            'expression': new AST_SymbolRef({'name': '__wan_flatten1'}),
++            'args': new AST_CallArgs({
++                'args': [new AST_CallArg({
++                    'value': value, 'is_array': False
++                })],
++                'kwargs': v'[]', 'kwarg_items': v'[]', 'starargs': False
++            }),
++            'end': value.end
++        })
++
++    def join_conditions(conds):
++        if conds.length is 0:
++            return None
++        cond = conds[0]
++        # `&&` is the tokenizer's spelling of Python `and` (short-circuit
++        # evaluation, exactly like chained `if` clauses).
++        for v'var i = 1; i < conds.length; i++':
++            cond = new AST_Binary({
++                'start': cond.start,
++                'left': cond,
++                'operator': '&&',
++                'right': conds[i],
++                'end': conds[i].end
++            })
++        return cond
++
+     async def read_comprehension(obj, terminator):
+         if is_node_type(obj, AST_GeneratorComprehension):
+             baselib_items['yield'] = True
++        # NOTE (wanim): save/restore the comprehension state so a nested
++        # comprehension's `read_comprehension` does not clear it for the
++        # enclosing one (which made `[p for p in [x for x in y] if c]`
++        # parse the following `if` as a conditional expression and fail
++        # with "expected keyword «else»").
++        prev_in_comp = S.in_comprehension
+         S.in_comprehension = True
+         # in case we are already in a parenthesized expression
+         S.in_parenthesized_expr = False
+-        expect_token('keyword', 'for')
+-        forloop = await for_(True)
+-        obj.init = forloop.init
+-        obj.name = forloop.name
+-        obj.object = forloop.object
+-        if is_('punc', terminator):
+-            obj.condition = None
+-        else:
+-            expect_token('keyword', 'if')
+-            obj.condition = await expression(True)
++        # `*x` is not meaningful in the `for`/`if` clauses themselves
++        prev_starred = S.allow_starred
++        S.allow_starred = False
++        clauses = v'[]'
++        while True:
++            expect_token('keyword', 'for')
++            forloop = await for_(True)
++            conds = v'[]'
++            while is_('keyword', 'if'):
++                next()
++                conds.push(await expression(True))
++            clauses.push({
++                'init': forloop.init,
++                'name': forloop.name,
++                'object': forloop.object,
++                'condition': join_conditions(conds)
++            })
++            if not is_('keyword', 'for'):
++                break
+         expect(terminator)
+-        S.in_comprehension = False
+-        return obj
++        S.in_comprehension = prev_in_comp
++        S.allow_starred = prev_starred
++        if clauses.length is 1:
++            return make_comp_clause(obj, clauses[0])
++        # NOTE (wanim): multiple clauses are lowered to nested single-`for`
++        # list comprehensions plus one `__wan_flatten1(...)` call per extra
++        # `for`, preserving Python's iteration order:
++        #   [E for a in A if c for b in B]
++        #   -> __wan_flatten1([[E for b in B] for a in A if c])
++        # Set/generator/dict comprehensions are re-wrapped in a single-for
++        # comprehension of their own kind over the flattened list (for
++        # dicts the inner element is the `[key, value]` pair).
++        if is_node_type(obj, AST_DictComprehension):
++            elem = new AST_Array({
++                'elements': [obj.statement, obj.value_statement]
++            })
++        else:
++            elem = obj.statement
++        inner = make_comp_clause(
++            new AST_ListComprehension({'statement': elem}),
++            clauses[clauses.length - 1]
++        )
++        for v'var i = clauses.length - 2; i >= 0; i--':
++            inner = make_comp_clause(
++                new AST_ListComprehension({'statement': inner}),
++                clauses[i]
++            )
++        result = inner
++        for v'var i = 1; i < clauses.length; i++':
++            result = flatten1_call(result)
++        if is_node_type(obj, AST_ListComprehension):
++            return result
++        item = new_symbol(AST_SymbolRef, '__wan_comp_item')
++        if is_node_type(obj, AST_DictComprehension):
++            statement = new AST_Sub({
++                'expression': item,
++                'property': new AST_Number({'value': 0}),
++                'end': item.end
++            })
++            value_statement = new AST_Sub({
++                'expression': item,
++                'property': new AST_Number({'value': 1}),
++                'end': item.end
++            })
++            wrapper = new AST_DictComprehension({
++                'statement': statement,
++                'value_statement': value_statement,
++                'is_pydict': obj.is_pydict,
++                'is_jshash': obj.is_jshash
++            })
++        elif is_node_type(obj, AST_SetComprehension):
++            wrapper = new AST_SetComprehension({'statement': item})
++        else:
++            wrapper = new AST_GeneratorComprehension({'statement': item})
++        return make_comp_clause(wrapper, {
++            'init': item,
++            'name': None,
++            'object': result,
++            'condition': None
++        })
+ 
+     async def dict_comprehension(a, is_pydict, is_jshash):
+         if a.length:
+@@ -2381,6 +2798,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1184,7 +1522,7 @@ index 5533155..ca1f562 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2602,7 @@ def create_parser_ctx(
+@@ -2388,12 +2817,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1198,7 +1536,7 @@ index 5533155..ca1f562 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2439,14 +2648,16 @@ def create_parser_ctx(
+@@ -2439,14 +2863,16 @@ def create_parser_ctx(
          if not expr.parens and get_class_in_scope(expr):
              # this is an object being created using a class
              call_args = await func_call_list()
@@ -1218,7 +1556,7 @@ index 5533155..ca1f562 100644
          else:
              if is_node_type(expr, AST_Dot):
                  c = get_class_in_scope(expr.expression)
-@@ -2456,7 +2667,9 @@ def create_parser_ctx(
+@@ -2456,7 +2882,9 @@ def create_parser_ctx(
                  funcname = expr
  
                  classcall_args = await func_call_list()
@@ -1229,7 +1567,7 @@ index 5533155..ca1f562 100644
                      'start': start,
                      'class': expr.expression,
                      'method': funcname.property,
-@@ -2464,8 +2677,6 @@ def create_parser_ctx(
+@@ -2464,8 +2892,6 @@ def create_parser_ctx(
                      'args': classcall_args,
                      'end': prev()
                  }), True)
@@ -1238,7 +1576,7 @@ index 5533155..ca1f562 100644
              elif is_node_type(expr, AST_SymbolRef):
                  tmp_ = expr.name
                  if tmp_ is 'jstype':
-@@ -2497,14 +2708,30 @@ def create_parser_ctx(
+@@ -2497,14 +2923,30 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1272,7 +1610,25 @@ index 5533155..ca1f562 100644
  
      async def get_attr(expr, allow_calls):
          next()
-@@ -2711,12 +2938,25 @@ def create_parser_ctx(
+@@ -2579,6 +3021,17 @@ def create_parser_ctx(
+             return new AST_EmptyStatement({
+                 'stype': '@', 'start': prev(), 'end': prev()
+             })
++        if S.allow_starred and is_('operator', '*'):
++            # NOTE (wanim): a starred element of a list/tuple display:
++            # `[*a, b]` / `(*a, b)`.  Parsed into an AST_Starred marker that
++            # the display builders turn into `__wan_spread(...)` calls (only
++            # allowed while a display is being parsed, so `x = *a` still
++            # fails like before).
++            next()
++            value = await expression(False)
++            return new AST_Starred({
++                'start': start, 'value': value, 'end': prev()
++            })
+         if is_('operator') and UNARY_PREFIX[start.value]:
+             next()
+             is_parenthesized = is_('punc', '(')
+@@ -2711,22 +3164,53 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1300,8 +1656,67 @@ index 5533155..ca1f562 100644
 +            return ans
          if commas:
              left = v'[ expr ]'
++            trailing_comma = False
              while is_(
-@@ -2853,6 +3093,8 @@ def create_parser_ctx(
+                 'punc', ','
+             ) and (not peek().nlb or S.in_parenthesized_expr) or (
+                 S.in_parenthesized_expr and S.token.nlb
++                # NOTE (wanim): a keyword on a new line inside parentheses
++                # is never an implicit additional tuple element -- it is a
++                # generator-expression clause (`(x\n for x in xs)`), which
++                # the caller (`expr_atom`) handles once `expression` returns.
++                and S.token.type is not 'keyword'
+                 and not is_('punc', ')')
+             ):
+                 if is_('punc', ','):
+                     next()
++                    # NOTE (wanim): a comma directly before the end of the
++                    # display is Python's trailing comma: `(a, b,)`, `(a,)`,
++                    # `x = a,;`.  Stop here instead of trying to parse
++                    # another element (which used to fail with
++                    # "Unexpected token: punc «)»").
++                    if (
++                        is_('punc', ')') or is_('punc', ']')
++                        or is_('punc', '}') or is_('punc', ';')
++                        or is_('eof')
++                    ):
++                        trailing_comma = True
++                        break
+                 if is_node_type(expr, AST_Assign):
+                     left[-1] = left[-1].left
+                     seq_cdr = await expression(True, no_in)
+@@ -2759,6 +3243,30 @@ def create_parser_ctx(
+                     'end': peek()
+                 })
+ 
++            # NOTE (wanim): a one-element tuple needs the trailing comma to
++            # be a tuple at all: `(a,)` is `[a]`, while `(a)` is just `a`.
++            if trailing_comma and left.length is 1:
++                if is_node_type(left[0], AST_Assign):
++                    # `x = a,` binds the tuple to x, it does not build an
++                    # array of an assignment (`x += a,` likewise augments
++                    # with the tuple).
++                    assign_node = left[0]
++                    return create_assign({
++                        'start': start,
++                        'left': assign_node.left,
++                        'operator': assign_node.operator,
++                        'right': new AST_Array({
++                            'elements': [assign_node.right],
++                            'end': peek()
++                        }),
++                        'end': peek()
++                    })
++                return new AST_Array({
++                    'start': start,
++                    'elements': left,
++                    'end': peek()
++                })
++
+             return build_seq(left)
+         return expr
+ 
+@@ -2853,6 +3361,8 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -1310,7 +1725,7 @@ index 5533155..ca1f562 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3228,92 @@ def create_parser_ctx(
+@@ -2986,6 +3496,92 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -1403,7 +1818,7 @@ index 5533155..ca1f562 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3327,16 @@ async def parse(text, options):
+@@ -2999,6 +3595,16 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -1420,6 +1835,16 @@ index 5533155..ca1f562 100644
          'module_cache_dir': '',
          # When True, continue parsing past syntax errors (used by the
          # LSP). See run_parser/block_.
+@@ -3036,6 +3642,9 @@ async def parse(text, options):
+         'in_comprehension': False,
+         'in_parenthesized_expr': False,
+         'in_delete': False,
++        # NOTE (wanim): while parsing the contents of a list/tuple display a
++        # leading `*` marks a starred element (`[*a, b]`, `(*a, b)`).
++        'allow_starred': False,
+         'in_loop': 0,
+         'in_class': [False],
+         'classes': [{}],
 diff --git a/tools/cli.mjs b/tools/cli.mjs
 index e0c8cad..f97ec68 100644
 --- a/tools/cli.mjs
