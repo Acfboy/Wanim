@@ -329,6 +329,26 @@ await check("reserved-word identifiers are renamed", async () => {
   assert.deepEqual(lines, ["5", "9"]);
 });
 
+await check("tuple branches of a conditional expression become arrays", async () => {
+  const lines = await runPython(
+    [
+      "c = 1",
+      "a, b = (-1, 0) if c < 0 else (0, 1)",
+      "print(a, b)",
+      "c = -1",
+      "x, y = (-1, 0) if c < 0 else (0, 1)",
+      "print(x, y)",
+      "d = {'k': (1, 2) if c < 0 else (3, 4)}",
+      "print(d['k'][0], d['k'][1])",
+      "print(((5, 6) if c < 0 else (7, 8))[1])",
+      "e = [v for v in ((1, 2) if c < 0 else (3, 4))]",
+      "print(e)",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(lines, ["0 1", "-1 0", "1 2", "6", "[1, 2]"]);
+});
+
 await check("f-strings still work", async () => {
   const lines = await runPython(
     ["a = 3", 'b = f"This is {a} and {a * 2}"', "print(b)", ""].join("\n"),
