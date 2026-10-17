@@ -251,7 +251,7 @@ function parseParamNames(fn: (...a: Any[]) => Any): (string | null)[] | null {
 
 const OPTIONS_PARAM = /(options|opts|kwargs|config|parameters)$/i;
 
-// Suffix applied by `renameJsReservedWords` (see `preprocess.ts`): Python
+// Suffix applied by the compiler's reserved-word renaming (`python_extensions`): Python
 // identifiers that collide with JavaScript reserved words (`function`, `new`,
 // `default`, ...) are rewritten to `<name>_modified` before compilation, so
 // the translated JS stays valid.  wanim's TypeScript side cannot declare a
@@ -1961,7 +1961,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // `obj[maskKey]` -- the NDArray coerces to `"[object Object]"` and the
     // result is `undefined`, so the subsequent `for p in rows` fails with
     // `TypeError: undefined is not iterable`.  Multi-dim subscripts never
-    // reach this path (`desugarNumpySubscripts` routes them to
+    // reach this path (the parser routes multi-dim subscripts to
     // `__wan_getitem`, which keeps numpy semantics).
     //
     // Defining `__getitem__` here makes the existing baselib branch
@@ -2217,7 +2217,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   /**
    * Concatenate one level of nesting: `[[a, b], [c]]` -> `[a, b, c]`.
    *
-   * Target of the multi-`for` comprehension desugar in `preprocess.ts` (which
+   * Target of the parser's multi-`for` comprehension lowering (which
    * emits `__wan_flatten1(...)` calls because rapydscript-ng only parses a
    * single `for` clause per comprehension). rapydscript lists are plain JS
    * arrays, so this is a verbatim `concat`; a non-array inner value is kept
@@ -2254,7 +2254,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    * strings, while CPython accepts any object with `__reversed__` or the
    * sequence protocol (`__len__` + `__getitem__`) -- notably wanim
    * `Mobject`/`VGroup` instances, which are iterable class objects (see
-   * `desugarReversedBuiltin` in `preprocess.ts`, which rewrites bare
+   * the parser's `python_extensions` lowering, which rewrites bare
    * `reversed(x)` calls to this helper).  Always returns a plain array in
    * reverse order, which the rest of the pipeline (`zip`, `for`, `list`,
    * ...) already handles; this matches observing the reversed iteration
@@ -2382,7 +2382,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   (pythonTuple as Any).__argnames__ = ["iterable"];
 
   /**
-   * Spread helper for the `desugarStarredDisplays` step in `preprocess.ts`.
+   * Spread helper for the parser's starred-display lowering.
    *
    * rapydscript-ng parses `*args` in calls but rejects `*` inside list/tuple
    * displays (`[*a, b]` fails with "Unexpected token: operator «*»"), so the
@@ -2412,7 +2412,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    * a string and the downstream `np.fft.rfft` threw
    * `undefined is not iterable`).  Plain numbers behave exactly like the
    * baselib version, including list concatenation for list terms.
-   * Target of the `desugarSumBuiltin` preprocess step (see `preprocess.ts`),
+   * Target of the parser's `python_extensions` lowering,
    * which rewrites bare `sum(...)` calls to this helper.
    */
   function pythonSum(iterable: Any, start?: Any): Any {
@@ -2909,7 +2909,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   //
   // rapydscript-ng has no complex-number support: its tokenizer rejects the
   // `j`-suffixed literal ("Invalid syntax: 0j") and the baselib defines no
-  // `complex` builtin.  `desugarComplexLiterals` (see `preprocess.ts`)
+  // `complex` builtin.  The parser's complex-literal lowering
   // rewrites every decimal `...j` literal into `__wan_complex(0, imag)` before
   // compilation; this section implements the runtime side:
   //
@@ -3160,8 +3160,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
-   * Factory target of the `desugarComplexLiterals` preprocess step (see
-   * `preprocess.ts`): `0j` becomes `__wan_complex(0, 0)`.  Always called with
+   * Factory target of the parser's complex-literal lowering: `0j` becomes
+   * `__wan_complex(0, 0)`.  Always called with
    * two real numbers; behaves like `complex(real, imag)` otherwise.
    */
   function wanComplex(real?: Any, imag?: Any): Any {
@@ -3171,7 +3171,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   /**
    * PEP 465 matrix multiplication (`a @ b`).
    *
-   * Target of the `desugarMatmul` preprocess step (see `preprocess.ts`),
+   * Target of the parser's matrix-multiplication lowering,
    * because rapydscript-ng only accepts `@` as a decorator.  Dunder dispatch
    * mirrors CPython (`__matmul__` first, then the reflected `__rmatmul__`);
    * plain arrays and NDArrays go through `np.matmul` like every other
@@ -3192,7 +3192,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   // --- numpy multi-dim subscripts (`a[:, 1]`) -------------------------------
   //
   // rapydscript-ng only parses a single index/slice per `[...]`, so
-  // `desugarNumpySubscripts` (see `preprocess.ts`) rewrites `a[:, 1]` into
+  // The parser rewrites `a[:, 1]` into
   // `__wan_getitem(a, __wan_slice(None, None), 1)`.  These are the runtime
   // targets of that desugar.  Single subscripts never reach this path
   // (rapydscript compiles them directly via `ρσ_getitem`/`ρσ_getslice`).
@@ -3312,7 +3312,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
-   * Multi-dim getitem target of the `desugarNumpySubscripts` preprocess step.
+   * Multi-dim getitem target of the parser's subscript lowering.
    * Each spec is a number (integer index), a `"start:stop[:step]"` slice
    * string (see `wanSliceDim`), or `"..."` (Ellipsis).
    */
@@ -3381,8 +3381,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
 
   // --- numpy multi-dim setitem (`a[:, 1] = v`) ------------------------------
   //
-  // Target of the subscript-store branch of `desugarNumpySubscripts` (see
-  // `preprocess.ts`): `a[:, 1] = v` becomes
+  // Target of the subscript-store branch of the parser's lowering:
+  // `a[:, 1] = v` becomes
   // `__wan_setitem(a, __wan_slice(None, None), 1, (v))` because a bare
   // `__wan_getitem(...) = ...` is not valid JavaScript. The last argument is
   // always the assigned value; the preceding arguments are the same specs
@@ -3638,7 +3638,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   /**
-   * Multi-dim setitem target of the `desugarNumpySubscripts` preprocess step.
+   * Multi-dim setitem target of the parser's subscript lowering.
    * The last argument is the assigned value; the preceding arguments are the
    * same specs `wanGetItem` accepts. Returns the value for chained stores.
    */
@@ -3672,7 +3672,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    * path (error 325).
    *
    * rapydscript compiles `row[:n] = v` (a single `start:stop` slice store,
-   * which `desugarNumpySubscripts` deliberately leaves untouched) into
+   * which the parser deliberately leaves untouched) into
    * `ρσ_splice(row, v, start, end)`, whose baselib assumes plain JS arrays:
    * `Array.prototype.splice.apply(arr, ...)` tries to set `length`, and once
    * `patchNDArrayForPython` installs the getter-only `length` (`shape[0]`)
@@ -3715,8 +3715,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   (pythonSplice as Any).__argnames__ = ["arr", "val", "start", "end"];
 
   /**
-   * Python `dict.get(key[, default])` target of the `desugarDictGet`
-   * preprocess step (see `preprocess.ts`).
+   * Python `dict.get(key[, default])` target of the parser's
+   * `python_extensions` lowering.
    *
    * Plain-object dict literals have no `.get` (and `Object.prototype` must
    * never gain one: it poisons `Object.defineProperties` via the descriptor
@@ -5400,7 +5400,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         // numpy-ts throws plain `Error`s for numerical failures (wrapped into
         // `LinAlgError` above), and this attribute is what `except
         // np.linalg.LinAlgError:` resolves to; the `except` desugar in
-        // `preprocess.ts` hoists exactly such attribute paths into aliases
+        // the parser used to hoist exactly such attribute paths into aliases
         // that are matched with `instanceof`.
         if (typeof (wrappedLinalg as Any).LinAlgError !== "function") {
           (wrappedLinalg as Any).LinAlgError = LinAlgError;
@@ -6546,13 +6546,13 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // from baselib as `Math.abs` but returns NaN on complex inputs. The
     // compiled JS declares its own local `var abs = Math.abs`, which shadows
     // this override, so bare `abs(x)` calls are rewritten to `__wan_abs(x)`
-    // by the `desugarAbsBuiltin` step (see `preprocess.ts`); both names point
+    // by the parser's `python_extensions` lowering; both names point
     // at the same complex-aware `pythonAbs`.  `sum` comes from baselib but
     // accumulates with plain JS `+`, which stringifies NDArray terms instead
     // of adding them elementwise, so bare `sum(...)` calls are likewise
-    // rewritten to `__wan_sum(...)` by the `desugarSumBuiltin` step.
+    // rewritten to `__wan_sum(...)` by the parser's lowering.
     // `complex`
-    // (and the `__wan_complex` factory the `desugarComplexLiterals` step
+    // (and the `__wan_complex` factory the complex-literal lowering
     // emits) likewise has no baselib equivalent.
     globals.round = pythonRound;
     globals.abs = pythonAbs;
@@ -6568,31 +6568,31 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // defined`.  Tuples and lists share the plain-array representation.
     globals.tuple = pythonTuple;
     // One-level flatten for the multi-`for` comprehension desugar (see
-    // `desugarMultiForComprehensions` in `preprocess.ts`). The name is
+    // parser lowering). The name is
     // reserved: the desugar refuses to run when user code already uses it.
     globals.__wan_flatten1 = wanFlatten1;
-    // Multi-dim subscript helpers for the `desugarNumpySubscripts` step
-    // (likewise reserved names; see `preprocess.ts`).
+    // Multi-dim subscript helpers for the parser's subscript lowering
+    // (likewise reserved names).
     globals.__wan_getitem = wanGetItem;
     globals.__wan_setitem = wanSetItem;
     globals.__wan_slice = wanSliceDim;
-    // Matrix-multiplication helper for the `desugarMatmul` step (likewise a
-    // reserved name; see `preprocess.ts`).
+    // Matrix-multiplication helper for the `@`/`@=` lowering (likewise a
+    // reserved name).
     globals.__wan_matmul = wanMatmul;
-    // CPython-compatible `reversed()` for the `desugarReversedBuiltin` step
-    // (likewise a reserved name; see `preprocess.ts`). rapydscript's own
+    // CPython-compatible `reversed()` for the parser's `python_extensions`
+    // lowering (likewise a reserved name). rapydscript's own
     // `reversed` only handles plain arrays/strings.
     globals.__wan_reversed = wanReversed;
-    // Spread helper for the `desugarStarredDisplays` step (likewise a
-    // reserved name; see `preprocess.ts`). rapydscript accepts `*args` in
+    // Spread helper for the parser's starred-display lowering (likewise a
+    // reserved name). rapydscript accepts `*args` in
     // calls but rejects `*` inside list/tuple displays.
     globals.__wan_spread = wanSpread;
-    // Numpy/complex-aware `sum()` for the `desugarSumBuiltin` step (likewise
-    // a reserved name; see `preprocess.ts`). rapydscript's own `sum`
+    // Numpy/complex-aware `sum()` for the parser's `python_extensions`
+    // lowering (likewise a reserved name). rapydscript's own `sum`
     // accumulates with plain JS `+` and stringifies NDArray terms.
     globals.__wan_sum = pythonSum;
-    // Python `dict.get()` for the `desugarDictGet` step (likewise a reserved
-    // name; see `preprocess.ts`). Plain-object dict literals have no `.get`
+    // Python `dict.get()` for the parser's `python_extensions` lowering
+    // (likewise a reserved name). Plain-object dict literals have no `.get`
     // and `Object.prototype` must never gain one.
     globals.__wan_dict_get = wanDictGet;
     // Single-dim slice-store `arr[start:end] = val` compiles to `ρσ_splice`
