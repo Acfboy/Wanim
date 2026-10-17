@@ -520,7 +520,7 @@ index b38e56f..4a9c37f 100644
                      body_out.assign(self.init)
                      body_out.print(itervar)
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..211b7b5 100644
+index a16673a..d1937cd 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
 @@ -12,8 +12,33 @@ from output.loops import unpack_tuple
@@ -793,7 +793,7 @@ index a16673a..211b7b5 100644
      if self.operator is '//=':
          output.assign(self.left)
          output.print('Math.floor')
-@@ -460,14 +656,32 @@ def print_conditional(self, output, condition, consequent, alternative):
+@@ -460,20 +656,44 @@ def print_conditional(self, output, condition, consequent, alternative):
  def print_seq(output):
      self = this
      p = output.parent()
@@ -828,7 +828,19 @@ index a16673a..211b7b5 100644
 +                break
  
      # this will effectively convert tuples to arrays
++    # NOTE (wanim): AST_Conditional is in the list because a tuple branch of
++    # a conditional expression (`a, b = (1, 2) if c else (3, 4)`) printed
++    # bare would become a JavaScript comma expression -- the value of the
++    # whole branch would collapse to its last element, so unpacking saw
++    # `[undefined, undefined]` (non-finite Surface points downstream).
      if is_node_type(p, AST_Binary)
+     or is_node_type(p, AST_Return)
+     or is_node_type(p, AST_Array)
+     or is_node_type(p, AST_BaseCall)
++    or is_node_type(p, AST_Conditional)
+     or is_node_type(p, AST_SimpleStatement):
+         output.with_square(print_seq)
+     else:
 diff --git a/src/output/stream.pyj b/src/output/stream.pyj
 index fe87930..4e7575e 100644
 --- a/src/output/stream.pyj
