@@ -887,7 +887,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..cf8b5e7 100644
+index 5533155..d6ab3a7 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -1046,7 +1046,7 @@ index 5533155..cf8b5e7 100644
          docstrings = v'[]'
  
          fn_argnames = await (async def ():
-@@ -1433,15 +1474,19 @@ def create_parser_ctx(
+@@ -1433,15 +1474,21 @@ def create_parser_ctx(
              name_token = None
              async def get_arg():
                  nonlocal current_arg_name, name_token
@@ -1065,12 +1065,23 @@ index 5533155..cf8b5e7 100644
 +                # use the renamed spelling so the kwargs interpolation code
 +                # binds the same names.
 +                current_arg_name = mangle_reserved_name(S.token.value)
++                if current_arg_name is not S.token.value:
++                    S.renamed_reserved[S.token.value] = current_arg_name
 +                if has_prop(seen_names, current_arg_name):
 +                    token_error(prev(), "Can't repeat parameter names")
                  seen_names[current_arg_name] = True
                  # save these in order to move back if we have an annotation
                  name_token = S.token
-@@ -1463,7 +1508,7 @@ def create_parser_ctx(
+@@ -1454,7 +1501,7 @@ def create_parser_ctx(
+                     annotation = await maybe_conditional()
+                     # and now, do as_symbol without the next() at the end
+                     # since we are already at the next comma (or end bracket)
+-                    if not is_token(name_token, 'name'):
++                    if not is_js_identifier_token(name_token):
+                         # assuming the previous context in case
+                         # the annotation was over the line
+                         if S.input.context().tokline is not def_line:
+@@ -1463,14 +1510,14 @@ def create_parser_ctx(
                              croak('Name expected')
                          return None
                      sym = new AST_SymbolFunarg({
@@ -1079,7 +1090,15 @@ index 5533155..cf8b5e7 100644
                          'start': S.token,
                          'end': S.token,
                          'annotation': annotation
-@@ -1480,7 +1525,7 @@ def create_parser_ctx(
+                     })
+                     return sym
+                 else:
+-                    if not is_('name'):
++                    if not is_js_identifier_token(S.token):
+                         # there is no name, which is an error we should
+                         # report on the same line as the definition, so
+                         # move to that is we're not already there.
+@@ -1480,7 +1527,7 @@ def create_parser_ctx(
                              croak('Name expected')
                          return None
                      sym = new AST_SymbolFunarg({
@@ -1088,7 +1107,7 @@ index 5533155..cf8b5e7 100644
                          'start': S.token,
                          'end': S.token,
                          'annotation': None
-@@ -1584,7 +1629,11 @@ def create_parser_ctx(
+@@ -1584,7 +1631,11 @@ def create_parser_ctx(
              a = await block_(docstrings)
              S.in_function -= 1
              S.scoped_flags.pop()
@@ -1101,7 +1120,7 @@ index 5533155..cf8b5e7 100644
              S.classes.pop()
              S.in_class.pop()
              S.in_loop = loop
-@@ -1604,7 +1653,7 @@ def create_parser_ctx(
+@@ -1604,7 +1655,7 @@ def create_parser_ctx(
          })
          definition.return_annotation = return_annotation
          definition.is_generator = is_generator[0]
@@ -1110,7 +1129,7 @@ index 5533155..cf8b5e7 100644
          if is_node_type(definition, AST_Method):
              definition.static = staticmethod
              definition.is_getter = property_getter
-@@ -1652,6 +1701,97 @@ def create_parser_ctx(
+@@ -1652,6 +1703,103 @@ def create_parser_ctx(
          )
          return definition
  
@@ -1126,9 +1145,15 @@ index 5533155..cf8b5e7 100644
 +        first = True
 +
 +        async def get_arg():
-+            if not is_('name'):
++            # NOTE (wanim): `new`/`do`/`typeof`/`void`/`instanceof` tokenize
++            # as keywords/operators but are valid Python parameter names
++            # (`lambda m, old, new: ...`); accept them under
++            # python_extensions (they are renamed like other reserved words).
++            if not is_js_identifier_token(S.token):
 +                croak('Name expected')
 +            name = mangle_reserved_name(S.token.value)
++            if name is not S.token.value:
++                S.renamed_reserved[S.token.value] = name
 +            if has_prop(seen_names, name):
 +                token_error(prev(), "Can't repeat parameter names")
 +            seen_names[name] = True
@@ -1208,7 +1233,7 @@ index 5533155..cf8b5e7 100644
      async def if_():
          cond = await expression(True)
          body = await statement()
-@@ -1742,10 +1882,25 @@ def create_parser_ctx(
+@@ -1742,10 +1890,25 @@ def create_parser_ctx(
              next()
              exceptions = []
              if not is_('punc', ':') and not is_('keyword', 'as'):
@@ -1238,26 +1263,33 @@ index 5533155..cf8b5e7 100644
  
              name = None
              if is_('keyword', 'as'):
-@@ -1829,6 +1984,18 @@ def create_parser_ctx(
+@@ -1829,6 +1992,25 @@ def create_parser_ctx(
      async def new_():
          start = S.token
          expect_token('operator', 'new')
 +        # NOTE (wanim): `new` is a JavaScript operator, but Python code may
 +        # use it as a plain identifier (`new = Text(...)`, `new + 1`,
-+        # `new.attr`).  Only the JavaScript form is followed by a name or a
-+        # bracketed expression; anything else treats `new` as a variable
-+        # (renamed to `new_modified` like the other reserved words).
-+        if (options.python_extensions
-+                and S.token.type is not 'name'
-+                and not is_('punc', '(') and not is_('punc', '[')
-+                and not is_('punc', '{')):
++        # `new.attr`, `class new` + `new()`).  Only the JavaScript form is
++        # followed by a name or a bracketed expression; anything else treats
++        # `new` as a variable (renamed to `new_modified` like the other
++        # reserved words).  Once the module has defined its own `new`
++        # (`class new`, `new = ...`, a parameter), every `new` is that name,
++        # so `new()` instantiates the user's class instead of the JS operator.
++        if (options.python_extensions and (
++                has_prop(S.renamed_reserved, 'new')
++                or (
++                    S.token.type is not 'name'
++                    and not is_('punc', '(') and not is_('punc', '[')
++                    and not is_('punc', '{')
++                ))):
++            S.renamed_reserved['new'] = 'new_modified'
 +            return await subscripts(new AST_SymbolRef({
 +                'name': 'new_modified', 'start': start, 'end': start
 +            }), True)
          newexp = await expr_atom(False)
  
          if is_('punc', '('):
-@@ -1870,6 +2037,30 @@ def create_parser_ctx(
+@@ -1870,6 +2052,30 @@ def create_parser_ctx(
                  'end': tok,
                  'value': tok.value
              })
@@ -1288,7 +1320,7 @@ index 5533155..cf8b5e7 100644
          elif tmp_ is 'string':
              return string_()
          elif tmp_ is 'regexp':
-@@ -1911,7 +2102,87 @@ def create_parser_ctx(
+@@ -1911,7 +2117,87 @@ def create_parser_ctx(
          next()
          return ret
  
@@ -1376,7 +1408,7 @@ index 5533155..cf8b5e7 100644
          if is_('operator', 'new'):
              return await new_()
  
-@@ -1920,20 +2191,34 @@ def create_parser_ctx(
+@@ -1920,20 +2206,34 @@ def create_parser_ctx(
              tmp_ = start.value
              if tmp_ is '(':
                  prev_parens = S.in_parenthesized_expr
@@ -1411,7 +1443,7 @@ index 5533155..cf8b5e7 100644
                  ex.start = start
                  ex.end = S.token
                  if is_node_type(ex, AST_SymbolRef):
-@@ -1943,11 +2228,19 @@ def create_parser_ctx(
+@@ -1943,11 +2243,19 @@ def create_parser_ctx(
                  if is_node_type(ex, AST_UnaryPrefix):
                      ex.parenthesized = True
                  S.in_parenthesized_expr = prev_parens
@@ -1432,7 +1464,7 @@ index 5533155..cf8b5e7 100644
  
              unexpected()
  
-@@ -1975,6 +2268,57 @@ def create_parser_ctx(
+@@ -1975,6 +2283,57 @@ def create_parser_ctx(
              func.end = prev()
              return await subscripts(func, allow_calls)
  
@@ -1490,7 +1522,7 @@ index 5533155..cf8b5e7 100644
          if is_('keyword', 'await'):
              next()
              if S.in_function is 0 or not S.functions[-1].is_async:
-@@ -2047,6 +2391,7 @@ def create_parser_ctx(
+@@ -2047,6 +2406,7 @@ def create_parser_ctx(
                  'args': a, 'kwargs': kwargs,
                  'kwarg_items': kwarg_items, 'starargs': starargs
              })
@@ -1498,7 +1530,7 @@ index 5533155..cf8b5e7 100644
          single_comprehension = False
          while not is_('punc', ')') and not is_('eof'):
              if not first:
-@@ -2087,6 +2432,18 @@ def create_parser_ctx(
+@@ -2087,6 +2447,18 @@ def create_parser_ctx(
                          break
                      a.push(new AST_CallArg({'value': arg, 'is_array': False}))
              first = False
@@ -1517,7 +1549,7 @@ index 5533155..cf8b5e7 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2096,12 +2453,22 @@ def create_parser_ctx(
+@@ -2096,12 +2468,22 @@ def create_parser_ctx(
  
      @embed_tokens
      async def array_():
@@ -1540,7 +1572,7 @@ index 5533155..cf8b5e7 100644
                  return await read_comprehension(
                      new AST_ListComprehension({'statement': expr[0]}),
                      ']'
-@@ -2111,8 +2478,12 @@ def create_parser_ctx(
+@@ -2111,8 +2493,12 @@ def create_parser_ctx(
                  expect(',')
  
          arr_rest = await expr_list(']', True, True)
@@ -1554,7 +1586,7 @@ index 5533155..cf8b5e7 100644
          })
  
      @embed_tokens
-@@ -2152,6 +2523,17 @@ def create_parser_ctx(
+@@ -2152,6 +2538,17 @@ def create_parser_ctx(
                  has_non_const_keys = True
              expect(':')
              obj_val = await expression(False)
@@ -1572,7 +1604,7 @@ index 5533155..cf8b5e7 100644
              a.push(new AST_ObjectKeyVal({
                  'start': start,
                  'key': left,
-@@ -2182,25 +2564,137 @@ def create_parser_ctx(
+@@ -2182,25 +2579,137 @@ def create_parser_ctx(
          next()
          return new AST_Set({'items': a, 'start': ostart, 'end': prev()})
  
@@ -1722,7 +1754,7 @@ index 5533155..cf8b5e7 100644
  
      async def dict_comprehension(a, is_pydict, is_jshash):
          if a.length:
-@@ -2232,12 +2726,29 @@ def create_parser_ctx(
+@@ -2232,18 +2741,57 @@ def create_parser_ctx(
          else:
              unexpected()
  
@@ -1733,6 +1765,26 @@ index 5533155..cf8b5e7 100644
 +    # never reach the symbol constructors -- they tokenize as keywords -- and
 +    # `this` keeps its rapydscript meaning (JavaScript `this`).
 +    extra_reserved_names = {'arguments': True, 'eval': True}
++
++    # JavaScript-only keyword/operator tokens that are valid Python
++    # identifiers (`lambda m, old, new: ...`, `def f(do):`, `class typeof`).
++    # They tokenize as keywords/operators (so `S.token.type` is not 'name'),
++    # which used to make parameter lists and import/except aliases fail with
++    # "Name expected" even with python_extensions.  They are accepted
++    # wherever an identifier is expected and renamed like the rest.
++    js_only_identifier_words = {
++        'new': True, 'do': True, 'typeof': True, 'void': True,
++        'instanceof': True
++    }
++
++    def is_js_identifier_token(tok):
++        if tok.type is 'name':
++            return True
++        if not options.python_extensions:
++            return False
++        if tok.type is not 'keyword' and tok.type is not 'operator':
++            return False
++        return has_prop(js_only_identifier_words, tok.value)
 +
 +    def mangle_reserved_name(name):
 +        if not options.python_extensions or name is 'this':
@@ -1748,13 +1800,22 @@ index 5533155..cf8b5e7 100644
 +            if not options.python_extensions:
 +                croak(name + ' is a reserved word')
 +            name = mangle_reserved_name(name)
++        if name is not tok.value:
++            S.renamed_reserved[tok.value] = name
          return new (AST_This if name is 'this' else ttype)({
 -            'name': v"String(tok.value)",
 +            'name': v"String(name)",
              'start': tok,
              'end': tok
          })
-@@ -2270,38 +2781,179 @@ def create_parser_ctx(
+ 
+     def as_symbol(ttype, noerror):
+-        if not is_('name'):
++        if not is_js_identifier_token(S.token):
+             if not noerror:
+                 croak('Name expected')
+             return None
+@@ -2270,38 +2818,179 @@ def create_parser_ctx(
          else:
              return False
  
@@ -1956,7 +2017,7 @@ index 5533155..cf8b5e7 100644
              if is_('operator', '='):
                  # splice-assignment (arr[start:end] = ...)
                  next()  # swallow the assignment
-@@ -2381,6 +3033,18 @@ def create_parser_ctx(
+@@ -2381,6 +3070,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1975,7 +2036,7 @@ index 5533155..cf8b5e7 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +3052,7 @@ def create_parser_ctx(
+@@ -2388,12 +3089,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1989,7 +2050,7 @@ index 5533155..cf8b5e7 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2439,14 +3098,16 @@ def create_parser_ctx(
+@@ -2439,14 +3135,16 @@ def create_parser_ctx(
          if not expr.parens and get_class_in_scope(expr):
              # this is an object being created using a class
              call_args = await func_call_list()
@@ -2009,7 +2070,7 @@ index 5533155..cf8b5e7 100644
          else:
              if is_node_type(expr, AST_Dot):
                  c = get_class_in_scope(expr.expression)
-@@ -2456,7 +3117,9 @@ def create_parser_ctx(
+@@ -2456,7 +3154,9 @@ def create_parser_ctx(
                  funcname = expr
  
                  classcall_args = await func_call_list()
@@ -2020,7 +2081,7 @@ index 5533155..cf8b5e7 100644
                      'start': start,
                      'class': expr.expression,
                      'method': funcname.property,
-@@ -2464,8 +3127,6 @@ def create_parser_ctx(
+@@ -2464,8 +3164,6 @@ def create_parser_ctx(
                      'args': classcall_args,
                      'end': prev()
                  }), True)
@@ -2029,7 +2090,7 @@ index 5533155..cf8b5e7 100644
              elif is_node_type(expr, AST_SymbolRef):
                  tmp_ = expr.name
                  if tmp_ is 'jstype':
-@@ -2497,14 +3158,30 @@ def create_parser_ctx(
+@@ -2497,14 +3195,30 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -2063,7 +2124,7 @@ index 5533155..cf8b5e7 100644
  
      async def get_attr(expr, allow_calls):
          next()
-@@ -2514,6 +3191,12 @@ def create_parser_ctx(
+@@ -2514,6 +3228,12 @@ def create_parser_ctx(
              classvars = c.provisional_classvars if c.processing else c.classvars
              if classvars and v'classvars[prop]':
                  prop = 'prototype.' + prop
@@ -2076,7 +2137,7 @@ index 5533155..cf8b5e7 100644
  
          return await subscripts(new AST_Dot({
              'start': expr.start,
-@@ -2568,6 +3251,19 @@ def create_parser_ctx(
+@@ -2568,6 +3288,19 @@ def create_parser_ctx(
  
      async def maybe_unary(allow_calls):
          start = S.token
@@ -2096,7 +2157,7 @@ index 5533155..cf8b5e7 100644
          if is_('operator', '@'):
              if S.parsing_decorator:
                  croak('Nested decorators are not allowed')
-@@ -2579,6 +3275,17 @@ def create_parser_ctx(
+@@ -2579,6 +3312,17 @@ def create_parser_ctx(
              return new AST_EmptyStatement({
                  'stype': '@', 'start': prev(), 'end': prev()
              })
@@ -2114,7 +2175,7 @@ index 5533155..cf8b5e7 100644
          if is_('operator') and UNARY_PREFIX[start.value]:
              next()
              is_parenthesized = is_('punc', '(')
-@@ -2614,6 +3321,12 @@ def create_parser_ctx(
+@@ -2614,6 +3358,12 @@ def create_parser_ctx(
          if no_in and (op is 'in' or op is 'nin'):
              op = None
  
@@ -2127,7 +2188,7 @@ index 5533155..cf8b5e7 100644
          prec = PRECEDENCE[op] if op is not None else None
          if prec is not None and prec > min_prec:
              next()
-@@ -2684,7 +3397,8 @@ def create_parser_ctx(
+@@ -2684,7 +3434,8 @@ def create_parser_ctx(
          start = S.token
          left = await maybe_conditional(no_in)
          val = S.token.value
@@ -2137,7 +2198,7 @@ index 5533155..cf8b5e7 100644
              if only_plain_assignment and val is not '=':
                  croak(
                      'Invalid assignment operator for chained assignment: '
-@@ -2711,22 +3425,53 @@ def create_parser_ctx(
+@@ -2711,22 +3462,53 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -2194,7 +2255,7 @@ index 5533155..cf8b5e7 100644
                  if is_node_type(expr, AST_Assign):
                      left[-1] = left[-1].left
                      seq_cdr = await expression(True, no_in)
-@@ -2759,6 +3504,30 @@ def create_parser_ctx(
+@@ -2759,6 +3541,30 @@ def create_parser_ctx(
                      'end': peek()
                  })
  
@@ -2225,7 +2286,7 @@ index 5533155..cf8b5e7 100644
              return build_seq(left)
          return expr
  
-@@ -2853,6 +3622,10 @@ def create_parser_ctx(
+@@ -2853,6 +3659,10 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -2236,7 +2297,7 @@ index 5533155..cf8b5e7 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3759,219 @@ def create_parser_ctx(
+@@ -2986,6 +3796,219 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -2456,7 +2517,7 @@ index 5533155..cf8b5e7 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3985,24 @@ async def parse(text, options):
+@@ -2999,6 +4022,24 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -2481,13 +2542,17 @@ index 5533155..cf8b5e7 100644
          'module_cache_dir': '',
          # When True, continue parsing past syntax errors (used by the
          # LSP). See run_parser/block_.
-@@ -3036,6 +4040,9 @@ async def parse(text, options):
+@@ -3036,6 +4077,13 @@ async def parse(text, options):
          'in_comprehension': False,
          'in_parenthesized_expr': False,
          'in_delete': False,
 +        # NOTE (wanim): while parsing the contents of a list/tuple display a
 +        # leading `*` marks a starred element (`[*a, b]`, `(*a, b)`).
 +        'allow_starred': False,
++        # Original → renamed spelling of JavaScript reserved words the module
++        # defined itself (`class new`, `def f(do)`, `new = ...`); `new_()` uses
++        # it to tell a user variable/class apart from the JS `new` operator.
++        'renamed_reserved': {},
          'in_loop': 0,
          'in_class': [False],
          'classes': [{}],
