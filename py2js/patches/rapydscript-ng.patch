@@ -846,7 +846,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..e2d281d 100644
+index 5533155..0fd0799 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -1090,7 +1090,37 @@ index 5533155..e2d281d 100644
      async def if_():
          cond = await expression(True)
          body = await statement()
-@@ -1911,6 +2039,79 @@ def create_parser_ctx(
+@@ -1742,10 +1870,25 @@ def create_parser_ctx(
+             next()
+             exceptions = []
+             if not is_('punc', ':') and not is_('keyword', 'as'):
+-                exceptions.push(as_symbol(AST_SymbolVar))
+-                while is_('punc', ','):
+-                    next()
+-                    exceptions.push(as_symbol(AST_SymbolVar))
++                # NOTE (wanim): handlers may be arbitrary expressions
++                # (`except np.linalg.LinAlgError:`) or parenthesised tuples
++                # (`except (ValueError, np.linalg.LinAlgError):`), not just
++                # bare names; the emitted `instanceof` chain accepts the
++                # dotted form as-is.  A tuple is flattened into the chain.
++                while True:
++                    errors = await expression(False)
++                    if is_node_type(errors, AST_Seq):
++                        for el in errors.to_array():
++                            exceptions.push(el)
++                    elif is_node_type(errors, AST_Array):
++                        for el in errors.elements:
++                            exceptions.push(el)
++                    else:
++                        exceptions.push(errors)
++                    if is_('punc', ','):
++                        next()
++                        continue
++                    break
+ 
+             name = None
+             if is_('keyword', 'as'):
+@@ -1911,6 +2054,79 @@ def create_parser_ctx(
          next()
          return ret
  
@@ -1170,7 +1200,7 @@ index 5533155..e2d281d 100644
      async def expr_atom(allow_calls):
          if is_('operator', 'new'):
              return await new_()
-@@ -1920,20 +2121,34 @@ def create_parser_ctx(
+@@ -1920,20 +2136,34 @@ def create_parser_ctx(
              tmp_ = start.value
              if tmp_ is '(':
                  prev_parens = S.in_parenthesized_expr
@@ -1205,7 +1235,7 @@ index 5533155..e2d281d 100644
                  ex.start = start
                  ex.end = S.token
                  if is_node_type(ex, AST_SymbolRef):
-@@ -1943,6 +2158,7 @@ def create_parser_ctx(
+@@ -1943,6 +2173,7 @@ def create_parser_ctx(
                  if is_node_type(ex, AST_UnaryPrefix):
                      ex.parenthesized = True
                  S.in_parenthesized_expr = prev_parens
@@ -1213,7 +1243,7 @@ index 5533155..e2d281d 100644
                  return await subscripts(ex, allow_calls)
              elif tmp_ is '[':
                  return await subscripts(await array_(), allow_calls)
-@@ -1975,6 +2191,57 @@ def create_parser_ctx(
+@@ -1975,6 +2206,57 @@ def create_parser_ctx(
              func.end = prev()
              return await subscripts(func, allow_calls)
  
@@ -1271,7 +1301,7 @@ index 5533155..e2d281d 100644
          if is_('keyword', 'await'):
              next()
              if S.in_function is 0 or not S.functions[-1].is_async:
-@@ -2047,6 +2314,7 @@ def create_parser_ctx(
+@@ -2047,6 +2329,7 @@ def create_parser_ctx(
                  'args': a, 'kwargs': kwargs,
                  'kwarg_items': kwarg_items, 'starargs': starargs
              })
@@ -1279,7 +1309,7 @@ index 5533155..e2d281d 100644
          single_comprehension = False
          while not is_('punc', ')') and not is_('eof'):
              if not first:
-@@ -2087,6 +2355,18 @@ def create_parser_ctx(
+@@ -2087,6 +2370,18 @@ def create_parser_ctx(
                          break
                      a.push(new AST_CallArg({'value': arg, 'is_array': False}))
              first = False
@@ -1298,7 +1328,7 @@ index 5533155..e2d281d 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2096,12 +2376,22 @@ def create_parser_ctx(
+@@ -2096,12 +2391,22 @@ def create_parser_ctx(
  
      @embed_tokens
      async def array_():
@@ -1321,7 +1351,7 @@ index 5533155..e2d281d 100644
                  return await read_comprehension(
                      new AST_ListComprehension({'statement': expr[0]}),
                      ']'
-@@ -2111,8 +2401,12 @@ def create_parser_ctx(
+@@ -2111,8 +2416,12 @@ def create_parser_ctx(
                  expect(',')
  
          arr_rest = await expr_list(']', True, True)
@@ -1335,7 +1365,7 @@ index 5533155..e2d281d 100644
          })
  
      @embed_tokens
-@@ -2152,6 +2446,17 @@ def create_parser_ctx(
+@@ -2152,6 +2461,17 @@ def create_parser_ctx(
                  has_non_const_keys = True
              expect(':')
              obj_val = await expression(False)
@@ -1353,7 +1383,7 @@ index 5533155..e2d281d 100644
              a.push(new AST_ObjectKeyVal({
                  'start': start,
                  'key': left,
-@@ -2182,25 +2487,137 @@ def create_parser_ctx(
+@@ -2182,25 +2502,137 @@ def create_parser_ctx(
          next()
          return new AST_Set({'items': a, 'start': ostart, 'end': prev()})
  
@@ -1503,7 +1533,7 @@ index 5533155..e2d281d 100644
  
      async def dict_comprehension(a, is_pydict, is_jshash):
          if a.length:
-@@ -2381,6 +2798,18 @@ def create_parser_ctx(
+@@ -2381,6 +2813,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1522,7 +1552,7 @@ index 5533155..e2d281d 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2817,7 @@ def create_parser_ctx(
+@@ -2388,12 +2832,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1536,7 +1566,7 @@ index 5533155..e2d281d 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2439,14 +2863,16 @@ def create_parser_ctx(
+@@ -2439,14 +2878,16 @@ def create_parser_ctx(
          if not expr.parens and get_class_in_scope(expr):
              # this is an object being created using a class
              call_args = await func_call_list()
@@ -1556,7 +1586,7 @@ index 5533155..e2d281d 100644
          else:
              if is_node_type(expr, AST_Dot):
                  c = get_class_in_scope(expr.expression)
-@@ -2456,7 +2882,9 @@ def create_parser_ctx(
+@@ -2456,7 +2897,9 @@ def create_parser_ctx(
                  funcname = expr
  
                  classcall_args = await func_call_list()
@@ -1567,7 +1597,7 @@ index 5533155..e2d281d 100644
                      'start': start,
                      'class': expr.expression,
                      'method': funcname.property,
-@@ -2464,8 +2892,6 @@ def create_parser_ctx(
+@@ -2464,8 +2907,6 @@ def create_parser_ctx(
                      'args': classcall_args,
                      'end': prev()
                  }), True)
@@ -1576,7 +1606,7 @@ index 5533155..e2d281d 100644
              elif is_node_type(expr, AST_SymbolRef):
                  tmp_ = expr.name
                  if tmp_ is 'jstype':
-@@ -2497,14 +2923,30 @@ def create_parser_ctx(
+@@ -2497,14 +2938,30 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1610,7 +1640,7 @@ index 5533155..e2d281d 100644
  
      async def get_attr(expr, allow_calls):
          next()
-@@ -2579,6 +3021,17 @@ def create_parser_ctx(
+@@ -2579,6 +3036,17 @@ def create_parser_ctx(
              return new AST_EmptyStatement({
                  'stype': '@', 'start': prev(), 'end': prev()
              })
@@ -1628,7 +1658,7 @@ index 5533155..e2d281d 100644
          if is_('operator') and UNARY_PREFIX[start.value]:
              next()
              is_parenthesized = is_('punc', '(')
-@@ -2711,22 +3164,53 @@ def create_parser_ctx(
+@@ -2711,22 +3179,53 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1685,7 +1715,7 @@ index 5533155..e2d281d 100644
                  if is_node_type(expr, AST_Assign):
                      left[-1] = left[-1].left
                      seq_cdr = await expression(True, no_in)
-@@ -2759,6 +3243,30 @@ def create_parser_ctx(
+@@ -2759,6 +3258,30 @@ def create_parser_ctx(
                      'end': peek()
                  })
  
@@ -1716,16 +1746,18 @@ index 5533155..e2d281d 100644
              return build_seq(left)
          return expr
  
-@@ -2853,6 +3361,8 @@ def create_parser_ctx(
+@@ -2853,6 +3376,10 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
 +        if options.await_scene_methods:
 +            annotate_await_scene_methods(toplevel)
++        if options.python_extensions:
++            rewrite_python_extensions(toplevel)
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3496,92 @@ def create_parser_ctx(
+@@ -2986,6 +3513,219 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -1783,6 +1815,133 @@ index 5533155..e2d281d 100644
 +    return node
 +
 +
++def _python_extension_binding_names(node, names, out):
++    # Record statement-level bindings of the tracked language names (see
++    # `rewrite_python_extensions`).  Conservative: any definition or
++    # assignment target anywhere in the module wins.
++    t = node.constructor.name
++    if (t is 'AST_SymbolDefun' or t is 'AST_SymbolFunarg'
++            or t is 'AST_SymbolVar' or t is 'AST_SymbolCatch'
++            or t is 'AST_SymbolLambda' or t is 'AST_SymbolAlias'
++            or t is 'AST_SymbolNonlocal' or t is 'AST_ImportedVar'
++            or t is 'AST_SymbolNonlocal'):
++        if has_prop(names, node.name):
++            out[node.name] = True
++        return
++    targets = None
++    if is_node_type(node, AST_Assign):
++        targets = node.left
++    elif is_node_type(node, AST_ForIn):
++        targets = node.init
++    elif (t.indexOf('Comprehension') > 1 and node.init):
++        targets = node.init
++    if targets is None:
++        return
++    if is_node_type(targets, AST_SymbolRef):
++        targets = [targets]
++    elif is_node_type(targets, AST_Array):
++        targets = targets.flatten()
++    elif is_node_type(targets, AST_Seq):
++        targets = targets.to_array()
++    else:
++        return
++    for target in targets:
++        if is_node_type(target, AST_SymbolRef) and has_prop(names, target.name):
++            out[target.name] = True
++
++
++def rewrite_python_extensions(toplevel):
++    # NOTE (wanim): route calls that need Python semantics rapydscript's
++    # baselib does not provide to the wanim runtime helpers:
++    #
++    #   d.get(k[, default]) -> __wan_dict_get(d, k[, default])
++    #   abs(x)              -> __wan_abs(x)
++    #   sum(x)              -> __wan_sum(x)
++    #   reversed(x)         -> __wan_reversed(x)
++    #
++    # Plain-object dict literals have no `.get` method and must never gain
++    # one via `Object.prototype`.  The baselib `abs` is `Math.abs` (NaN on
++    # complex numbers) and its `sum`/`reversed` are plain-JS versions that
++    # do not understand NumPy arrays or iterable class instances, so all
++    # four are rewritten here instead of by source-text heuristics.
++    #
++    # Names the module binds itself (def/class, assignment, loop targets,
++    # imports) are never rewritten; the detection is deliberately
++    # module-wide and conservative (matching CPython's module-level builtin
++    # lookup closely enough for manim scenes).
++    builtin_helpers = {
++        'abs': '__wan_abs',
++        'sum': '__wan_sum',
++        'reversed': '__wan_reversed',
++    }
++    bound = {}
++    for stmt in toplevel.body:
++        stmt.walk(new TreeWalker(def (n, descend):
++            _python_extension_binding_names(n, builtin_helpers, bound)
++        ))
++    active = {}
++    for name in Object.keys(builtin_helpers):
++        if not has_prop(bound, name):
++            active[name] = builtin_helpers[name]
++
++    def dict_get_call(node):
++        callee = node.expression
++        if (is_node_type(callee, AST_Dot)
++                and callee.property is 'get'
++                and node.args.kwargs.length is 0
++                and node.args.kwarg_items.length is 0
++                and not node.args.starargs):
++            args = v'[]'
++            args.push(new AST_CallArg({
++                'value': callee.expression, 'is_array': False
++            }))
++            for arg in node.args.args:
++                args.push(arg)
++            return new AST_Call({
++                'start': node.start,
++                'expression': new AST_SymbolRef({'name': '__wan_dict_get'}),
++                'args': new AST_CallArgs({
++                    'args': args, 'kwargs': v'[]',
++                    'kwarg_items': v'[]', 'starargs': False
++                }),
++                'end': node.end
++            })
++        return node
++
++    def transform(node):
++        if is_node_type(node, AST_Call):
++            node = dict_get_call(node)
++            callee = node.expression
++            if (is_node_type(callee, AST_SymbolRef)
++                    and has_prop(active, callee.name)):
++                callee.name = active[callee.name]
++        return node
++
++    seen = v'new Set()'
++
++    def walk(node):
++        if is_node_type(node, AST_Token) or seen.has(node):
++            return node
++        seen.add(node)
++        node = transform(node)
++        for key in node:
++            value = node[key]
++            if Array.isArray(value):
++                for v'var i = 0; i < value.length; i++':
++                    child = value[i]
++                    if (is_node_type(child, AST)
++                            and not is_node_type(child, AST_Token)):
++                        value[i] = walk(child)
++            elif (is_node_type(value, AST)
++                    and not is_node_type(value, AST_Token)):
++                node[key] = walk(value)
++        return node
++
++    for stmt in toplevel.body:
++        walk(stmt)
++    return toplevel
++
++
 +def annotate_await_scene_methods(toplevel):
 +    # Transitively propagate `await_scene_methods`' auto-await to calls of the
 +    # user's own async helper methods.  Without this, a synchronous-looking
@@ -1818,7 +1977,7 @@ index 5533155..e2d281d 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3595,16 @@ async def parse(text, options):
+@@ -2999,6 +3739,24 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -1832,10 +1991,18 @@ index 5533155..e2d281d 100644
 +        # manim scene run against the real-time (yielding) wanim renderer while
 +        # the user's Python keeps its synchronous look.
 +        'await_scene_methods': False,
++        # When True, calls that need Python semantics rapydscript's baselib
++        # does not provide are routed to __wan_* runtime helpers:
++        # `d.get(k[, default])` -> `__wan_dict_get(...)` and bare
++        # `abs(...)`/`sum(...)`/`reversed(...)` -> `__wan_abs`/`__wan_sum`/
++        # `__wan_reversed` (the wanim runtime exposes these globals; language
++        # names the module binds itself are left alone).  Off by default so
++        # plain rapydscript keeps upstream behavior.
++        'python_extensions': False,
          'module_cache_dir': '',
          # When True, continue parsing past syntax errors (used by the
          # LSP). See run_parser/block_.
-@@ -3036,6 +3642,9 @@ async def parse(text, options):
+@@ -3036,6 +3794,9 @@ async def parse(text, options):
          'in_comprehension': False,
          'in_parenthesized_expr': False,
          'in_delete': False,
@@ -1846,10 +2013,10 @@ index 5533155..e2d281d 100644
          'in_class': [False],
          'classes': [{}],
 diff --git a/tools/cli.mjs b/tools/cli.mjs
-index e0c8cad..f97ec68 100644
+index e0c8cad..9381dad 100644
 --- a/tools/cli.mjs
 +++ b/tools/cli.mjs
-@@ -239,6 +239,17 @@ without the assert statements.`);
+@@ -239,6 +239,24 @@ without the assert statements.`);
  
  opt("uglify", 'u', 'bool', false, `Minify the output instead of pretty printing it.`);
  
@@ -1864,11 +2031,18 @@ index e0c8cad..f97ec68 100644
 +await expressions and mark the enclosing function async. Used for translating
 +manim scenes that run against a real-time (yielding) renderer. Off by default.`);
 +
++opt("python_extensions", undefined, 'bool', false, `Route calls that need
++Python semantics rapydscript's baselib does not provide to __wan_* runtime
++helpers: d.get(k[, default]) -> __wan_dict_get(...) and bare
++abs/sum/reversed calls -> __wan_abs/__wan_sum/__wan_reversed. The runtime
++must provide those globals; language names the module binds itself are left
++alone. Off by default.`);
++
  opt("omit_baselib", 'm', 'bool', false, `Omit baselib functions. Use this if you have a
  different way of ensuring they're imported. For example,
  you could import one of the baselib-plain-*.js files directly
 diff --git a/tools/compile.mjs b/tools/compile.mjs
-index 83fe97c..4699585 100644
+index 83fe97c..ad1e3da 100644
 --- a/tools/compile.mjs
 +++ b/tools/compile.mjs
 @@ -62,6 +62,8 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
@@ -1880,25 +2054,27 @@ index 83fe97c..4699585 100644
      };
  
      if (argv.comments) {
-@@ -108,6 +110,8 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
+@@ -108,6 +110,9 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
              import_dirs: utils.get_import_dirs(argv.import_path),
              discard_asserts: argv.discard_asserts,
              module_cache_dir: cache_dir,
 +            operator_overloading: !!argv.operator_overloading,
 +            await_scene_methods: !!argv.await_scene_methods,
++            python_extensions: !!argv.python_extensions,
          });
      }
  
 diff --git a/tools/export.js b/tools/export.js
-index 61a2f5b..2e24367 100644
+index 61a2f5b..bda3fd9 100644
 --- a/tools/export.js
 +++ b/tools/export.js
-@@ -266,12 +266,16 @@ async function compile(code, filename, options) {
+@@ -266,12 +266,17 @@ async function compile(code, filename, options) {
          filename: filename || '<eval>',
          basedir: options.basedir || dirname(filename || ''),
          libdir: options.libdir,
 +        operator_overloading: !!options.operator_overloading,
 +        await_scene_methods: !!options.await_scene_methods,
++        python_extensions: !!options.python_extensions,
      });
      var out_ops = {
          beautify: (options.beautify === undefined ? true : options.beautify),
