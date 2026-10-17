@@ -185,6 +185,28 @@ check("wanGetItem supports None/newaxis on NDArrays (error 242)", () => {
   assert.equal(ndCore.wanGetItem(grid, 0, 1).toArray(), 2);
 });
 
+check("wanGetItem supports boolean-mask and fancy row indices", () => {
+  ndCore.buildRuntime(); // applies the NDArray slice patch like the browser
+  const pts = npReal.asarray([[1, 2], [3, 4]]);
+  // Comparison results are the bool-dtype masks comparisons produce
+  // (`pts[:, 1] > 2.5`); numpy-ts infers float64 for literal boolean arrays.
+  const mask = npReal.greater(npReal.asarray([2, 4]), 2.5);
+  assert.deepEqual(ndCore.wanGetItem(pts, mask).toArray(), [[3, 4]]);
+  assert.deepEqual(ndCore.wanGetItem(pts, mask, 0).toArray(), [3]);
+  assert.deepEqual(ndCore.wanGetItem(pts, mask, 1).toArray(), [4]);
+  const idx = npReal.asarray([1, 0]);
+  assert.deepEqual(ndCore.wanGetItem(pts, idx, 1).toArray(), [4, 2]);
+  assert.deepEqual(ndCore.wanGetItem(pts, idx, ":").toArray(), [[3, 4], [1, 2]]);
+  // Plain-array masks/indices behave the same.
+  assert.deepEqual(ndCore.wanGetItem(pts, [true, false], 1).toArray(), [2]);
+  assert.deepEqual(ndCore.wanGetItem(pts, [1, 0], 0).toArray(), [3, 1]);
+  // The stereographic-scene shape: boolean row filter, then a column index.
+  const eq = npReal.asarray([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+  const keep = npReal.greater(npReal.asarray([0.2, -0.5, 0.9]), 0);
+  assert.deepEqual(ndCore.wanGetItem(eq, keep, 0).toArray(), [1, 7]);
+  assert.deepEqual(ndCore.wanGetItem(eq, keep, 2).toArray(), [3, 9]);
+});
+
 check("wanGetItem descends nested plain lists numpy-style", () => {
   const grid = [[1, 2, 3], [4, 5, 6]];
   assert.deepEqual(ndCore.wanGetItem(grid, ":", 1), [2, 5]);
