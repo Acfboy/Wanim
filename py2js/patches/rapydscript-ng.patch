@@ -520,7 +520,7 @@ index b38e56f..4a9c37f 100644
                      body_out.assign(self.init)
                      body_out.print(itervar)
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..c99755d 100644
+index a16673a..211b7b5 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
 @@ -12,8 +12,33 @@ from output.loops import unpack_tuple
@@ -631,7 +631,7 @@ index a16673a..c99755d 100644
      output.print(op)
      if /^[a-z]/i.test(op):
          output.space()
-@@ -211,9 +278,96 @@ function_ops = {
+@@ -211,9 +278,106 @@ function_ops = {
      'nin': '!ρσ_in',
  }
  
@@ -674,6 +674,16 @@ index a16673a..c99755d 100644
  
  def print_binary_op(self, output):
 -    if function_ops[self.operator]:
++    if self.operator is '@':
++        # NOTE (wanim): PEP 465 matrix multiplication; the runtime helper
++        # understands numpy matrices and wanim numeric vectors.
++        output.print('__wan_matmul')
++        output.with_parens(def ():
++            self.left.print(output)
++            output.comma()
++            self.right.print(output)
++        )
++        return
 +    if comparators[self.operator] and is_node_type(
 +        self.left,
 +        AST_Binary
@@ -729,7 +739,7 @@ index a16673a..c99755d 100644
          output.print(function_ops[self.operator])
          output.with_parens(def ():
              self.left.print(output)
-@@ -363,6 +517,20 @@ def print_existential(self, output):
+@@ -363,6 +527,20 @@ def print_existential(self, output):
  
  
  def print_assignment(self, output):
@@ -750,7 +760,7 @@ index a16673a..c99755d 100644
      flattened = False
      left = self.left
      if is_node_type(left, AST_Seq):
-@@ -372,7 +540,13 @@ def print_assignment(self, output):
+@@ -372,7 +550,13 @@ def print_assignment(self, output):
          flattened = flat.length > left.elements.length
          output.print('ρσ_unpack')
      else:
@@ -764,7 +774,26 @@ index a16673a..c99755d 100644
      output.space()
      output.print(self.operator)
      output.space()
-@@ -460,14 +634,32 @@ def print_conditional(self, output, condition, consequent, alternative):
+@@ -395,6 +579,18 @@ def print_assignment(self, output):
+ 
+ 
+ def print_assign(self, output):
++    if self.operator is '@=':
++        # NOTE (wanim): `a @= b` -> `a = __wan_matmul(a, b)` (PEP 465).
++        # Like `//=` below this re-evaluates the target; acceptable for the
++        # plain name/attribute/subscript targets Python allows here.
++        output.assign(self.left)
++        output.print('__wan_matmul')
++        output.with_parens(def ():
++            self.left.print(output)
++            output.comma()
++            self.right.print(output)
++        )
++        return
+     if self.operator is '//=':
+         output.assign(self.left)
+         output.print('Math.floor')
+@@ -460,14 +656,32 @@ def print_conditional(self, output, condition, consequent, alternative):
  def print_seq(output):
      self = this
      p = output.parent()
@@ -846,7 +875,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..0fd0799 100644
+index 5533155..36efb3c 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -873,7 +902,37 @@ index 5533155..0fd0799 100644
      is_node_type,
      TreeWalker
  )
-@@ -251,6 +254,23 @@ def create_parser_ctx(
+@@ -181,7 +184,9 @@ FORBIDDEN_CLASS_VARS = 'prototype constructor'.split(' ')
+ # -----[ Parser (constants) ]-----
+ UNARY_PREFIX = make_predicate('typeof void delete ~ - + ! @')
+ 
+-ASSIGNMENT = make_predicate('= += -= /= //= *= %= >>= <<= >>>= |= ^= &=')
++ASSIGNMENT = make_predicate(
++    '= += -= /= //= *= %= >>= <<= >>>= |= ^= &= @='
++)
+ 
+ PRECEDENCE = (def (a, ret):
+     for i in range(a.length):
+@@ -200,7 +205,8 @@ PRECEDENCE = (def (a, ret):
+     ['<', '>', '<=', '>=', 'in', 'nin', 'instanceof'],
+     ['>>', '<<', '>>>'],
+     ['+', '-'],
+-    ['*', '/', '//', '%'],
++    # NOTE (wanim): PEP 465 `@` has the same precedence as `*`.
++    ['*', '/', '//', '%', '@'],
+     ['**']
+     # highest precedence
+ ], {})
+@@ -208,7 +214,7 @@ PRECEDENCE = (def (a, ret):
+ STATEMENTS_WITH_LABELS = array_to_hash(['for', 'do', 'while', 'switch'])
+ 
+ ATOMIC_START_TOKEN = array_to_hash([
+-    'atom', 'num', 'string', 'regexp', 'name', 'js'
++    'atom', 'num', 'num_imag', 'string', 'regexp', 'name', 'js'
+ ])
+ 
+ compile_time_decorators = ['staticmethod', 'external', 'property']
+@@ -251,6 +257,23 @@ def create_parser_ctx(
      imported_module_ids, imported_modules,
      importing_modules, options
  ):
@@ -897,7 +956,7 @@ index 5533155..0fd0799 100644
      def next():
          S.prev = S.token
          if S.peeked.length:
-@@ -622,6 +642,10 @@ def create_parser_ctx(
+@@ -622,6 +645,10 @@ def create_parser_ctx(
              )
              return await simple_statement()
          elif tmp_ is 'keyword':
@@ -908,7 +967,7 @@ index 5533155..0fd0799 100644
              tmp_ = S.token.value
              next()
              if tmp_ is 'break':
-@@ -723,10 +747,14 @@ def create_parser_ctx(
+@@ -723,10 +750,14 @@ def create_parser_ctx(
              elif tmp_ is 'return':
                  if S.in_function is 0:
                      croak("'return' outside of function")
@@ -927,7 +986,7 @@ index 5533155..0fd0799 100644
                  ret_val = await return_()
                  return new AST_Return({'value': ret_val})
              elif tmp_ is 'await':
-@@ -814,8 +842,9 @@ def create_parser_ctx(
+@@ -814,8 +845,9 @@ def create_parser_ctx(
              croak("'yield' outside of function")
          if S.functions[-1].is_async:
              croak("'yield' not allowed in an async function")
@@ -939,7 +998,7 @@ index 5533155..0fd0799 100644
          S.functions[-1].is_generator = True
          is_yield_from = is_('keyword', 'from')
          if is_yield_from:
-@@ -830,13 +859,16 @@ def create_parser_ctx(
+@@ -830,13 +862,16 @@ def create_parser_ctx(
              init = await expression(True, True)
              # standardize AST_Seq into array now for consistency
              if is_node_type(init, AST_Seq):
@@ -962,7 +1021,7 @@ index 5533155..0fd0799 100644
                  else:
                      tmp = [init]
                  init = new AST_Array({
-@@ -1418,6 +1450,7 @@ def create_parser_ctx(
+@@ -1418,6 +1453,7 @@ def create_parser_ctx(
          ctor = AST_Method if in_class else AST_Function
          return_annotation = None
          is_generator = v'[]'
@@ -970,7 +1029,7 @@ index 5533155..0fd0799 100644
          docstrings = v'[]'
  
          fn_argnames = await (async def ():
-@@ -1584,7 +1617,11 @@ def create_parser_ctx(
+@@ -1584,7 +1620,11 @@ def create_parser_ctx(
              a = await block_(docstrings)
              S.in_function -= 1
              S.scoped_flags.pop()
@@ -983,7 +1042,7 @@ index 5533155..0fd0799 100644
              S.classes.pop()
              S.in_class.pop()
              S.in_loop = loop
-@@ -1604,7 +1641,7 @@ def create_parser_ctx(
+@@ -1604,7 +1644,7 @@ def create_parser_ctx(
          })
          definition.return_annotation = return_annotation
          definition.is_generator = is_generator[0]
@@ -992,7 +1051,7 @@ index 5533155..0fd0799 100644
          if is_node_type(definition, AST_Method):
              definition.static = staticmethod
              definition.is_getter = property_getter
-@@ -1652,6 +1689,97 @@ def create_parser_ctx(
+@@ -1652,6 +1692,97 @@ def create_parser_ctx(
          )
          return definition
  
@@ -1090,7 +1149,7 @@ index 5533155..0fd0799 100644
      async def if_():
          cond = await expression(True)
          body = await statement()
-@@ -1742,10 +1870,25 @@ def create_parser_ctx(
+@@ -1742,10 +1873,25 @@ def create_parser_ctx(
              next()
              exceptions = []
              if not is_('punc', ':') and not is_('keyword', 'as'):
@@ -1120,7 +1179,38 @@ index 5533155..0fd0799 100644
  
              name = None
              if is_('keyword', 'as'):
-@@ -1911,6 +2054,79 @@ def create_parser_ctx(
+@@ -1870,6 +2016,30 @@ def create_parser_ctx(
+                 'end': tok,
+                 'value': tok.value
+             })
++        elif tmp_ is 'num_imag':
++            # NOTE (wanim): Python imaginary literal (`1j`); lowered to the
++            # `__wan_complex(0, imag)` runtime factory, which the wanim
++            # runtime provides.
++            if not options.python_extensions:
++                token_error(tok, 'Invalid syntax: ' + tok.value + 'j')
++            return new AST_Call({
++                'start': tok,
++                'expression': new AST_SymbolRef({'name': '__wan_complex'}),
++                'args': new AST_CallArgs({
++                    'args': [
++                        new AST_CallArg({
++                            'value': new AST_Number({'value': 0}),
++                            'is_array': False
++                        }),
++                        new AST_CallArg({
++                            'value': new AST_Number({'value': tok.value}),
++                            'is_array': False
++                        })
++                    ],
++                    'kwargs': v'[]', 'kwarg_items': v'[]', 'starargs': False
++                }),
++                'end': tok
++            })
+         elif tmp_ is 'string':
+             return string_()
+         elif tmp_ is 'regexp':
+@@ -1911,6 +2081,79 @@ def create_parser_ctx(
          next()
          return ret
  
@@ -1200,7 +1290,7 @@ index 5533155..0fd0799 100644
      async def expr_atom(allow_calls):
          if is_('operator', 'new'):
              return await new_()
-@@ -1920,20 +2136,34 @@ def create_parser_ctx(
+@@ -1920,20 +2163,34 @@ def create_parser_ctx(
              tmp_ = start.value
              if tmp_ is '(':
                  prev_parens = S.in_parenthesized_expr
@@ -1235,7 +1325,7 @@ index 5533155..0fd0799 100644
                  ex.start = start
                  ex.end = S.token
                  if is_node_type(ex, AST_SymbolRef):
-@@ -1943,6 +2173,7 @@ def create_parser_ctx(
+@@ -1943,6 +2200,7 @@ def create_parser_ctx(
                  if is_node_type(ex, AST_UnaryPrefix):
                      ex.parenthesized = True
                  S.in_parenthesized_expr = prev_parens
@@ -1243,7 +1333,7 @@ index 5533155..0fd0799 100644
                  return await subscripts(ex, allow_calls)
              elif tmp_ is '[':
                  return await subscripts(await array_(), allow_calls)
-@@ -1975,6 +2206,57 @@ def create_parser_ctx(
+@@ -1975,6 +2233,57 @@ def create_parser_ctx(
              func.end = prev()
              return await subscripts(func, allow_calls)
  
@@ -1301,7 +1391,7 @@ index 5533155..0fd0799 100644
          if is_('keyword', 'await'):
              next()
              if S.in_function is 0 or not S.functions[-1].is_async:
-@@ -2047,6 +2329,7 @@ def create_parser_ctx(
+@@ -2047,6 +2356,7 @@ def create_parser_ctx(
                  'args': a, 'kwargs': kwargs,
                  'kwarg_items': kwarg_items, 'starargs': starargs
              })
@@ -1309,7 +1399,7 @@ index 5533155..0fd0799 100644
          single_comprehension = False
          while not is_('punc', ')') and not is_('eof'):
              if not first:
-@@ -2087,6 +2370,18 @@ def create_parser_ctx(
+@@ -2087,6 +2397,18 @@ def create_parser_ctx(
                          break
                      a.push(new AST_CallArg({'value': arg, 'is_array': False}))
              first = False
@@ -1328,7 +1418,7 @@ index 5533155..0fd0799 100644
          if not single_comprehension:
              next()
          return new AST_CallArgs({
-@@ -2096,12 +2391,22 @@ def create_parser_ctx(
+@@ -2096,12 +2418,22 @@ def create_parser_ctx(
  
      @embed_tokens
      async def array_():
@@ -1351,7 +1441,7 @@ index 5533155..0fd0799 100644
                  return await read_comprehension(
                      new AST_ListComprehension({'statement': expr[0]}),
                      ']'
-@@ -2111,8 +2416,12 @@ def create_parser_ctx(
+@@ -2111,8 +2443,12 @@ def create_parser_ctx(
                  expect(',')
  
          arr_rest = await expr_list(']', True, True)
@@ -1365,7 +1455,7 @@ index 5533155..0fd0799 100644
          })
  
      @embed_tokens
-@@ -2152,6 +2461,17 @@ def create_parser_ctx(
+@@ -2152,6 +2488,17 @@ def create_parser_ctx(
                  has_non_const_keys = True
              expect(':')
              obj_val = await expression(False)
@@ -1383,7 +1473,7 @@ index 5533155..0fd0799 100644
              a.push(new AST_ObjectKeyVal({
                  'start': start,
                  'key': left,
-@@ -2182,25 +2502,137 @@ def create_parser_ctx(
+@@ -2182,25 +2529,137 @@ def create_parser_ctx(
          next()
          return new AST_Set({'items': a, 'start': ostart, 'end': prev()})
  
@@ -1533,7 +1623,7 @@ index 5533155..0fd0799 100644
  
      async def dict_comprehension(a, is_pydict, is_jshash):
          if a.length:
-@@ -2381,6 +2813,18 @@ def create_parser_ctx(
+@@ -2381,6 +2840,18 @@ def create_parser_ctx(
                      )
  
                  _ca3 = v'[]'
@@ -1552,7 +1642,7 @@ index 5533155..0fd0799 100644
                  for _sb in slice_bounds:
                      _ca3.push(new AST_CallArg({
                          'value': _sb, 'is_array': False
-@@ -2388,12 +2832,7 @@ def create_parser_ctx(
+@@ -2388,12 +2859,7 @@ def create_parser_ctx(
                  return await subscripts(
                      new AST_Call({
                          'start': start,
@@ -1566,7 +1656,7 @@ index 5533155..0fd0799 100644
                          'args': new AST_CallArgs({
                              'args': _ca3, 'kwargs': v'[]',
                              'kwarg_items': v'[]', 'starargs': False
-@@ -2439,14 +2878,16 @@ def create_parser_ctx(
+@@ -2439,14 +2905,16 @@ def create_parser_ctx(
          if not expr.parens and get_class_in_scope(expr):
              # this is an object being created using a class
              call_args = await func_call_list()
@@ -1586,7 +1676,7 @@ index 5533155..0fd0799 100644
          else:
              if is_node_type(expr, AST_Dot):
                  c = get_class_in_scope(expr.expression)
-@@ -2456,7 +2897,9 @@ def create_parser_ctx(
+@@ -2456,7 +2924,9 @@ def create_parser_ctx(
                  funcname = expr
  
                  classcall_args = await func_call_list()
@@ -1597,7 +1687,7 @@ index 5533155..0fd0799 100644
                      'start': start,
                      'class': expr.expression,
                      'method': funcname.property,
-@@ -2464,8 +2907,6 @@ def create_parser_ctx(
+@@ -2464,8 +2934,6 @@ def create_parser_ctx(
                      'args': classcall_args,
                      'end': prev()
                  }), True)
@@ -1606,7 +1696,7 @@ index 5533155..0fd0799 100644
              elif is_node_type(expr, AST_SymbolRef):
                  tmp_ = expr.name
                  if tmp_ is 'jstype':
-@@ -2497,14 +2938,30 @@ def create_parser_ctx(
+@@ -2497,14 +2965,30 @@ def create_parser_ctx(
  
              # fall-through to basic function call
              basic_args = await func_call_list()
@@ -1640,7 +1730,7 @@ index 5533155..0fd0799 100644
  
      async def get_attr(expr, allow_calls):
          next()
-@@ -2579,6 +3036,17 @@ def create_parser_ctx(
+@@ -2579,6 +3063,17 @@ def create_parser_ctx(
              return new AST_EmptyStatement({
                  'stype': '@', 'start': prev(), 'end': prev()
              })
@@ -1658,7 +1748,30 @@ index 5533155..0fd0799 100644
          if is_('operator') and UNARY_PREFIX[start.value]:
              next()
              is_parenthesized = is_('punc', '(')
-@@ -2711,22 +3179,53 @@ def create_parser_ctx(
+@@ -2614,6 +3109,12 @@ def create_parser_ctx(
+         if no_in and (op is 'in' or op is 'nin'):
+             op = None
+ 
++        # NOTE (wanim): binary `@` (PEP 465) needs the `python_extensions`
++        # option (it is lowered to the `__wan_matmul` runtime helper); when
++        # off, `@` keeps its old meaning (decorator only).
++        if op is '@' and not options.python_extensions:
++            op = None
++
+         prec = PRECEDENCE[op] if op is not None else None
+         if prec is not None and prec > min_prec:
+             next()
+@@ -2684,7 +3185,8 @@ def create_parser_ctx(
+         start = S.token
+         left = await maybe_conditional(no_in)
+         val = S.token.value
+-        if is_('operator') and ASSIGNMENT[val]:
++        if (is_('operator') and ASSIGNMENT[val]
++                and (val is not '@=' or options.python_extensions)):
+             if only_plain_assignment and val is not '=':
+                 croak(
+                     'Invalid assignment operator for chained assignment: '
+@@ -2711,22 +3213,53 @@ def create_parser_ctx(
              if a.length is 1:
                  return a[0]
  
@@ -1715,7 +1828,7 @@ index 5533155..0fd0799 100644
                  if is_node_type(expr, AST_Assign):
                      left[-1] = left[-1].left
                      seq_cdr = await expression(True, no_in)
-@@ -2759,6 +3258,30 @@ def create_parser_ctx(
+@@ -2759,6 +3292,30 @@ def create_parser_ctx(
                      'end': peek()
                  })
  
@@ -1746,7 +1859,7 @@ index 5533155..0fd0799 100644
              return build_seq(left)
          return expr
  
-@@ -2853,6 +3376,10 @@ def create_parser_ctx(
+@@ -2853,6 +3410,10 @@ def create_parser_ctx(
          toplevel.filename = options.filename
          toplevel.imported_module_ids = imported_module_ids
          toplevel.classes = scan_for_classes(toplevel.body)
@@ -1757,7 +1870,7 @@ index 5533155..0fd0799 100644
          toplevel.import_order = Object.keys(imported_modules).length
          toplevel.module_id = module_id
          imported_modules[module_id] = toplevel
-@@ -2986,6 +3513,219 @@ def create_parser_ctx(
+@@ -2986,6 +3547,219 @@ def create_parser_ctx(
      return run_parser
  
  
@@ -1977,7 +2090,7 @@ index 5533155..0fd0799 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +3739,24 @@ async def parse(text, options):
+@@ -2999,6 +3773,24 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -2002,7 +2115,7 @@ index 5533155..0fd0799 100644
          'module_cache_dir': '',
          # When True, continue parsing past syntax errors (used by the
          # LSP). See run_parser/block_.
-@@ -3036,6 +3794,9 @@ async def parse(text, options):
+@@ -3036,6 +3828,9 @@ async def parse(text, options):
          'in_comprehension': False,
          'in_parenthesized_expr': False,
          'in_delete': False,
@@ -2012,6 +2125,49 @@ index 5533155..0fd0799 100644
          'in_loop': 0,
          'in_class': [False],
          'classes': [{}],
+diff --git a/src/tokenizer.pyj b/src/tokenizer.pyj
+index 36504ab..41c0e17 100644
+--- a/src/tokenizer.pyj
++++ b/src/tokenizer.pyj
+@@ -71,6 +71,10 @@ OPERATORS = make_predicate([
+     'and',
+     'or',
+     '@',
++    # NOTE (wanim): PEP 465 matrix multiplication assignment (`a @= b`).
++    # `grow()` only produces this token when the next character is `=`, so
++    # decorators (`@name`) are unaffected.
++    '@=',
+     '->'
+ ])
+ 
+@@ -555,14 +559,25 @@ def tokenizer(raw_text, filename, recover_errors):
+                 ) else False
+             return is_alphanumeric_char(ch.charCodeAt(0))
+         )
++        # NOTE (wanim): Python imaginary literals (`1j`, `1.5j`, `1e-3j`)
++        # tokenize as `num_imag`; the parser lowers them to complex-number
++        # objects.  Hexadecimal/octal/binary literals never take the suffix
++        # in CPython, so `has_x` (and the early binary return above) keeps
++        # those a syntax error.
++        is_imag = False
++        if not has_x and num.length > 1 and (
++                num.slice(-1) is 'j' or num.slice(-1) is 'J'):
++            is_imag = True
++            num = num.slice(0, -1)
++
+         if prefix:
+             num = prefix + num
+ 
+         valid = parse_js_number(num)
+         if not isNaN(valid):
+-            return token('num', valid)
++            return token('num_imag' if is_imag else 'num', valid)
+         else:
+-            parse_error('Invalid syntax: ' + num)
++            parse_error('Invalid syntax: ' + num + ('j' if is_imag else ''))
+ 
+     def read_hex_digits(count):
+         ans = ''
 diff --git a/tools/cli.mjs b/tools/cli.mjs
 index e0c8cad..9381dad 100644
 --- a/tools/cli.mjs
