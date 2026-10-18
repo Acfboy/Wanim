@@ -61,6 +61,11 @@ export interface CompiledScene {
  *   `[*a]` -> `__wan_spread`, multi-`for` comprehensions ->
  *   `__wan_flatten1`, multi-dim subscripts ->
  *   `__wan_getitem`/`__wan_setitem`/`__wan_slice`;
+ * - Python truthiness in boolean contexts with `python_truthiness: true`:
+ *   `not`/`and`/`or`, `if`/`while` conditions, conditional expressions,
+ *   comprehension `if` clauses and `assert` are lowered through `ρσ_bool`
+ *   (baselib), so an empty list/dict/set/string is falsy as in CPython
+ *   (`if not crits:` must not take JavaScript's `![] === false` branch);
  * - identifiers that collide with JavaScript reserved words
  *   (`new`, `default`, `let`, ...) are renamed to `<name>_modified`.
  */
@@ -73,6 +78,7 @@ export async function compilePython(source: string): Promise<CompiledScene> {
       operator_overloading: true,
       await_scene_methods: true,
       python_extensions: true,
+      python_truthiness: true,
       bare: true,
       beautify: true,
     });

@@ -90,10 +90,59 @@ index 7c28645..e1ea319 100644
  
  
 diff --git a/src/baselib-builtins.pyj b/src/baselib-builtins.pyj
-index fc6322b..adc15e3 100644
+index fc6322b..34b91bc 100644
 --- a/src/baselib-builtins.pyj
 +++ b/src/baselib-builtins.pyj
-@@ -19,6 +19,14 @@ def ρσ_print():
+@@ -7,7 +7,47 @@
+ 
+ 
+ def ρσ_bool(val):
+-    return v'!!val'
++    # wanim: Python truthiness instead of JavaScript's.  `[]`, `{}`, `''` and
++    # empty arrays are falsy in Python but truthy in JS, so a bare `!!val` sent
++    # `if not crits:` (and every other "an empty container is falsy" test) down
++    # the wrong branch -- `crits[0]` was `undefined` and the NaN that followed
++    # poisoned the geometry downstream.
++    if val is None or val is undefined:
++        return False
++    t = jstype(val)
++    if t is 'boolean':
++        return val
++    if t is 'number':
++        # Python: only 0/-0 are falsy, NaN is truthy.
++        return v'val !== 0'
++    if t is 'string':
++        return v'val.length > 0'
++    if v'Array.isArray(val) || ArrayBuffer.isView(val)':
++        return v'val.length > 0'
++    if v'val instanceof Map || val instanceof Set':
++        return v'val.size > 0'
++    if v'"size" in val && ("jsmap" in val || "jsset" in val || "_store" in val)':
++        # rapydscript's own dict/set wrappers (Python `{}`/`set()` literals):
++        # empty is falsy.
++        return v'val.size > 0'
++    # NOTE: dunders and numpy-ts markers are probed with `in`, never read
++    # blindly: reading an absent attribute on a wanim Mobject Proxy raises
++    # AttributeError (the `has` trap is not overridden).
++    if v'"__bool__" in val':
++        return ρσ_bool(v'val.__bool__()')
++    if v'"shape" in val && "size" in val && ("tolist" in val || "_storage" in val)':
++        # numpy-ts NDArray: an empty array is falsy, a single element defers to
++        # that element, and CPython raises for anything larger.
++        if v'val.size === 0':
++            return False
++        if v'val.size === 1':
++            return ρσ_bool(v'val.item()')
++        raise ValueError('The truth value of an array with more than one element is ambiguous')
++    proto = v'Object.getPrototypeOf(val)'
++    if proto is v'Object.prototype' or proto is None:
++        # Python dict: empty is falsy.
++        return v'Object.keys(val).length > 0'
++    return True
+ 
+ 
+ def ρσ_print():
+@@ -19,6 +59,14 @@ def ρσ_print():
  
  
  def ρσ_int(val, base):
@@ -108,7 +157,7 @@ index fc6322b..adc15e3 100644
      if jstype(val) is 'number':
          ans = val | 0
      else:
-@@ -30,6 +38,10 @@ def ρσ_int(val, base):
+@@ -30,6 +78,10 @@ def ρσ_int(val, base):
  
  
  def ρσ_float(val):
@@ -247,6 +296,42 @@ index e0ec495..ed23bcf 100644
  def ρσ_setitem(obj, key, val):
      if obj.__setitem__:
          obj.__setitem__(key, val)
+diff --git a/src/baselib-itertools.pyj b/src/baselib-itertools.pyj
+index 3ff31e9..f00c672 100644
+--- a/src/baselib-itertools.pyj
++++ b/src/baselib-itertools.pyj
+@@ -79,13 +79,16 @@ def zip():
+ 
+ def any(iterable):
+     for i in iterable:
+-        if i:
++        # wanim: `ρσ_bool`, not plain JavaScript truthiness: an empty
++        # list/dict/set/string is falsy in Python but truthy in JS, so
++        # `any([[], []])` used to return True.
++        if ρσ_bool(i):
+             return True
+     return False
+ 
+ 
+ def all(iterable):
+     for i in iterable:
+-        if not i:
++        if not ρσ_bool(i):
+             return False
+     return True
+diff --git a/src/output/codegen.pyj b/src/output/codegen.pyj
+index d6bad40..216bf08 100644
+--- a/src/output/codegen.pyj
++++ b/src/output/codegen.pyj
+@@ -401,7 +401,7 @@ def generate_code():
+     DEFPRINT(AST_If, def (self, output):
+         output.print('if')
+         output.space()
+-        output.with_parens(def (): self.condition.print(output);)
++        output.with_condition(self.condition)
+         output.space()
+         if self.alternative:
+             make_then(self, output)
 diff --git a/src/output/functions.pyj b/src/output/functions.pyj
 index 341df63..a0e9032 100644
 --- a/src/output/functions.pyj
@@ -325,7 +410,7 @@ index 341df63..a0e9032 100644
              else:
                  output.print('[')
 diff --git a/src/output/loops.pyj b/src/output/loops.pyj
-index b38e56f..4a9c37f 100644
+index b38e56f..ba5adff 100644
 --- a/src/output/loops.pyj
 +++ b/src/output/loops.pyj
 @@ -4,10 +4,30 @@ from __python__ import hash_literals
@@ -420,6 +505,23 @@ index b38e56f..4a9c37f 100644
  def print_do_loop(self, output):
      output.print('do')
      output.space()
+@@ -28,14 +101,14 @@ def print_do_loop(self, output):
+     output.space()
+     output.print('while')
+     output.space()
+-    output.with_parens(def (): self.condition.print(output);)
++    output.with_condition(self.condition)
+     output.semicolon()
+ 
+ 
+ def print_while_loop(self, output):
+     output.print('while')
+     output.space()
+-    output.with_parens(def (): self.condition.print(output);)
++    output.with_condition(self.condition)
+     output.space()
+     self._do_print_body(output)
+ 
 @@ -78,14 +151,14 @@ def print_for_loop_body(output):
              output.indent()
              itervar = 'ρσ_Index' + output.index_counter
@@ -519,8 +621,31 @@ index b38e56f..4a9c37f 100644
                  else:
                      body_out.assign(self.init)
                      body_out.print(itervar)
+@@ -339,9 +433,7 @@ def print_list_comprehension(self, output):
+                     body_out.indent()
+                     body_out.print('if')
+                     body_out.space()
+-                    body_out.with_parens(def ():
+-                        self.condition.print(body_out)
+-                    )
++                    body_out.with_condition(self.condition)
+                     body_out.space()
+                     body_out.with_block(def ():
+                         add_to_result(body_out)
+diff --git a/src/output/modules.pyj b/src/output/modules.pyj
+index a3dfc5d..a3ec4e7 100644
+--- a/src/output/modules.pyj
++++ b/src/output/modules.pyj
+@@ -123,6 +123,7 @@ def prologue(module, output):
+     output.indent(), output.spaced(
+         'var',
+         'ρσ_cond_temp,',
++        'ρσ_and_temp,',
+         'ρσ_expr_temp,',
+         'ρσ_last_exception'
+     ), output.end_statement()
 diff --git a/src/output/operators.pyj b/src/output/operators.pyj
-index a16673a..d1937cd 100644
+index a16673a..10a6703 100644
 --- a/src/output/operators.pyj
 +++ b/src/output/operators.pyj
 @@ -12,8 +12,33 @@ from output.loops import unpack_tuple
@@ -609,7 +734,7 @@ index a16673a..d1937cd 100644
          output.print(']')
          return
      is_repeatable = is_node_type(prop, AST_SymbolRef)
-@@ -115,6 +167,21 @@ def print_unary_prefix(self, output):
+@@ -115,6 +167,30 @@ def print_unary_prefix(self, output):
      op = self.operator
      if op is 'delete':
          return print_delete(self.expression, output)
@@ -628,10 +753,19 @@ index a16673a..d1937cd 100644
 +            self.expression.print(output)
 +        )
 +        return
++    if output.options.python_truthiness and op is '!':
++        # Python `not x` is a truth test (`not []` is True), while JS `!x`
++        # tests JavaScript truthiness (`![]` is false).  `not` always yields a
++        # bool, so no operand caching is needed.
++        output.print('!ρσ_bool')
++        output.with_parens(def ():
++            self.expression.print(output)
++        )
++        return
      output.print(op)
      if /^[a-z]/i.test(op):
          output.space()
-@@ -211,9 +278,106 @@ function_ops = {
+@@ -211,9 +287,143 @@ function_ops = {
      'nin': '!ρσ_in',
  }
  
@@ -683,6 +817,43 @@ index a16673a..d1937cd 100644
 +            output.comma()
 +            self.right.print(output)
 +        )
++        return
++    if output.options.python_truthiness and (
++        self.operator is '&&' or self.operator is '||'
++    ):
++        # Python `and`/`or` short-circuit on Python truthiness and evaluate to
++        # one of their *operands* (`[] and x` is `[]`, `[] or x` is `x`), while
++        # JS `&&`/`||` test JavaScript truthiness, where the empty containers
++        # are truthy.  The temp variable caches the left operand's value
++        # without evaluating it twice, and the whole thing stays a single
++        # expression so an `await` inside either operand (wanim's auto-await
++        # for `self.play(...)`) keeps working.
++        #   a and b  ->  (ρσ_bool(ρσ_and_temp = (a)) ? (b) : ρσ_and_temp)
++        #   a or  b  ->  (ρσ_bool(ρσ_and_temp = (a)) ? ρσ_and_temp : (b))
++        is_and = self.operator is '&&'
++        output.print('(')
++        output.print('ρσ_bool')
++        output.with_parens(def ():
++            output.assign('ρσ_and_temp')
++            output.with_parens(def ():
++                self.left.print(output)
++            )
++        )
++        output.space(), output.print('?'), output.space()
++        if is_and:
++            output.with_parens(def ():
++                self.right.print(output)
++            )
++        else:
++            output.print('ρσ_and_temp')
++        output.space(), output.colon(), output.space()
++        if is_and:
++            output.print('ρσ_and_temp')
++        else:
++            output.with_parens(def ():
++                self.right.print(output)
++            )
++        output.print(')')
 +        return
 +    if comparators[self.operator] and is_node_type(
 +        self.left,
@@ -739,7 +910,7 @@ index a16673a..d1937cd 100644
          output.print(function_ops[self.operator])
          output.with_parens(def ():
              self.left.print(output)
-@@ -363,6 +527,20 @@ def print_existential(self, output):
+@@ -363,6 +573,20 @@ def print_existential(self, output):
  
  
  def print_assignment(self, output):
@@ -760,7 +931,7 @@ index a16673a..d1937cd 100644
      flattened = False
      left = self.left
      if is_node_type(left, AST_Seq):
-@@ -372,7 +550,13 @@ def print_assignment(self, output):
+@@ -372,7 +596,13 @@ def print_assignment(self, output):
          flattened = flat.length > left.elements.length
          output.print('ρσ_unpack')
      else:
@@ -774,7 +945,7 @@ index a16673a..d1937cd 100644
      output.space()
      output.print(self.operator)
      output.space()
-@@ -395,6 +579,18 @@ def print_assignment(self, output):
+@@ -395,6 +625,18 @@ def print_assignment(self, output):
  
  
  def print_assign(self, output):
@@ -793,7 +964,16 @@ index a16673a..d1937cd 100644
      if self.operator is '//=':
          output.assign(self.left)
          output.print('Math.floor')
-@@ -460,20 +656,44 @@ def print_conditional(self, output, condition, consequent, alternative):
+@@ -447,7 +689,7 @@ def print_conditional(self, output, condition, consequent, alternative):
+     condition = self.condition
+     consequent = self.consequent
+     alternative = self.alternative
+-    output.with_parens(def (): condition.print(output);)
++    output.with_condition(condition)
+     output.space()
+     output.print('?')
+     output.space()
+@@ -460,20 +702,44 @@ def print_conditional(self, output, condition, consequent, alternative):
  def print_seq(output):
      self = this
      p = output.parent()
@@ -841,11 +1021,28 @@ index a16673a..d1937cd 100644
      or is_node_type(p, AST_SimpleStatement):
          output.with_square(print_seq)
      else:
+diff --git a/src/output/statements.pyj b/src/output/statements.pyj
+index 9495ee3..89404da 100644
+--- a/src/output/statements.pyj
++++ b/src/output/statements.pyj
+@@ -202,9 +202,9 @@ def print_assert(self, output):
+         return
+     output.spaced(
+         'if',
+-        '(!('
+-    ), self.condition.print(output), output.spaced(
+-        '))', 'throw new AssertionError'
++        '(!'
++    ), output.with_condition(self.condition), output.spaced(
++        ')', 'throw new AssertionError'
+     )
+     if self.message:
+         output.print('(')
 diff --git a/src/output/stream.pyj b/src/output/stream.pyj
-index fe87930..4e7575e 100644
+index fe87930..47d28d5 100644
 --- a/src/output/stream.pyj
 +++ b/src/output/stream.pyj
-@@ -79,6 +79,15 @@ output_stream_defaults = {
+@@ -79,6 +79,22 @@ output_stream_defaults = {
      'module_cache_dir': '',
      'js_version': 6,
      'write_name': True,
@@ -858,10 +1055,17 @@ index fe87930..4e7575e 100644
 +    # When true, blocking scene methods are emitted as `await self.<method>(...)`
 +    # (see the `await_scene_methods` parse option).
 +    'await_scene_methods': False,
++    # When true, boolean contexts (`if`/`while` conditions, conditional
++    # expressions, comprehension `if` clauses, `assert`, `not`, `and`/`or`)
++    # are lowered through `ρσ_bool`, which implements Python truthiness
++    # (an empty list/dict/set/string is falsy, as in CPython; in JavaScript
++    # only `0`, `''`, `null`, `undefined` and `NaN` are falsy).  Off by
++    # default so plain rapydscript keeps upstream JavaScript semantics.
++    'python_truthiness': False,
  }
  
  
-@@ -97,6 +106,10 @@ class OutputStream:
+@@ -97,6 +113,10 @@ class OutputStream:
          self.index_counter = 0
          self.with_counter = 0
          self.try_else_counter = 0
@@ -872,7 +1076,30 @@ index fe87930..4e7575e 100644
          self._source_map_segments = v'[]' if self.options.source_map else None
          # Indentation string cache: avoids repeat_string() on every
          # indent() call
-@@ -301,7 +314,13 @@ class OutputStream:
+@@ -277,6 +297,22 @@ class OutputStream:
+         self.print(')')
+         return ret
+ 
++    def with_condition(self, node):
++        # Print a Python boolean context (`if`/`while`/`elif` conditions,
++        # conditional expressions, comprehension `if` clauses, `assert`).
++        # With `python_truthiness` the test is routed through `ρσ_bool` so an
++        # empty list/dict/set/string is falsy like in CPython; the surrounding
++        # parentheses are emitted either way.
++        self.with_parens(def ():
++            if self.options.python_truthiness:
++                self.print('ρσ_bool')
++                self.with_parens(def ():
++                    node.print(self)
++                )
++            else:
++                node.print(self)
++        )
++
+     def with_square(self, cont):
+         self.print('[')
+         ret = cont()
+@@ -301,7 +337,13 @@ class OutputStream:
          if jstype(name) is 'string':
              self.print(name)
          else:
@@ -887,7 +1114,7 @@ index fe87930..4e7575e 100644
          self.print('=')
          self.space()
 diff --git a/src/parse.pyj b/src/parse.pyj
-index 5533155..d6ab3a7 100644
+index 5533155..6ac574f 100644
 --- a/src/parse.pyj
 +++ b/src/parse.pyj
 @@ -5,6 +5,7 @@
@@ -2517,7 +2744,7 @@ index 5533155..d6ab3a7 100644
  async def parse(text, options):
      options = defaults(options, {
          'filename': None,  # name of the file being parsed
-@@ -2999,6 +4022,24 @@ async def parse(text, options):
+@@ -2999,6 +4022,31 @@ async def parse(text, options):
          'classes': undefined,
          'scoped_flags': {},  # Global scoped flags (used by the REPL)
          'discard_asserts': False,
@@ -2539,10 +2766,17 @@ index 5533155..d6ab3a7 100644
 +        # names the module binds itself are left alone).  Off by default so
 +        # plain rapydscript keeps upstream behavior.
 +        'python_extensions': False,
++        # When True, boolean contexts are lowered through the `ρσ_bool`
++        # baselib helper, which implements Python truthiness: an empty
++        # list/dict/set/string (and a 0-element numpy array) is falsy, unlike
++        # in JavaScript where only `0`, `''`, `null`, `undefined` and `NaN`
++        # are falsy.  Covers `not`, `and`/`or`, `if`/`while` conditions,
++        # conditional expressions, comprehension `if` clauses and `assert`.
++        'python_truthiness': False,
          'module_cache_dir': '',
          # When True, continue parsing past syntax errors (used by the
          # LSP). See run_parser/block_.
-@@ -3036,6 +4077,13 @@ async def parse(text, options):
+@@ -3036,6 +4084,13 @@ async def parse(text, options):
          'in_comprehension': False,
          'in_parenthesized_expr': False,
          'in_delete': False,
@@ -2613,10 +2847,10 @@ index 36504ab..aba418e 100644
              'punc',
              '.'
 diff --git a/tools/cli.mjs b/tools/cli.mjs
-index e0c8cad..9381dad 100644
+index e0c8cad..bf8d1e2 100644
 --- a/tools/cli.mjs
 +++ b/tools/cli.mjs
-@@ -239,6 +239,24 @@ without the assert statements.`);
+@@ -239,6 +239,30 @@ without the assert statements.`);
  
  opt("uglify", 'u', 'bool', false, `Minify the output instead of pretty printing it.`);
  
@@ -2638,43 +2872,52 @@ index e0c8cad..9381dad 100644
 +must provide those globals; language names the module binds itself are left
 +alone. Off by default.`);
 +
++opt("python_truthiness", undefined, 'bool', false, `Lower boolean contexts
++(not, and/or, if/while conditions, conditional expressions, comprehension
++if clauses and assert) through the baselib ρσ_bool helper so that Python
++truthiness applies: an empty list/dict/set/string is falsy, as in CPython,
++whereas JavaScript treats them as truthy. Off by default.`);
++
  opt("omit_baselib", 'm', 'bool', false, `Omit baselib functions. Use this if you have a
  different way of ensuring they're imported. For example,
  you could import one of the baselib-plain-*.js files directly
 diff --git a/tools/compile.mjs b/tools/compile.mjs
-index 83fe97c..ad1e3da 100644
+index 83fe97c..6d27e8b 100644
 --- a/tools/compile.mjs
 +++ b/tools/compile.mjs
-@@ -62,6 +62,8 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
+@@ -62,6 +62,9 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
          module_cache_dir: cache_dir,
          source_map: !!argv.source_map,
          source_map_line_offset: parseInt(argv.source_map_line_offset) || 0,
 +        operator_overloading: !!argv.operator_overloading,
 +        await_scene_methods: !!argv.await_scene_methods,
++        python_truthiness: !!argv.python_truthiness,
      };
  
      if (argv.comments) {
-@@ -108,6 +110,9 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
+@@ -108,6 +111,10 @@ export default async function(start_time, argv, base_path, src_path, lib_path) {
              import_dirs: utils.get_import_dirs(argv.import_path),
              discard_asserts: argv.discard_asserts,
              module_cache_dir: cache_dir,
 +            operator_overloading: !!argv.operator_overloading,
 +            await_scene_methods: !!argv.await_scene_methods,
 +            python_extensions: !!argv.python_extensions,
++            python_truthiness: !!argv.python_truthiness,
          });
      }
  
 diff --git a/tools/export.js b/tools/export.js
-index 61a2f5b..bda3fd9 100644
+index 61a2f5b..032d378 100644
 --- a/tools/export.js
 +++ b/tools/export.js
-@@ -266,12 +266,17 @@ async function compile(code, filename, options) {
+@@ -266,12 +266,19 @@ async function compile(code, filename, options) {
          filename: filename || '<eval>',
          basedir: options.basedir || dirname(filename || ''),
          libdir: options.libdir,
 +        operator_overloading: !!options.operator_overloading,
 +        await_scene_methods: !!options.await_scene_methods,
 +        python_extensions: !!options.python_extensions,
++        python_truthiness: !!options.python_truthiness,
      });
      var out_ops = {
          beautify: (options.beautify === undefined ? true : options.beautify),
@@ -2683,6 +2926,7 @@ index 61a2f5b..bda3fd9 100644
          js_version: options.js_version || 6,
 +        operator_overloading: !!options.operator_overloading,
 +        await_scene_methods: !!options.await_scene_methods,
++        python_truthiness: !!options.python_truthiness,
      };
      if (!out_ops.omit_baselib) out_ops.baselib_plain = data['baselib-plain-' + (out_ops.beautify ? 'pretty' : 'ugly') + '.js'];
      var out = new RapydScript.OutputStream(out_ops);
