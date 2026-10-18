@@ -285,19 +285,46 @@ export class InteractiveScene extends Scene {
    * rebuilt controls are matched positionally (the same code recreates them in
    * the same order); a control without `set_value` or a shorter snapshot is
    * skipped.
+   *
+   * Every restored control then fires its `on_input` listeners once through
+   * `notify_input`, even when the value equals the current one, so courseware
+   * that mirrors control values into its own state rebuilds that state from the
+   * restored controls (a plain `set_value` stays silent, which is what keeps a
+   * blueprint reaction's write-back from echoing).  Values are all written
+   * before any listener runs, so a listener reading sibling controls sees the
+   * complete restored snapshot.
    */
   presentation_set_control_values(values: unknown[]): void {
     const controls = this.interactive_controls();
     const count = Math.min(controls.length, values.length);
+    const restored: Array<{ control: Mobject & InteractiveControl; previous: unknown; next: unknown }> = [];
     for (let index = 0; index < count; index += 1) {
-      const control = controls[index] as Mobject & InteractiveControl & { set_value?: (value: unknown) => unknown };
+      const control = controls[index] as Mobject &
+        InteractiveControl & { set_value?: (value: unknown) => unknown };
       const value = values[index];
       if (value === undefined || typeof control.set_value !== "function") continue;
+      const previous = this.read_control_value(control);
       try {
         control.set_value(value);
       } catch {
         /* keep going: a stale value must not break the rebuild */
       }
+      restored.push({ control, previous, next: this.read_control_value(control) });
+    }
+    for (const { control, previous, next } of restored) {
+      try {
+        control.notify_input?.(previous, next);
+      } catch {
+        /* a listener must not break the remainder of the restore */
+      }
+    }
+  }
+
+  private read_control_value(control: Mobject & InteractiveControl): unknown {
+    try {
+      return control.get_value();
+    } catch {
+      return undefined;
     }
   }
 

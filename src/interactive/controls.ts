@@ -76,6 +76,15 @@ export interface InteractiveControl {
    * pointer handlers.
    */
   on_input?(listener: InputListener): unknown;
+  /**
+   * Optional: fire the `on_input` listeners for a value written by the player.
+   * Called once per control when the player restores remembered values
+   * (previous/replay rewinds, including pages it fast-forwards through), so
+   * courseware that mirrors control values into its own state can rebuild that
+   * state from the restored controls.  It fires even when the value is
+   * unchanged, unlike a user gesture; `set_value` itself stays silent.
+   */
+  notify_input?(previous: unknown, next: unknown): void;
 }
 
 /** Duck-typed check that `mobject` is an interactive control. */
@@ -86,12 +95,16 @@ export function isInteractiveControl(value: unknown): value is Mobject & Interac
 /**
  * Callback registered through `on_input`.
  *
- * Receives the control itself, the value before the user gesture and the value
- * after it.  Only user-originated changes fire it: `set_value` (or `toggle`)
- * called programmatically stays silent, so writing control values back from a
- * blueprint reaction never echoes into the listener.  A listener should update
- * shared state only; writing to other controls belongs in a scene reaction
- * (which then runs after all input listeners for the frame).
+ * Receives the control itself, the value before the change and the value after
+ * it.  User gestures fire it; `set_value` (or `toggle`) called programmatically
+ * stays silent, so writing control values back from a blueprint reaction never
+ * echoes into the listener.  The one programmatic exception is the player
+ * restoring remembered values on "previous"/replay: every restored control
+ * fires its listeners once (through {@link InteractiveControl.notify_input},
+ * even for a value equal to the current one), so state derived from controls
+ * is rebuilt after a rewind.  A listener should update shared state only;
+ * writing to other controls belongs in a scene reaction (which then runs after
+ * all input listeners for the frame).
  *
  * NOTE (sync timing): listeners run synchronously inside the input path
  * (`on_press` / `on_drag` / the inline editor's input callback), i.e. outside
@@ -99,7 +112,9 @@ export function isInteractiveControl(value: unknown): value is Mobject & Interac
  * between animation frames, so a listener always completes before the next
  * frame's reactions run; there is deliberately no frame-batched dispatch.
  * Should a future host invoke control handlers from inside a reaction, the
- * listener would run mid-tick instead of before it.
+ * listener would run mid-tick instead of before it.  Restored-value
+ * notifications run inside the player's rewind, after every restored control
+ * has its new value and before that page's reaction pass.
  */
 export type InputListener = (control: Mobject, previous: unknown, next: unknown) => void;
 
@@ -129,6 +144,20 @@ function emitInput(
   next: unknown,
 ): void {
   if (listeners.length === 0 || !inputValueChanged(previous, next)) return;
+  notifyInput(control, listeners, previous, next);
+}
+
+/**
+ * Fire `listeners` unconditionally, for a value the player restored.  Unlike
+ * {@link emitInput} this ignores "unchanged": every restored control is
+ * announced once so state mirrored from controls is rebuilt.
+ */
+function notifyInput(
+  control: Mobject,
+  listeners: readonly InputListener[],
+  previous: unknown,
+  next: unknown,
+): void {
   for (const listener of listeners) listener(control, previous, next);
 }
 
@@ -339,12 +368,17 @@ export class PathSlider extends VGroup implements InteractiveControl {
   }
 
   /**
-   * Register a listener for user-originated value changes. See
-   * {@link InputListener} for the callback contract and its timing.
+   * Register a listener for value changes: user gestures, plus the player
+   * restoring remembered values on a rewind. See {@link InputListener}.
    */
   on_input(listener: InputListener): this {
     this.input_listeners.push(listener);
     return this;
+  }
+
+  /** Fire the listeners for a restored value (see {@link InteractiveControl}). */
+  notify_input(previous: unknown, next: unknown): void {
+    notifyInput(this, this.input_listeners, previous, next);
   }
 
   /**
@@ -765,12 +799,17 @@ export class Switch extends VGroup implements InteractiveControl {
   }
 
   /**
-   * Register a listener for user-originated value changes. See
-   * {@link InputListener} for the callback contract and its timing.
+   * Register a listener for value changes: user gestures, plus the player
+   * restoring remembered values on a rewind. See {@link InputListener}.
    */
   on_input(listener: InputListener): this {
     this.input_listeners.push(listener);
     return this;
+  }
+
+  /** Fire the listeners for a restored value (see {@link InteractiveControl}). */
+  notify_input(previous: unknown, next: unknown): void {
+    notifyInput(this, this.input_listeners, previous, next);
   }
 
   is_hit(point: readonly number[]): boolean {
@@ -911,12 +950,17 @@ export class Chip extends VGroup implements InteractiveControl {
   }
 
   /**
-   * Register a listener for user-originated value changes. See
-   * {@link InputListener} for the callback contract and its timing.
+   * Register a listener for value changes: user gestures, plus the player
+   * restoring remembered values on a rewind. See {@link InputListener}.
    */
   on_input(listener: InputListener): this {
     this.input_listeners.push(listener);
     return this;
+  }
+
+  /** Fire the listeners for a restored value (see {@link InteractiveControl}). */
+  notify_input(previous: unknown, next: unknown): void {
+    notifyInput(this, this.input_listeners, previous, next);
   }
 
   is_hit(point: readonly number[]): boolean {
@@ -1043,13 +1087,18 @@ export class InputDecimalNumber extends DecimalNumber implements InteractiveCont
   }
 
   /**
-   * Register a listener for user-originated value changes: every keystroke
-   * while editing, every scrub step while dragging, and the commit. See
-   * {@link InputListener} for the callback contract and its timing.
+   * Register a listener for value changes: every keystroke while editing, every
+   * scrub step while dragging, the commit, and the player restoring remembered
+   * values on a rewind. See {@link InputListener} for the callback contract.
    */
   on_input(listener: InputListener): this {
     this.input_listeners.push(listener);
     return this;
+  }
+
+  /** Fire the listeners for a restored value (see {@link InteractiveControl}). */
+  notify_input(previous: unknown, next: unknown): void {
+    notifyInput(this, this.input_listeners, previous, next);
   }
 
   /**

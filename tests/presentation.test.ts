@@ -300,6 +300,7 @@ describe("ScenePresentation", () => {
     const host = new FakeHost();
     const factory = interactiveFactory(host);
     const seen: number[] = [];
+    const restored: number[] = [];
     let updaterRuns = 0;
     // Count only the work done while rewinding: the target blueprint stops the
     // recording before its own settle.  Without this a mobject from the first
@@ -326,6 +327,11 @@ describe("ScenePresentation", () => {
         const dot = new Circle(0.2);
         dot.add_reaction(() => {
           if (recording) seen.push(this.slider.get_value());
+        });
+        // Courseware mirrors control values into its own state; the restore on
+        // a rewind must notify the listener (including on skipped pages).
+        this.slider.on_input(() => {
+          if (recording) restored.push(this.slider.get_value());
         });
         this.add(this.slider, dot);
       }
@@ -375,6 +381,7 @@ describe("ScenePresentation", () => {
     await host.advance(3);
     expect(controller.state.phaseIndex).toBe(2);
     expect(seen).toEqual([10]);
+    expect(restored).toEqual([10]);
     expect(updaterRuns).toBe(1);
 
     controller.abort();
