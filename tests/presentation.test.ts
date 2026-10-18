@@ -234,8 +234,12 @@ describe("ScenePresentation", () => {
     const first = factory.created[0]!;
     expect(controller.state.canPrevious).toBe(false);
     expect(controller.state.canReplay).toBe(true);
-    // Reactions run while paused in the blueprint.
+    // Reactions run once on entering the blueprint (the first pass) ...
     expect(first.updates).toBeGreaterThan(0);
+    // ... and not again while the page sits idle without input.
+    const idleUpdates = first.updates;
+    await host.advance(3);
+    expect(first.updates).toBe(idleUpdates);
 
     // Drag the slider to its maximum.
     const sliderBefore = first.slider;
@@ -286,6 +290,92 @@ describe("ScenePresentation", () => {
     await host.advance(2);
     expect(controller.state.sceneIndex).toBe(1);
     expect(controller.state.phaseKind).toBe("blueprint");
+
+    controller.abort();
+    await host.advance(1);
+    await run;
+  });
+
+  test("rewinding settles skipped pages: blueprint reactions and construct updaters run once", async () => {
+    const host = new FakeHost();
+    const factory = interactiveFactory(host);
+    const seen: number[] = [];
+    let updaterRuns = 0;
+    // Count only the work done while rewinding: the target blueprint stops the
+    // recording before its own settle.  Without this a mobject from the first
+    // page, still on screen, would also fire when the target page settles.
+    let recording = false;
+
+    class RewindScene extends InteractiveScene {
+      slider!: Slider;
+
+      override setup(): void {
+        this.set_storyboard([
+          [this.blueprint0, this.construct0],
+          [this.blueprint1, this.construct1],
+        ]);
+      }
+
+      blueprint0(): void {
+        this.slider = new Slider({
+          start: [-2, 0, 0],
+          end: [2, 0, 0],
+          value_range: [0, 10],
+          init_value: 4,
+        });
+        const dot = new Circle(0.2);
+        dot.add_reaction(() => {
+          if (recording) seen.push(this.slider.get_value());
+        });
+        this.add(this.slider, dot);
+      }
+
+      construct0(): void {
+        const dot = new Circle(0.2);
+        dot.add_updater(() => {
+          if (recording) updaterRuns += 1;
+        });
+        this.add(dot);
+      }
+
+      blueprint1(): void {
+        recording = false;
+      }
+      construct1(): void {}
+    }
+
+    const controller = new ScenePresentation([RewindScene], {
+      host,
+      slidesMode: true,
+      createScene: factory.create,
+    });
+    const run = controller.run();
+    await host.advance(1);
+
+    // Move the slider away from its default so the restored value is checkable.
+    host.press([2, 0, 0]);
+    host.release();
+    await host.advance(1);
+    expect(controller.state.phaseIndex).toBe(0);
+
+    host.click("next");
+    await host.advance(2);
+    host.click("next");
+    await host.advance(2);
+    host.click("next");
+    await host.advance(2);
+    expect(controller.state.phaseIndex).toBe(3);
+
+    // "previous" from the last page rebuilds the scene and fast-forwards the
+    // two phases before the target blueprint.  Those skipped pages must settle
+    // like a live page: the blueprint reaction runs once (with the remembered
+    // value) and the construct updater runs once.
+    recording = true;
+    host.click("previous");
+    await host.advance(3);
+    expect(controller.state.phaseIndex).toBe(2);
+    expect(seen).toEqual([10]);
+    expect(updaterRuns).toBe(1);
 
     controller.abort();
     await host.advance(1);

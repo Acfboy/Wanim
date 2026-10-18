@@ -6,11 +6,13 @@
  * The design goal is a *minimal* extension of the
  * manim API:
  *
- *  - {@link blueprint} is to reactions what `construct` is to updaters: while a
- *    scene is in its blueprint phase, `Mobject.add_reaction(...)` callbacks are
- *    re-applied every frame, so a slider's value can drive a shape.  The scene
- *    itself can also carry reactions through {@link add_reaction}, for global
- *    refresh callbacks that do not belong to any single mobject.
+ *  - {@link blueprint} is to reactions what `construct` is to updaters: a
+ *    `Mobject.add_reaction(...)` callback is applied once when the blueprint
+ *    page is entered and again whenever the reader interacts (a control value
+ *    changes, a background gesture runs), so a slider's value drives a shape
+ *    without recomputing it on idle frames.  The scene itself can also carry
+ *    reactions through {@link add_reaction}, for global refresh callbacks that
+ *    do not belong to any single mobject.
  *  - After the user presses "next", `construct` runs with `add_updater`
  *    callbacks active and reactions disabled.
  *  - A scene run on its own is one single-scene presentation: the
@@ -59,11 +61,12 @@ export class InteractiveScene extends Scene {
    */
   slides_mode = false;
   /**
-   * Scene-level reactions: each runs once per blueprint frame, after every
-   * mobject's own reactions, and receives the scene.  This is the
-   * `Scene.add_reaction` counterpart of `Mobject.add_reaction` for callbacks
-   * that are not attached to a shape (it replaces the empty-`VGroup` holder
-   * pattern).  Cleared together with the mobjects on restart/replay.
+   * Scene-level reactions: each runs once when the blueprint page is entered
+   * and again after any user input, after every mobject's own reactions, and
+   * receives the scene.  This is the `Scene.add_reaction` counterpart of
+   * `Mobject.add_reaction` for callbacks that are not attached to a shape (it
+   * replaces the empty-`VGroup` holder pattern).  Cleared together with the
+   * mobjects on restart/replay.
    */
   reactions: Array<(scene: InteractiveScene) => void> = [];
 
@@ -74,6 +77,15 @@ export class InteractiveScene extends Scene {
   private _activeControl: InteractiveControl | null = null;
   private _hoveredControl: (Mobject & InteractiveControl) | null = null;
   private _controlsCache: Array<Mobject & InteractiveControl> | null = null;
+  /**
+   * Set while the blueprint still needs a reaction pass: on entry it is set by
+   * {@link presentation_run_phase}, and every user input sets it again through
+   * {@link mark_input}.  Cleared by {@link tick} once the reactions have run,
+   * so an idle page renders without recomputing the model.
+   */
+  private _reactionsPending = false;
+  /** Controls whose `on_input` is already wired into {@link mark_input}. */
+  private readonly _observedControls = new WeakSet<Mobject>();
   private _disposers: Array<() => void> = [];
   private _installed = false;
   private _requestNext = false;
@@ -95,8 +107,8 @@ export class InteractiveScene extends Scene {
   /**
    * Register a scene-level interaction reaction (same call shape as
    * {@link Mobject.add_reaction}, but the callback receives this scene).  In
-   * the blueprint phase it is re-applied every frame, after the mobjects'
-   * reactions; it is inert during `construct`, like every reaction.
+   * the blueprint phase it is applied on entry and after user input; it is
+   * inert during `construct`, like every reaction.
    */
   add_reaction(reaction: (scene: InteractiveScene) => void): this {
     this.reactions.push(reaction);
@@ -215,6 +227,9 @@ export class InteractiveScene extends Scene {
   async presentation_run_phase(phase: Phase): Promise<void> {
     if (this.is_aborted()) return;
     this._phaseKind = phase.kind;
+    // Entering a blueprint always earns one reaction pass, even without input,
+    // so the page's initial state reflects the controls' initial values.
+    if (phase.kind === "blueprint") this._reactionsPending = true;
     // A gesture must not survive a phase boundary: `move`/`up` events of an
     // in-flight drag are ignored outside the blueprint phase, so clearing the
     // state here is what stops a stale drag from jumping on the next frame.
@@ -225,11 +240,26 @@ export class InteractiveScene extends Scene {
     this._controlsCache = null;
     const result = phase.run.call(this);
     if (is_thenable(result)) await result;
+    // The phase has built its controls: wire their `on_input` now so an edit
+    // typed into an inline editor (which never reaches the pointer handlers)
+    // still schedules a reaction pass.
+    if (phase.kind === "blueprint") this.interactive_controls();
   }
 
   /** One interaction frame: reactions/updaters + self updaters + draw. */
   presentation_frame(): void {
     this.tick();
+  }
+
+  /**
+   * Settle a fast-forwarded page without drawing.  The player calls this after
+   * running a page with animations skipped, so the state a later page builds on
+   * is complete: a blueprint applies its reactions once (with the remembered
+   * control values), a construct runs its updaters once, exactly like the
+   * `settle()` frame a live page gets.
+   */
+  presentation_settle_phase(): void {
+    this.tick(false);
   }
 
   /** Drop all scene state so phases can rebuild from scratch. */
@@ -421,18 +451,35 @@ export class InteractiveScene extends Scene {
     return () => target.call(this);
   }
 
-  private tick(): void {
+  private tick(render = true): void {
     const frameRate = (this.camera?.frame_rate as number | undefined) ?? 30;
     const dt = frameRate > 0 ? 1 / frameRate : 1 / 30;
     // Blueprint phases drive mobjects through reactions; construct phases use
     // the ordinary updater machinery (matching `add_reaction` /
-    // `add_updater` semantics).
-    if (this._phaseKind === "blueprint") this.apply_reactions();
-    else this.update_mobjects(dt);
+    // `add_updater` semantics).  Reactions only run when the page was just
+    // entered or the reader interacted: an idle blueprint re-renders (hover,
+    // camera gestures) without recomputing the model.
+    if (this._phaseKind === "blueprint") {
+      if (this._reactionsPending) {
+        this._reactionsPending = false;
+        this.apply_reactions();
+      }
+    } else {
+      this.update_mobjects(dt);
+    }
     this.update_self(dt);
-    if (typeof this.renderer?.render === "function") {
+    if (render && typeof this.renderer?.render === "function") {
       this.renderer.render(this, this.time, this.moving_mobjects);
     }
+  }
+
+  /**
+   * Note that the reader just did something in the blueprint phase, so the
+   * next frame re-applies the reactions.  Inputs outside the blueprint phase
+   * are inert, like every reaction.
+   */
+  private mark_input(): void {
+    if (this._phaseKind === "blueprint") this._reactionsPending = true;
   }
 
   /**
@@ -446,7 +493,9 @@ export class InteractiveScene extends Scene {
   enter_blueprint(): void {
     this.setup();
     this._phaseKind = "blueprint";
+    this._reactionsPending = true;
     this.blueprint();
+    this.interactive_controls();
   }
 
   /**
@@ -481,8 +530,24 @@ export class InteractiveScene extends Scene {
   private interactive_controls(): Array<Mobject & InteractiveControl> {
     if (this._controlsCache === null) {
       this._controlsCache = this.interactive_family().filter(isInteractiveControl);
+      this.observe_control_input(this._controlsCache);
     }
     return this._controlsCache;
+  }
+
+  /**
+   * Wire every interactive control's `on_input` into {@link mark_input}.  This
+   * covers gestures that bypass the scene's pointer handlers (typing into an
+   * inline editor) and immediate-mode controls; `set_value` stays silent, so a
+   * reaction writing values back never echoes.  Registration is once per
+   * control: the cache is rebuilt whenever mobjects are added or removed.
+   */
+  private observe_control_input(controls: Array<Mobject & InteractiveControl>): void {
+    for (const control of controls) {
+      if (this._observedControls.has(control)) continue;
+      this._observedControls.add(control);
+      control.on_input?.(() => this.mark_input());
+    }
   }
 
   private find_control_at(point: readonly number[]): (Mobject & InteractiveControl) | null {
@@ -530,6 +595,7 @@ export class InteractiveScene extends Scene {
    */
   protected handle_pointer_down(point: number[], event?: PointerEvent): void {
     if (this._phaseKind !== "blueprint") return;
+    this.mark_input();
     const control = this.find_control_at(point);
     if (control === null) {
       this.clear_hover();
@@ -543,16 +609,19 @@ export class InteractiveScene extends Scene {
 
   protected handle_pointer_move(point: number[], event?: PointerEvent): void {
     if (this._activeControl !== null) {
+      this.mark_input();
       this._activeControl.on_drag(point, { host: this.interactive_host, camera: this.camera });
       return;
     }
     if (this._phaseKind !== "blueprint") return;
+    this.mark_input();
     this.update_hover(point);
     this.on_background_pointer_move(point, event);
   }
 
   protected handle_pointer_up(event?: PointerEvent): void {
     if (this._activeControl !== null) {
+      this.mark_input();
       this._activeControl.on_release();
       this._activeControl = null;
       // Hover updates are suspended while a drag is active, so re-evaluate the
@@ -562,11 +631,13 @@ export class InteractiveScene extends Scene {
       return;
     }
     if (this._phaseKind !== "blueprint") return;
+    this.mark_input();
     this.on_background_pointer_up(event);
   }
 
   protected handle_pointer_wheel(event: WheelEvent): void {
     if (this._phaseKind !== "blueprint") return;
+    this.mark_input();
     this.on_background_wheel(event);
   }
 
@@ -612,6 +683,7 @@ export class InteractiveScene extends Scene {
     this.updaters = [];
     this.reactions = [];
     this.last_t = 0;
+    this._reactionsPending = false;
     this._activeControl = null;
     this.clear_hover();
     this._controlsCache = null;
