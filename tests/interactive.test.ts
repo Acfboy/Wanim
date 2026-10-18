@@ -654,7 +654,7 @@ describe("InteractiveScene", () => {
     await done;
   });
 
-  test("scene-level add_reaction runs each blueprint frame and receives the scene", async () => {
+  test("scene-level add_reaction runs on entry and on input, not idle frames", async () => {
     const host = new FakeHost();
     const calls: Array<{ scene: InteractiveScene; value: number }> = [];
     class SceneReactionScene extends InteractiveScene {
@@ -676,15 +676,24 @@ describe("InteractiveScene", () => {
     const scene = new SceneReactionScene({ renderer: makeRenderer(), host });
     const done = scene.render();
     await host.advance(1);
+    // The first pass on entering the page always runs the reaction.
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((call) => call.scene === scene)).toBe(true);
     expect(calls.at(-1)?.value).toBe(1);
 
-    // The reaction sees the slider's new value on the next blueprint frame.
+    // Idle frames do not re-run it: there was no input.
+    const idleCalls = calls.length;
+    await host.advance(3);
+    expect(calls.length).toBe(idleCalls);
+
+    // The reaction runs once after the user's gesture, seeing the new value.
     host.press([2, 0, 0]);
     host.release();
     await host.advance(1);
     expect(calls.at(-1)?.value).toBe(3);
+    const afterInput = calls.length;
+    await host.advance(2);
+    expect(calls.length).toBe(afterInput);
 
     // Construct phase: scene reactions are inert like every other reaction.
     const before = calls.length;

@@ -21,8 +21,8 @@ Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro
   common surface keep their Python names and keyword arguments.
 - **Real-time playback** on a Canvas2D backend. `self.wait()` is a real pause.
 - **Interactive scenes.** `InteractiveScene` separates a live `blueprint()`
-  (controls and reactions that run every frame) from `construct()` (an
-  ordinary animation script the reader advances to).
+  (controls and input-driven reactions) from `construct()` (an ordinary
+  animation script the reader advances to).
 - **Math and text without LaTeX.** `MathTex` and `Tex` use MathJax, loaded on
   demand. Text uses open-licensed fonts.
 - **Embeddable.** A `<wanim-scene>` custom element, a code-in-URL iframe, and
@@ -153,6 +153,9 @@ other:
 
 Other features:
 
+- `add_reaction` callbacks run once when a blueprint page is entered and again
+  after any reader input; an idle page is re-rendered without recomputing the
+  model.
 - `set_storyboard([[blueprint, construct], ...])` gives multi-step stories.
 - `wanim_config({"slides_mode": True})` pauses after every segment, for
   lecture-style material.

@@ -657,9 +657,9 @@ export class Mobject {
   }
   updaters: MobjectUpdater[] = [];
   /**
-   * Interaction callbacks (see `InteractiveScene`). Unlike updaters — which run
-   * every frame — reactions are only applied while the scene is in its
-   * interactive "blueprint" phase, so they can react to a control's value.
+   * Interaction callbacks (see `InteractiveScene`). Reactions are only applied
+   * while the scene is in its interactive "blueprint" phase, and there only on
+   * entry and after user input — unlike updaters, which run every frame.
    */
   reactions: Array<(mobject: Mobject) => void> = [];
   updating_suspended = false;

@@ -68,6 +68,14 @@ export interface InteractiveControl {
    * the highlight to a sub-part (e.g. a slider's knob).
    */
   set_hovered?(hovered: boolean, point?: readonly number[]): void;
+  /**
+   * Optional: observe user-originated value changes (see {@link InputListener}).
+   * `InteractiveScene` subscribes to every control it finds so that a
+   * blueprint's reactions are re-applied when the reader changes something —
+   * including edits typed into an inline editor, which never reach the scene's
+   * pointer handlers.
+   */
+  on_input?(listener: InputListener): unknown;
 }
 
 /** Duck-typed check that `mobject` is an interactive control. */

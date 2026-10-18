@@ -127,6 +127,7 @@ interface InteractiveSceneLike {
   presentation_phases(): PresentationPhase[];
   presentation_run_phase(phase: PresentationPhase): Promise<void>;
   presentation_frame(): void;
+  presentation_settle_phase(): void;
   presentation_reset(): void;
   presentation_control_values(): unknown[];
   presentation_set_control_values(values: unknown[]): void;
@@ -573,6 +574,37 @@ export class ScenePresentation {
     this.emit_state();
   }
 
+  /**
+   * Run a phase with animations skipped, then settle its final state without
+   * drawing.  A fast-forwarded page must reach the same state a live page
+   * would: a blueprint applies its reactions once (state a later construct
+   * builds on), and a construct runs its updaters once.  `run_phase_skipping`
+   * alone only builds the mobjects, so without this the skipped page's model
+   * would stay at its raw construction values.
+   */
+  private async run_skipped_page(index: number): Promise<void> {
+    const phase = this.phases[index];
+    if (phase === undefined) return;
+    await this.run_phase_skipping(phase);
+    if (phase.kind === "blueprint") this.restore_control_values(index);
+    this.settle_skipped_phase();
+  }
+
+  /** One non-drawing frame for a fast-forwarded page (updaters/reactions only). */
+  private settle_skipped_phase(): void {
+    const scene = this.scene;
+    if (scene === null) return;
+    const interactive = as_interactive(scene);
+    if (interactive !== null) {
+      interactive.presentation_settle_phase();
+      return;
+    }
+    const frameRate = (scene.camera?.frame_rate as number | undefined) ?? 30;
+    const dt = frameRate > 0 ? 1 / frameRate : 1 / 30;
+    scene.update_mobjects(dt);
+    scene.update_self(dt);
+  }
+
   private tick_plain_scene(scene: Scene): void {
     const frameRate = (scene.camera?.frame_rate as number | undefined) ?? 30;
     const dt = frameRate > 0 ? 1 / frameRate : 1 / 30;
@@ -598,7 +630,8 @@ export class ScenePresentation {
    * Rebuild the current scene from its start and fast-forward the phases
    * before `target`, then land on `target` (not yet visited).  Blueprint
    * values are restored while fast-forwarding so the replay continues from the
-   * remembered inputs.
+   * remembered inputs; each skipped page is settled (see
+   * {@link run_skipped_page}) so the replayed state is complete.
    */
   private async rewind_before(target: number): Promise<void> {
     const scene = this.scene;
@@ -607,9 +640,7 @@ export class ScenePresentation {
     scene.setup();
     this.phases = this.phases_of(scene);
     for (let index = 0; index < target; index += 1) {
-      const phase = this.phases[index]!;
-      await this.run_phase_skipping(phase);
-      if (phase.kind === "blueprint") this.restore_control_values(index);
+      await this.run_skipped_page(index);
     }
     this.phaseIndex = Math.max(0, target);
   }
@@ -621,10 +652,7 @@ export class ScenePresentation {
    */
   private async settle_skipping(target: number): Promise<void> {
     await this.rewind_before(target);
-    const phase = this.phases[target];
-    if (phase === undefined) return;
-    await this.run_phase_skipping(phase);
-    if (phase.kind === "blueprint") this.restore_control_values(target);
+    await this.run_skipped_page(target);
   }
 
   /** Move the page cursor forward without running anything. */
