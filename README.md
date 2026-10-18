@@ -156,6 +156,9 @@ Other features:
 - `add_reaction` callbacks run once when a blueprint page is entered and again
   after any reader input; an idle page is re-rendered without recomputing the
   model.
+- `control.on_input(fn)` observes value changes from gestures, text edits and
+  drags; it also fires once per control when the player restores remembered
+  values on "previous"/replay.
 - `set_storyboard([[blueprint, construct], ...])` gives multi-step stories.
 - `wanim_config({"slides_mode": True})` pauses after every segment, for
   lecture-style material.

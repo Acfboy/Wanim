@@ -1080,6 +1080,51 @@ describe("on_input", () => {
       [2, 7.5],
     ]);
   });
+
+  test("notify_input announces a restored value, unlike set_value", () => {
+    const slider = new Slider({ start: [-2, 0, 0], end: [2, 0, 0], value_range: [0, 10], init_value: 2 });
+    const events: Array<[unknown, unknown]> = [];
+    slider.on_input((_control, previous, next) => events.push([previous, next]));
+
+    slider.set_value(6);
+    expect(events).toEqual([]);
+
+    // The player's restore notifies even though the write itself is silent...
+    slider.notify_input(2, 6);
+    expect(events).toEqual([[2, 6]]);
+    // ...and a restored value equal to the current one is still announced once.
+    slider.notify_input(6, 6);
+    expect(events).toEqual([[2, 6], [6, 6]]);
+  });
+
+  test("restoring control values fires the scene's on_input listeners once each", () => {
+    class RestoreScene extends InteractiveScene {
+      slider!: Slider;
+      events: Array<[unknown, unknown]> = [];
+
+      override blueprint(): void {
+        this.slider = new Slider({
+          start: [-2, 0, 0],
+          end: [2, 0, 0],
+          value_range: [0, 10],
+          init_value: 3,
+        });
+        this.slider.on_input((_control, previous, next) => this.events.push([previous, next]));
+        this.add(this.slider);
+      }
+    }
+    const scene = new RestoreScene({ renderer: makeRenderer() });
+    scene.enter_blueprint();
+
+    scene.presentation_set_control_values([7]);
+    expect(scene.slider.get_value()).toBe(7);
+    expect(scene.events).toEqual([[3, 7]]);
+
+    // A restore of the same value still notifies once (rewinding replays pages
+    // from their defaults, so "unchanged" is not a reliable signal).
+    scene.presentation_set_control_values([7]);
+    expect(scene.events).toEqual([[3, 7], [7, 7]]);
+  });
 });
 
 describe("InputDecimalMatrix", () => {
