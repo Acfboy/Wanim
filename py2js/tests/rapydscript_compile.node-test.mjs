@@ -84,16 +84,17 @@ sandbox.__wan_setitem = (obj, ...args) => {
   return value;
 };
 
-async function compilePython(source) {
+async function compilePython(source, extraOptions = {}) {
   return sandbox.RapydScript.compile(source, "test.py", {
     bare: false,
     beautify: true,
     python_extensions: true,
+    ...extraOptions,
   });
 }
 
-async function runPython(source) {
-  const js = await compilePython(source);
+async function runPython(source, extraOptions) {
+  const js = await compilePython(source, extraOptions);
   const lines = [];
   const previous = sandbox.console;
   sandbox.console = { log: (...args) => lines.push(args.join(" ")), warn() {}, error() {} };
@@ -375,6 +376,237 @@ await check("f-strings still work", async () => {
     ["a = 3", 'b = f"This is {a} and {a * 2}"', "print(b)", ""].join("\n"),
   );
   assert.deepEqual(lines, ["This is 3 and 6"]);
+});
+
+// --- python_truthiness ------------------------------------------------------
+//
+// Python containers are falsy when empty; JavaScript's `[]`/`{}` are truthy.
+// The compiler lowers every boolean context through the baselib `ρσ_bool`, so
+// `if not crits:` takes the "empty" branch (the bug this option was added
+// for), `[] or x` evaluates to `x`, and `[] and x` evaluates to `[]`.
+
+const TRUTHY = { python_truthiness: true };
+
+await check("python_truthiness: bool()/if follow Python container truthiness", async () => {
+  const lines = await runPython(
+    [
+      "def f(x):",
+      "    return 1 if x else 0",
+      "print(f([]), f({}), f(''), f(0), f(0.0), f(None), f(()))",
+      "print(f([0]), f({'a': 1}), f(' '), f(1), f([[]]))",
+      "print(bool([]), bool([0]), bool({}), bool({'a': 1}))",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, [
+    "0 0 0 0 0 0 0",
+    "1 1 1 1 1",
+    "False True False True",
+  ]);
+});
+
+await check("python_truthiness: `not` on containers", async () => {
+  const lines = await runPython(
+    [
+      "print(not [], not [1], not {}, not {'a': 1}, not '', not 'x')",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ["True False True False True False"]);
+});
+
+await check("python_truthiness: `and`/`or` return operands and short-circuit", async () => {
+  const lines = await runPython(
+    [
+      "def boom():",
+      "    print('BOOM')",
+      "    return 'b'",
+      "print([] and 'x')",
+      "print([] or 'x')",
+      "print([0] and 'x')",
+      "print([0] or 'x')",
+      "print(0 or '' or 'y')",
+      "print('a' and '' and 'c')",
+      "print(0 and boom())",
+      "print([1] or boom())",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  // `boom()` must never run (both operands short-circuit).
+  assert.deepEqual(lines, ["[]", "x", "x", "[0]", "y", "", "0", "[1]"]);
+});
+
+await check("python_truthiness: empty-list branch selection (the crits bug)", async () => {
+  const lines = await runPython(
+    [
+      "crits = []",
+      "if not crits:",
+      "    print('single')",
+      "else:",
+      "    print('split', crits[0])",
+      "crits.append(2)",
+      "if not crits:",
+      "    print('single')",
+      "else:",
+      "    print('split', crits[0])",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ["single", "split 2"]);
+});
+
+await check("python_truthiness: while/comprehension/assert use Python truthiness", async () => {
+  const lines = await runPython(
+    [
+      "items = [1, 2]",
+      "times = 0",
+      "while items:",
+      "    items.pop()",
+      "    times += 1",
+      "print(times)",
+      "flags = [[], [1], []]",
+      "print([i for i in range(3) if flags[i]])",
+      "assert [1]",
+      "assert {'a': 1}",
+      "print('asserts-pass')",
+      "caught = False",
+      "try:",
+      "    assert []",
+      "except AssertionError:",
+      "    caught = True",
+      "print(caught)",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ["2", "[1]", "asserts-pass", "True"]);
+});
+
+await check("python_truthiness: numpy-style arrays", async () => {
+  // Stub the numpy-ts NDArray surface (shape/size/dtype/tolist/item) the
+  // baselib detects; the real arrays behave the same way.
+  sandbox.fake_nd_empty = { shape: [0], size: 0, dtype: "float64", tolist: () => [] };
+  sandbox.fake_nd_zero = {
+    shape: [1],
+    size: 1,
+    dtype: "float64",
+    item: () => 0,
+    tolist: () => [0],
+  };
+  sandbox.fake_nd_two = {
+    shape: [2],
+    size: 2,
+    dtype: "float64",
+    item: () => 1,
+    tolist: () => [1, 1],
+  };
+  const lines = await runPython(
+    [
+      "print(bool(fake_nd_empty), bool(fake_nd_zero))",
+      "ambiguous = False",
+      "try:",
+      "    print(bool(fake_nd_two))",
+      "except ValueError:",
+      "    ambiguous = True",
+      "print(ambiguous)",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ["False False", "True"]);
+});
+
+await check("python_truthiness: __bool__ is honoured", async () => {
+  sandbox.fake_tracker = { __bool__: () => false };
+  const lines = await runPython(
+    ["print(bool(fake_tracker), not fake_tracker)", ""].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ["False True"]);
+});
+
+await check("python_truthiness: off by default keeps upstream JS truthiness", async () => {
+  const lines = await runPython(
+    ["print(1 if [] else 0)", "print([] or 'x', [] and 'x')", ""].join("\n"),
+  );
+  assert.deepEqual(lines, ["1", "[] x"]);
+});
+
+await check("python_truthiness: tricky operand shapes", async () => {
+  const lines = await runPython(
+    [
+      "print((1, 2) and 3)",
+      "print(() or 'empty')",
+      "print(not (1 < 2))",
+      "print('a' if (1, 2) else 'b')",
+      "print(f\"{[] or 'f'}\")",
+      "f = lambda: [] or 'lam'",
+      "print(f())",
+      "d = {'k': [] or 'v'}",
+      "print(d['k'])",
+      "g = [[1], []]",
+      "print([(x or 'none') for x in g])",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ["3", "empty", "False", "a", "f", "lam", "v", '[[1], "none"]']);
+});
+
+await check("python_truthiness: and/or inside generators", async () => {
+  // NOTE: a bare `yield` *nested inside* an expression is broken upstream
+  // (`[] || yield "first";`), so only generator bodies are covered here.
+  const lines = await runPython(
+    [
+      "def gen(flag):",
+      "    yield [1] and flag",
+      "    yield [] or 'y'",
+      "    yield flag and []",
+      "print(list(gen('x')))",
+      "",
+    ].join("\n"),
+    TRUTHY,
+  );
+  assert.deepEqual(lines, ['["x", "y", []]']);
+});
+
+await check("python_truthiness: auto-await inside and/or stays valid", async () => {
+  // `await` must stay in the same expression: wrapping the right operand in a
+  // function would produce `() => await ...` (a syntax error) and break the
+  // real-time scene renderer.
+  const js = await compilePython(
+    [
+      "class Scene:",
+      "    def play(self, *args, **kwargs):",
+      "        return 'played'",
+      "    def run(self):",
+      "        first = self.play(1) or 'fallback'",
+      "        second = [1] and self.play(2)",
+      "        return first, second",
+      "Scene().run()",
+      "",
+    ].join("\n"),
+    { ...TRUTHY, await_scene_methods: true },
+  );
+  assert.match(js, /await self\.play\(/);
+  assert.doesNotMatch(js, /=>\s*await\s/);
+  vm.runInContext(js, sandbox);
+});
+
+await check("python truthiness: all()/any() (baselib, option-independent)", async () => {
+  const lines = await runPython(
+    [
+      "print(all([[1], [2]]), all([[1], []]), all([]))",
+      "print(any([[], [1]]), any([[], []]), any([]))",
+      "print(all([{'a': 1}]), any([{}]), all([{}, 1]))",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(lines, ["True False True", "True False False", "True False False"]);
 });
 
 console.log(`\n${passed} passed`);
