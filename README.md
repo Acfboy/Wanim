@@ -15,32 +15,22 @@ changes.
   <a href="https://wanim.org/docs/intro">Documentation</a> ·
   <a href="https://wanim.org/playground">Playground</a> ·
   <a href="https://wanim.org/docs/gallery">Examples</a> ·
-  <a href="http://wanim.org/chat/">Embedded in chat</a>
+  <a href="https://wanim.org/chat/">Embedded in chat</a>
 </p>
 
-Nothing for your readers to install: no Python, no
-LaTeX, no server, and no tens-of-megabytes Pyodide runtime. See examples in
-our [gallery](https://wanim.org/docs/gallery) and try it yourself in the
-[playground](https://wanim.org/playground).
+<p align="center">
+  <a href="https://wanim.org/chat/"><img src="assets/linear_trans.gif" width="32%"></a>
+  <a href="https://wanim.org/playground/?id=4be3ae8d&show=1"><img src="assets/fourier.gif" width="32%"></a>
+  <a href="https://wanim.org/playground/?id=bfa1cf5e&show=1"><img src="assets/slides.gif" width="32%"></a>
+ 
+</p>
 
-[![The Fourier transform winding machine, recreated in Wanim](assets/playground-fourier.png)](https://wanim.org/playground?id=4be3ae8d&show=1)
-_A recreation of 3b1b's stunning Fourier transform visualization_, [click to try it live.](https://wanim.org/playground?id=4be3ae8d&show=1)
 
-Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro).
+## Why Wanim？
 
-## Features
-
-- **Stock manim API.** `Scene`, mobjects, `self.play`, `.animate`,
-  `ValueTracker`, `Transform`, `MathTex`, `ThreeDScene`, and the rest of the
-  common surface keep their Python names and keyword arguments.
-- **Real-time playback** on a Canvas2D backend. `self.wait()` is a real pause.
-- **Interactive scenes.** `InteractiveScene` separates a live `blueprint()`
-  (controls and input-driven reactions) from `construct()` (an ordinary
-  animation script the reader advances to).
-- **Math and text without LaTeX.** `MathTex` and `Tex` use MathJax, loaded on
-  demand. Text uses open-licensed fonts.
-- **Embeddable.** A `<wanim-scene>` custom element, a code-in-URL iframe, and
-  a JavaScript API.
+- Run the original manim Python in the browser. 
+- Small enough to embed anywhere: **About 20× smaller than Pyodide-based ways of running manim in the browser.** Your readers install nothing, and a scene drops into any page as a <wanim-scene> element or an iframe. In the age of AI, that means live math can sit inside a conversation with a model, or serve as the blackboard the AI draws on while it explains.
+- Interactive with a few small edits. Turn an ordinary manim animation into an explorable explanation: add a slider, a switch, or a numeric input, wire up a reaction, and readers can drag, type, and toggle their way through the idea instead of just watching it go by.
 
 ## Comparison
 
@@ -50,16 +40,6 @@ Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro
 | Lightweight, embeddable anywhere | ✅ | ✅ | ❌ | ❌ |
 | Real-time rendering in the browser | ✅ | ✅ | ❌ | ✅ |
 | Interactive demos and slides | ✅ | ❌ | ❌ | ❌ |
-
-## Installation
-
-```bash
-npm install @wanimjs/wanim
-```
-
-Node.js 18 or newer is needed when using the package from Node. The embed
-helpers need a browser with `CompressionStream` (current Chrome, Edge,
-Firefox, and Safari).
 
 ## Quick start
 
@@ -76,6 +56,12 @@ shortcuts), and a ready-to-paste iframe snippet for embedding the animation in
 any page.
 
 ### In a bundled app (Vite, webpack, esbuild, Rollup)
+
+```bash
+npm install @wanimjs/wanim
+```
+
+Node.js 18 or newer is needed when using the package from Node. 
 
 ```js
 import { runPythonOnCanvas } from "@wanimjs/wanim/bridge";
@@ -124,6 +110,8 @@ class Demo(Scene):
 Serving the files yourself works the same way: copy the package's `browser/`
 directory (keep its `chunks/` subdirectory) and `numpy-ts.browser.js` from
 `node_modules/numpy-ts/dist/` onto your site, then point the URLs at them.
+
+For the full `<wanim-scene>` and javascript API, see the [documentation](https://wanim.org/docs/usage).
 
 ## Interactive scenes
 
@@ -181,53 +169,7 @@ Other features:
 - `ThreeDScene` and `InteractiveThreeDScene` support drag-to-orbit and scroll
   to zoom in idle blueprints.
 
-## Embedding
 
-- **`<wanim-scene>`** attributes: `code` or child `<script type="text/x-python">`,
-  `src`, `quality` (`-ql`, `-qm`, `-qh`, `-q4k`), `fps`, `scene`, `background`,
-  `autoplay`, `loop`, `preload-modules` (`mathjax fonts`). Methods: `run()`,
-  `stop()`, `next()`, `previous()`, `replay()`, `restart()`. Events:
-  `wanim-ready`, `wanim-run`, `wanim-scene`, `wanim-done`, `wanim-error`.
-- **Code in the URL fragment** for CMSs that accept only an iframe:
-
-  ```js
-  import { build_embed_hash, build_embed_iframe } from "@wanimjs/wanim";
-
-  const hash = await build_embed_hash(pythonSource, { quality: "-qm" });
-  const html = build_embed_iframe(`https://wanim.org/embed.html${hash}`, {
-    width: 960, height: 540, title: "Square to circle",
-  });
-  ```
-
-  The fragment is deflate-compressed and never sent to a server. The player
-  page is `demo/embed.html` in this repository; copy it as a starting point.
-
-## Package entry points
-
-| Import | Contents | Environment |
-| --- | --- | --- |
-| `@wanimjs/wanim` | manim-compatible library, scenes, embed helpers | Node, bundlers |
-| `@wanimjs/wanim/py2js` | Python to JavaScript compiler helpers | Node-safe |
-| `@wanimjs/wanim/py-runtime` | rapydscript shims, `math`/`random`/`itertools` facades | Node-safe |
-| `@wanimjs/wanim/bridge` | `runPythonOnCanvas`, `benchInteractiveScene` | Browser |
-| `@wanimjs/wanim/browser/*` | prebuilt bundles (`element`, `rapydscript`, and others) | Browser |
-
-Supported Python imports are `manim`, `numpy` (mapped to numpy-ts), `random`,
-`math`, and `itertools`. Other imports fail with a readable error at compile
-time.
-
-## Compatibility notes
-
-- The API follows manim Community Edition v0.21. Where behaviour differs, the
-  test suite is the reference. Please open an issue with the scene if
-  something runs under manim but not here.
-- Output is a live `<canvas>`. Wanim does not write video files.
-- Math uses MathJax, not LaTeX. Common `MathTex` input works; unusual LaTeX
-  packages do not.
-- Glyph coverage depends on the fonts you configure. Fonts can be self-hosted
-  with `configure_fonts([...])`, called before the first scene runs.
-- Some relatively complex numpy usage is not supported yet. If you hit a common
-  pattern that should work, please open an issue.
 
 ## Development
 
@@ -252,23 +194,10 @@ pnpm demo          # editor at http://localhost:5174/demo/
 | `pnpm test:py2js` | preprocessor, compiler-error, and runtime tests |
 | `pnpm typecheck` | TypeScript check without emitting |
 
-### Layout
 
-```
-src/          manim-compatible library (mobject, animation, scene, interactive, renderer)
-py2js/        Python to JavaScript bridge and rapydscript-ng patch
-demo/         editor and iframe player
-scripts/      bundling, packaging, and demo server
-packaging/    package.json, README, and LICENSE for the npm package
-tests/        Vitest suites
-```
+## Acknowledgements
 
-## Contributing
-
-Bug reports and minimal failing scenes are the most useful contribution right
-now. Open an issue with the Python source, the expected output, and what Wanim
-does instead. Before opening a pull request, run `pnpm typecheck`, `pnpm test`,
-and `pnpm test:py2js`.
+Wanim wouldn't exist without the work of others. Thanks to [3Blue1Brown](https://www.3blue1brown.com/) for creating manim and for the videos that made so many of us want to explain math this way in the first place; to everyone in the [Manim Community](https://www.manim.community/) who built and maintained the API Wanim follows; to [numpy-ts](https://numpyts.dev/) for the numpy layer; and to [rapydscript-ng](https://github.com/kovidgoyal/rapydscript-ng) for the Python-to-JavaScript compiler we patch.
 
 ## License
 
