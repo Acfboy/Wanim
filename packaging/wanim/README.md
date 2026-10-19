@@ -1,6 +1,6 @@
 # Wanim
 
-**manim, live in the browser — lightweight, fast, and interactive.**
+**Build playable math with ManimCE's API, and embed it anywhere.**
 
 Wanim lets almost unmodified [manim](https://www.manim.community/) Python run
 in the browser—lightweight, fast, and convenient—and with only minor code
@@ -12,19 +12,11 @@ our [gallery](https://wanim.org/docs/gallery) and try it yourself in the
 
 Full documentation starts at [wanim.org/docs/intro](https://wanim.org/docs/intro).
 
-## Features
+## Why Wanim？
 
-- **Stock manim API.** `Scene`, mobjects, `self.play`, `.animate`,
-  `ValueTracker`, `Transform`, `MathTex`, `ThreeDScene`, and the rest of the
-  common surface keep their Python names and keyword arguments.
-- **Real-time playback** on a Canvas2D backend. `self.wait()` is a real pause.
-- **Interactive scenes.** `InteractiveScene` separates a live `blueprint()`
-  (controls and reactions that run every frame) from `construct()` (an
-  ordinary animation script the reader advances to).
-- **Math and text without LaTeX.** `MathTex` and `Tex` use MathJax, loaded on
-  demand. Text uses open-licensed fonts.
-- **Embeddable.** A `<wanim-scene>` custom element, a code-in-URL iframe, and
-  a JavaScript API.
+- Run the original manim Python in the browser. 
+- Small enough to embed anywhere: **About 20× smaller than Pyodide-based ways of running manim in the browser.** Your readers install nothing, and a scene drops into any page as a <wanim-scene> element or an iframe. In the age of AI, that means live math can sit inside a conversation with a model, or serve as the blackboard the AI draws on while it explains.
+- Interactive with a few small edits. Turn an ordinary manim animation into an explorable explanation: add a slider, a switch, or a numeric input, wire up a reaction, and readers can drag, type, and toggle their way through the idea instead of just watching it go by.
 
 ## Comparison
 
