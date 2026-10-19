@@ -1,10 +1,24 @@
-# Wanim
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wanim-title-dark.svg">
+    <img src="assets/wanim-title.svg" alt="wanim" width="640">
+  </picture>
+</p>
 
-**manim, live in the browser — lightweight, fast, and interactive.**
-Wanim lets almost unmodified [manim](https://www.manim.community/) Python run
-in the browser—lightweight, fast, and convenient—and with only minor code
-changes, turns those scenes into interactive presentations far more powerful
-than plain animation. Nothing for your readers to install: no Python, no
+<p align="center">
+  <b>Build playable math with <a href="https://www.manim.community">ManimCE's API</a>, and embed it anywhere.</b><br>
+  Wanim lets almost unmodified manim Python run
+in the browser lightweightly, and turns those scenes into interactive presentations with only minor code
+changes.
+</p>
+<p align="center">
+  <a href="https://wanim.org/docs/intro">Documentation</a> ·
+  <a href="https://wanim.org/playground">Playground</a> ·
+  <a href="https://wanim.org/docs/gallery">Examples</a> ·
+  <a href="http://wanim.org/chat/">Embedded in chat</a>
+</p>
+
+Nothing for your readers to install: no Python, no
 LaTeX, no server, and no tens-of-megabytes Pyodide runtime. See examples in
 our [gallery](https://wanim.org/docs/gallery) and try it yourself in the
 [playground](https://wanim.org/playground).
