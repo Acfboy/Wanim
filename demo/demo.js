@@ -287,6 +287,21 @@ class InteractiveDemo(InteractiveScene):
     def construct(self):
         self.play(FadeOut(self.circle))
 `,
+  interactiveLinear: `from manim import *
+
+class InteractiveLinearDemo(InteractiveLinearTransformationScene):
+    def blueprint(self):
+        # The background/foreground grids and the i/j basis are prebuilt.
+        self.add_unit_square(animate=False)
+        self.add_vector([2, 1, 0], color=BLUE, animate=False)
+        self.add_draggable_vector([1, 2, 0], color=GOLD)
+        self.add_matrix_control()
+
+    def construct(self):
+        hint = Text("Drag the basis tips, or edit the matrix", font_size=26)
+        hint.to_edge(DOWN)
+        self.play(FadeIn(hint), run_time=0.8)
+`,
   interactive3d: `from manim import *
 
 class InteractiveThreeDDemo(InteractiveThreeDScene):

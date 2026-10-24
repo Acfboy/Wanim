@@ -147,6 +147,7 @@ other:
 | --- | --- | --- |
 | `Slider(start, end, value_range, init_value)` | drag along a segment | `float` |
 | `PathSlider(path, value_range, is_closed)` | drag along any curve | `float` |
+| `DraggablePoint([x, y, 0])` | drag freely on the plane | `get_center()` (numpy array) |
 | `Switch(value)` | click to toggle | `bool` |
 | `InputDecimalNumber(value, num_decimal_places)` | type, or drag to scrub | `float` |
 | `InputInteger(value)` | type, or drag to scrub | `int` |
@@ -175,6 +176,10 @@ Other features:
   `Space` or `→` next, `←` previous, `↑` replay.
 - `ThreeDScene` and `InteractiveThreeDScene` support drag-to-orbit and scroll
   to zoom in idle blueprints.
+- `InteractiveLinearTransformationScene` keeps a live 2x2 matrix: drag the
+  basis tips or edit `add_matrix_control()`, call
+  `set_matrix([[a, b], [c, d]])`, and add vectors with `add_vector(...)` or
+  reader-movable ones with `add_draggable_vector(...)`.
 
 
 

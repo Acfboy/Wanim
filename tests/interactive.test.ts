@@ -1,13 +1,14 @@
 import { describe, expect, test } from "vitest";
 import { CanvasSceneRenderer } from "../src/renderer/canvas_renderer.js";
 import { Camera } from "../src/camera/camera.js";
-import { Arc, Circle } from "../src/mobject/geometry/arc.js";
+import { Arc, Circle, Dot } from "../src/mobject/geometry/arc.js";
 import { Line } from "../src/mobject/geometry/line.js";
 import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
 import { DecimalNumber } from "../src/mobject/text/numbers.js";
 import { YELLOW } from "../src/utils/color/index.js";
 import {
   Chip,
+  DraggablePoint,
   InputDecimalMatrix,
   InputDecimalNumber,
   InputDecimalTable,
@@ -19,6 +20,7 @@ import {
 } from "../src/interactive/controls.js";
 import type { InteractiveHost, PointerHandlers, TextEditOptions } from "../src/interactive/host.js";
 import { InteractiveScene } from "../src/scene/interactive_scene.js";
+import { InteractiveLinearTransformationScene } from "../src/scene/interactive_linear_transformation_scene.js";
 import { Scene } from "../src/scene/scene.js";
 import { Wait } from "../src/animation/animation.js";
 import {
@@ -567,6 +569,69 @@ class DemoScene extends InteractiveScene {
     this.constructed = true;
   }
 }
+
+describe("DraggablePoint in an InteractiveScene", () => {
+  test("the host drags the point, a label follows and get_center reports it", async () => {
+    class PointScene extends InteractiveScene {
+      point!: DraggablePoint;
+      label!: Dot;
+      blueprint(): void {
+        this.point = new DraggablePoint([0, 0, 0], { color: YELLOW });
+        this.label = new Dot([0, 0.5, 0]);
+        this.point.attach(this.label);
+        this.add(this.point);
+      }
+    }
+    const host = new FakeHost();
+    const scene = new PointScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+
+    host.drag(scene.point.get_center());
+    expect(scene.point.hovered).toBe(true);
+
+    host.press(scene.point.get_center());
+    host.drag([1, 2, 0]);
+    host.release([1, 2, 0]);
+    const center = (scene.point.get_center() as unknown as number[]);
+    expect([center[0], center[1]]).toEqual([1, 2]);
+    const label = (scene.label.get_center() as unknown as number[]);
+    expect(label[0]).toBeCloseTo(1, 9);
+    expect(label[1]).toBeCloseTo(2.5, 9);
+
+    await endRun(host, scene, done);
+  });
+});
+
+describe("InteractiveLinearTransformationScene in a live host", () => {
+  test("promotes the basis tips to controls and deforms the plane on drag", async () => {
+    class LinearScene extends InteractiveLinearTransformationScene {
+      blueprint(): void {
+        this.add_unit_square(false);
+        this.add_draggable_point([1, 1, 0]);
+      }
+    }
+    const host = new FakeHost();
+    const scene = new LinearScene({ renderer: makeRenderer(), host });
+    const done = scene.render();
+    await host.advance(1);
+
+    expect(scene.basis_handles).toHaveLength(2);
+    host.press([1, 0, 0]);
+    host.drag([2, 1, 0]);
+    host.release([2, 1, 0]);
+    expect(scene.get_matrix()[0]![0]).toBeCloseTo(2, 8);
+    expect(scene.get_matrix()[1]![0]).toBeCloseTo(1, 8);
+
+    // The draggable point's image is a normal mobject reaction-free update.
+    const record = scene.draggable_points[0]!;
+    const image = record.image!.get_center() as unknown as number[];
+    expect(image[0]).toBeCloseTo(2, 8);
+    expect(image[1]).toBeCloseTo(2, 8);
+
+    await endRun(host, scene, done);
+  });
+});
 
 describe("InteractiveScene", () => {
   test("headless (node) runs one blueprint/construct pass and finishes", async () => {
