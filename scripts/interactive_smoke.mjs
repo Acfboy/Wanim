@@ -3,9 +3,9 @@
 //
 //   1. DraggablePoint: the reader drags the dot, `get_center()` follows, an
 //      attached label follows too, and a reaction reads the new position.
-//   2. InteractiveLinearTransformationScene: the basis-tip handles are real
-//      controls; dragging one updates the matrix, the transformed plane and
-//      the images of tracked draggable points.
+//   2. InteractiveLinearTransformationScene: the scene installs no controls of
+//      its own; the page wires a DraggablePoint to `set_matrix`, and dragging
+//      it updates the transformed plane and tracked vectors.
 //
 // Playwright drives real pointer events on a canvas; the scene reads its
 // state back through `window.__scene`.  Both scenes are compiled from Python
@@ -63,8 +63,18 @@ const LINEAR_SCENE = `from manim import *
 class LinearDemo(InteractiveLinearTransformationScene):
     def blueprint(self):
         self.add_unit_square(animate=False)
-        self.point = self.add_draggable_point([1, 1, 0])
-        self.vector = self.add_draggable_vector([2, 2, 0], color=GOLD, image_color=BLUE)
+        self.vector = self.add_vector([2, 1, 0], color=BLUE, animate=False)
+
+        # The scene has no built-in dragging: the author owns the interaction.
+        self.handle = DraggablePoint([1, 0, 0], color=GREEN)
+        def on_i_handle(control, previous, next_value):
+            point = control.get_center()
+            matrix = self.get_matrix()
+            matrix[0][0] = point[0]
+            matrix[1][0] = point[1]
+            self.set_matrix(matrix)
+        self.handle.on_input(on_i_handle)
+        self.add(self.handle)
 `;
 
 const SCENES = { drag: DRAG_SCENE, linear: LINEAR_SCENE };
@@ -197,7 +207,7 @@ async function main() {
       );
       await page.waitForFunction(
         sceneName === "linear"
-          ? "window.__scene.basis_handles?.length === 2"
+          ? "window.__scene.square !== undefined && window.__scene.handle !== undefined"
           : "window.__scene.point !== undefined",
         null,
         { timeout: 60000 },
@@ -235,18 +245,14 @@ async function main() {
             const value = mob.get_center();
             return [value[0], value[1]];
           };
+          const vector = scene.vector ? scene.vector.get_vector() : null;
           return {
-            point: center(scene.point),
+            point: scene.point ? center(scene.point) : null,
             marker: scene.marker ? center(scene.marker) : null,
             label: scene.label ? center(scene.label) : null,
+            handle: scene.handle ? center(scene.handle) : null,
             matrix: scene.get_matrix?.() ?? null,
-            images: scene.draggable_points?.map((record) => center(record.image)) ?? null,
-            vector: scene.vector ? center(scene.vector) : null,
-            vectorImage:
-              scene.draggable_vectors?.map((record) => {
-                const image = record.image.get_vector();
-                return [image[0], image[1]];
-              }) ?? null,
+            vector: vector ? [vector[0], vector[1]] : null,
             square: scene.square ? center(scene.square) : null,
             errors: window.__errors,
           };
@@ -301,48 +307,22 @@ async function main() {
   );
 
   await runCase(
-    "InteractiveLinearTransformationScene drags a basis tip and its matrix",
+    "InteractiveLinearTransformationScene follows a user-wired handle",
     "linear",
     async ({ drag, state }) => {
       await drag([1, 0], [2, 1]);
-      const afterBasis = await state();
-      const matrix = afterBasis.matrix;
+      const after = await state();
+      const matrix = after.matrix;
       assert(matrix !== null, "no matrix");
       assert(
         near(matrix[0][0], 2) && near(matrix[1][0], 1) && near(matrix[1][1], 1),
         `matrix ${JSON.stringify(matrix)}`,
       );
-      assert(
-        afterBasis.images !== null && near(afterBasis.images[0][0], 2) && near(afterBasis.images[0][1], 2),
-        `image ${JSON.stringify(afterBasis.images)}`,
-      );
-
-      // Drag the source-space point itself; its image follows M @ p.
-      await drag([1, 1], [2, 1]);
-      const afterPoint = await state();
-      assert(near(afterPoint.point[0], 2) && near(afterPoint.point[1], 1), `point ${afterPoint.point}`);
-      assert(
-        near(afterPoint.images[0][0], 4) && near(afterPoint.images[0][1], 3),
-        `image after drag ${JSON.stringify(afterPoint.images)}`,
-      );
-
-      // A second draggable vector, added with keyword arguments, follows M too.
-      assert(
-        afterPoint.vectorImage !== null &&
-          afterPoint.vectorImage[0][0] > 3.4 &&
-          afterPoint.vectorImage[0][1] > 3.4,
-        `vector image before drag ${JSON.stringify(afterPoint.vectorImage)}`,
-      );
-      await drag([2, 2], [1, 2]);
-      const afterVector = await state();
-      assert(near(afterVector.vector[0], 1) && near(afterVector.vector[1], 2), `vector ${afterVector.vector}`);
-      assert(
-        afterVector.vectorImage[0][0] > 1.4 &&
-          afterVector.vectorImage[0][0] < 2.2 &&
-          afterVector.vectorImage[0][1] > 2.4 &&
-          afterVector.vectorImage[0][1] < 3.2,
-        `vector image after drag ${JSON.stringify(afterVector.vectorImage)}`,
-      );
+      assert(near(after.handle[0], 2) && near(after.handle[1], 1), `handle ${after.handle}`);
+      // Unit square centre (0.5, 0.5) -> M @ (0.5, 0.5) = (1, 1).
+      assert(near(after.square[0], 1) && near(after.square[1], 1), `square ${after.square}`);
+      // The tracked vector shows M @ [2, 1] = [4, 3].
+      assert(after.vector[0] > 3.4 && after.vector[1] > 2.4, `vector ${after.vector}`);
     },
   );
 

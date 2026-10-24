@@ -146,10 +146,10 @@ Other features:
   `Space` or `→` next, `←` previous, `↑` replay.
 - `ThreeDScene` and `InteractiveThreeDScene` support drag-to-orbit and scroll
   to zoom in idle blueprints.
-- `InteractiveLinearTransformationScene` keeps a live 2x2 matrix: drag the
-  basis tips or edit `add_matrix_control()`, call
-  `set_matrix([[a, b], [c, d]])`, and add vectors with `add_vector(...)` or
-  reader-movable ones with `add_draggable_vector(...)`.
+- `InteractiveLinearTransformationScene` keeps a live 2x2 matrix. It adds no
+  controls itself: wire your own `DraggablePoint` / `Slider` / matrix editor to
+  `set_matrix([[a, b], [c, d]])`. Vectors added with `add_vector(...)` and
+  objects registered with `add_transformable_mobject(...)` follow the matrix.
 
 ## Embedding
 

@@ -294,11 +294,33 @@ class InteractiveLinearDemo(InteractiveLinearTransformationScene):
         # The background/foreground grids and the i/j basis are prebuilt.
         self.add_unit_square(animate=False)
         self.add_vector([2, 1, 0], color=BLUE, animate=False)
-        self.add_draggable_vector([1, 2, 0], color=GOLD)
-        self.add_matrix_control()
+
+        # No dragging is built in: the author wires the controls.
+        self.handle_i = DraggablePoint([1, 0, 0], color=GREEN)
+        def set_i_column(control, previous, next_value):
+            point = control.get_center()
+            matrix = self.get_matrix()
+            matrix[0][0] = point[0]
+            matrix[1][0] = point[1]
+            self.set_matrix(matrix)
+        self.handle_i.on_input(set_i_column)
+
+        self.handle_j = DraggablePoint([0, 1, 0], color=RED)
+        def set_j_column(control, previous, next_value):
+            point = control.get_center()
+            matrix = self.get_matrix()
+            matrix[0][1] = point[0]
+            matrix[1][1] = point[1]
+            self.set_matrix(matrix)
+        self.handle_j.on_input(set_j_column)
+
+        self.add(self.handle_i, self.handle_j)
+        hint = Text("Drag the green / red points to move i-hat / j-hat", font_size=24)
+        hint.to_corner(UL)
+        self.add(hint)
 
     def construct(self):
-        hint = Text("Drag the basis tips, or edit the matrix", font_size=26)
+        hint = Text("The grid is a live matrix", font_size=26)
         hint.to_edge(DOWN)
         self.play(FadeIn(hint), run_time=0.8)
 `,
