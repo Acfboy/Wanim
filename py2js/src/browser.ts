@@ -145,19 +145,6 @@ function orderedScenes(
 }
 
 /**
- * Build the per-run `wanim_config` global.  Each `runPythonOnCanvas` call gets
- * its own config object, so two presentations on one page never share settings.
- *
- * No `__argnames__`: with one, rapydscript's `ρσ_interpolate_kwargs` would drop
- * the keyword bag (`slides_mode=True`) because no keyword names the `options`
- * slot.  Without it the bag itself arrives as the single argument, and
- * `apply_wanim_config` reads its entries.
- */
-function makeWanimConfig(runConfig: Any): Any {
-  return (options: Any): Any => (wanim as Any).apply_wanim_config(runConfig, options);
-}
-
-/**
  * Await the optional wanim modules (MathJax / fonts) the scene is likely to
  * need, before any scene code runs.  See ./preload.ts for detection.
  */
@@ -175,9 +162,8 @@ export interface RunPythonOptions {
   /** manim quality flag controlling resolution / frame rate (default `-qm`). */
   quality?: string;
   /**
-   * Presentation pacing supplied by the host: `auto` (default), `slides`,
-   * `two-view`, or `animation` (loop the animation only).  This replaces the
-   * old `wanim_config({"slides_mode": ...})` Python switch.
+   * Presentation pacing supplied by the host: `normal` (default), `slides`,
+   * `two-view`, or `animation` (loop the animation only).
    */
   mode?: string;
   /** Light/dark hint readable from Python as `self.theme` in `setup()`. */
@@ -238,9 +224,7 @@ export interface RunPythonResult {
 
 /**
  * Compile `source` and play the `Scene` subclasses onto `canvas`, in source
- * order.  The host controls pacing through `mode`; the legacy
- * `wanim_config({"slides_mode": True})` line is only used as a fallback when
- * no mode is supplied.
+ * order.  The host controls pacing through `mode`.
  *
  * The scene runs in real time: wanim yields to the browser between frames, so
  * a `self.wait()` is an actual pause and the canvas updates live.
@@ -257,10 +241,6 @@ export async function runPythonOnCanvas(
     if (name === "*") Object.assign(runtime.globals, runtime.np);
     else if (name in runtime.np) runtime.globals[name] = runtime.np[name];
   }
-  // Per-run presentation configuration, set from Python through
-  // `wanim_config({...})`; injected before the sandbox copies the globals.
-  const runConfig = (wanim as Any).default_wanim_run_config();
-  runtime.globals["wanim_config"] = makeWanimConfig(runConfig);
   const sandbox = createSandbox(runtime);
   try {
     sandbox.win.eval(js);
@@ -300,7 +280,6 @@ export async function runPythonOnCanvas(
       mode: options.mode,
       theme: options.theme,
       instanceId: options.instanceId,
-      slidesMode: Boolean(runConfig.slides_mode),
       onMessage: options.onMessage,
       onLoop: options.onLoop,
       onSceneReady: options.onSceneReady,

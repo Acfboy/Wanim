@@ -218,14 +218,12 @@ export async function render_scene_to_canvas(
 
 export interface BrowserPresentationOptions extends BrowserRenderOptions {
   /**
-   * How the presentation is paced.  `auto` (default) pauses only on blueprint
-   * pages; `slides` pauses after every phase; `two-view` loops the animation
-   * and lets the reader double-click into a live blueprint; `animation` loops
-   * the animation only (used for GIF export).
+   * How the presentation is paced.  `normal` (default) pauses only on
+   * blueprint pages; `slides` pauses after every phase; `two-view` loops the
+   * animation and lets the reader double-click into a live blueprint;
+   * `animation` loops the animation only (used for GIF export).
    */
   mode?: PresentationMode | string;
-  /** Legacy slides switch; ignored when `mode` is supplied. */
-  slidesMode?: boolean;
   /** Stable id attached to every `post_message` from this run. */
   instanceId?: string;
   /** Called each time a scene becomes active (fresh or rebuilt). */
@@ -309,9 +307,7 @@ export async function render_presentation_to_canvas(
     renderer.dispose();
   };
 
-  const requestedMode = normalize_presentation_mode(options.mode);
-  const mode: PresentationMode =
-    requestedMode ?? (options.slidesMode === true ? "slides" : "auto");
+  const mode: PresentationMode = normalize_presentation_mode(options.mode) ?? "normal";
   const theme = normalize_presentation_theme(options.theme);
   const instanceId = options.instanceId ?? `wanim-${nextPresentationId++}`;
   const twoView = mode === "two-view" || mode === "animation";

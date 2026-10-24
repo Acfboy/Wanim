@@ -1,6 +1,6 @@
 {
   "name": "@wanimjs/wanim",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Manim-compatible animation library in TypeScript with a real-time Canvas2D backend, a Python-to-JS compiler bridge and prebuilt browser bundles — one package with subpath exports.",
   "keywords": [
     "manim",
