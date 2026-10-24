@@ -38,6 +38,7 @@ class FakeHost implements InteractiveHost {
   buttons = new Map<string, () => void>();
   buttonsEnabled = true;
   visible = new Map<string, boolean>();
+  dark: boolean | null = null;
   doubleClickHandler: (() => void) | null = null;
   private resolvers: Array<() => void> = [];
 
@@ -71,7 +72,9 @@ class FakeHost implements InteractiveHost {
   setButtonVisible(icon: string, visible: boolean): void {
     this.visible.set(icon, visible);
   }
-  setControlTheme(): void {}
+  setControlTheme(dark: boolean): void {
+    this.dark = dark;
+  }
   onKey(_handlers: unknown): () => void {
     return () => {};
   }
@@ -311,6 +314,34 @@ describe("TwoViewPresentation", () => {
     await host.advance(3);
     expect(visibleInConstruct).toBe(0);
     expect(active.slider.get_value()).toBe(3);
+
+    controller.abort();
+    await host.advance(2);
+    await run;
+  });
+
+  test("uses dark control icons when the camera background is light", async () => {
+    const host = new FakeHost();
+    const renderer = makeRenderer();
+    renderer.camera.background_color = "#ffffff";
+    const created: InteractiveScene[] = [];
+    const create = (sceneClass: SceneConstructor): Scene => {
+      const scene = new sceneClass({ renderer, host });
+      if (scene instanceof InteractiveScene) created.push(scene);
+      return scene;
+    };
+    class WhiteScene extends InteractiveScene {
+      construct(): void {}
+    }
+    const controller = new TwoViewPresentation([WhiteScene], {
+      host,
+      mode: "two-view",
+      createScene: create,
+    });
+    const run = controller.run();
+    await host.advance(3);
+    expect(created.length).toBeGreaterThan(0);
+    expect(host.dark).toBe(false);
 
     controller.abort();
     await host.advance(2);

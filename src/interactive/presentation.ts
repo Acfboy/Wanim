@@ -572,6 +572,9 @@ export class ScenePresentation {
   private settle(): void {
     if (this.abortRequested) return;
     this.tick();
+    // A blueprint may change the camera background; keep the overlay icons
+    // readable when the page settles.
+    if (this.scene !== null) this.apply_control_theme(this.scene);
     this.emit_state();
   }
 

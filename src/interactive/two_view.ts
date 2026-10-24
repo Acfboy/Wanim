@@ -37,6 +37,7 @@ import type { InteractiveHost } from "./host.js";
 import { is_thenable, type RenderScheduler } from "../utils/scheduler.js";
 import {
   PRESENTATION_CONTROL_LABELS,
+  dark_from_hex,
   type PresentationPhase,
   type PresentationState,
 } from "./presentation.js";
@@ -408,6 +409,7 @@ export class TwoViewPresentation {
             this.subphase = "blueprint";
             await this.run_phase({ kind: "blueprint", run: page.blueprint });
             this.settle();
+            this.apply_control_theme();
             this.apply_stage_clear();
           }
           this.subphase = "construct";
@@ -1009,6 +1011,7 @@ export class TwoViewPresentation {
   }
 
   private show_animation_controls(plan: TwoViewPlan | null): void {
+    this.apply_control_theme();
     this.host.setButtonsEnabled(true);
     this.host.setButtonVisible?.("previous", false);
     this.host.setButtonVisible?.(
@@ -1024,6 +1027,7 @@ export class TwoViewPresentation {
   }
 
   private show_interaction_controls(): void {
+    this.apply_control_theme();
     const canPrevious = this.can_previous();
     const canNext = this.can_next();
     this.host.setButtonsEnabled(true);
@@ -1032,6 +1036,23 @@ export class TwoViewPresentation {
     this.host.setButtonVisible?.("next", canNext);
     this.host.setButtonVisible?.("interact", false);
     this.emit_state();
+  }
+
+  /**
+   * Tell the host whether the current canvas backdrop is light, so the icon
+   * bar can switch to dark-grey glyphs.  Re-evaluated whenever the controls
+   * become visible: a scene may change `camera.background_color` while it
+   * builds its blueprint.
+   */
+  private apply_control_theme(): void {
+    if (typeof this.host.setControlTheme !== "function") return;
+    const camera = this.scene?.camera as
+      | { background_color?: { to_hex?: () => string }; background_opacity?: number }
+      | null
+      | undefined;
+    const hex = camera?.background_color?.to_hex?.();
+    if (typeof hex !== "string") return;
+    this.host.setControlTheme(dark_from_hex(hex, camera?.background_opacity ?? 1));
   }
 
   private hide_controls(): void {
