@@ -43,7 +43,7 @@
  * | `code`             | `.code`             | Python source (also a child script or src) |
  * | `quality`          | `.quality`          | manim quality flag, default `-qm`          |
  * | `background`       | —                   | CSS colour override                        |
- * | `mode`             | `.mode`             | `auto`, `slides`, `two-view`, `animation`  |
+ * | `mode`             | `.mode`             | `normal`, `slides`, `two-view`, `animation`  |
  * | `theme`            | `.theme`            | `light` / `dark`, readable as `self.theme` |
  * | `instance-id`      | `.instanceId`       | Id attached to `post_message` events       |
  * | `fps`              | —                   | realtime frame rate, default 30            |

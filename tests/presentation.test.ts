@@ -12,8 +12,6 @@ import {
 import { InteractiveScene } from "../src/scene/interactive_scene.js";
 import { Scene } from "../src/scene/scene.js";
 import {
-  apply_wanim_config,
-  default_wanim_run_config,
   normalize_presentation_mode,
   normalize_presentation_theme,
 } from "../src/interactive/config.js";
@@ -165,26 +163,11 @@ class SliderScene extends InteractiveScene {
 
 class SecondScene extends SliderScene {}
 
-describe("wanim_config", () => {
-  test("defaults to slides_mode off and can be switched on", () => {
-    const config = default_wanim_run_config();
-    expect(config.slides_mode).toBe(false);
-    apply_wanim_config(config, { slides_mode: true });
-    expect(config.slides_mode).toBe(true);
-    apply_wanim_config(config, {});
-    expect(config.slides_mode).toBe(true);
-  });
-
-  test("rejects unknown keys and wrong types", () => {
-    const config = default_wanim_run_config();
-    expect(() => apply_wanim_config(config, { nope: 1 })).toThrowError(/unknown option 'nope'/);
-    expect(() => apply_wanim_config(config, { slides_mode: "yes" })).toThrowError(/must be a bool/);
-  });
-});
-
 describe("presentation mode/theme normalization", () => {
   test("accepts the host-facing mode names and aliases", () => {
-    expect(normalize_presentation_mode("auto")).toBe("auto");
+    expect(normalize_presentation_mode("normal")).toBe("normal");
+    expect(normalize_presentation_mode("default")).toBe("normal");
+    expect(normalize_presentation_mode("auto")).toBeUndefined();
     expect(normalize_presentation_mode("slides")).toBe("slides");
     expect(normalize_presentation_mode("two-view")).toBe("two-view");
     expect(normalize_presentation_mode("two_view")).toBe("two-view");
