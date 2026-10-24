@@ -67,7 +67,12 @@ export interface KeyHandlers {
 }
 
 /** Icon names the host knows how to draw (fallback is the text label). */
-export type InteractiveButtonIcon = "previous" | "next" | "replay" | "restart";
+export type InteractiveButtonIcon =
+  | "previous"
+  | "next"
+  | "replay"
+  | "restart"
+  | "interact";
 
 /** Environment services an {@link InteractiveScene} needs. */
 export interface InteractiveHost {
@@ -92,6 +97,12 @@ export interface InteractiveHost {
    * the host implements it (a headless host has no wheel to deliver).
    */
   onWheel?(handler: (event: WheelEvent) => void): () => void;
+  /**
+   * Register a double-click callback on the interactive surface; returns a
+   * disposer.  Optional: the two-view player uses it to switch between the
+   * looping animation and the live interactive page.
+   */
+  onDoubleClick?(handler: () => void): () => void;
   /** Add an overlay button; returns a disposer that detaches its click handler. */
   addButton(label: string, onClick: () => void, icon?: InteractiveButtonIcon): () => void;
   /**

@@ -32,6 +32,17 @@ import {
   type PresentationState,
 } from "./interactive/presentation.js";
 import {
+  TwoViewPresentation,
+  type TwoViewState,
+  type WanimMessage,
+} from "./interactive/two_view.js";
+import {
+  normalize_presentation_mode,
+  normalize_presentation_theme,
+  type PresentationMode,
+  type PresentationTheme,
+} from "./interactive/config.js";
+import {
   create_frame_scheduler,
   get_render_scheduler,
   is_thenable,
@@ -77,6 +88,8 @@ export interface BrowserRenderOptions {
    * omitted, the scene/camera background is kept.
    */
   background?: string;
+  /** Light/dark hint readable from Python as `self.theme` in `setup()`. */
+  theme?: PresentationTheme;
   /** Abort a realtime run; the scene stops at the next frame boundary. */
   signal?: AbortSignal;
   onProgress?: (info: { frames: number; plays: number; elapsedMs: number }) => void;
@@ -95,6 +108,9 @@ export interface BrowserRenderResult {
   frames: MJSONFrame[];
   meta: MJSONMeta;
 }
+
+/** Monotonic id used to tell several embeds on one page apart. */
+let nextPresentationId = 1;
 
 function make_meta(camera: Camera, numFrames: number, numPlays: number): MJSONMeta {
   return {
@@ -157,6 +173,8 @@ export async function render_scene_to_canvas(
     renderer.camera.background_color = options.background;
   }
   const scene = construct_scene(sceneClass, renderer as never);
+  const theme = normalize_presentation_theme(options.theme);
+  if (theme !== undefined) scene.theme = theme;
   options.onSceneReady?.(scene);
   // Interactive scenes need a DOM host to receive pointer events and to place
   // the restart/next buttons.  Without a DOM (Node) the scene falls back to its
@@ -200,21 +218,34 @@ export async function render_scene_to_canvas(
 
 export interface BrowserPresentationOptions extends BrowserRenderOptions {
   /**
-   * Slide mode: pause after every phase and enable previous/replay.  Without
-   * it only blueprint phases pause and the story plays through.
+   * How the presentation is paced.  `auto` (default) pauses only on blueprint
+   * pages; `slides` pauses after every phase; `two-view` loops the animation
+   * and lets the reader double-click into a live blueprint; `animation` loops
+   * the animation only (used for GIF export).
    */
+  mode?: PresentationMode | string;
+  /** Legacy slides switch; ignored when `mode` is supplied. */
   slidesMode?: boolean;
+  /** Stable id attached to every `post_message` from this run. */
+  instanceId?: string;
   /** Called each time a scene becomes active (fresh or rebuilt). */
   onSceneActivated?: (scene: Scene, index: number, sceneClass: SceneConstructor) => void;
   /** Called once with the navigation controller driving the presentation. */
-  onController?: (controller: ScenePresentation) => void;
+  onController?: (controller: PresentationController) => void;
   /** Called whenever the presentation position/state changes. */
-  onStateChange?: (state: PresentationState) => void;
+  onStateChange?: (state: PresentationState | TwoViewState) => void;
+  /** Forwarded `Scene.post_message(key, value)` calls. */
+  onMessage?: (message: WanimMessage) => void;
+  /** Called after one complete animation loop (two-view/animation modes). */
+  onLoop?: () => void;
 }
+
+/** The navigation surface shared by both players. */
+export type PresentationController = ScenePresentation | TwoViewPresentation;
 
 export interface BrowserPresentationResult extends BrowserRenderResult {
   /** Navigation handle: `next()`, `previous()`, `replay()`, `restart()`. */
-  controller: ScenePresentation;
+  controller: PresentationController;
 }
 
 /**
@@ -244,7 +275,7 @@ export async function render_presentation_to_canvas(
     : null;
   const domHost = typeof document !== "undefined" ? new DomInteractiveHost(canvas) : null;
   const host: InteractiveHost = domHost ?? new NullInteractiveHost();
-  let controller: ScenePresentation | null = null;
+  let controller: PresentationController | null = null;
   const onAbort = (): void => {
     scheduler?.cancel();
     controller?.abort();
@@ -278,6 +309,27 @@ export async function render_presentation_to_canvas(
     renderer.dispose();
   };
 
+  const requestedMode = normalize_presentation_mode(options.mode);
+  const mode: PresentationMode =
+    requestedMode ?? (options.slidesMode === true ? "slides" : "auto");
+  const theme = normalize_presentation_theme(options.theme);
+  const instanceId = options.instanceId ?? `wanim-${nextPresentationId++}`;
+  const twoView = mode === "two-view" || mode === "animation";
+  // Every scene gets a message sink so `post_message` works in the classic
+  // players too; the two-view player installs a richer one itself.
+  let activeSceneIndex = 0;
+  const forwardMessage = (scene: Scene, key: unknown, value: unknown): void => {
+    options.onMessage?.({
+      id: instanceId,
+      key,
+      value,
+      scene: scene.constructor.name,
+      sceneIndex: activeSceneIndex,
+      pageIndex: 0,
+      phaseKind: "construct",
+    });
+  };
+
   const createScene = (sceneClass: SceneConstructor): Scene => {
     const cameraClass = default_camera_class(sceneClass);
     const camera = new cameraClass();
@@ -306,27 +358,48 @@ export async function render_presentation_to_canvas(
       renderer.camera.background_color = options.background;
     }
     const scene = construct_scene(sceneClass, renderer as never);
+    if (theme !== undefined) scene.theme = theme;
     // Attach the scheduler explicitly instead of installing a global one: a
     // second presentation on the same page must not steal this run's pacing.
     scene.set_run_scheduler(scheduler);
     if (scene instanceof InteractiveScene) scene.interactive_host = host;
+    if (!twoView) scene.message_sink = (key, value) => forwardMessage(scene, key, value);
     lastCamera = renderer.camera;
     options.onSceneReady?.(scene);
     return scene;
   };
 
-  controller = new ScenePresentation(sceneClasses, {
-    host,
-    slidesMode: options.slidesMode ?? false,
-    createScene,
-    disposeScene: (scene) => harvest(scene),
-    onSceneActivated: (scene, index, sceneClass) =>
-      options.onSceneActivated?.(scene, index, sceneClass),
-    onStateChange: options.onStateChange,
-  });
-  options.onController?.(controller);
+  const presentationController: PresentationController = twoView
+    ? new TwoViewPresentation(sceneClasses, {
+        host,
+        mode: mode as "two-view" | "animation",
+        theme,
+        instanceId,
+        createScene,
+        disposeScene: (scene) => harvest(scene),
+        onSceneActivated: (scene, index, sceneClass) => {
+          activeSceneIndex = index;
+          options.onSceneActivated?.(scene, index, sceneClass);
+        },
+        onStateChange: options.onStateChange,
+        onMessage: options.onMessage,
+        onLoop: options.onLoop,
+      })
+    : new ScenePresentation(sceneClasses, {
+        host,
+        slidesMode: mode === "slides",
+        createScene,
+        disposeScene: (scene) => harvest(scene),
+        onSceneActivated: (scene, index, sceneClass) => {
+          activeSceneIndex = index;
+          options.onSceneActivated?.(scene, index, sceneClass);
+        },
+        onStateChange: options.onStateChange,
+      });
+  controller = presentationController;
+  options.onController?.(presentationController);
   try {
-    await controller.run();
+    await presentationController.run();
   } finally {
     options.signal?.removeEventListener("abort", onAbort);
     domHost?.dispose();
@@ -335,7 +408,7 @@ export async function render_presentation_to_canvas(
     stats,
     frames,
     meta: make_meta(lastCamera ?? new Camera(), stats.frames, numPlays),
-    controller,
+    controller: presentationController,
   };
 }
 

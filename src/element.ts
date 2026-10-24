@@ -43,6 +43,9 @@
  * | `code`             | `.code`             | Python source (also a child script or src) |
  * | `quality`          | `.quality`          | manim quality flag, default `-qm`          |
  * | `background`       | —                   | CSS colour override                        |
+ * | `mode`             | `.mode`             | `auto`, `slides`, `two-view`, `animation`  |
+ * | `theme`            | `.theme`            | `light` / `dark`, readable as `self.theme` |
+ * | `instance-id`      | `.instanceId`       | Id attached to `post_message` events       |
  * | `fps`              | —                   | realtime frame rate, default 30            |
  * | `scene`            | `.sceneName`        | scene class name                           |
  * | `src`              | —                   | fetch Python from a URL                    |
@@ -53,9 +56,11 @@
  *
  * Methods: `run()` (async, resolves with the render stats), `stop()`,
  * `next()` / `previous()` / `replay()` (drive the live presentation),
- * `restart()` (re-runs).  Events (bubbling, composed): `wanim-ready`,
- * `wanim-run`, `wanim-scene` (detail.name), `wanim-done` (detail.stats),
- * `wanim-error` (detail.error).
+ * `enterInteraction()` / `enterAnimation()` (two-view mode), `restart()`
+ * (re-runs).  Events (bubbling, composed): `wanim-ready`, `wanim-run`,
+ * `wanim-scene` (detail.name), `wanim-done` (detail.stats),
+ * `wanim-error` (detail.error), `wanim-message` (detail from
+ * `post_message`), `wanim-loop` (one animation loop completed).
  */
 
 /** Render statistics returned by `run()` (a subset of wanim's stats). */
@@ -92,9 +97,31 @@ interface PresentationControllerLike {
   replay?: () => void;
   restart?: () => void;
   abort?: () => void;
+  enterInteraction?: () => void;
+  enterAnimation?: () => void;
+}
+
+/** Payload of a `wanim-message` event. */
+export interface WanimMessageDetail {
+  id: string;
+  key: unknown;
+  value: unknown;
+  scene: string;
+  sceneIndex: number;
+  pageIndex: number;
+  phaseKind: "blueprint" | "construct";
 }
 
 const TAG_NAME = "wanim-scene";
+
+/** Monotonic fallback id for elements without an `id`/`instance-id`. */
+let nextElementInstance = 1;
+function elementInstanceId(element: WanimSceneElement): string {
+  if (element.dataset.wanimInstanceId === undefined) {
+    element.dataset.wanimInstanceId = `wanim-scene-${nextElementInstance++}`;
+  }
+  return element.dataset.wanimInstanceId;
+}
 const DEFAULT_QUALITY = "-qm";
 const DEFAULT_FPS = 30;
 
@@ -269,6 +296,9 @@ export class WanimSceneElement extends HTMLElementBase {
       "code",
       "quality",
       "background",
+      "mode",
+      "theme",
+      "instance-id",
       "fps",
       "scene",
       "autoplay",
@@ -282,6 +312,9 @@ export class WanimSceneElement extends HTMLElementBase {
   private _code: string | null = null;
   private _quality: string | null = null;
   private _background: string | null = null;
+  private _mode: string | null = null;
+  private _theme: "light" | "dark" | null = null;
+  private _instanceId: string | null = null;
   private _fps: number | null = null;
   private _sceneName: string | null = null;
   private _autoplay = true;
@@ -320,6 +353,42 @@ export class WanimSceneElement extends HTMLElementBase {
   set quality(value: string) {
     this._quality = value;
     this.setAttribute("quality", value);
+  }
+
+  /** Presentation mode; empty string means "let the host/legacy default". */
+  get mode(): string {
+    return this._mode ?? "";
+  }
+
+  set mode(value: string) {
+    this._mode = value === "" ? null : value;
+    if (value === "") this.removeAttribute("mode");
+    else this.setAttribute("mode", value);
+  }
+
+  /** Light/dark hint, readable from Python as `self.theme`. */
+  get theme(): "light" | "dark" {
+    return this._theme ?? "light";
+  }
+
+  set theme(value: "light" | "dark") {
+    this._theme = value;
+    this.setAttribute("theme", value);
+  }
+
+  /** Stable id attached to `post_message` events from this element. */
+  get instanceId(): string {
+    return (
+      this._instanceId ||
+      this.getAttribute("instance-id") ||
+      this.id ||
+      elementInstanceId(this)
+    );
+  }
+
+  set instanceId(value: string) {
+    this._instanceId = value;
+    this.setAttribute("instance-id", value);
   }
 
   /** Scene class name to run; defaults to the first scene found. */
@@ -371,6 +440,17 @@ export class WanimSceneElement extends HTMLElementBase {
         break;
       case "background":
         this._background = value;
+        break;
+      case "mode":
+        this._mode = value;
+        break;
+      case "theme": {
+        const normalized = value?.trim().toLowerCase();
+        this._theme = normalized === "dark" ? "dark" : normalized === "light" ? "light" : null;
+        break;
+      }
+      case "instance-id":
+        this._instanceId = value;
         break;
       case "fps": {
         const parsed = value === null || value === "" ? Number.NaN : Number(value);
@@ -443,6 +523,22 @@ export class WanimSceneElement extends HTMLElementBase {
     return true;
   }
 
+  /** Two-view mode: switch from the looping animation to the live page. */
+  enterInteraction(): boolean {
+    const controller = this.liveController;
+    if (controller === null || typeof controller.enterInteraction !== "function") return false;
+    controller.enterInteraction();
+    return true;
+  }
+
+  /** Two-view mode: switch back to the looping animation. */
+  enterAnimation(): boolean {
+    const controller = this.liveController;
+    if (controller === null || typeof controller.enterAnimation !== "function") return false;
+    controller.enterAnimation();
+    return true;
+  }
+
   /** The live presentation controller, if a run is active. */
   get presentation(): PresentationControllerLike | null {
     return this.liveController;
@@ -470,6 +566,10 @@ export class WanimSceneElement extends HTMLElementBase {
     this._code = this.getAttribute("code");
     this._quality = this.getAttribute("quality");
     this._background = this.getAttribute("background");
+    this._mode = this.getAttribute("mode");
+    const theme = this.getAttribute("theme")?.trim().toLowerCase();
+    this._theme = theme === "dark" ? "dark" : theme === "light" ? "light" : null;
+    this._instanceId = this.getAttribute("instance-id");
     this._sceneName = this.getAttribute("scene");
     this._autoplay = resolveAutoplayAttribute(this.getAttribute("autoplay"));
     this._loop = resolveLoopAttribute(this.getAttribute("loop"));
@@ -671,8 +771,19 @@ export class WanimSceneElement extends HTMLElementBase {
         drawFrames: true,
         recordFrames: false,
         background: this._background ?? undefined,
+        mode: this._mode ?? undefined,
+        theme: this._theme ?? undefined,
+        instanceId: this.instanceId,
         sceneName: this._sceneName ?? undefined,
         signal: controller.signal,
+        onMessage: (message: unknown) => {
+          if (generation !== this.generation) return;
+          this.dispatch("wanim-message", message as Record<string, unknown>);
+        },
+        onLoop: () => {
+          if (generation !== this.generation) return;
+          this.dispatch("wanim-loop", {});
+        },
         onScene: (name: string) => {
           if (generation !== this.generation) return;
           this.setStatus(`Running ${name}…`);

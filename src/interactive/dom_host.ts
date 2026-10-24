@@ -72,7 +72,7 @@ const LIVE_HOSTS = new Set<DomInteractiveHost>();
 let ACTIVE_HOST: DomInteractiveHost | null = null;
 
 /** Icon names known to the control bar, in their fixed on-screen order. */
-const ICON_ORDER: InteractiveButtonIcon[] = ["previous", "replay", "next"];
+const ICON_ORDER: InteractiveButtonIcon[] = ["previous", "replay", "next", "interact"];
 
 /**
  * SVG icon markup (24x24 viewBox), stroke-based so the icons stay crisp and
@@ -87,6 +87,9 @@ const BUTTON_ICONS: Record<InteractiveButtonIcon, string> = {
   restart:
     '<polyline points="21 4 21 9.5 15.5 9.5" />' +
     '<path d="M18.9 14.1a7.5 7.5 0 1 1-1.6-7.7L21 9.5" />',
+  // A cursor arrow over a small "play" triangle: "take over / interact".
+  interact:
+    '<path d="M7 4l10 7-4.4 1.2L15 19l-2.2 1-2.4-6.6L7 17z" />',
 };
 
 function applyIcon(button: HTMLButtonElement, icon: InteractiveButtonIcon): void {
@@ -373,6 +376,20 @@ export class DomInteractiveHost implements InteractiveHost {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       this.canvas.removeEventListener("pointerleave", leave);
+    };
+    this.disposers.push(dispose);
+    return dispose;
+  }
+
+  onDoubleClick(handler: () => void): () => void {
+    const listener = (event: MouseEvent): void => {
+      if (this.editor !== null) return;
+      event.preventDefault();
+      handler();
+    };
+    this.canvas.addEventListener("dblclick", listener);
+    const dispose = (): void => {
+      this.canvas.removeEventListener("dblclick", listener);
     };
     this.disposers.push(dispose);
     return dispose;

@@ -60,6 +60,7 @@ export const PRESENTATION_CONTROL_LABELS = {
   previous: "Previous page",
   replay: "Replay this segment",
   next: "Next page",
+  interact: "Enter interaction mode",
 } as const;
 
 /** Observable presentation position/state, reported through `onStateChange`. */

@@ -174,6 +174,16 @@ async function applyPreload(
 export interface RunPythonOptions {
   /** manim quality flag controlling resolution / frame rate (default `-qm`). */
   quality?: string;
+  /**
+   * Presentation pacing supplied by the host: `auto` (default), `slides`,
+   * `two-view`, or `animation` (loop the animation only).  This replaces the
+   * old `wanim_config({"slides_mode": ...})` Python switch.
+   */
+  mode?: string;
+  /** Light/dark hint readable from Python as `self.theme` in `setup()`. */
+  theme?: "light" | "dark";
+  /** Stable id attached to every `post_message` from this run. */
+  instanceId?: string;
   /** Render live, yielding to the browser between frames (default `true`). */
   realtime?: boolean;
   /** Target logical frame rate for live playback (default 30). */
@@ -199,10 +209,13 @@ export interface RunPythonOptions {
   onSceneReady?: (scene: unknown) => void;
   /**
    * Called once with the navigation controller (`next()`, `previous()`,
-   * `replay()`, `restart()`); the same handle is on the result.  Slides mode
-   * comes from `wanim_config({"slides_mode": True})` in the Python source.
+   * `replay()`, `restart()`); the same handle is on the result.
    */
   onController?: (controller: unknown) => void;
+  /** Forwarded `Scene.post_message(key, value)` calls. */
+  onMessage?: (message: unknown) => void;
+  /** Called after one complete animation loop (two-view/animation modes). */
+  onLoop?: () => void;
   /**
    * Optional-module preload plan.  `"auto"` (default) detects MathJax and font
    * needs from the Python source; `"none"` disables preloading; an object
@@ -225,8 +238,9 @@ export interface RunPythonResult {
 
 /**
  * Compile `source` and play the `Scene` subclasses onto `canvas`, in source
- * order.  A `wanim_config({...})` call in the source configures the run
- * (currently `slides_mode`).
+ * order.  The host controls pacing through `mode`; the legacy
+ * `wanim_config({"slides_mode": True})` line is only used as a fallback when
+ * no mode is supplied.
  *
  * The scene runs in real time: wanim yields to the browser between frames, so
  * a `self.wait()` is an actual pause and the canvas updates live.
@@ -283,7 +297,12 @@ export async function runPythonOnCanvas(
       recordFrames: options.recordFrames ?? false,
       background: options.background,
       signal: options.signal,
+      mode: options.mode,
+      theme: options.theme,
+      instanceId: options.instanceId,
       slidesMode: Boolean(runConfig.slides_mode),
+      onMessage: options.onMessage,
+      onLoop: options.onLoop,
       onSceneReady: options.onSceneReady,
       onSceneActivated: (_scene: Any, _index: number, sceneClass: Any) => {
         options.onScene?.(sceneClass.name);
