@@ -2,10 +2,10 @@ import { describe, expect, test } from "vitest";
 import { CanvasSceneRenderer } from "../src/renderer/canvas_renderer.js";
 import { Camera } from "../src/camera/camera.js";
 import { Arc, Circle, Dot } from "../src/mobject/geometry/arc.js";
-import { Line } from "../src/mobject/geometry/line.js";
+import { Arrow, Line } from "../src/mobject/geometry/line.js";
 import { VGroup } from "../src/mobject/types/vectorized_mobject.js";
 import { DecimalNumber } from "../src/mobject/text/numbers.js";
-import { YELLOW } from "../src/utils/color/index.js";
+import { BLUE, YELLOW } from "../src/utils/color/index.js";
 import {
   Chip,
   DraggablePoint,
@@ -604,11 +604,22 @@ describe("DraggablePoint in an InteractiveScene", () => {
 });
 
 describe("InteractiveLinearTransformationScene in a live host", () => {
-  test("promotes the basis tips to controls and deforms the plane on drag", async () => {
+  test("a user-wired DraggablePoint drives the live matrix and geometry", async () => {
     class LinearScene extends InteractiveLinearTransformationScene {
+      handle!: DraggablePoint;
+      vector!: Arrow;
       blueprint(): void {
         this.add_unit_square(false);
-        this.add_draggable_point([1, 1, 0]);
+        this.vector = this.add_vector([2, 1, 0], BLUE, false) as Arrow;
+        this.handle = new DraggablePoint([1, 0, 0]);
+        this.handle.on_input(() => {
+          const point = this.handle.get_center() as unknown as number[];
+          const matrix = this.get_matrix();
+          matrix[0]![0] = point[0]!;
+          matrix[1]![0] = point[1]!;
+          this.set_matrix(matrix);
+        });
+        this.add(this.handle);
       }
     }
     const host = new FakeHost();
@@ -616,18 +627,21 @@ describe("InteractiveLinearTransformationScene in a live host", () => {
     const done = scene.render();
     await host.advance(1);
 
-    expect(scene.basis_handles).toHaveLength(2);
+    // The scene itself installed no controls; the only one is the user handle.
     host.press([1, 0, 0]);
     host.drag([2, 1, 0]);
     host.release([2, 1, 0]);
     expect(scene.get_matrix()[0]![0]).toBeCloseTo(2, 8);
     expect(scene.get_matrix()[1]![0]).toBeCloseTo(1, 8);
 
-    // The draggable point's image is a normal mobject reaction-free update.
-    const record = scene.draggable_points[0]!;
-    const image = record.image!.get_center() as unknown as number[];
-    expect(image[0]).toBeCloseTo(2, 8);
-    expect(image[1]).toBeCloseTo(2, 8);
+    // M = [[2, 0], [1, 1]]: the unit square's centre (0.5, 0.5) -> (1, 1).
+    const center = scene.square.get_center() as unknown as number[];
+    expect(center[0]).toBeCloseTo(1, 8);
+    expect(center[1]).toBeCloseTo(1, 8);
+    // ...and the tracked vector shows M @ [2, 1] = [4, 3].
+    const vector = scene.vector.get_vector() as unknown as number[];
+    expect(vector[0]).toBeGreaterThan(3.4);
+    expect(vector[1]).toBeGreaterThan(2.4);
 
     await endRun(host, scene, done);
   });

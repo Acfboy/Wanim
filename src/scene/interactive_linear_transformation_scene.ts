@@ -1,22 +1,26 @@
 /**
- * `InteractiveLinearTransformationScene`: the live counterpart of manim's
- * `LinearTransformationScene`.
+ * `InteractiveLinearTransformationScene`: a live, control-agnostic counterpart
+ * of manim's `LinearTransformationScene`.
  *
  * The geometry is the one readers know from the classic scene (a static grey
  * background grid, a transformable foreground grid, the `i_hat` / `j_hat` basis
- * vectors), but the current linear map is a piece of state instead of a
- * one-shot `self.play(...)`:
+ * vectors), but the current linear map is a piece of state instead of a one-shot
+ * `self.play(...)`:
  *
  *  - `set_matrix(A)` / `apply_matrix(A)` install `A` **immediately** and redraw
- *    the foreground plane, the basis vectors and every tracked vector, so it
- *    can be called from a `blueprint` reaction or an `on_input` listener;
- *  - the tips of `i_hat` / `j_hat` are `DraggablePoint` handles: dragging one
- *    sets the corresponding column of the matrix and deforms the grid live;
- *  - `add_matrix_control(...)` places an editable `InputDecimalMatrix` whose
- *    cells drive the same state;
- *  - `add_draggable_vector(v)` and `add_draggable_point(p)` add reader-movable
- *    objects in the *source* space, with their images under the current matrix
- *    drawn beside them.
+ *    the foreground plane, the basis vectors and every tracked vector;
+ *  - the matrix can be driven from any wanim control by calling `set_matrix`
+ *    from a blueprint reaction or an `on_input` listener;
+ *  - `add_vector(v)` draws `M @ v` and keeps it in sync;
+ *  - `add_transformable_mobject(...)` / `add_moving_mobject(...)` register any
+ *    other source-space mobject that the matrix should transform.
+ *
+ * Deliberately **no interaction is built in**: the class does not add drag
+ * handles, matrix editors or other controls. That is application logic, so the
+ * scene author wires their own `DraggablePoint` / `Slider` /
+ * `InputDecimalMatrix` to `set_matrix` (see the docs for the pattern). This keeps
+ * the scene usable for very different stories: dragging a basis tip, typing a
+ * matrix, animating between maps, syncing to an external model, etc.
  *
  * Everything is a normal mobject and can be styled/positioned like any other
  * wanim object. The class intentionally borrows (`prototype.call`) the setup and
@@ -29,29 +33,20 @@
  * animations in `construct` when a transition should be animated.
  */
 import { array, type NDArray } from "numpy-ts";
-import { BLUE, GOLD, GREY, TEAL, YELLOW, ManimColor, type ParsableManimColor } from "../utils/color/index.js";
-import { ORIGIN, UL } from "../constants.js";
+import { GREY, ManimColor, type ParsableManimColor } from "../utils/color/index.js";
+import { ORIGIN } from "../constants.js";
 import { config } from "../_config/utils.js";
 import { isNDArray, matrixRows, pointRows } from "../utils/arrays.js";
 import { is_thenable } from "../utils/scheduler.js";
-import { Arrow, type ArrowOptions, type VectorOptions } from "../mobject/geometry/line.js";
-import { Dot } from "../mobject/geometry/arc.js";
+import { Arrow } from "../mobject/geometry/line.js";
 import { Rectangle } from "../mobject/geometry/polygram.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VGroup } from "../mobject/types/vectorized_mobject.js";
 import type { NumberPlane } from "../mobject/graphing/coordinate_systems.js";
-import {
-  DraggablePoint,
-  InputDecimalMatrix,
-  isInteractiveControl,
-  type InputDecimalMatrixOptions,
-} from "../interactive/controls.js";
 import { InteractiveScene, type InteractiveSceneOptions } from "./interactive_scene.js";
 import { LinearTransformationScene, VectorScene, X_COLOR, Y_COLOR } from "./vector_space_scene.js";
 
 export interface InteractiveLinearTransformationSceneOptions extends InteractiveSceneOptions {
-  /** Whether the i/j basis tips get drag handles. Defaults to `true`. */
-  draggable_basis?: boolean;
   /** Initial 2x2 matrix (defaults to the identity). */
   matrix?: unknown;
   [key: string]: unknown;
@@ -63,21 +58,6 @@ interface PlainVectorRecord {
   start: [number, number, number];
   end: [number, number, number];
   opacity: number;
-}
-
-/** An `add_draggable_vector` control plus the arrows it drives. */
-interface DraggableVectorRecord {
-  control: DraggablePoint;
-  source: Arrow | null;
-  image: Arrow | null;
-  source_opacity: number;
-  image_opacity: number;
-}
-
-/** An `add_draggable_point` control plus its image dot. */
-interface DraggablePointRecord {
-  control: DraggablePoint;
-  image: Dot | null;
 }
 
 /** Per-mobject point snapshot used to re-apply the matrix from scratch. */
@@ -96,7 +76,6 @@ function isOptionsBag(value: unknown): value is InteractiveLinearTransformationS
     "always_update_mobjects",
     "random_seed",
     "skip_animations",
-    "draggable_basis",
     "matrix",
   ].some((key) => key in (value as Record<string, unknown>));
 }
@@ -163,21 +142,6 @@ function inverse2x2(matrix: number[][]): number[][] {
   ];
 }
 
-interface DraggableVectorOptions extends VectorOptions {
-  /** Colour of the draggable handle / source arrow. */
-  color?: ParsableManimColor;
-  /** Colour of the image arrow (defaults to gold). */
-  image_color?: ParsableManimColor;
-  /** Draw the source-space arrow (default `True`). */
-  show_source?: boolean;
-  /** Draw the transformed image arrow (default `True`). */
-  show_image?: boolean;
-  /** Handle radius (world units). */
-  radius?: number;
-  /** Handle pick radius (world units). */
-  hit_radius?: number;
-}
-
 export class InteractiveLinearTransformationScene extends InteractiveScene {
   include_background_plane: boolean;
   include_foreground_plane: boolean;
@@ -206,16 +170,6 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
 
   /** Current linear map, as a 2x2 list of rows. */
   matrix: number[][] = identity2x2();
-  /** Whether the i/j tips expose drag handles (default `True`). */
-  draggable_basis = true;
-  /** The matrix editor added by {@link add_matrix_control}, if any. */
-  matrix_control: InputDecimalMatrix | null = null;
-  /** Handles added for the basis tips (empty when they are disabled). */
-  basis_handles: DraggablePoint[] = [];
-  /** Controls created by {@link add_draggable_point}. */
-  draggable_points: DraggablePointRecord[] = [];
-  /** Controls created by {@link add_draggable_vector}. */
-  draggable_vectors: DraggableVectorRecord[] = [];
 
   private _transformable_snapshots = new Map<Mobject, TransformableSnapshot>();
   private _plain_vectors: PlainVectorRecord[] = [];
@@ -254,7 +208,6 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     this.i_hat_color = new ManimColor(i_hat_color);
     this.j_hat_color = new ManimColor(j_hat_color);
     this.leave_ghost_vectors = leave_ghost_vectors;
-    this.draggable_basis = opts.draggable_basis !== false;
     if (opts.matrix !== undefined) this.matrix = normalize2x2(opts.matrix);
     this._initial_matrix = this.matrix.map((row) => [...row]);
 
@@ -286,6 +239,19 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
   /**
    * Replace the current matrix and redraw immediately (no animation). Safe to
    * call from a blueprint reaction or an `on_input` listener.
+   *
+   * ```python
+   * def on_i(control, previous, next_value):
+   *     point = control.get_center()
+   *     matrix = self.get_matrix()
+   *     matrix[0][0] = point[0]
+   *     matrix[1][0] = point[1]
+   *     self.set_matrix(matrix)
+   *
+   * handle = DraggablePoint([1, 0, 0], color=GREEN)
+   * handle.on_input(on_i)
+   * self.add(handle)
+   * ```
    */
   set_matrix(matrix: unknown): this {
     this.matrix = normalize2x2(matrix);
@@ -309,16 +275,13 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
 
   /**
    * Re-apply the current matrix to the foreground plane, basis vectors and
-   * every tracked vector/image. Called automatically by the interaction paths;
-   * call it yourself after mutating `self.matrix` in place.
+   * every tracked vector. Called automatically by `set_matrix`; call it
+   * yourself after mutating `self.matrix` in place.
    */
   refresh_transform(): this {
     this._refresh_transformables();
     this._place_basis_vectors();
-    this._place_basis_handles();
     this._refresh_plain_vectors();
-    this._refresh_draggable_records();
-    this._sync_matrix_control();
     return this;
   }
 
@@ -345,8 +308,6 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     // The setup above added the foreground plane through our override, which
     // snapshotted it; re-apply a non-identity initial matrix now.
     this.refresh_transform();
-    this._create_basis_handles();
-    this._place_basis_handles();
   }
 
   override presentation_reset(): void {
@@ -356,10 +317,6 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     this.has_already_setup = false;
     this._transformable_snapshots.clear();
     this._plain_vectors = [];
-    this.draggable_points = [];
-    this.draggable_vectors = [];
-    this.basis_handles = [];
-    this.matrix_control = null;
     this.matrix = this._initial_matrix.map((row) => [...row]);
   }
 
@@ -505,190 +462,7 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     });
   }
 
-  // --- interactive helpers ---------------------------------------------------
-
-  /**
-   * Add an editable matrix at a screen corner and wire it to the live
-   * transformation. The cells keep in sync when the reader drags a basis tip.
-   */
-  add_matrix_control(
-    matrix: unknown = null,
-    position: readonly number[] = UL,
-    buff = 0.6,
-    num_decimal_places = 1,
-    options: InputDecimalMatrixOptions = {},
-  ): InputDecimalMatrix {
-    const rows = normalize2x2(matrix === null ? this.matrix : matrix);
-    this.matrix = rows;
-    // One editor is enough: replace any previous one so stale cells cannot
-    // keep driving the matrix.
-    if (this.matrix_control !== null) this.remove(this.matrix_control);
-    const control = new InputDecimalMatrix(rows, {
-      element_to_mobject_config: { num_decimal_places },
-      ...options,
-    });
-    control.to_corner(position, buff);
-    for (const row of control.mob_matrix) {
-      for (const cell of row) {
-        if (!isInteractiveControl(cell)) continue;
-        cell.on_input?.(() => this._on_matrix_control_input());
-      }
-    }
-    this.matrix_control = control;
-    this.add(control);
-    this.refresh_transform();
-    return control;
-  }
-
-  /** Read the matrix editor's cells into the current matrix and redraw. */
-  private _on_matrix_control_input(): void {
-    const control = this.matrix_control;
-    if (control === null) return;
-    const rows = control.mob_matrix.map((row) =>
-      row.map((cell) => {
-        const value = (cell as unknown as { get_value?: () => unknown }).get_value?.();
-        return typeof value === "number" ? value : Number(value ?? 0);
-      }),
-    );
-    this.matrix = normalize2x2(rows);
-    // Do not write the cells back while the reader is typing in one of them.
-    this._refresh_transformables();
-    this._place_basis_vectors();
-    this._place_basis_handles();
-    this._refresh_plain_vectors();
-    this._refresh_draggable_records();
-  }
-
-  /**
-   * Add a draggable point (in source space) together with a dot showing its
-   * image `matrix @ p` in the transformed plane. Returns the draggable control.
-   */
-  add_draggable_point(
-    point: readonly number[] | NDArray = [0, 0, 0],
-    color: ParsableManimColor = YELLOW,
-    image_color: ParsableManimColor = TEAL,
-    show_image = true,
-    radius = 0.1,
-    hit_radius = 0.32,
-  ): DraggablePoint {
-    const row = pointRows(point, 3)[0] ?? [0, 0, 0];
-    const control = new DraggablePoint(row, { color, radius, hit_radius });
-    const image = show_image
-      ? new Dot({ point: this._matrix_point(row), radius, color: image_color, fill_opacity: 0.8 })
-      : null;
-    const record: DraggablePointRecord = { control, image };
-    this.draggable_points.push(record);
-    control.on_input(() => this._refresh_draggable_records());
-    if (image !== null) this.add(image);
-    this.add(control);
-    this._refresh_draggable_records();
-    return control;
-  }
-
-  /**
-   * Add a reader-movable vector in source space: the handle sits at `vector`,
-   * the source arrow is drawn faintly and the transformed image arrow follows
-   * the current matrix. Returns the draggable control (use `get_center()`).
-   */
-  add_draggable_vector(
-    vector: readonly number[] | NDArray | Arrow,
-    options: DraggableVectorOptions = {},
-  ): DraggablePoint {
-    const {
-      color = BLUE,
-      image_color = GOLD,
-      show_source = true,
-      show_image = true,
-      radius = 0.12,
-      hit_radius = 0.34,
-      ...arrowOptions
-    } = options;
-    const sourcePoint = vector instanceof Arrow
-      ? (pointRows(vector.get_end(), 3)[0] ?? [0, 0, 0])
-      : (pointRows(vector, 3)[0] ?? [0, 0, 0]);
-    const control = new DraggablePoint(sourcePoint, { color, radius, hit_radius });
-    const source = show_source
-      ? new Arrow({
-          start: [...ORIGIN],
-          end: sourcePoint,
-          buff: 0,
-          color,
-          stroke_width: 4,
-          // The source arrow sits under the image; keep it faint by default so
-          // the transformed arrow is the one that stands out.
-          stroke_opacity: 0.55,
-          ...arrowOptions,
-        } as ArrowOptions & { start: number[]; end: number[] })
-      : null;
-    const image = show_image
-      ? new Arrow({
-          start: [...ORIGIN],
-          end: this._matrix_point(sourcePoint),
-          buff: 0,
-          color: image_color,
-          stroke_width: 4,
-          ...arrowOptions,
-        } as ArrowOptions & { start: number[]; end: number[] })
-      : null;
-    const record: DraggableVectorRecord = {
-      control,
-      source,
-      image,
-      source_opacity: source === null ? 1 : Math.max(source.get_stroke_opacity(), source.get_fill_opacity()),
-      image_opacity: image === null ? 1 : Math.max(image.get_stroke_opacity(), image.get_fill_opacity()),
-    };
-    this.draggable_vectors.push(record);
-    control.on_input(() => this._refresh_draggable_records());
-    if (source !== null) this.add(source);
-    if (image !== null) this.add(image);
-    this.add(control);
-    this._refresh_draggable_records();
-    return control;
-  }
-
-  // --- basis drag handles ----------------------------------------------------
-
-  /** Create the i/j drag handles (idempotent). */
-  enable_basis_drag(): this {
-    this.draggable_basis = true;
-    this._create_basis_handles();
-    this._place_basis_handles();
-    return this;
-  }
-
-  /** Remove the i/j drag handles; matrix changes keep working from code/controls. */
-  disable_basis_drag(): this {
-    this.draggable_basis = false;
-    for (const handle of this.basis_handles) this.remove(handle);
-    this.basis_handles = [];
-    return this;
-  }
-
-  private _create_basis_handles(): void {
-    if (!this.draggable_basis || !this.show_basis_vectors || this.basis_handles.length > 0) return;
-    if (this.i_hat === undefined || this.j_hat === undefined) return;
-    const make = (column: 0 | 1, color: ParsableManimColor): DraggablePoint => {
-      const end = this._matrix_point(column === 0 ? [1, 0, 0] : [0, 1, 0]);
-      const handle = new DraggablePoint(end, { color, radius: 0.12, hit_radius: 0.34 });
-      handle.on_input(() => this._on_basis_handle_input(column, handle));
-      return handle;
-    };
-    this.basis_handles = [make(0, this.i_hat_color), make(1, this.j_hat_color)];
-    this.add(this.basis_handles[0]!, this.basis_handles[1]!);
-  }
-
-  private _on_basis_handle_input(column: 0 | 1, handle: DraggablePoint): void {
-    const point = pointRows(handle.get_center(), 3)[0] ?? [0, 0, 0];
-    this.matrix[0]![column] = point[0] ?? 0;
-    this.matrix[1]![column] = point[1] ?? 0;
-    this.refresh_transform();
-  }
-
-  private _place_basis_handles(): void {
-    if (this.basis_handles.length < 2) return;
-    this.basis_handles[0]!.set_value([this.matrix[0]?.[0] ?? 1, this.matrix[1]?.[0] ?? 0, 0]);
-    this.basis_handles[1]!.set_value([this.matrix[0]?.[1] ?? 0, this.matrix[1]?.[1] ?? 1, 0]);
-  }
+  // --- transform bookkeeping -------------------------------------------------
 
   private _place_basis_vectors(): void {
     if (!this.show_basis_vectors || this.i_hat === undefined) return;
@@ -697,8 +471,6 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     this._place_arrow(this.i_hat, ORIGIN, iEnd, 1);
     this._place_arrow(this.j_hat, ORIGIN, jEnd, 1);
   }
-
-  // --- transform bookkeeping -------------------------------------------------
 
   private _snapshot_transformable(mobject: Mobject): void {
     if (this._transformable_snapshots.has(mobject)) return;
@@ -772,61 +544,20 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
       );
     }
   }
-
-  private _refresh_draggable_records(): void {
-    for (const record of this.draggable_points) {
-      if (record.image === null) continue;
-      record.image.move_to(this._matrix_point(pointRows(record.control.get_center(), 3)[0] ?? [0, 0, 0]));
-    }
-    for (const record of this.draggable_vectors) {
-      const sourcePoint = pointRows(record.control.get_center(), 3)[0] ?? [0, 0, 0];
-      const imagePoint = this._matrix_point(sourcePoint);
-      if (record.source !== null) {
-        this._place_arrow(record.source, ORIGIN, sourcePoint, record.source_opacity);
-      }
-      if (record.image !== null) {
-        this._place_arrow(record.image, ORIGIN, imagePoint, record.image_opacity);
-      }
-    }
-  }
-
-  /** Write the current matrix back into the editor cells (when they differ). */
-  private _sync_matrix_control(): void {
-    const control = this.matrix_control;
-    if (control === null) return;
-    let changed = false;
-    for (let row = 0; row < control.mob_matrix.length; row += 1) {
-      const cells = control.mob_matrix[row];
-      if (cells === undefined) continue;
-      for (let column = 0; column < cells.length; column += 1) {
-        const cell = cells[column]!;
-        const target = this.matrix[row]?.[column] ?? 0;
-        const reader = cell as unknown as { get_value?: () => unknown; set_value?: (value: number) => unknown };
-        const value = reader.get_value?.();
-        if (typeof value === "number" && Math.abs(value - target) < 1e-9) continue;
-        reader.set_value?.(target);
-        changed = true;
-      }
-    }
-    if (changed) control.relayout();
-  }
 }
 
 // Pin the Python-facing parameter names: esbuild may rename colliding
 // parameters when bundling, and py2js maps keyword arguments by reading these
 // names at runtime (see `parseParamNames` in py2js/src/runtime_core.ts).
-(InteractiveLinearTransformationScene.prototype.add_matrix_control as unknown as {
-  __argnames__?: string[];
-}).__argnames__ = ["matrix", "position", "buff", "num_decimal_places", "options"];
-(InteractiveLinearTransformationScene.prototype.add_draggable_point as unknown as {
-  __argnames__?: string[];
-}).__argnames__ = ["point", "color", "image_color", "show_image", "radius", "hit_radius"];
-(InteractiveLinearTransformationScene.prototype.add_draggable_vector as unknown as {
-  __argnames__?: string[];
-}).__argnames__ = ["vector", "options"];
 (InteractiveLinearTransformationScene.prototype.set_matrix as unknown as {
   __argnames__?: string[];
 }).__argnames__ = ["matrix"];
+(InteractiveLinearTransformationScene.prototype.apply_matrix as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["matrix", "kwargs"];
+(InteractiveLinearTransformationScene.prototype.apply_inverse as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["matrix", "kwargs"];
 (InteractiveLinearTransformationScene.prototype.get_vector as unknown as {
   __argnames__?: string[];
 }).__argnames__ = ["numerical_vector", "kwargs"];
@@ -845,9 +576,3 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
 (InteractiveLinearTransformationScene.prototype.add_vector as unknown as {
   __argnames__?: string[];
 }).__argnames__ = ["vector", "color", "animate", "kwargs"];
-(InteractiveLinearTransformationScene.prototype.apply_matrix as unknown as {
-  __argnames__?: string[];
-}).__argnames__ = ["matrix", "kwargs"];
-(InteractiveLinearTransformationScene.prototype.apply_inverse as unknown as {
-  __argnames__?: string[];
-}).__argnames__ = ["matrix", "kwargs"];
