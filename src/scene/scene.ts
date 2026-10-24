@@ -330,6 +330,20 @@ export class Scene {
   always_update_mobjects: boolean;
   random_seed: number | null;
   skip_animations: boolean;
+  /**
+   * Colour theme supplied by the embedder (`"light"` or `"dark"`).  Scenes can
+   * read it from `setup()` to pick colour constants, e.g.
+   * `color = WHITE if self.theme == "dark" else BLACK`.  The value is set by
+   * the host before `setup()` runs; a scene rendered directly (Node/tests)
+   * keeps the default.
+   */
+  theme: "light" | "dark" = "light";
+  /**
+   * Sink for `post_message(key, value)`; the presentation player installs one
+   * per active scene so messages can carry the scene/page context.  A scene
+   * rendered directly has no sink and the calls are dropped.
+   */
+  message_sink: ((key: unknown, value: unknown) => void) | null = null;
   skip_animation_preview = false;
   queue: Array<SceneInteractAction> = [];
   widgets: Array<Record<string, unknown>> = [];
@@ -1411,6 +1425,18 @@ export class Scene {
   }
 
   setup(): void {}
+
+  /**
+   * Send a named event to the embedding page.  The presentation player
+   * forwards it (through the JS API's `onMessage` / the element's
+   * `wanim-message` event) together with a per-run instance id and the active
+   * scene/page, so several exercises on one page can be told apart without the
+   * author inventing ids.  Unnamed sinks are dropped, so a scene rendered
+   * outside a presentation still runs.
+   */
+  post_message(key: unknown, value: unknown = null): void {
+    this.message_sink?.(key, value);
+  }
 
   tear_down(): void {}
 

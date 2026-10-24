@@ -14,7 +14,13 @@
  *
  * | Key           | Type | Default | Meaning                                              |
  * | ------------- | ---- | ------- | ---------------------------------------------------- |
- * | `slides_mode` | bool | `False` | Pause after every blueprint *and* construct phase.   |
+ * | `slides_mode` | bool | `False` | Legacy fallback for the host's `mode: "slides"`.     |
+ *
+ * **Presentation mode is owned by the embedder now.**  The JavaScript API's
+ * `mode` option and the `<wanim-scene mode="...">` attribute decide how the
+ * scene is played; `wanim_config({"slides_mode": True})` is kept only for old
+ * snippets and is ignored whenever the host supplies a mode.  New code should
+ * not call `wanim_config` at all.
  *
  * Configuration is per run: each `runPythonOnCanvas` call builds a fresh
  * {@link WanimRunConfig}, so two presentations on one page never share it.
@@ -81,4 +87,33 @@ export function apply_wanim_config(config: WanimRunConfig, options: unknown): Wa
     }
   }
   return config;
+}
+
+/** How a presentation is paced.  Supplied by the host, never by Python. */
+export type PresentationMode = "auto" | "slides" | "two-view" | "animation";
+
+/** Colour theme supplied by the embedder. */
+export type PresentationTheme = "light" | "dark";
+
+/**
+ * Normalize a mode coming from a JS option or an HTML attribute.  Both
+ * `two-view` and `two_view` are accepted; an unknown/omitted value returns
+ * `undefined` so the caller can fall back to the legacy setting.
+ */
+export function normalize_presentation_mode(value: unknown): PresentationMode | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().toLowerCase().replace(/_/g, "-");
+  if (text === "auto" || text === "default" || text === "interactive") return "auto";
+  if (text === "slides" || text === "slide" || text === "slideshow") return "slides";
+  if (text === "two-view" || text === "twoview" || text === "two") return "two-view";
+  if (text === "animation" || text === "loop" || text === "animated") return "animation";
+  return undefined;
+}
+
+/** Normalize a light/dark theme; unknown values return `undefined`. */
+export function normalize_presentation_theme(value: unknown): PresentationTheme | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().toLowerCase();
+  if (text === "light" || text === "dark") return text;
+  return undefined;
 }

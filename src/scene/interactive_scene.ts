@@ -42,6 +42,32 @@ import { is_thenable } from "../utils/scheduler.js";
 export type InteractiveStepFn = (() => unknown) | unknown;
 export type InteractiveStep = { blueprint: InteractiveStepFn; construct: InteractiveStepFn };
 
+/** One two-view page: a blueprint and/or the construct that follows it. */
+export interface InteractivePage {
+  blueprint: (() => unknown) | null;
+  construct: (() => unknown) | null;
+}
+
+/**
+ * How a scene wants to be presented in two-view mode.
+ *
+ * - `separate` (set with the class attribute `SEPARATE = True`): the looping
+ *   animation runs `construct` only, while the interaction state shows
+ *   `blueprint` only; the two halves are independent.
+ * - otherwise pages pair a blueprint with the construct that follows it; a
+ *   blueprint may call `self.clear_stage()` before its construct to let the
+ *   animation start on an empty canvas while still reading the control values.
+ */
+export interface TwoViewPlan {
+  separate: boolean;
+  has_blueprint: boolean;
+  has_construct: boolean;
+  /** Pages as authored (used by the interaction state). */
+  pages: InteractivePage[];
+  /** Pages the looping animation plays, in order. */
+  animation_pages: InteractivePage[];
+}
+
 type PhaseKind = "blueprint" | "construct";
 type Phase = PresentationPhase;
 
@@ -55,6 +81,12 @@ export class InteractiveScene extends Scene {
   readonly is_interactive_scene = true;
   /** Host services (pointer mapping, buttons, inline editing). */
   interactive_host: InteractiveHost = new NullInteractiveHost();
+  /**
+   * Whether reader input is accepted right now.  The two-view player turns
+   * this off while the looping animation state silently runs blueprints, so a
+   * pointer over a control cannot change the demo mid-loop.
+   */
+  interaction_enabled = true;
   /**
    * Default for the player driving this scene directly (`render()`): pause
    * after every phase.  A multi-scene presentation passes its own value.
@@ -74,6 +106,7 @@ export class InteractiveScene extends Scene {
   private _presentation: ScenePresentation | null = null;
   private _storyboard: InteractiveStep[] | null = null;
   private _phaseKind: PhaseKind = "blueprint";
+  private _stageClearPending = false;
   private _activeControl: InteractiveControl | null = null;
   private _hoveredControl: (Mobject & InteractiveControl) | null = null;
   private _controlsCache: Array<Mobject & InteractiveControl> | null = null;
@@ -127,6 +160,89 @@ export class InteractiveScene extends Scene {
 
   removeReaction(reaction: (scene: InteractiveScene) => void): this {
     return this.remove_reaction(reaction);
+  }
+
+  /**
+   * Class-level opt-out for the paired two-view story: with `SEPARATE = True`,
+   * the looping animation plays only `construct` and the interaction state
+   * shows only `blueprint`.
+   */
+  is_separate(): boolean {
+    return (this as unknown as { SEPARATE?: unknown }).SEPARATE === true;
+  }
+
+  /**
+   * Remove every mobject from the stage while keeping the Python references
+   * alive.  Calling it at the end of a blueprint starts the following
+   * construct on an empty canvas: `self.slider.get_value()` and friends still
+   * work, but the controls are no longer drawn and no longer receive input.
+   *
+   * In the two-view interaction state the clear is deferred until the reader
+   * presses "next": otherwise the controls would vanish before they could be
+   * used.  While the looping animation silently runs the blueprint
+   * ({@link interaction_enabled} is `false`) it clears immediately, so the
+   * animation already starts from the empty canvas.
+   */
+  clear_stage(): this {
+    this._stageClearPending = true;
+    if (!this.interaction_enabled) this.presentation_apply_stage_clear();
+    return this;
+  }
+
+  /** Whether a `clear_stage()` call is waiting for the interaction advance. */
+  get stage_clear_pending(): boolean {
+    return this._stageClearPending;
+  }
+
+  /** Apply a deferred {@link clear_stage} (idempotent). */
+  presentation_apply_stage_clear(): void {
+    if (!this._stageClearPending) return;
+    this._stageClearPending = false;
+    this.clear();
+    this.moving_mobjects = [];
+    this.static_mobjects = [];
+    this._controlsCache = null;
+    this.clear_hover();
+    this._activeControl = null;
+  }
+
+  /**
+   * How this scene maps onto the two-view player: whether it has an animation
+   * half and an interaction half, and which pages each half plays.
+   */
+  two_view_plan(): TwoViewPlan {
+    const phases = this.build_phases();
+    const authoredBlueprint =
+      this._storyboard !== null
+        ? this._storyboard.some((step) => step.blueprint !== null && step.blueprint !== undefined)
+        : ((this.blueprint as unknown) !== (InteractiveScene.prototype.blueprint as unknown));
+    const pages: InteractivePage[] = [];
+    for (let index = 0; index < phases.length; index += 1) {
+      const phase = phases[index]!;
+      if (phase.kind === "blueprint") {
+        // `build_phases` keeps a base no-op blueprint so a bare interactive
+        // scene still has a live page; in two-view mode a scene that never
+        // authored a blueprint is animation-only, so drop it.
+        if (!authoredBlueprint) continue;
+        const next = phases[index + 1];
+        if (next !== undefined && next.kind === "construct") {
+          pages.push({ blueprint: phase.run, construct: next.run });
+          index += 1;
+        } else {
+          pages.push({ blueprint: phase.run, construct: null });
+        }
+      } else {
+        pages.push({ blueprint: null, construct: phase.run });
+      }
+    }
+    // A storyboard may mix authored blueprints with construct-only pages.
+    const has_blueprint = pages.some((page) => page.blueprint !== null);
+    const has_construct = pages.some((page) => page.construct !== null);
+    const separate = has_blueprint && has_construct && this.is_separate();
+    const animation_pages = separate
+      ? pages.filter((page) => page.construct !== null)
+      : pages;
+    return { separate, has_blueprint, has_construct, pages, animation_pages };
   }
 
   /**
@@ -621,7 +737,7 @@ export class InteractiveScene extends Scene {
    * animations never compete with user input.
    */
   protected handle_pointer_down(point: number[], event?: PointerEvent): void {
-    if (this._phaseKind !== "blueprint") return;
+    if (!this.interaction_enabled || this._phaseKind !== "blueprint") return;
     this.mark_input();
     const control = this.find_control_at(point);
     if (control === null) {
@@ -635,6 +751,7 @@ export class InteractiveScene extends Scene {
   }
 
   protected handle_pointer_move(point: number[], event?: PointerEvent): void {
+    if (!this.interaction_enabled) return;
     if (this._activeControl !== null) {
       this.mark_input();
       this._activeControl.on_drag(point, { host: this.interactive_host, camera: this.camera });
@@ -647,6 +764,7 @@ export class InteractiveScene extends Scene {
   }
 
   protected handle_pointer_up(event?: PointerEvent): void {
+    if (!this.interaction_enabled) return;
     if (this._activeControl !== null) {
       this.mark_input();
       this._activeControl.on_release();
@@ -663,7 +781,7 @@ export class InteractiveScene extends Scene {
   }
 
   protected handle_pointer_wheel(event: WheelEvent): void {
-    if (this._phaseKind !== "blueprint") return;
+    if (!this.interaction_enabled || this._phaseKind !== "blueprint") return;
     this.mark_input();
     this.on_background_wheel(event);
   }
@@ -711,6 +829,7 @@ export class InteractiveScene extends Scene {
     this.reactions = [];
     this.last_t = 0;
     this._reactionsPending = false;
+    this._stageClearPending = false;
     this._activeControl = null;
     this.clear_hover();
     this._controlsCache = null;

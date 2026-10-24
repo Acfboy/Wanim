@@ -124,6 +124,7 @@ export * from "./interactive/controls.js";
 export * from "./interactive/host.js";
 export * from "./interactive/config.js";
 export * from "./interactive/presentation.js";
+export * from "./interactive/two_view.js";
 export * from "./scene/moving_camera_scene.js";
 export * from "./scene/three_d_scene.js";
 export * from "./scene/interactive_three_d_scene.js";

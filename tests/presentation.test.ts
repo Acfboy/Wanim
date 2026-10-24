@@ -11,7 +11,12 @@ import {
 } from "../src/interactive/presentation.js";
 import { InteractiveScene } from "../src/scene/interactive_scene.js";
 import { Scene } from "../src/scene/scene.js";
-import { apply_wanim_config, default_wanim_run_config } from "../src/interactive/config.js";
+import {
+  apply_wanim_config,
+  default_wanim_run_config,
+  normalize_presentation_mode,
+  normalize_presentation_theme,
+} from "../src/interactive/config.js";
 import type { SceneConstructor } from "../src/renderer/scene_runner.js";
 
 function mockContext(): CanvasRenderingContext2D {
@@ -174,6 +179,25 @@ describe("wanim_config", () => {
     const config = default_wanim_run_config();
     expect(() => apply_wanim_config(config, { nope: 1 })).toThrowError(/unknown option 'nope'/);
     expect(() => apply_wanim_config(config, { slides_mode: "yes" })).toThrowError(/must be a bool/);
+  });
+});
+
+describe("presentation mode/theme normalization", () => {
+  test("accepts the host-facing mode names and aliases", () => {
+    expect(normalize_presentation_mode("auto")).toBe("auto");
+    expect(normalize_presentation_mode("slides")).toBe("slides");
+    expect(normalize_presentation_mode("two-view")).toBe("two-view");
+    expect(normalize_presentation_mode("two_view")).toBe("two-view");
+    expect(normalize_presentation_mode("animation")).toBe("animation");
+    expect(normalize_presentation_mode("  SLIDESHOW ")).toBe("slides");
+    expect(normalize_presentation_mode("nope")).toBeUndefined();
+    expect(normalize_presentation_mode(undefined)).toBeUndefined();
+  });
+
+  test("normalizes light/dark only", () => {
+    expect(normalize_presentation_theme("dark")).toBe("dark");
+    expect(normalize_presentation_theme(" LIGHT ")).toBe("light");
+    expect(normalize_presentation_theme("blue")).toBeUndefined();
   });
 });
 

@@ -162,8 +162,15 @@ Other features:
   drags; it also fires once per control when the player restores remembered
   values on "previous"/replay.
 - `set_storyboard([[blueprint, construct], ...])` gives multi-step stories.
-- `wanim_config({"slides_mode": True})` pauses after every segment, for
-  lecture-style material.
+- The embedder chooses pacing: `<wanim-scene mode="slides">` pauses after
+  every segment for lecture-style material, while `mode="two-view"` loops the
+  animation and lets readers double-click into the live controls.
+- In two-view mode a paired blueprint/construct loops as one animation; set
+  `SEPARATE = True` on the class to keep the two halves independent, or call
+  `self.clear_stage()` at the end of a blueprint to start the construct on an
+  empty canvas while still reading control values.
+- `self.post_message(key, value)` emits a `wanim-message` event to the page,
+  and `self.theme` is `"light"` / `"dark"` when the host supplies it.
 - Scenes that pause show previous, replay, and next controls. Keys:
   `Space` or `→` next, `←` previous, `↑` replay.
 - `ThreeDScene` and `InteractiveThreeDScene` support drag-to-orbit and scroll
