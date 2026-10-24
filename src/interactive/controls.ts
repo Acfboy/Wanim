@@ -1,7 +1,8 @@
 /**
  * Interactive controls: `PathSlider` (and its `Slider` line subclass),
- * `Switch`, `InputDecimalNumber` (plus `InputInteger`) and the editable
- * `InputDecimalMatrix` / `InputDecimalTable` containers.
+ * `DraggablePoint`, `Switch`, `Chip`, `InputDecimalNumber` (plus
+ * `InputInteger`) and the editable `InputDecimalMatrix` / `InputDecimalTable`
+ * containers.
  *
  * Each control is a normal `VMobject` (so it can be added to a scene, animated
  * and moved like any other mobject) that additionally implements the
@@ -19,12 +20,13 @@
  * they are meant to be `self.add(...)`-ed directly, not nested in groups that
  * move afterwards.
  */
+import { array, type NDArray } from "numpy-ts";
 import type { ParsableManimColor } from "../utils/color/index.js";
 import { BLACK, BLUE_E, GREY_B, GREY_C, WHITE, YELLOW, interpolate_color, ManimColor } from "../utils/color/index.js";
-import { LEFT, RIGHT } from "../constants.js";
+import { DEFAULT_DOT_RADIUS, LEFT, RIGHT } from "../constants.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VGroup, VMobject } from "../mobject/types/vectorized_mobject.js";
-import { Dot } from "../mobject/geometry/arc.js";
+import { Dot, type DotOptions } from "../mobject/geometry/arc.js";
 import { Line } from "../mobject/geometry/line.js";
 import { isPlainOptionsBag, Rectangle, RoundedRectangle } from "../mobject/geometry/polygram.js";
 import { pointRows, type ComplexPoint } from "../utils/arrays.js";
@@ -721,6 +723,278 @@ export class Slider extends PathSlider {
     this.end_point = endPoint;
     this.track = line;
   }
+}
+
+export interface DraggablePointOptions extends DotOptions {
+  /**
+   * Pick radius around the dot's centre, in world units. Defaults to
+   * `max(0.3, 2 * radius)` so small dots remain easy to grab.
+   */
+  hit_radius?: number;
+  /**
+   * Scale factor applied to the dot while the pointer hovers it or it is being
+   * dragged. Defaults to 1.25. Ignored while a mobject is attached (the dot is
+   * then the anchor of the attached mobject and must not resize it).
+   */
+  active_scale?: number;
+  /**
+   * Optional grid snap: a number (both axes) or `[x_step, y_step]`. The
+   * dragged position is rounded to the nearest multiple of the step(s).
+   * `null` (the default) keeps the point continuous.
+   */
+  snap?: number | readonly number[] | null;
+}
+
+/**
+ * A free point on the plane that the reader can drag anywhere.
+ *
+ * It is an ordinary {@link Dot} (same construction as `Dot(point, **kwargs)`)
+ * that also implements the {@link InteractiveControl} protocol:
+ *
+ * ```python
+ * p = DraggablePoint([1, 2, 0], color=YELLOW)
+ * self.add(p)
+ * readout.add_reaction(lambda m: m.set_value(p.get_center()[0]))
+ * ```
+ *
+ * `get_center()` is the dot's current position (an ordinary manim call, just
+ * like on any other mobject, and exact even when a label is attached);
+ * `set_value(...)` / `move_to(...)` move it from code without firing
+ * `on_input`. `attach(mobject)` makes a mobject follow the point, mirroring
+ * `Slider.attach`.
+ *
+ * Unlike a slider the point has no track, so hit testing is a circle around
+ * its current centre: put the control directly on the stage instead of inside
+ * a group that later moves or scales.
+ */
+export class DraggablePoint extends Dot implements InteractiveControl {
+  readonly [INTERACTIVE_CONTROL] = true;
+  /** Pick radius around the dot's centre (world units). */
+  hit_radius: number;
+  /** Hover/drag growth factor (`1` disables it). */
+  active_scale: number;
+  /** Optional grid snap (see {@link DraggablePointOptions.snap}). */
+  snap: number | [number, number] | null;
+  /** Mobjects currently attached with {@link attach}. */
+  attached: Mobject[] = [];
+  /** Listeners registered through {@link DraggablePoint.on_input}. */
+  input_listeners: InputListener[] = [];
+  /** Whether the pointer currently hovers the dot. */
+  hovered = false;
+  private _base_radius: number;
+  /** Exact position of the dot's centre (kept in sync with `shift`). */
+  private _point!: [number, number, number];
+  private _grabbing = false;
+  /** Pointer-to-centre offset captured on press, so a drag never jumps. */
+  private _grab_offset: [number, number] = [0, 0];
+  /** Scale factor currently applied to the dot (1 when at rest). */
+  private _visual_scale = 1;
+
+  constructor(
+    point: readonly number[] | NDArray = [0, 0, 0],
+    options: DraggablePointOptions = {},
+  ) {
+    const {
+      hit_radius = -1,
+      active_scale = 1.25,
+      snap = null,
+      radius = DEFAULT_DOT_RADIUS,
+      ...dotOptions
+    } = options;
+    const dotRadius =
+      typeof radius === "number" && Number.isFinite(radius) && radius > 0
+        ? radius
+        : DEFAULT_DOT_RADIUS;
+    super({ point, radius: dotRadius, ...dotOptions });
+    const initial = pointRows(point, 3)[0] ?? [0, 0, 0];
+    this._point = [initial[0] ?? 0, initial[1] ?? 0, initial[2] ?? 0];
+    this._base_radius = dotRadius;
+    this.hit_radius = hit_radius > 0 ? hit_radius : Math.max(0.3, 2 * dotRadius);
+    this.active_scale = active_scale > 0 ? active_scale : 1;
+    this.snap = normalizeSnap(snap);
+  }
+
+  /**
+   * The dot's current position. Returns exactly the dragged point even when
+   * mobjects are attached (their offsets never shift the reported centre).
+   */
+  override get_center(): NDArray {
+    // `super(...)` generates the circle's points before `_point` exists.
+    if (!("_point" in (this as object))) return super.get_center();
+    return array([...this._point]) as NDArray;
+  }
+
+  /** The control protocol value: the same position as {@link get_center}. */
+  get_value(): NDArray {
+    return this.get_center();
+  }
+
+  /**
+   * Move the point from code (silent: does not fire `on_input`). `move_to` and
+   * `.shift(...)` also keep the reported centre in sync.
+   */
+  set_value(point: readonly number[] | NDArray): this {
+    const row = pointRows(point, 3)[0] ?? [0, 0, 0];
+    const [x, y] = this._snap_xy(row[0] ?? 0, row[1] ?? 0);
+    this._move_center_to([x, y, row[2] ?? 0]);
+    return this;
+  }
+
+  /**
+   * Register a listener for user-originated position changes (dragging), plus
+   * the player restoring remembered values on a rewind. See
+   * {@link InputListener}.
+   */
+  on_input(listener: InputListener): this {
+    this.input_listeners.push(listener);
+    return this;
+  }
+
+  /** Fire the listeners for a restored value (see {@link InteractiveControl}). */
+  notify_input(previous: unknown, next: unknown): void {
+    notifyInput(this, this.input_listeners, previous, next);
+  }
+
+  /**
+   * Parent `mobject` to the point so it follows every drag. Attach labels after
+   * positioning them; the point's centre stays the anchor.
+   */
+  attach(mobject: Mobject): this {
+    if (this.attached.includes(mobject)) return this;
+    // Reset any hover growth first: `scale` walks the family, so a grown dot
+    // would resize the newly attached mobject too.
+    this._set_visual_scale(1);
+    this.attached.push(mobject);
+    this.add(mobject);
+    return this;
+  }
+
+  /** Detach one mobject, or every attached mobject when called with no argument. */
+  unattach(mobject?: Mobject): this {
+    if (mobject === undefined) {
+      for (const attached of [...this.attached]) this.remove(attached);
+      this.attached = [];
+    } else {
+      if (!this.attached.includes(mobject)) return this;
+      this.remove(mobject);
+      this.attached = this.attached.filter((candidate) => candidate !== mobject);
+    }
+    this._apply_hover_scale();
+    return this;
+  }
+
+  is_hit(point: readonly number[]): boolean {
+    const radius = Math.max(this.hit_radius, 2 * this._base_radius * this._visual_scale);
+    return Math.hypot((point[0] ?? 0) - this._point[0], (point[1] ?? 0) - this._point[1]) <= radius;
+  }
+
+  on_press(point: readonly number[], _context: InteractiveContext): void {
+    this._grabbing = true;
+    this._apply_hover_scale();
+    this._grab_offset = [this._point[0] - (point[0] ?? 0), this._point[1] - (point[1] ?? 0)];
+  }
+
+  on_drag(point: readonly number[], context: InteractiveContext): void {
+    if (!this._grabbing) {
+      // A drag without a preceding press (hosts always send one, but custom
+      // hosts may not): fall back to a normal press so the offset is captured.
+      this.on_press(point, context);
+      return;
+    }
+    const previous: [number, number, number] = [...this._point];
+    const [x, y] = this._snap_xy(
+      (point[0] ?? 0) + this._grab_offset[0],
+      (point[1] ?? 0) + this._grab_offset[1],
+    );
+    this._move_center_to([x, y, this._point[2]]);
+    const next = this._point;
+    if (previous[0] !== next[0] || previous[1] !== next[1]) {
+      notifyInput(this, this.input_listeners, array(previous) as NDArray, array([...next]) as NDArray);
+    }
+  }
+
+  /**
+   * Keep the tracked position in sync with any external positioning
+   * (`move_to`, `to_corner`, `.shift(...)`). `shift` is the primitive behind
+   * all of them, so overriding it here is enough for ordinary scene code.
+   */
+  override shift(...vectors: Array<readonly number[] | NDArray>): this {
+    // `super(...)` builds the dot's points, and the Arc generator shifts them
+    // before this class's field initialisers have run. Mobject proxies throw
+    // on unknown *reads*, so probe with `in` instead of comparing to undefined.
+    if (!("_point" in (this as object))) return super.shift(...vectors);
+    let dx = 0;
+    let dy = 0;
+    let dz = 0;
+    for (const value of vectors) {
+      const row = pointRows(value, 3)[0] ?? [0, 0, 0];
+      dx += row[0] ?? 0;
+      dy += row[1] ?? 0;
+      dz += row[2] ?? 0;
+    }
+    const result = super.shift(...vectors);
+    if (dx !== 0 || dy !== 0 || dz !== 0) {
+      this._point = [this._point[0] + dx, this._point[1] + dy, this._point[2] + dz];
+    }
+    return result;
+  }
+
+  on_release(): void {
+    this._grabbing = false;
+    this._apply_hover_scale();
+  }
+
+  /** Update the hover highlight (called by the scene on pointer motion). */
+  set_hovered(hovered: boolean): void {
+    const next = Boolean(hovered);
+    if (this.hovered === next) return;
+    this.hovered = next;
+    this._apply_hover_scale();
+  }
+
+  /** Shift the whole family so the dot's own centre lands on `target`. */
+  private _move_center_to(target: readonly number[]): void {
+    this.shift([
+      (target[0] ?? 0) - this._point[0],
+      (target[1] ?? 0) - this._point[1],
+      (target[2] ?? 0) - this._point[2],
+    ]);
+  }
+
+  private _snap_xy(x: number, y: number): [number, number] {
+    const snap = this.snap;
+    if (snap === null) return [x, y];
+    if (Array.isArray(snap)) {
+      const [stepX, stepY] = snap as [number, number];
+      return [stepX > 0 ? Math.round(x / stepX) * stepX : x, stepY > 0 ? Math.round(y / stepY) * stepY : y];
+    }
+    const step = snap as number;
+    return step > 0 ? [Math.round(x / step) * step, Math.round(y / step) * step] : [x, y];
+  }
+
+  private _apply_hover_scale(): void {
+    const active = this.attached.length === 0 && (this._grabbing || this.hovered);
+    this._set_visual_scale(active ? this.active_scale : 1);
+  }
+
+  private _set_visual_scale(target: number): void {
+    if (target === this._visual_scale) return;
+    this.scale(target / this._visual_scale, [...this._point]);
+    this._visual_scale = target;
+  }
+}
+
+/** Normalize a snap option (`null`, scalar or `[x, y]`) to its stored form. */
+function normalizeSnap(value: number | readonly number[] | null): number | [number, number] | null {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) {
+    const stepX = Number((value as readonly number[])[0] ?? 0);
+    const stepY = Number((value as readonly number[])[1] ?? stepX);
+    if (stepX <= 0 && stepY <= 0) return null;
+    return [stepX > 0 ? stepX : 0, stepY > 0 ? stepY : 0];
+  }
+  const step = Number(value);
+  return step > 0 ? step : null;
 }
 
 export interface SwitchOptions {
@@ -1499,6 +1773,7 @@ export class InputDecimalTable extends DecimalTable {
 // Python keyword arguments onto positional slots via `Function.toString`
 // parameter names, but esbuild renames colliding locals when bundling, so the
 // names are pinned here (see `arrange_in_grid` for the same pattern).
+(DraggablePoint as unknown as { __argnames__?: string[] }).__argnames__ = ["point", "options"];
 (PathSlider as unknown as { __argnames__?: string[] }).__argnames__ = ["path", "options"];
 // `Slider` takes a single options bag (its track is derived from `start`/`end`),
 // so it must pin its *own* names: a class static `__argnames__` is inherited by
