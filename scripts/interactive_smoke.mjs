@@ -75,6 +75,10 @@ class LinearDemo(InteractiveLinearTransformationScene):
             self.set_matrix(matrix)
         self.handle.on_input(on_i_handle)
         self.add(self.handle)
+
+    def construct(self):
+        # In construct the apply_* family animates like the base scene.
+        self.apply_matrix([[1, 1], [0, 1]], run_time=2)
 `;
 
 const SCENES = { drag: DRAG_SCENE, linear: LINEAR_SCENE };
@@ -309,7 +313,7 @@ async function main() {
   await runCase(
     "InteractiveLinearTransformationScene follows a user-wired handle",
     "linear",
-    async ({ drag, state }) => {
+    async ({ page, drag, state }) => {
       await drag([1, 0], [2, 1]);
       const after = await state();
       const matrix = after.matrix;
@@ -323,6 +327,57 @@ async function main() {
       assert(near(after.square[0], 1) && near(after.square[1], 1), `square ${after.square}`);
       // The tracked vector shows M @ [2, 1] = [4, 3].
       assert(after.vector[0] > 3.4 && after.vector[1] > 2.4, `vector ${after.vector}`);
+
+      // Advance to construct: apply_matrix must animate (not jump) and then
+      // compose S @ M with S = [[1, 1], [0, 1]] and M from the blueprint drag.
+      const M = after.matrix;
+      const expected = [
+        [M[0][0] + M[1][0], M[0][1] + M[1][1]],
+        [M[1][0], M[1][1]],
+      ];
+      const expectedSquare = [
+        (expected[0][0] + expected[0][1]) * 0.5,
+        (expected[1][0] + expected[1][1]) * 0.5,
+      ];
+      const before = await page.evaluate(() => {
+        const c = window.__scene.square.get_center();
+        return [c[0], c[1]];
+      });
+      await page.evaluate(() => window.__scene.next_step());
+      // Sample mid-animation (2 s animation, sampled at ~0.7 s): the square
+      // must be off both endpoints.
+      await page.waitForTimeout(700);
+      const mid = await page.evaluate(() => {
+        const c = window.__scene.square.get_center();
+        return [c[0], c[1]];
+      });
+      // Let the 2 s animation finish (generous wall-clock budget).
+      await page.waitForFunction(
+        (exp) => {
+          const m = window.__scene.get_matrix();
+          return (
+            Math.abs(m[0][0] - exp[0][0]) < 0.05 &&
+            Math.abs(m[0][1] - exp[0][1]) < 0.05 &&
+            Math.abs(m[1][0] - exp[1][0]) < 0.05 &&
+            Math.abs(m[1][1] - exp[1][1]) < 0.05
+          );
+        },
+        expected,
+        { timeout: 15000 },
+      );
+      const done = await state();
+      assert(
+        near(done.matrix[0][0], expected[0][0]) && near(done.matrix[1][1], expected[1][1]),
+        `composed matrix ${JSON.stringify(done.matrix)} vs ${JSON.stringify(expected)}`,
+      );
+      assert(
+        near(done.square[0], expectedSquare[0]) && near(done.square[1], expectedSquare[1]),
+        `square ${done.square} vs ${expectedSquare}`,
+      );
+      const moved =
+        Math.hypot(mid[0] - before[0], mid[1] - before[1]) > 0.02 &&
+        Math.hypot(mid[0] - done.square[0], mid[1] - done.square[1]) > 0.02;
+      assert(moved, `animation jumped: before=${before} mid=${mid} end=${done.square}`);
     },
   );
 
