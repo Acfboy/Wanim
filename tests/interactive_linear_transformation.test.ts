@@ -105,6 +105,39 @@ describe("InteractiveLinearTransformationScene", () => {
     expect(center[1]).toBeCloseTo(1.5, 10);
   });
 
+  test("apply_matrix in construct animates and composes the matrix state", () => {
+    const scene = new InteractiveLinearTransformationScene();
+    scene.setup();
+    scene.add_unit_square(false);
+    scene.set_matrix([
+      [2, 0],
+      [0, 1],
+    ]);
+    // Enter the construct phase: apply_matrix must animate like the base
+    // scene instead of installing immediately.
+    (scene as unknown as { _phaseKind: string })._phaseKind = "construct";
+    const result = scene.apply_matrix(
+      [
+        [1, 1],
+        [0, 1],
+      ],
+      { run_time: 0.01 },
+    );
+    if (result instanceof Promise) return result.then(check);
+    check();
+    function check(): void {
+      // [[1, 1], [0, 1]] @ [[2, 0], [0, 1]] = [[2, 1], [0, 1]].
+      expect(scene.get_matrix()).toEqual([
+        [2, 1],
+        [0, 1],
+      ]);
+      // The unit square's centre (0.5, 0.5) ends at (1.5, 0.5).
+      const center = rows(scene.square.get_center())[0]!;
+      expect(center[0]).toBeCloseTo(1.5, 6);
+      expect(center[1]).toBeCloseTo(0.5, 6);
+    }
+  });
+
   test("add_vector follows the current matrix", () => {
     const scene = new InteractiveLinearTransformationScene();
     scene.setup();
@@ -137,13 +170,10 @@ describe("InteractiveLinearTransformationScene", () => {
     expect(scene.j_hat.get_stroke_opacity()).toBe(1);
   });
 
-  test("apply_inverse installs the inverse matrix", () => {
+  test("apply_inverse composes the inverse incrementally", () => {
     const scene = new InteractiveLinearTransformationScene();
     scene.setup();
-    scene.set_matrix([
-      [2, 1],
-      [0, 3],
-    ]);
+    // From identity: installing the inverse of M leaves exactly M^-1.
     scene.apply_inverse([
       [2, 1],
       [0, 3],

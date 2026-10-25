@@ -28,23 +28,34 @@
  * from them: `InteractiveScene` owns the storyboard/control machinery, and a
  * single-inheritance TS hierarchy cannot carry both bases.
  *
- * NOTE: transformations are immediate. Unlike `LinearTransformationScene`,
- * `apply_matrix` does not animate here; use `self.play(...)` with ordinary
- * animations in `construct` when a transition should be animated.
+ * NOTE: in `blueprint` every transformation is immediate (no animation), so
+ * it is safe to call them from reactions and `on_input` listeners. In
+ * `construct` the `apply_*` family animates exactly like
+ * `LinearTransformationScene` and keeps the matrix state in sync, so a
+ * scripted `self.apply_matrix(...)` plays as a transition.
  */
 import { array, type NDArray } from "numpy-ts";
 import { GREY, ManimColor, type ParsableManimColor } from "../utils/color/index.js";
-import { ORIGIN } from "../constants.js";
+import { ORIGIN, PI, RIGHT, UP } from "../constants.js";
 import { config } from "../_config/utils.js";
-import { isNDArray, matrixRows, pointRows } from "../utils/arrays.js";
+import { isNDArray, matrixRows, pointFrom, pointRows, transposeMatrix } from "../utils/arrays.js";
+import { angle_of_vector } from "../utils/space_ops.js";
 import { is_thenable } from "../utils/scheduler.js";
-import { Arrow } from "../mobject/geometry/line.js";
+import { Arrow, type Vector } from "../mobject/geometry/line.js";
 import { Rectangle } from "../mobject/geometry/polygram.js";
 import { Mobject } from "../mobject/mobject.js";
 import { VGroup } from "../mobject/types/vectorized_mobject.js";
 import type { NumberPlane } from "../mobject/graphing/coordinate_systems.js";
+import type { Animation } from "../animation/animation.js";
+import type { Transform } from "../animation/transform.js";
 import { InteractiveScene, type InteractiveSceneOptions } from "./interactive_scene.js";
-import { LinearTransformationScene, VectorScene, X_COLOR, Y_COLOR } from "./vector_space_scene.js";
+import {
+  LinearTransformationScene,
+  VectorScene,
+  X_COLOR,
+  Y_COLOR,
+  type MappingFunction,
+} from "./vector_space_scene.js";
 
 export interface InteractiveLinearTransformationSceneOptions extends InteractiveSceneOptions {
   /** Initial 2x2 matrix (defaults to the identity). */
@@ -260,17 +271,179 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
   }
 
   /**
-   * Alias of {@link set_matrix} for readers coming from
-   * `LinearTransformationScene`. Unlike the animated base method this installs
-   * the matrix immediately; see the class comment.
+   * Transform by `matrix`. In `blueprint` this is immediate (compose into the
+   * matrix state and redraw, no animation), so reactions and `on_input`
+   * listeners stay live. In `construct` it animates exactly like
+   * `LinearTransformationScene.apply_matrix` and composes the matrix state
+   * once the animation finishes.
    */
-  apply_matrix(matrix: unknown, _kwargs: Record<string, unknown> = {}): this {
-    return this.set_matrix(matrix);
+  apply_matrix(matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
+    const applied = normalize2x2(matrix);
+    if (this.phase_kind !== "construct") {
+      this.matrix = matMul2x2(applied, this.matrix);
+      this.refresh_transform();
+      return this;
+    }
+    // NOTE: the base entry points (`apply_matrix`, `apply_transposed_matrix`,
+    // ...) call back into `this.apply_function`, which would dispatch to this
+    // class's override and play the animation twice while composing the matrix
+    // state three times. The construct path therefore builds the pointwise
+    // `func` itself and invokes the base `apply_function` directly; that body
+    // only calls the (safe, animation-building) movement helpers below.
+    return this._play_construct(applied, [], kwargs, () => {
+      this.matrix = matMul2x2(applied, this.matrix);
+    });
   }
 
-  /** Install the inverse of `matrix` immediately. */
-  apply_inverse(matrix: unknown, _kwargs: Record<string, unknown> = {}): this {
-    return this.set_matrix(inverse2x2(normalize2x2(matrix)));
+  /**
+   * Transform by the inverse of `matrix`. Immediate in `blueprint`, animated
+   * in `construct` (see {@link apply_matrix}).
+   */
+  apply_inverse(matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
+    const applied = inverse2x2(normalize2x2(matrix));
+    if (this.phase_kind !== "construct") {
+      return this.set_matrix(matMul2x2(applied, this.matrix));
+    }
+    return this._play_construct(applied, [], kwargs, () => {
+      this.matrix = matMul2x2(applied, this.matrix);
+    });
+  }
+
+  /**
+   * Transform by a transposed matrix. Immediate in `blueprint`, animated in
+   * `construct` (see {@link apply_matrix}).
+   */
+  apply_transposed_matrix(
+    transposed_matrix: unknown,
+    kwargs: Record<string, unknown> = {},
+  ): this | Promise<this> {
+    // The base applies the transpose of its argument as the ordinary map.
+    const applied = normalize2x2(transposeMatrix(matrixRows(transposed_matrix)));
+    if (this.phase_kind !== "construct") {
+      this.matrix = matMul2x2(applied, this.matrix);
+      this.refresh_transform();
+      return this;
+    }
+    return this._play_construct(applied, [], kwargs, () => {
+      this.matrix = matMul2x2(applied, this.matrix);
+    });
+  }
+
+  /**
+   * Transform by an inverse transpose. Immediate in `blueprint`, animated in
+   * `construct` (see {@link apply_matrix}).
+   */
+  apply_inverse_transpose(t_matrix: unknown, kwargs: Record<string, unknown> = {}): this | Promise<this> {
+    // Base applies transpose(inverse(transpose(rows))); as an ordinary map
+    // that is inverse(transpose(rows)).
+    const applied = inverse2x2(normalize2x2(transposeMatrix(matrixRows(t_matrix))));
+    if (this.phase_kind !== "construct") {
+      this.matrix = matMul2x2(applied, this.matrix);
+      this.refresh_transform();
+      return this;
+    }
+    return this._play_construct(applied, [], kwargs, () => {
+      this.matrix = matMul2x2(applied, this.matrix);
+    });
+  }
+
+  /**
+   * Apply a nonlinear `func`. Animated in `construct` like the base scene;
+   * immediate in `blueprint`. Either way the geometry can no longer be
+   * described by a 2x2 matrix afterwards, so the snapshots are rebased onto
+   * the current picture and the matrix resets to identity (mirroring manim,
+   * which tracks no matrix at all).
+   */
+  apply_nonlinear_transformation(
+    func: MappingFunction,
+    kwargs: Record<string, unknown> = {},
+  ): this | Promise<this> {
+    if (this.phase_kind !== "construct") {
+      (this.plane as unknown as { prepare_for_nonlinear_transform: () => void }).prepare_for_nonlinear_transform();
+      this._apply_func_to_current(func);
+      this._rebase();
+      return this;
+    }
+    (this.plane as unknown as { prepare_for_nonlinear_transform: () => void }).prepare_for_nonlinear_transform();
+    return this._play_construct_func(func, [], kwargs, () => this._rebase());
+  }
+
+  /**
+   * Apply an arbitrary pointwise `func`. Animated in `construct` like the base
+   * scene; immediate in `blueprint`. See
+   * {@link apply_nonlinear_transformation} for what happens to the matrix
+   * state afterwards.
+   */
+  apply_function(
+    func: MappingFunction,
+    added_anims: Animation[] = [],
+    kwargs: Record<string, unknown> = {},
+  ): this | Promise<this> {
+    if (this.phase_kind !== "construct") {
+      this._apply_func_to_current(func);
+      this._rebase();
+      return this;
+    }
+    return this._play_construct_func(func, added_anims, kwargs, () => this._rebase());
+  }
+
+  /**
+   * Play `applied` as an animated transition in the `construct` phase,
+   * through the base implementation (bypassing the virtual dispatch that
+   * would otherwise re-enter this class's overrides), then sync the matrix
+   * state. `applied` is the ordinary-form 2x2 map being animated.
+   */
+  private _play_construct(
+    applied: number[][],
+    added_anims: Animation[] = [],
+    kwargs: Record<string, unknown> = {},
+    onDone: () => void,
+  ): this | Promise<this> {
+    return this._play_construct_func(
+      this.get_matrix_transformation(applied),
+      added_anims,
+      kwargs,
+      onDone,
+    );
+  }
+
+  /** `_play_construct` for an already-built pointwise `func`. */
+  private _play_construct_func(
+    func: MappingFunction,
+    added_anims: Animation[] = [],
+    kwargs: Record<string, unknown> = {},
+    onDone: () => void,
+  ): this | Promise<this> {
+    if (!("path_arc" in kwargs)) {
+      // Mirror the base default: rotate along the average basis rotation.
+      const right = pointRows(func(pointFrom(RIGHT, 3)), 3)[0] ?? [1, 0, 0];
+      const up = pointRows(func(pointFrom(UP, 3)), 3)[0] ?? [0, 1, 0];
+      const net_rotation = (
+        (angle_of_vector(right) as number) + ((angle_of_vector(up) as number) - Math.PI / 2)
+      ) / 2;
+      kwargs["path_arc"] = net_rotation;
+    }
+    const played = LinearTransformationScene.prototype.apply_function.call(
+      this as unknown as LinearTransformationScene,
+      func,
+      added_anims,
+      kwargs,
+    );
+    return this._after_play(played, onDone);
+  }
+
+  /**
+   * Run `update` after `played` finishes. `play` blocks in Python but returns
+   * a promise under the real-time renderer; with no async scheduler it runs
+   * inline and this stays synchronous.
+   */
+  private _after_play(played: unknown, update: () => void): this | Promise<this> {
+    if (is_thenable(played)) return (played as Promise<unknown>).then(() => {
+      update();
+      return this;
+    });
+    update();
+    return this;
   }
 
   /**
@@ -465,6 +638,75 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     });
   }
 
+  // --- delegated movement/transformation helpers ------------------------------
+  // The animated `construct` path runs the base `apply_*` implementations on
+  // this instance; they call back into these helpers, so they are delegated
+  // to the shared `Scene` surface both classes provide.
+
+  get_matrix_transformation(matrix: unknown): (point: number[] | NDArray) => NDArray {
+    return LinearTransformationScene.prototype.get_matrix_transformation.call(
+      this as unknown as LinearTransformationScene,
+      matrix,
+    );
+  }
+
+  get_transposed_matrix_transformation(
+    transposed_matrix: unknown,
+  ): (point: number[] | NDArray) => NDArray {
+    return LinearTransformationScene.prototype.get_transposed_matrix_transformation.call(
+      this as unknown as LinearTransformationScene,
+      transposed_matrix,
+    );
+  }
+
+  get_piece_movement(pieces: Iterable<Mobject>): Transform {
+    return LinearTransformationScene.prototype.get_piece_movement.call(
+      this as unknown as LinearTransformationScene,
+      pieces,
+    );
+  }
+
+  get_moving_mobject_movement(func: MappingFunction): Transform {
+    return LinearTransformationScene.prototype.get_moving_mobject_movement.call(
+      this as unknown as LinearTransformationScene,
+      func,
+    );
+  }
+
+  get_vector_movement(func: MappingFunction): Transform {
+    return LinearTransformationScene.prototype.get_vector_movement.call(
+      this as unknown as LinearTransformationScene,
+      func,
+    );
+  }
+
+  get_transformable_label_movement(): Transform {
+    return LinearTransformationScene.prototype.get_transformable_label_movement.call(
+      this as unknown as LinearTransformationScene,
+    );
+  }
+
+  get_vector_label(
+    vector: Vector,
+    label: string | Mobject,
+    at_tip = false,
+    direction = "left",
+    rotate = false,
+    color: ParsableManimColor | null = null,
+    label_scale_factor?: number,
+  ): Mobject {
+    return VectorScene.prototype.get_vector_label.call(
+      this as unknown as VectorScene,
+      vector,
+      label,
+      at_tip,
+      direction,
+      rotate,
+      color,
+      label_scale_factor,
+    );
+  }
+
   // --- transform bookkeeping -------------------------------------------------
 
   private _place_basis_vectors(): void {
@@ -547,6 +789,84 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
       );
     }
   }
+
+  /**
+   * Apply `func` to the *current* geometry of every tracked object (used for
+   * arbitrary pointwise maps that cannot be folded into the 2x2 matrix).
+   */
+  private _apply_func_to_current(func: MappingFunction): void {
+    for (const mobject of this._transformable_snapshots.keys()) {
+      (mobject as unknown as { apply_function: (f: MappingFunction) => void }).apply_function(func);
+    }
+    for (const v of this.moving_vectors as Array<Arrow>) {
+      const rawEnd = pointRows(v.get_end(), 3)[0] ?? [0, 0, 0];
+      const rawStart = pointRows(v.get_start(), 3)[0] ?? [0, 0, 0];
+      const newEnd = pointRows(func(rawEnd), 3)[0] ?? [0, 0, 0];
+      const newStart = pointRows(func(rawStart), 3)[0] ?? [0, 0, 0];
+      v.put_start_and_end_on(newStart, newEnd);
+    }
+    for (const m of this.moving_mobjects as Array<Mobject>) {
+      const center = pointRows(m.get_center(), 3)[0] ?? [0, 0, 0];
+      m.move_to(pointRows(func(center), 3)[0] ?? [0, 0, 0]);
+    }
+    for (const label of this.transformable_labels as Array<any>) {
+      try {
+        const kw = (label.kwargs ?? {}) as Record<string, unknown>;
+        const target = this.get_vector_label(
+          label.vector as Vector,
+          (label.target_text ?? "") as string | Mobject,
+          (kw["at_tip"] as boolean | undefined) ?? false,
+          (kw["direction"] as string | undefined) ?? "left",
+          (kw["rotate"] as boolean | undefined) ?? false,
+          (kw["color"] as ParsableManimColor | null | undefined) ?? null,
+          (kw["label_scale_factor"] as number | undefined) ?? undefined,
+        );
+        (label as unknown as { become: (m: unknown) => void }).become(target);
+      } catch {
+        /* a label that cannot be rebuilt keeps its old position */
+      }
+    }
+    for (const record of this._plain_vectors) {
+      const rawEnd = pointRows(record.arrow.get_end(), 3)[0] ?? [0, 0, 0];
+      const rawStart = pointRows(record.arrow.get_start(), 3)[0] ?? [0, 0, 0];
+      const newEnd = pointRows(func(rawEnd), 3)[0] ?? [0, 0, 0];
+      const newStart = pointRows(func(rawStart), 3)[0] ?? [0, 0, 0];
+      this._place_arrow(record.arrow, newStart, newEnd, record.opacity);
+      record.start = [newStart[0] ?? 0, newStart[1] ?? 0, newStart[2] ?? 0];
+      record.end = [newEnd[0] ?? 0, newEnd[1] ?? 0, newEnd[2] ?? 0];
+    }
+  }
+
+  /**
+   * Rebase the snapshots onto the current picture and reset the matrix to
+   * identity. Used after an arbitrary (non-linear) map, which cannot be
+   * represented as a 2x2 matrix.
+   */
+  private _rebase(): void {
+    this._transformable_snapshots.clear();
+    for (const mobject of this.transformable_mobjects) this._snapshot_transformable(mobject);
+    for (const mobject of this.moving_mobjects) this._snapshot_transformable(mobject);
+    this.matrix = identity2x2();
+  }
+}
+
+/**
+ * Product of two 2x2 row-list matrices (`left @ right`), for composing an
+ * incremental map onto the absolute matrix state.
+ */
+function matMul2x2(left: number[][], right: number[][]): number[][] {
+  const a = left[0]?.[0] ?? 1;
+  const b = left[0]?.[1] ?? 0;
+  const c = left[1]?.[0] ?? 0;
+  const d = left[1]?.[1] ?? 1;
+  const e = right[0]?.[0] ?? 1;
+  const f = right[0]?.[1] ?? 0;
+  const g = right[1]?.[0] ?? 0;
+  const h = right[1]?.[1] ?? 1;
+  return [
+    [a * e + b * g, a * f + b * h],
+    [c * e + d * g, c * f + d * h],
+  ];
 }
 
 // Pin the Python-facing parameter names: esbuild may rename colliding
@@ -579,3 +899,33 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
 (InteractiveLinearTransformationScene.prototype.add_vector as unknown as {
   __argnames__?: string[];
 }).__argnames__ = ["vector", "color", "animate", "kwargs"];
+(InteractiveLinearTransformationScene.prototype.apply_transposed_matrix as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["transposed_matrix", "kwargs"];
+(InteractiveLinearTransformationScene.prototype.apply_inverse_transpose as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["t_matrix", "kwargs"];
+(InteractiveLinearTransformationScene.prototype.apply_nonlinear_transformation as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["func", "kwargs"];
+(InteractiveLinearTransformationScene.prototype.apply_function as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["func", "added_anims", "kwargs"];
+(InteractiveLinearTransformationScene.prototype.get_matrix_transformation as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["matrix"];
+(InteractiveLinearTransformationScene.prototype.get_transposed_matrix_transformation as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["transposed_matrix"];
+(InteractiveLinearTransformationScene.prototype.get_vector_label as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["vector", "label", "at_tip", "direction", "rotate", "color", "label_scale_factor"];
+(InteractiveLinearTransformationScene.prototype.get_piece_movement as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["pieces"];
+(InteractiveLinearTransformationScene.prototype.get_moving_mobject_movement as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["func"];
+(InteractiveLinearTransformationScene.prototype.get_vector_movement as unknown as {
+  __argnames__?: string[];
+}).__argnames__ = ["func"];
