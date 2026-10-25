@@ -14,6 +14,13 @@ export type PresentationMode = "normal" | "slides" | "two-view" | "animation";
 export type PresentationTheme = "light" | "dark";
 
 /**
+ * Theme preference accepted from JS options and HTML attributes.  Concrete
+ * values are passed through; `"auto"` asks wanim to read the viewer's
+ * `prefers-color-scheme` at run time.
+ */
+export type PresentationThemePreference = PresentationTheme | "auto";
+
+/**
  * Normalize a mode coming from a JS option or an HTML attribute.  Both
  * `two-view` and `two_view` are accepted; an unknown/omitted value returns
  * `undefined` so the caller can use `"normal"`.
@@ -28,10 +35,43 @@ export function normalize_presentation_mode(value: unknown): PresentationMode | 
   return undefined;
 }
 
-/** Normalize a light/dark theme; unknown values return `undefined`. */
-export function normalize_presentation_theme(value: unknown): PresentationTheme | undefined {
+/**
+ * Normalize a theme preference coming from a JS option or an HTML attribute.
+ * `"light"`/`"dark"` are passed through, `"auto"` (and `"system"`) ask wanim
+ * to read the viewer's colour scheme at run time; an unknown/omitted value
+ * returns `undefined` so the caller can fall back to `"auto"`.
+ */
+export function normalize_presentation_theme(
+  value: unknown,
+): PresentationThemePreference | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim().toLowerCase();
-  if (text === "light" || text === "dark") return text;
+  if (text === "light" || text === "dark" || text === "auto") return text;
+  if (text === "system") return "auto";
   return undefined;
+}
+
+/**
+ * Resolve a theme preference to the concrete value a scene sees as
+ * `self.theme`.  `"auto"` (and an omitted preference) follow `prefersDark`,
+ * which callers read from `matchMedia("(prefers-color-scheme: dark)")` where
+ * a DOM exists; headless runs pass `false` and stay on `"light"`.
+ */
+export function resolve_presentation_theme(
+  preference: PresentationThemePreference | undefined,
+  prefersDark: boolean,
+): PresentationTheme {
+  if (preference === "light") return "light";
+  if (preference === "dark") return "dark";
+  return prefersDark ? "dark" : "light";
+}
+
+/** Read the viewer's colour scheme; `false` where there is no DOM to ask. */
+export function prefers_dark_colour_scheme(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch {
+    return false;
+  }
 }

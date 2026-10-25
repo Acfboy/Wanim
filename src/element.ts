@@ -44,7 +44,7 @@
  * | `quality`          | `.quality`          | manim quality flag, default `-qm`          |
  * | `background`       | —                   | CSS colour override                        |
  * | `mode`             | `.mode`             | `normal`, `slides`, `two-view`, `animation`  |
- * | `theme`            | `.theme`            | `light` / `dark`, readable as `self.theme` |
+ * | `theme`            | `.theme`            | `light` / `dark` / `auto` (default), readable as `self.theme` |
  * | `instance-id`      | `.instanceId`       | Id attached to `post_message` events       |
  * | `fps`              | —                   | realtime frame rate, default 30            |
  * | `scene`            | `.sceneName`        | scene class name                           |
@@ -313,7 +313,7 @@ export class WanimSceneElement extends HTMLElementBase {
   private _quality: string | null = null;
   private _background: string | null = null;
   private _mode: string | null = null;
-  private _theme: "light" | "dark" | null = null;
+  private _theme: "light" | "dark" | "auto" | null = null;
   private _instanceId: string | null = null;
   private _fps: number | null = null;
   private _sceneName: string | null = null;
@@ -366,12 +366,16 @@ export class WanimSceneElement extends HTMLElementBase {
     else this.setAttribute("mode", value);
   }
 
-  /** Light/dark hint, readable from Python as `self.theme`. */
-  get theme(): "light" | "dark" {
-    return this._theme ?? "light";
+  /**
+   * Colour theme readable from Python as `self.theme`.  `"auto"` (the
+   * default) reads the viewer's `prefers-color-scheme` at run time; wanim
+   * only informs the scene, palette choices stay in user code.
+   */
+  get theme(): "light" | "dark" | "auto" {
+    return this._theme ?? "auto";
   }
 
-  set theme(value: "light" | "dark") {
+  set theme(value: "light" | "dark" | "auto") {
     this._theme = value;
     this.setAttribute("theme", value);
   }
@@ -446,7 +450,10 @@ export class WanimSceneElement extends HTMLElementBase {
         break;
       case "theme": {
         const normalized = value?.trim().toLowerCase();
-        this._theme = normalized === "dark" ? "dark" : normalized === "light" ? "light" : null;
+        this._theme =
+          normalized === "dark" || normalized === "light" || normalized === "auto"
+            ? normalized
+            : null;
         break;
       }
       case "instance-id":
@@ -568,7 +575,8 @@ export class WanimSceneElement extends HTMLElementBase {
     this._background = this.getAttribute("background");
     this._mode = this.getAttribute("mode");
     const theme = this.getAttribute("theme")?.trim().toLowerCase();
-    this._theme = theme === "dark" ? "dark" : theme === "light" ? "light" : null;
+    this._theme =
+      theme === "dark" || theme === "light" || theme === "auto" ? theme : null;
     this._instanceId = this.getAttribute("instance-id");
     this._sceneName = this.getAttribute("scene");
     this._autoplay = resolveAutoplayAttribute(this.getAttribute("autoplay"));

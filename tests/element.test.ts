@@ -105,4 +105,8 @@ describe("Node/SSR safety", () => {
   it("registerWanimScene is a no-op without customElements", () => {
     expect(registerWanimScene()).toBe(false);
   });
+
+  it("defaults the theme preference to auto", () => {
+    expect(new WanimSceneElement().theme).toBe("auto");
+  });
 });
