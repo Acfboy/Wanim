@@ -53,6 +53,29 @@ describe("InteractiveLinearTransformationScene", () => {
     const jVector = rows(scene.j_hat.get_vector())[0]!;
     expect(jVector[0]).toBeCloseTo(0, 10);
     expect(jVector[1]).toBeGreaterThan(2.4);
+
+    // Regression: the foreground grid itself must deform, not just the
+    // square/vectors (a dropped plane snapshot left the grid frozen while
+    // vectors still moved). Under diag(2, 3) the grid's x-extent doubles
+    // and its y-extent triples.
+    const before = new InteractiveLinearTransformationScene();
+    before.setup();
+    const extent = (plane: unknown): [number, number] => {
+      let maxX = 0;
+      let maxY = 0;
+      for (const member of (plane as { get_family: () => Array<{ points: unknown }> }).get_family()) {
+        for (const row of rows(member.points)) {
+          maxX = Math.max(maxX, Math.abs(row[0] ?? 0));
+          maxY = Math.max(maxY, Math.abs(row[1] ?? 0));
+        }
+      }
+      return [maxX, maxY];
+    };
+    const [beforeX, beforeY] = extent(before.plane);
+    const [afterX, afterY] = extent(scene.plane);
+    expect(beforeX).toBeGreaterThan(0);
+    expect(afterX).toBeCloseTo(beforeX * 2, 6);
+    expect(afterY).toBeCloseTo(beforeY * 3, 6);
   });
 
   test("a user-wired DraggablePoint can drive a matrix column", () => {
