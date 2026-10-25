@@ -331,11 +331,13 @@ export class Scene {
   random_seed: number | null;
   skip_animations: boolean;
   /**
-   * Colour theme supplied by the embedder (`"light"` or `"dark"`).  Scenes can
-   * read it from `setup()` to pick colour constants, e.g.
-   * `color = WHITE if self.theme == "dark" else BLACK`.  The value is set by
-   * the host before `setup()` runs; a scene rendered directly (Node/tests)
-   * keeps the default.
+   * Colour theme the scene sees as `self.theme` (`"light"` or `"dark"`).
+   * Scenes read it from `setup()` to pick colour constants, e.g.
+   * `color = WHITE if self.theme == "dark" else BLACK`.  The run options
+   * accept `"light"`/`"dark"`/`"auto"`; `"auto"` (the default) reads the
+   * viewer's `prefers-color-scheme` and is resolved before `setup()` runs, so
+   * by the time user code sees it the value is always concrete.  A scene
+   * rendered directly (Node/tests) keeps `"light"`.
    */
   theme: "light" | "dark" = "light";
   /**

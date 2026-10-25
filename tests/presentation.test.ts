@@ -14,6 +14,7 @@ import { Scene } from "../src/scene/scene.js";
 import {
   normalize_presentation_mode,
   normalize_presentation_theme,
+  resolve_presentation_theme,
 } from "../src/interactive/config.js";
 import type { SceneConstructor } from "../src/renderer/scene_runner.js";
 
@@ -177,10 +178,23 @@ describe("presentation mode/theme normalization", () => {
     expect(normalize_presentation_mode(undefined)).toBeUndefined();
   });
 
-  test("normalizes light/dark only", () => {
+  test("normalizes explicit themes and the auto preference", () => {
     expect(normalize_presentation_theme("dark")).toBe("dark");
     expect(normalize_presentation_theme(" LIGHT ")).toBe("light");
+    expect(normalize_presentation_theme("auto")).toBe("auto");
+    expect(normalize_presentation_theme(" system ")).toBe("auto");
     expect(normalize_presentation_theme("blue")).toBeUndefined();
+    expect(normalize_presentation_theme(undefined)).toBeUndefined();
+  });
+
+  test("resolves a preference to the concrete scene theme", () => {
+    expect(resolve_presentation_theme("dark", true)).toBe("dark");
+    expect(resolve_presentation_theme("dark", false)).toBe("dark");
+    expect(resolve_presentation_theme("light", true)).toBe("light");
+    expect(resolve_presentation_theme("auto", true)).toBe("dark");
+    expect(resolve_presentation_theme("auto", false)).toBe("light");
+    expect(resolve_presentation_theme(undefined, true)).toBe("dark");
+    expect(resolve_presentation_theme(undefined, false)).toBe("light");
   });
 });
 

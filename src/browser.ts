@@ -39,8 +39,11 @@ import {
 import {
   normalize_presentation_mode,
   normalize_presentation_theme,
+  prefers_dark_colour_scheme,
+  resolve_presentation_theme,
   type PresentationMode,
   type PresentationTheme,
+  type PresentationThemePreference,
 } from "./interactive/config.js";
 import {
   create_frame_scheduler,
@@ -88,8 +91,13 @@ export interface BrowserRenderOptions {
    * omitted, the scene/camera background is kept.
    */
   background?: string;
-  /** Light/dark hint readable from Python as `self.theme` in `setup()`. */
-  theme?: PresentationTheme;
+  /**
+   * Colour theme readable from Python as `self.theme` in `setup()`.
+   * `"light"`/`"dark"` are passed through; `"auto"` (the default) reads the
+   * viewer's `prefers-color-scheme` at run time.  wanim only informs the
+   * scene — background and palette choices stay in user code.
+   */
+  theme?: PresentationThemePreference;
   /** Abort a realtime run; the scene stops at the next frame boundary. */
   signal?: AbortSignal;
   onProgress?: (info: { frames: number; plays: number; elapsedMs: number }) => void;
@@ -173,8 +181,10 @@ export async function render_scene_to_canvas(
     renderer.camera.background_color = options.background;
   }
   const scene = construct_scene(sceneClass, renderer as never);
-  const theme = normalize_presentation_theme(options.theme);
-  if (theme !== undefined) scene.theme = theme;
+  scene.theme = resolve_presentation_theme(
+    normalize_presentation_theme(options.theme),
+    prefers_dark_colour_scheme(),
+  );
   options.onSceneReady?.(scene);
   // Interactive scenes need a DOM host to receive pointer events and to place
   // the restart/next buttons.  Without a DOM (Node) the scene falls back to its
@@ -308,7 +318,10 @@ export async function render_presentation_to_canvas(
   };
 
   const mode: PresentationMode = normalize_presentation_mode(options.mode) ?? "normal";
-  const theme = normalize_presentation_theme(options.theme);
+  const theme = resolve_presentation_theme(
+    normalize_presentation_theme(options.theme),
+    prefers_dark_colour_scheme(),
+  );
   const instanceId = options.instanceId ?? `wanim-${nextPresentationId++}`;
   const twoView = mode === "two-view" || mode === "animation";
   // Every scene gets a message sink so `post_message` works in the classic
@@ -354,7 +367,7 @@ export async function render_presentation_to_canvas(
       renderer.camera.background_color = options.background;
     }
     const scene = construct_scene(sceneClass, renderer as never);
-    if (theme !== undefined) scene.theme = theme;
+    scene.theme = theme;
     // Attach the scheduler explicitly instead of installing a global one: a
     // second presentation on the same page must not steal this run's pacing.
     scene.set_run_scheduler(scheduler);

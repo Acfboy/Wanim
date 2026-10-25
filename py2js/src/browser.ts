@@ -166,8 +166,11 @@ export interface RunPythonOptions {
    * `two-view`, or `animation` (loop the animation only).
    */
   mode?: string;
-  /** Light/dark hint readable from Python as `self.theme` in `setup()`. */
-  theme?: "light" | "dark";
+  /**
+   * Colour theme readable from Python as `self.theme` in `setup()`.
+   * `"auto"` (the default) reads the viewer's `prefers-color-scheme`.
+   */
+  theme?: "light" | "dark" | "auto";
   /** Stable id attached to every `post_message` from this run. */
   instanceId?: string;
   /** Render live, yielding to the browser between frames (default `true`). */
