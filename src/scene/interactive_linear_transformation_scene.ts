@@ -304,9 +304,12 @@ export class InteractiveLinearTransformationScene extends InteractiveScene {
     // vectors; it is safe on this instance because it only touches the shared
     // Scene surface and the fields initialised in the constructor.
     LinearTransformationScene.prototype.setup.call(this as unknown as LinearTransformationScene);
-    this._transformable_snapshots.clear();
-    // The setup above added the foreground plane through our override, which
-    // snapshotted it; re-apply a non-identity initial matrix now.
+    // NOTE: do not clear `_transformable_snapshots` here: the setup above
+    // added the foreground plane through our `add_transformable_mobject`
+    // override, which already snapshotted its source-space points. Clearing
+    // would drop that snapshot and the grid would never transform again
+    // (only vectors, which are re-pointed directly, would move).
+    // Re-apply a non-identity initial matrix now.
     this.refresh_transform();
   }
 
