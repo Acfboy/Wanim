@@ -824,6 +824,23 @@ function installPythonScalarShims(proto: Any, withRealImag: boolean): void {
 }
 
 /**
+ * The native `replace`/`split` of each patched `String.prototype`.  The Python
+ * shims must keep JS internals working: rapydscript's own `str.format`
+ * trims `:g` output with `value.replace(/0+$/g, "")`, and other library code
+ * splits on `/\s+/`.  Once `String.prototype.replace` is replaced by the
+ * Python version (which only understands string patterns), those calls stop
+ * matching -- `f"{1.0:g}"` printed "1.00000" because the regex was stringified
+ * to `/0+$/g` and nothing was trimmed.  Keep the natives per prototype so the
+ * shim can delegate RegExp / replacer-function calls.
+ */
+const nativeStringMethods = new WeakMap<object, { replace: Any; split: Any }>();
+
+/** Cross-realm-safe `instanceof RegExp`. */
+function isRegExpValue(value: Any): boolean {
+  return Object.prototype.toString.call(value) === "[object RegExp]";
+}
+
+/**
  * Install Python string-method shims on the vm context's own String.prototype.
  * rapydscript exposes these on its `ρσ_str` function object (not on
  * String.prototype), so `"x".upper()` fails unless we bridge them.
@@ -836,6 +853,11 @@ export function installPythonShims(sandbox: Record<string, Any>): void {
   installPythonScalarShims((sandbox as Any).BigInt?.prototype, false);
   const S = sandbox.String?.prototype as Any;
   if (S === undefined) return;
+  let natives = nativeStringMethods.get(S);
+  if (natives === undefined) {
+    natives = { replace: S.replace, split: S.split };
+    nativeStringMethods.set(S, natives);
+  }
   for (const name of PYTHON_STR_METHODS) {
     Object.defineProperty(S, name, {
       configurable: true,
@@ -853,6 +875,12 @@ export function installPythonShims(sandbox: Record<string, Any>): void {
     writable: true,
     value: function (this: Any, oldValue: Any, newValue: Any, count?: number) {
       const text = String(this);
+      // Rapydscript's own formatting code and any bundled JS may pass a
+      // RegExp (or a replacer function); that is JavaScript semantics, not
+      // Python's `str.replace`, so hand it to the native method untouched.
+      if (isRegExpValue(oldValue) || typeof newValue === "function") {
+        return natives.replace.call(text, oldValue, newValue);
+      }
       const search = String(oldValue);
       if (search === "") return text;
       if (count === undefined || count < 0) return text.split(search).join(String(newValue));
@@ -875,11 +903,14 @@ export function installPythonShims(sandbox: Record<string, Any>): void {
     writable: true,
     value: function (this: Any, sep?: Any, maxsplit?: number) {
       const text = String(this);
+      if (isRegExpValue(sep)) return natives.split.call(text, sep, maxsplit);
       if (sep === undefined || sep === null) {
-        const parts = text.trim().split(/\s+/);
-        return text.trim() === "" ? [] : maxsplit === undefined ? parts : parts.slice(0, maxsplit);
+        const trimmed = text.trim();
+        if (trimmed === "") return [];
+        const parts = natives.split.call(trimmed, /\s+/);
+        return maxsplit === undefined ? parts : parts.slice(0, maxsplit);
       }
-      const parts = text.split(String(sep));
+      const parts = natives.split.call(text, String(sep));
       return maxsplit === undefined ? parts : parts.slice(0, maxsplit + 1);
     },
   });
