@@ -2,6 +2,7 @@
 //
 // Run with:  pnpm test:py2js
 import assert from "node:assert/strict";
+import vm from "node:vm";
 
 import * as npReal from "numpy-ts";
 
@@ -427,6 +428,35 @@ check("scalar shims bridge .item()/.real/.imag onto unboxed primitives", () => {
   assert.equal(true.real, 1);
   assert.equal(true.imag, 0);
   assert.equal((7n).item(), 7n);
+});
+
+check("string replace/split shims delegate RegExp calls to native", () => {
+  // Install the shims in an isolated realm so this test does not mutate the
+  // test process's own String.prototype.
+  const sandbox = { console };
+  const context = vm.createContext(sandbox);
+  for (const name of ["Object", "Array", "String", "RegExp", "Number", "Boolean", "BigInt"]) {
+    sandbox[name] = vm.runInContext(name, context);
+  }
+  installPythonShims(sandbox);
+  const proto = sandbox.String.prototype;
+  const regexp = (source, flags) => new sandbox.RegExp(source, flags);
+
+  // rapydscript's `str.format` trims `:g` output with replace(/0+$/g, "").
+  // With the Python replace shim intercepting the regex it did nothing, so
+  // `f"{1.0:g}"` rendered "1.00000" instead of "1".
+  assert.equal(proto.replace.call("1.00000", regexp("0+$", "g"), ""), "1.");
+  assert.equal(proto.replace.call("abc", regexp("b"), (m) => m.toUpperCase()), "aBc");
+
+  // Python semantics are unchanged for string patterns.
+  assert.equal(proto.replace.call("a-b-c", "-", "+"), "a+b+c");
+  assert.equal(proto.replace.call("a-b-c", "-", "+", 1), "a+b-c");
+  assert.equal(proto.replace.call("a-b-c", "-", "+", 0), "a-b-c");
+
+  assert.deepEqual(Array.from(proto.split.call("a1b2c", regexp("[0-9]"))), ["a", "b", "c"]);
+  assert.deepEqual(Array.from(proto.split.call("a,b", ",")), ["a", "b"]);
+  assert.deepEqual(Array.from(proto.split.call("  a  b ", undefined)), ["a", "b"]);
+  assert.deepEqual(Array.from(proto.split.call("", undefined)), []);
 });
 
 check("numpy facade accepts rapydscript range() objects as array-likes", () => {
