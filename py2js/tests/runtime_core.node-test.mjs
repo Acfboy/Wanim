@@ -336,6 +336,24 @@ check("numpy facade exposes linalg.LinAlgError for except handlers", () => {
   assert.equal(error.name, "LinAlgError");
 });
 
+check("linalg results are full NDArrays with Python methods (.T)", () => {
+  const np = ndCore.buildNumpy();
+  const a = np.array([[1.0, -1.5], [1.5, 0.5]]);
+  // numpy-ts returns NDArrayCore from linalg.*: `.T` used to be `undefined`,
+  // so `V = np.linalg.svd(a)[2].T` gave None and `V[1, 0]` threw
+  // `'NoneType' object is not subscriptable`.
+  const [, , vt] = np.linalg.svd(a);
+  const v = vt.T;
+  assert.deepEqual(v.shape, [2, 2]);
+  assert.equal(typeof v.get([1, 0]), "number");
+  assert.deepEqual(np.linalg.inv(a).T.shape, [2, 2]);
+  const [w, vec] = np.linalg.eig(np.array([[2.0, 1.0], [1.0, 2.0]]));
+  assert.deepEqual(w.T.shape, [2]);
+  assert.deepEqual(vec.T.shape, [2, 2]);
+  // Wrapping must not copy: full NDArrays keep their identity.
+  assert.equal(np.asarray(a), a);
+});
+
 check("linalg numerical failures throw np.linalg.LinAlgError", () => {
   const np = ndCore.buildNumpy();
   // numpy-ts throws `Error: inv: singular matrix`; Python catches LinAlgError.

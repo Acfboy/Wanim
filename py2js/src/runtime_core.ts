@@ -5302,37 +5302,68 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       }
       return value;
     }
+    // numpy-ts' `linalg.*` return the low-level `NDArrayCore` class instead of
+    // the full `NDArray`: the values index fine but have no `.T`,
+    // `.transpose()`, `.slice()`, ... methods.  Python code such as
+    // `V = np.linalg.svd(a)[2].T` therefore silently gets `undefined` (a
+    // missing getter, not a copy) and the following `V[1, 0]` throws
+    // `'NoneType' object is not subscriptable`.  `asarray` is a no-op for
+    // full NDArrays and re-wraps core ones around the same storage.
+    function toPythonNdArray(value: Any): Any {
+      if (!isNdArray(value)) return value;
+      try {
+        return (np as Any).asarray(value);
+      } catch {
+        return value;
+      }
+    }
     // numpy-ts returns multi-output linalg results as plain objects
     // (`{w, v}` for eig, `{q, r}` for qr, `{u, s, vt}` for svd,
     // `{sign, logabsdet}` for slogdet, `{x, residuals, rank, s}` for
     // lstsq) while numpy returns tuples.  Python code unpacks them
     // (`w, v = np.linalg.eig(a)`) or indexes them (`res[0]`), both of
-    // which fail on the object form (error 320).  Normalize to tuples.
+    // which fail on the object form (error 320).  Normalize to tuples and
+    // re-wrap every array element (see `toPythonNdArray` above).
     function normalizeLinalgResult(key: string, result: Any): Any {
       if (result === null || result === undefined) return result;
-      if (Array.isArray(result) || isNdArray(result)) return result;
+      if (isNdArray(result)) return toPythonNdArray(result);
+      if (Array.isArray(result)) return result.map(toPythonNdArray);
       if (typeof result !== "object") return result;
       try {
         if ((key === "eig" || key === "eigh") && "w" in result && "v" in result) {
-          return [(result as Any).w, (result as Any).v];
+          return [toPythonNdArray((result as Any).w), toPythonNdArray((result as Any).v)];
         }
         if (key === "qr" && "q" in result && "r" in result) {
-          return [(result as Any).q, (result as Any).r];
+          return [toPythonNdArray((result as Any).q), toPythonNdArray((result as Any).r)];
         }
         if (key === "svd" && "u" in result && "s" in result) {
           const vt = (result as Any).vt ?? (result as Any).vh ?? (result as Any).Vh;
-          if (vt !== undefined) return [(result as Any).u, (result as Any).s, vt];
+          if (vt !== undefined) {
+            return [
+              toPythonNdArray((result as Any).u),
+              toPythonNdArray((result as Any).s),
+              toPythonNdArray(vt),
+            ];
+          }
         }
         if (key === "slogdet" && "sign" in result && ("logabsdet" in result || "logdet" in result)) {
-          return [(result as Any).sign, (result as Any).logabsdet ?? (result as Any).logdet];
+          return [
+            toPythonNdArray((result as Any).sign),
+            toPythonNdArray((result as Any).logabsdet ?? (result as Any).logdet),
+          ];
         }
         if (key === "lstsq" && "x" in result && "residuals" in result) {
-          return [(result as Any).x, (result as Any).residuals, (result as Any).rank, (result as Any).s];
+          return [
+            toPythonNdArray((result as Any).x),
+            toPythonNdArray((result as Any).residuals),
+            (result as Any).rank,
+            toPythonNdArray((result as Any).s),
+          ];
         }
       } catch {
         /* fall through and return the raw result */
       }
-      return result;
+      return toPythonNdArray(result);
     }
     /**
      * Map numpy-ts' plain-`Error` numerical linalg failures onto
