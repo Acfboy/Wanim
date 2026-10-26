@@ -355,6 +355,22 @@ check("linalg results are full NDArrays with Python methods (.T)", () => {
   assert.equal(np.asarray(a), a);
 });
 
+check("np.diag accepts Python lists (numpy-ts requires NDArray)", () => {
+  const np = ndCore.buildNumpy();
+  // numpy-ts' `diag` reads `v.shape.length` directly, so a Python list threw
+  // `Cannot read properties of undefined (reading 'length')` (e.g.
+  // `np.diag([s1, s2])` in an SVD scene).  The facade coerces array-likes.
+  assert.deepEqual(np.diag([2, 3]).tolist(), [[2, 0], [0, 3]]);
+  assert.deepEqual(np.diag([2, 3], 1).tolist(), [[0, 2, 0], [0, 0, 3], [0, 0, 0]]);
+  assert.deepEqual(np.diag([[1, 2], [3, 4]]).tolist(), [1, 4]);
+  assert.deepEqual(np.diagflat([[1, 2], [3, 4]]).tolist(), [
+    [1, 0, 0, 0],
+    [0, 2, 0, 0],
+    [0, 0, 3, 0],
+    [0, 0, 0, 4],
+  ]);
+});
+
 check("linalg numerical failures throw np.linalg.LinAlgError", () => {
   const np = ndCore.buildNumpy();
   // numpy-ts throws `Error: inv: singular matrix`; Python catches LinAlgError.

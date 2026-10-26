@@ -5546,6 +5546,13 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       vecdot: { count: 2, names: ["a", "b", "axis"] },
       trace: { count: 1, names: ["a", "offset", "axis1", "axis2", "dtype", "out"] },
       diagonal: { count: 1, names: ["a", "offset", "axis1", "axis2"] },
+      // `diag`/`diagflat` accept array-likes in numpy, but numpy-ts requires
+      // NDArray storage: `np.diag([s1, s2])` (a Python list, e.g. singular
+      // values) threw `Cannot read properties of undefined (reading
+      // 'length')` because `shape` was missing.  Coerce the first argument
+      // like `diagonal`/`trace` above.
+      diag: { count: 1, names: ["v", "k"] },
+      diagflat: { count: 1, names: ["v", "k"] },
       transpose: { count: 1, names: ["a", "axes"] },
       matrix_transpose: { count: 1, names: ["x"] },
       permute_dims: { count: 1, names: ["x", "axes"] },
