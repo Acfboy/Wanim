@@ -572,16 +572,23 @@ export class InteractiveScene extends Scene {
 
   /**
    * The implicit `(blueprint, construct)` pair of a scene without a
-   * storyboard.  The construct half is only added when the subclass overrides
-   * `construct`: a blueprint-only scene is a live interactive model, and an
-   * implicit no-op construct would only add a fake page whose "next" ends the
-   * run.  The blueprint half is always kept (even as the base no-op) so a bare
-   * interactive scene, e.g. an orbit-only 3D model, still has a live page.
+   * storyboard.  Each half is only added when the subclass overrides it: a
+   * blueprint-only scene is a live interactive model, and a construct-only
+   * scene (e.g. a plain animation on an `InteractiveThreeDScene` for its
+   * orbit camera) plays straight through without a fake interactive page
+   * whose "next" would stall the run.  When neither is overridden the base
+   * no-op blueprint is kept so a bare interactive scene, e.g. an orbit-only
+   * 3D model, still has a live page.
    */
   private default_step(): InteractiveStep {
+    const blueprintOverridden =
+      (this.blueprint as unknown) !== (InteractiveScene.prototype.blueprint as unknown);
     const overridden = (this.construct as unknown) !== (Scene.prototype.construct as unknown);
+    if (!blueprintOverridden && !overridden) {
+      return { blueprint: () => this.blueprint(), construct: null };
+    }
     return {
-      blueprint: () => this.blueprint(),
+      blueprint: blueprintOverridden ? () => this.blueprint() : null,
       construct: overridden ? () => this.construct() : null,
     };
   }
