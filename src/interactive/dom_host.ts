@@ -60,6 +60,13 @@ const CONTROLS_BARS = new WeakMap<HTMLCanvasElement, HTMLElement>();
 /** Gap between the canvas' bottom-right corner and the control bar. */
 const CONTROLS_MARGIN = 10;
 
+/**
+ * Max gap between two clicks to count as a double-click.  Deliberately
+ * stricter than the OS native `dblclick` interval (often ~500ms): slow,
+ * accidental second clicks must not flip the two-view player.
+ */
+const DOUBLE_CLICK_MS = 300;
+
 /** Which host currently owns a control bar (so a stale run won't remove it). */
 const CONTROLS_OWNER = new WeakMap<HTMLElement, DomInteractiveHost>();
 
@@ -382,14 +389,25 @@ export class DomInteractiveHost implements InteractiveHost {
   }
 
   onDoubleClick(handler: () => void): () => void {
+    // Manual timing instead of the native `dblclick` event, whose OS-level
+    // interval is too loose here.  Two `click`s only count when they land
+    // within DOUBLE_CLICK_MS; the stamp resets after a hit so a triple
+    // click does not toggle twice.
+    let lastClick = 0;
     const listener = (event: MouseEvent): void => {
       if (this.editor !== null) return;
-      event.preventDefault();
-      handler();
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (now - lastClick <= DOUBLE_CLICK_MS) {
+        lastClick = 0;
+        event.preventDefault();
+        handler();
+      } else {
+        lastClick = now;
+      }
     };
-    this.canvas.addEventListener("dblclick", listener);
+    this.canvas.addEventListener("click", listener);
     const dispose = (): void => {
-      this.canvas.removeEventListener("dblclick", listener);
+      this.canvas.removeEventListener("click", listener);
     };
     this.disposers.push(dispose);
     return dispose;
