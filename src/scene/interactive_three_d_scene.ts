@@ -155,8 +155,8 @@ export class InteractiveThreeDScene extends InteractiveScene {
     frame_center: Mobject | number[] | readonly number[] | null = null,
     added_anims: Animation[] = [],
     kwargs: Record<string, unknown> = {},
-  ): void {
-    ThreeDScene.prototype.move_camera.call(
+  ): this | Promise<this> {
+    return ThreeDScene.prototype.move_camera.call(
       this as unknown as ThreeDScene,
       phi,
       theta,
@@ -166,7 +166,7 @@ export class InteractiveThreeDScene extends InteractiveScene {
       frame_center,
       added_anims,
       kwargs,
-    );
+    ) as this | Promise<this>;
   }
 
   override get_moving_mobjects(...animations: Animation[]): Mobject[] {

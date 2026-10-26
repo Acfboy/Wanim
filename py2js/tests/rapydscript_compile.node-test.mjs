@@ -609,4 +609,21 @@ await check("python truthiness: all()/any() (baselib, option-independent)", asyn
   assert.deepEqual(lines, ["True False True", "True False False", "True False False"]);
 });
 
+await check("await_scene_methods: self.move_camera is auto-awaited", async () => {
+  // `move_camera` blocks on an internal play (ThreeDScene), so the
+  // real-time renderer must await it like `play`/`wait`; otherwise the
+  // camera animation runs detached and interactive 3D scenes never move.
+  const js = await compilePython(
+    [
+      "class Demo:",
+      "    def construct(self):",
+      "        self.move_camera(phi=75, theta=30)",
+      "        self.wait()",
+      "",
+    ].join("\n"),
+    { ...TRUTHY, await_scene_methods: true },
+  );
+  assert.match(js, /await.*move_camera/);
+});
+
 console.log(`\n${passed} passed`);

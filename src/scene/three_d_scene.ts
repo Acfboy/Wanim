@@ -1,6 +1,7 @@
 import { config } from "../_config/utils.js";
 import { pointRows } from "../utils/arrays.js";
 import { bump_mobject_geometry_epoch } from "../utils/render_epoch.js";
+import { is_thenable } from "../utils/scheduler.js";
 import { DEGREES, RendererType } from "../constants.js";
 import type { Animation } from "../animation/animation.js";
 import { Transform } from "../animation/transform.js";
@@ -177,7 +178,7 @@ export class ThreeDScene extends Scene {
     frame_center: Mobject | number[] | readonly number[] | null = null,
     added_anims: Animation[] = [],
     kwargs: Record<string, unknown> = {},
-  ): void {
+  ): this | Promise<this> {
     const anims: Animation[] = [];
     if (config.renderer === RendererType.CAIRO) {
       const value_tracker_pairs: Array<[number | null, ValueTracker]> = [
@@ -236,21 +237,34 @@ export class ThreeDScene extends Scene {
       }
       anims.push(new Transform(cam as Mobject, cam2 as Mobject));
     }
-    // NOTE: Python does `self.play(*anims + added_anims, **kwargs)`; forward
-    // the extra play options (e.g. run_time) as a trailing bag so the
+    // NOTE: Python does `self.play(*anims + added_anims, **kwargs)` and blocks
+    // until the camera move finishes (the frame_center cleanup below runs
+    // after).  The realtime renderer is async, so the play promise is
+    // returned: rapydscript auto-awaits `self.move_camera(...)`, keeping
+    // Python's sequential semantics, while sync runs stay synchronous.
+    // Forward the extra play options (e.g. run_time) as a trailing bag so the
     // animation duration is honoured.
-    if (Object.keys(kwargs).length > 0) {
-      this.play(...anims, ...added_anims, kwargs);
-    } else {
-      this.play(...anims, ...added_anims);
-    }
+    const played =
+      Object.keys(kwargs).length > 0
+        ? this.play(...anims, ...added_anims, kwargs)
+        : this.play(...anims, ...added_anims);
     // These lines are added to improve performance. If manim thinks that frame_center is moving,
     // it is required to redraw every object. These lines remove frame_center from the Scene once
     // its animation is done, ensuring that manim does not think that it is moving. Since the
     // frame_center is never actually drawn, this shouldn't break anything.
-    if (frame_center !== null && frame_center !== undefined && config.renderer === RendererType.CAIRO) {
-      this.remove(this.camera._frame_center);
+    const cleanupFrameCenter = (): void => {
+      if (frame_center !== null && frame_center !== undefined && config.renderer === RendererType.CAIRO) {
+        this.remove(this.camera._frame_center);
+      }
+    };
+    if (is_thenable(played)) {
+      return Promise.resolve(played).then((result) => {
+        cleanupFrameCenter();
+        return result;
+      });
     }
+    cleanupFrameCenter();
+    return played;
   }
 
   override get_moving_mobjects(...animations: Animation[]): Mobject[] {
