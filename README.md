@@ -15,7 +15,7 @@ changes.
   <a href="https://wanim.org/docs/intro">Documentation</a> ·
   <a href="https://wanim.org/playground">Playground</a> ·
   <a href="https://wanim.org/docs/gallery">Examples</a> ·
-  <a href="https://wanim.org/chat/">Embedded in chat</a>
+  <a href="https://wanim.org/blog">Explorable Blogs</a>
 </p>
 
 <p align="center">
@@ -30,7 +30,7 @@ changes.
 
 - Run the original manim Python in the browser. 
 - Small enough to embed anywhere: **About 20× smaller than Pyodide-based ways of running manim in the browser.** Your readers install nothing, and a scene drops into any page as a <wanim-scene> element or an iframe. In the age of AI, that means live math can sit inside a conversation with a model, or serve as the blackboard the AI draws on while it explains.
-- Interactive with a few small edits. Turn an ordinary manim animation into an explorable explanation: add a slider, a switch, or a numeric input, wire up a reaction, and readers can drag, type, and toggle their way through the idea instead of just watching it go by.
+- **Interactive** with a few small edits. Turn an ordinary manim animation into an explorable explanation: add a slider, a switch, or a numeric input, wire up a reaction, and readers can drag, type, and toggle their way through the idea instead of just watching it go by.
 
 ## Comparison
 
