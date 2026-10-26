@@ -20,6 +20,8 @@ import {
 } from "../src/renderer/canvas.js";
 import { CanvasSceneRenderer } from "../src/renderer/canvas_renderer.js";
 import { serialize_frame } from "../src/renderer/json_renderer.js";
+import { Scene } from "../src/scene/scene.js";
+import { is_thenable, type RenderScheduler } from "../src/utils/scheduler.js";
 import { ImageMobject } from "../src/mobject/types/image_mobject.js";
 import { PMobject } from "../src/mobject/types/point_cloud_mobject.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
@@ -442,6 +444,47 @@ describe("CanvasSceneRenderer", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("static wait realtime pacing", () => {
+  test("frozen wait yields to a realtime scheduler", async () => {
+    const { ctx } = mockContext();
+    const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: false, recordFrames: false });
+    const scene = new Scene({ renderer } as never);
+    let calls = 0;
+    const scheduler: RenderScheduler = {
+      async: true,
+      cancelled: false,
+      cancel() { (this as unknown as { cancelled: boolean }).cancelled = true; },
+      async next_frame() { calls += 1; await new Promise((resolve) => setTimeout(resolve, 5)); },
+    };
+    scene.set_run_scheduler(scheduler);
+    const startedAt = performance.now();
+    const played = scene.wait(0.15);
+    expect(is_thenable(played)).toBe(true);
+    await played;
+    expect(calls).toBeGreaterThan(0);
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(80);
+  });
+
+  test("skip_animations fast-forward stays synchronous", async () => {
+    const { ctx } = mockContext();
+    const renderer = new CanvasSceneRenderer("", { ctx, drawFrames: false, recordFrames: false });
+    renderer.set_skip_animations(true);
+    const scene = new Scene({ renderer } as never);
+    let calls = 0;
+    const scheduler: RenderScheduler = {
+      async: true,
+      cancelled: false,
+      cancel() { (this as unknown as { cancelled: boolean }).cancelled = true; },
+      async next_frame() { calls += 1; },
+    };
+    scene.set_run_scheduler(scheduler);
+    const played = scene.wait(0.15);
+    expect(is_thenable(played)).toBe(false);
+    await played;
+    expect(calls).toBe(0);
   });
 });
 

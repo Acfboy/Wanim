@@ -39,7 +39,7 @@ import {
 } from "./json_renderer.js";
 import { WebGLThreeDRenderer } from "./webgl_3d.js";
 import { ThreeDCamera } from "../camera/three_d_camera.js";
-import { is_thenable } from "../utils/scheduler.js";
+import { get_render_scheduler, is_thenable, type RenderScheduler } from "../utils/scheduler.js";
 import { create_canvas_backend, type CanvasBackend } from "./backend.js";
 
 export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
@@ -172,7 +172,52 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     if (is_thenable(result)) {
       return Promise.resolve(result).then(finish);
     }
+    // A frozen single-`Wait` finishes synchronously in the base renderer
+    // (`update_frame` once + `freeze_current_frame`). In a realtime run that
+    // would make `self.wait(1.0)` resolve instantly instead of pausing for a
+    // wall-clock second. Pace it here so live playback matches the logical
+    // duration; fast-forward/skip paths stay synchronous.
+    const freezeWait = this.realtime_freeze_wait(scene);
+    if (is_thenable(freezeWait)) {
+      return Promise.resolve(freezeWait).then(finish);
+    }
     finish();
+  }
+
+  /**
+   * Wall-clock pacing for a frozen `Wait` when a realtime scheduler is active.
+   *
+   * Returns a promise resolving after `scene.duration` seconds (yielding per
+   * scheduler frame so skip/abort stays responsive), or `void` when no pacing
+   * is needed: no async scheduler, `skip_animations` fast-forward, aborted
+   * runs, zero durations, or non-frozen plays (dynamic plays already yield per
+   * frame through `play_internal_async`).
+   */
+  private realtime_freeze_wait(scene: Scene): void | Promise<void> {
+    if (this.skip_animations) return;
+    if (this.abortSignal?.aborted === true) return;
+    const scheduler: RenderScheduler | null | undefined =
+      (scene as unknown as { run_scheduler?: RenderScheduler | null }).run_scheduler ??
+      get_render_scheduler();
+    if (!scheduler || !scheduler.async || scheduler.cancelled) return;
+    try {
+      const frozen = (scene as unknown as { is_current_animation_frozen_frame?: () => boolean })
+        .is_current_animation_frozen_frame;
+      if (typeof frozen !== "function" || !frozen.call(scene)) return;
+    } catch {
+      return;
+    }
+    const duration = (scene as unknown as { duration?: unknown }).duration;
+    if (typeof duration !== "number" || !(duration > 0)) return;
+    return (async () => {
+      const deadline = performance.now() + duration * 1000;
+      while (performance.now() < deadline) {
+        if (scheduler.cancelled) break;
+        if (this.abortSignal?.aborted === true) break;
+        if (this.skip_animations) break;
+        await scheduler.next_frame();
+      }
+    })();
   }
 
   override update_frame(
