@@ -811,14 +811,11 @@ describe("InteractiveScene", () => {
       }
     }
     const scene = new UpdaterScene({ renderer: makeRenderer(), host });
+    // A construct-only scene has no blueprint page, so it plays straight
+    // through without waiting for a "next" click.
     const done = scene.render();
-    await host.advance(1);
-    updates = 0;
-    host.click("next");
-    await host.advance(1);
+    await host.advance(2);
     expect(updates).toBeGreaterThan(0);
-    host.click("next");
-    await host.advance(1);
     await done;
   });
 
