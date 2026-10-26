@@ -177,6 +177,44 @@ body {
   font-size: 0.82rem;
 }
 
+/* Segmented playback-mode tabs.  The active mode is the only filled chip so
+   the current player is readable at a glance next to the Example dropdown. */
+.mode-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mode-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--w-line);
+  border-radius: 7px;
+  background: var(--w-paper);
+}
+
+.mode-tab {
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--w-ink-2);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.24rem 0.7rem;
+  cursor: pointer;
+}
+
+.mode-tab:hover {
+  color: var(--w-blue);
+}
+
+.mode-tab[aria-pressed="true"] {
+  background: var(--w-blue);
+  color: #fff;
+}
+
 select {
   border: 1px solid var(--w-line);
   border-radius: 6px;

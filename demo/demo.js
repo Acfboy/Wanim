@@ -365,6 +365,25 @@ const presetEl = document.getElementById("preset");
 const stage = document.getElementById("stage");
 const outputEl = document.getElementById("output");
 const runBtn = document.getElementById("run");
+const modeTabs = Array.from(document.querySelectorAll("#mode-tabs .mode-tab"));
+
+// Playback pacing is chosen by the host.  "normal" is wanim's default; the
+// other tabs pass `two-view` / `slides` straight through to the canvas API.
+const MODES = new Set(["normal", "two-view", "slides"]);
+let presentationMode = "normal";
+
+function setMode(next, rerun = true) {
+  if (!MODES.has(next)) return;
+  const changed = next !== presentationMode;
+  presentationMode = next;
+  for (const tab of modeTabs) {
+    const active = tab.dataset.mode === presentationMode;
+    tab.setAttribute("aria-pressed", String(active));
+  }
+  // Switching the player while the page is open should demonstrate the new
+  // pacing immediately; `run()` aborts the previous run first.
+  if (changed && rerun) void run();
+}
 
 // Same editor setup as the website playground (One Dark + Python).
 const editor = createEditor({
@@ -454,6 +473,7 @@ async function run() {
     const startedAt = performance.now();
     const promise = py2js.runPythonOnCanvas(editor.getValue(), stage, {
       quality: QUALITY,
+      mode: presentationMode,
       realtime: true,
       fps: TARGET_FPS,
       drawFrames: true,
@@ -490,6 +510,9 @@ presetEl.addEventListener("change", () => {
   void stopCurrent();
   loadPreset(presetEl.value);
 });
+for (const tab of modeTabs) {
+  tab.addEventListener("click", () => setMode(tab.dataset.mode));
+}
 
 // Ctrl+Enter (or Cmd+Enter) runs the current code, like the website playground.
 // A capture listener on `document` fires before any other page shortcut.
@@ -507,9 +530,15 @@ document.addEventListener(
 
 loadPreset(presetEl.value);
 resetOutput();
+setMode(presentationMode, false);
 
 // Automation handle for scripts/editor_smoke.mjs (and browser consoles).
-window.__wanimDemo = { editor, run };
+window.__wanimDemo = {
+  editor,
+  run,
+  getMode: () => presentationMode,
+  setMode: (next) => setMode(next, false),
+};
 
 // --- embed ------------------------------------------------------------------
 // Builds a paste-ready <iframe> pointing at ./embed.html with the current code
