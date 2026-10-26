@@ -371,6 +371,31 @@ check("np.diag accepts Python lists (numpy-ts requires NDArray)", () => {
   ]);
 });
 
+check("np.tril/np.triu accept Python lists (numpy-ts requires NDArray)", () => {
+  const np = ndCore.buildNumpy();
+  // Same bridge gap as `np.diag`: numpy-ts reads `m.shape.length` directly.
+  assert.deepEqual(np.tril([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).tolist(), [
+    [1, 0, 0],
+    [4, 5, 0],
+    [7, 8, 9],
+  ]);
+  assert.deepEqual(np.tril([[1, 2, 3], [4, 5, 6], [7, 8, 9]], 1).tolist(), [
+    [1, 2, 0],
+    [4, 5, 6],
+    [7, 8, 9],
+  ]);
+  assert.deepEqual(np.triu([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).tolist(), [
+    [1, 2, 3],
+    [0, 5, 6],
+    [0, 0, 9],
+  ]);
+  assert.deepEqual(np.triu([[1, 2, 3], [4, 5, 6], [7, 8, 9]], -1).tolist(), [
+    [1, 2, 3],
+    [4, 5, 6],
+    [0, 8, 9],
+  ]);
+});
+
 check("linalg numerical failures throw np.linalg.LinAlgError", () => {
   const np = ndCore.buildNumpy();
   // numpy-ts throws `Error: inv: singular matrix`; Python catches LinAlgError.
