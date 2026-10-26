@@ -47,6 +47,32 @@
         <option value="interactive3d">Interactive 3D Orbit</option>
       </select>
     </label>
+    <div class="mode-wrap">
+      <span id="mode-label" class="select-label">Mode</span>
+      <div id="mode-tabs" class="mode-tabs" role="group" aria-labelledby="mode-label">
+        <button
+          type="button"
+          class="mode-tab"
+          data-mode="normal"
+          aria-pressed="true"
+          title="Only blueprint pages wait for the reader; constructs play through"
+        >Default</button>
+        <button
+          type="button"
+          class="mode-tab"
+          data-mode="two-view"
+          aria-pressed="false"
+          title="Loop the animation; double-click the canvas to interact"
+        >Two-view</button>
+        <button
+          type="button"
+          class="mode-tab"
+          data-mode="slides"
+          aria-pressed="false"
+          title="Pause after every blueprint / construct segment"
+        >Slides</button>
+      </div>
+    </div>
     <a class="bar-link" href="./component.html" title="Zero-config web component demo">&lt;wanim-scene&gt; demo →</a>
     <span class="hint">Ctrl+Enter to run</span>
     <div class="actions">
