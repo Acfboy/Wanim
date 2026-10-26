@@ -1171,7 +1171,7 @@ index 5533155..6ac574f 100644
  ])
  
  compile_time_decorators = ['staticmethod', 'external', 'property']
-@@ -251,6 +257,23 @@ def create_parser_ctx(
+@@ -251,6 +257,27 @@ def create_parser_ctx(
      imported_module_ids, imported_modules,
      importing_modules, options
  ):
@@ -1182,8 +1182,12 @@ index 5533155..6ac574f 100644
 +    # user code using them keeps Python's sequential semantics. The
 +    # implementations return the play promise in real-time mode while staying
 +    # synchronous otherwise, so awaiting is a no-op there.
++    # `move_camera` (ThreeDScene/InteractiveThreeDScene) also blocks on an
++    # internal play; without auto-await the camera animation runs detached
++    # and interactive 3D scenes never appear to move.
 +    await_scene_method_names = {
 +        'play': True, 'wait': True, 'pause': True, 'wait_until': True,
++        'move_camera': True,
 +        'add_title': True, 'add_unit_square': True, 'add_vector': True,
 +        'add_transformable_label': True, 'label_vector': True,
 +        'write_vector_coordinates': True, 'apply_matrix': True,

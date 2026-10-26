@@ -184,6 +184,27 @@ describe("InteractiveThreeDScene camera API", () => {
     expect(camera.fixed_in_frame_mobjects.has(label)).toBe(false);
   });
 
+  test("move_camera animates the camera and returns for await", async () => {
+    const scene = new InteractiveThreeDScene({ renderer: makeRenderer3D() });
+    scene.set_camera_orientation(70 * DEGREES, -45 * DEGREES);
+    const camera = scene.camera as ThreeDCamera;
+
+    // Sync run: play finishes inline and the scene itself is returned, so
+    // `await self.move_camera(...)` keeps Python's sequential semantics.
+    const played = scene.move_camera(30 * DEGREES, 20 * DEGREES);
+    expect(played).toBe(scene);
+    expect(camera.get_phi()).toBeCloseTo(30 * DEGREES, 9);
+    expect(camera.get_theta()).toBeCloseTo(20 * DEGREES, 9);
+
+    // Realtime run: the camera move is async and only settles after await.
+    const scheduler = create_frame_scheduler({ wait_for_frame: (cb) => setTimeout(cb, 0) });
+    scene.set_run_scheduler(scheduler);
+    scene.set_camera_orientation(70 * DEGREES, -45 * DEGREES);
+    await scene.move_camera(10 * DEGREES, 40 * DEGREES);
+    expect(camera.get_phi()).toBeCloseTo(10 * DEGREES, 9);
+    expect(camera.get_theta()).toBeCloseTo(40 * DEGREES, 9);
+  });
+
   test("borrows begin/stop_ambient_camera_rotation into the interactive loop", async () => {
     class AmbientScene extends InteractiveThreeDScene {
       override construct(): void {
