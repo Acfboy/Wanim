@@ -488,7 +488,7 @@ export class TwoViewPresentation {
       }
       if (action === "animate") return "animate";
       if (action === "next") {
-        if (this.subphase === "blueprint") {
+        if (this.subphase === "blueprint" && this.plan?.separate !== true) {
           const page = this.current_page();
           if (page !== null && page.construct !== null) {
             this.record_control_values();
@@ -531,7 +531,7 @@ export class TwoViewPresentation {
       return;
     }
     if (action === "replay") {
-      if (this.subphase === "blueprint") {
+      if (this.subphase === "blueprint" || this.plan?.separate === true) {
         this.controlValues.delete(this.value_key(this.pageIndex));
         await this.jump_to_page(this.sceneIndex, this.pageIndex, "blueprint");
       } else {
@@ -562,6 +562,32 @@ export class TwoViewPresentation {
   private async goto_next_page(): Promise<void> {
     const plan = this.plan;
     if (plan === null) return;
+    if (plan.separate) {
+      // SEPARATE: the interaction state shows blueprints only; the paired
+      // construct must never run here. Skip construct-only pages.
+      for (let index = this.pageIndex + 1; index < plan.pages.length; index += 1) {
+        if (plan.pages[index]!.blueprint !== null) {
+          await this.jump_to_page(this.sceneIndex, index, "blueprint");
+          return;
+        }
+      }
+      const originScene = this.sceneIndex;
+      const originPage = this.pageIndex;
+      for (let sceneIndex = this.sceneIndex + 1; sceneIndex < this.sceneClasses.length; sceneIndex += 1) {
+        await this.prepare_scene(sceneIndex);
+        const nextPlan = this.plan!;
+        const index = nextPlan.pages.findIndex((page) => page.blueprint !== null);
+        if (index >= 0) {
+          await this.jump_to_page(sceneIndex, index, "blueprint");
+          return;
+        }
+      }
+      // No later blueprint: stay on the current page (no next page).
+      if (this.sceneIndex !== originScene) {
+        await this.jump_to_page(originScene, originPage, "blueprint");
+      }
+      return;
+    }
     if (this.pageIndex + 1 < plan.pages.length) {
       const next = plan.pages[this.pageIndex + 1]!;
       const subphase = next.blueprint !== null ? "blueprint" : "construct";
@@ -584,6 +610,31 @@ export class TwoViewPresentation {
   private async goto_previous_page(): Promise<void> {
     const plan = this.plan;
     if (plan === null) return;
+    if (plan.separate) {
+      // SEPARATE: stay within blueprints only; never land on a construct.
+      for (let index = this.pageIndex - 1; index >= 0; index -= 1) {
+        if (plan.pages[index]!.blueprint !== null) {
+          await this.jump_to_page(this.sceneIndex, index, "blueprint");
+          return;
+        }
+      }
+      const originScene = this.sceneIndex;
+      const originPage = this.pageIndex;
+      for (let sceneIndex = this.sceneIndex - 1; sceneIndex >= 0; sceneIndex -= 1) {
+        await this.prepare_scene(sceneIndex);
+        const previousPlan = this.plan!;
+        for (let index = previousPlan.pages.length - 1; index >= 0; index -= 1) {
+          if (previousPlan.pages[index]!.blueprint !== null) {
+            await this.jump_to_page(sceneIndex, index, "blueprint");
+            return;
+          }
+        }
+      }
+      if (this.sceneIndex !== originScene) {
+        await this.jump_to_page(originScene, originPage, "blueprint");
+      }
+      return;
+    }
     if (this.pageIndex > 0) {
       const previous = plan.pages[this.pageIndex - 1]!;
       const subphase = previous.construct !== null ? "construct" : "blueprint";
@@ -694,6 +745,11 @@ export class TwoViewPresentation {
     await this.prepare_scene(sceneIndex);
     const plan = this.plan!;
     const clamped = Math.max(0, Math.min(pageIndex, Math.max(0, plan.pages.length - 1)));
+    // SEPARATE: interaction shows blueprints only; never enter a construct
+    // subphase when the page has a blueprint to show.
+    if (plan.separate && plan.pages[clamped]?.blueprint !== null) {
+      subphase = "blueprint";
+    }
     this.pageIndex = clamped;
     this.subphase = subphase;
     for (let index = 0; index < clamped; index += 1) {
@@ -734,6 +790,9 @@ export class TwoViewPresentation {
       this.settle_skipped_phase();
       this.apply_stage_clear();
     }
+    // SEPARATE: the two halves are independent, so fast-forwarding to a
+    // blueprint must not execute earlier constructs.
+    if (this.plan?.separate === true) return;
     if (page.construct !== null) {
       await this.run_skipped_phase({ kind: "construct", run: page.construct });
       this.settle_skipped_phase();
@@ -930,12 +989,20 @@ export class TwoViewPresentation {
     if (this.view === "animation") return false;
     const page = this.current_page();
     if (page === null) return false;
+    if (this.plan?.separate === true) {
+      // SEPARATE: the paired construct is not a next step; only a later
+      // blueprint page counts.
+      return this.has_next_interaction_page();
+    }
     if (this.subphase === "blueprint" && page.construct !== null) return true;
     return this.has_next_page();
   }
 
   private can_previous(): boolean {
     if (this.view === "animation") return false;
+    if (this.plan?.separate === true) {
+      return this.has_previous_interaction_page();
+    }
     if (this.subphase === "construct") return true;
     return this.pageIndex > 0 || this.sceneIndex > 0;
   }
@@ -943,6 +1010,27 @@ export class TwoViewPresentation {
   private has_next_page(): boolean {
     if (this.plan !== null && this.pageIndex + 1 < this.plan.pages.length) return true;
     return this.sceneIndex + 1 < this.sceneClasses.length;
+  }
+
+  private has_next_interaction_page(): boolean {
+    if (this.plan !== null) {
+      for (let index = this.pageIndex + 1; index < this.plan.pages.length; index += 1) {
+        if (this.plan.pages[index]!.blueprint !== null) return true;
+      }
+    }
+    // Later scenes are not loaded yet; optimistically report a next page so
+    // cross-scene blueprints stay reachable. `goto_next_page` stays put when
+    // none exists.
+    return this.sceneIndex + 1 < this.sceneClasses.length;
+  }
+
+  private has_previous_interaction_page(): boolean {
+    if (this.plan !== null) {
+      for (let index = this.pageIndex - 1; index >= 0; index -= 1) {
+        if (this.plan.pages[index]!.blueprint !== null) return true;
+      }
+    }
+    return this.sceneIndex > 0;
   }
 
   // --- messages --------------------------------------------------------------
