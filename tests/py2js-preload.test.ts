@@ -48,6 +48,25 @@ describe("detectPreloadNeeds", () => {
     }
   });
 
+  it("recognises the derived matrix/table classes", () => {
+    // `DecimalMatrix` and friends build MathTex brackets and (for numbers)
+    // MathTex glyphs internally, but their names contain `Matrix` rather than
+    // being it, so a plain `\bMatrix\b` never matched them.
+    const names = [
+      "DecimalMatrix",
+      "IntegerMatrix",
+      "MobjectMatrix",
+      "DecimalTable",
+      "IntegerTable",
+      "MathTable",
+      "SampleSpace",
+    ];
+    for (const name of names) {
+      const source = `${PLAIN_SCENE}\n        hud = ${name}(...)\n`;
+      expect(detectPreloadNeeds(source).mathjax, name).toBe(true);
+    }
+  });
+
   it("recognises internal TeX triggers (include_numbers, Label)", () => {
     expect(detectPreloadNeeds("axes = Axes(x_axis_config={'include_numbers': True})").mathjax).toBe(true);
     expect(detectPreloadNeeds("label = Label('x')").mathjax).toBe(true);
