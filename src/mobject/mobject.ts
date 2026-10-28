@@ -14,6 +14,21 @@ import { config } from "../_config/utils.js";
 export type MobjectUpdater = ((mobject: Mobject) => void) | ((mobject: Mobject, dt: number) => void);
 export type MobjectArray = Mobject[];
 
+/**
+ * Whether an updater expects the elapsed-time argument.
+ *
+ * Python decides this from the parameter *name* (`dt` in
+ * `inspect.signature`), not from arity.  Arity is a poor proxy: `(...args)`
+ * wrappers have length 0, `lambda m, t` has length 2 but no `dt`, and
+ * `(m, dt = 0)` has length 1.  Compiled Python functions carry `__argnames__`,
+ * so prefer it; JS closures fall back to arity.
+ */
+export function updater_uses_dt(updater: MobjectUpdater): boolean {
+  const names = (updater as { __argnames__?: unknown }).__argnames__;
+  if (Array.isArray(names)) return names.includes("dt");
+  return updater.length >= 2;
+}
+
 /** TS mirror of a Python ``slice`` (as passed to ``Mobject.__getitem__``). */
 export interface MobjectSlice {
   start?: number | null;
@@ -853,7 +868,7 @@ export class Mobject {
   }
 
   get_time_based_updaters(): MobjectUpdater[] {
-    return this.updaters.filter((updater) => updater.length >= 2);
+    return this.updaters.filter((updater) => updater_uses_dt(updater));
   }
 
   getTimeBasedUpdaters(): MobjectUpdater[] {
@@ -861,7 +876,7 @@ export class Mobject {
   }
 
   has_time_based_updater(): boolean {
-    return this.updaters.some((updater) => updater.length >= 2);
+    return this.updaters.some((updater) => updater_uses_dt(updater));
   }
 
   hasTimeBasedUpdater(): boolean {
@@ -939,8 +954,9 @@ export class Mobject {
     const values: Mobject[] = [];
     for (const item of mobjects) {
       if (item instanceof Mobject) values.push(item);
-      else if (isIterable(item)) values.push(...item as Iterable<Mobject>);
-      else values.push(item as Mobject);
+      else if (isIterable(item)) {
+        for (const member of item as Iterable<Mobject>) values.push(member);
+      } else values.push(item as Mobject);
     }
     this._assert_valid_submobjects(values);
     const unique = remove_list_redundancies(values);
@@ -950,9 +966,12 @@ export class Mobject {
           "this is not possible. Repetitions are ignored.",
       );
     }
-    this.submobjects = this.submobjects.filter((mobject) => !unique.includes(mobject));
-    this.submobjects.push(...unique);
+    const uniqueSet = new Set(unique);
+    this.submobjects = this.submobjects.filter((mobject) => !uniqueSet.has(mobject));
+    // A single spread can overflow the argument limit for very large groups.
+    for (const mobject of unique) this.submobjects.push(mobject);
     bump_mobject_geometry_epoch();
+    bump_mobject_structure_epoch();
     return this;
   }
 
@@ -1565,13 +1584,21 @@ export class Mobject {
       key_func = (m: Mobject): number => point_func(pointRows(m.get_center(), this.dim)[0] ?? []);
     }
     const resolved = key_func;
-    this.submobjects.sort((a, b) => {
-      const key_a = resolved(a);
-      const key_b = resolved(b);
-      if (key_a < key_b) return -1;
-      if (key_a > key_b) return 1;
-      return 0;
+    // Compute each key once: the comparator used to call `get_center()` for
+    // every comparison, which is O(n log n) bounding-box scans.
+    const keyed = this.submobjects.map((mobject, index) => ({
+      mobject,
+      index,
+      key: resolved(mobject),
+    }));
+    keyed.sort((a, b) => {
+      if (a.key < b.key) return -1;
+      if (a.key > b.key) return 1;
+      return a.index - b.index;
     });
+    this.submobjects = keyed.map((entry) => entry.mobject);
+    bump_mobject_geometry_epoch();
+    bump_mobject_structure_epoch();
     return this;
   }
 
@@ -2398,7 +2425,7 @@ export class Mobject {
     if (index === null || index === undefined) this.updaters.push(update_function);
     else this.updaters.splice(index, 0, update_function);
     if (call_updater) {
-      if (update_function.length >= 2) (update_function as (mobject: Mobject, dt: number) => void)(this, 0);
+      if (updater_uses_dt(update_function)) (update_function as (mobject: Mobject, dt: number) => void)(this, 0);
       else (update_function as (mobject: Mobject) => void)(this);
     }
     return this;
@@ -2448,9 +2475,13 @@ export class Mobject {
 
   update(dt = 0, recursive = true): this {
     if (this.updating_suspended) return this;
-    for (const updater of [...this.updaters]) {
-      if (updater.length >= 2) (updater as (mobject: Mobject, dt: number) => void)(this, dt);
-      else (updater as (mobject: Mobject) => void)(this);
+    // Copy only when there is something to run: most nodes in a large family
+    // have no updater, and the snapshot must not allocate for them.
+    if (this.updaters.length > 0) {
+      for (const updater of [...this.updaters]) {
+        if (updater_uses_dt(updater)) (updater as (mobject: Mobject, dt: number) => void)(this, dt);
+        else (updater as (mobject: Mobject) => void)(this);
+      }
     }
     if (recursive) for (const submob of this.submobjects) submob.update(dt, recursive);
     return this;
@@ -2807,6 +2838,9 @@ export class Mobject {
   set_z_index(z_index_value: number, family = true): this {
     if (family) for (const submob of this.submobjects) submob.set_z_index(z_index_value, family);
     this.z_index = z_index_value;
+    // Display-list caches key on the geometry epoch; changing z-order without
+    // bumping it made ThreeDCamera keep drawing the old order.
+    bump_mobject_geometry_epoch();
     return this;
   }
 
@@ -3216,6 +3250,8 @@ export class Mobject {
       this.submobjects[index] = this.submobjects[other] as Mobject;
       this.submobjects[other] = temp;
     }
+    bump_mobject_geometry_epoch();
+    bump_mobject_structure_epoch();
     return this;
   }
 
@@ -3231,6 +3267,8 @@ export class Mobject {
   invert(recursive = false): this {
     if (recursive) for (const submob of this.submobjects) submob.invert(true);
     this.submobjects.reverse();
+    bump_mobject_geometry_epoch();
+    bump_mobject_structure_epoch();
     return this;
   }
 
@@ -3242,7 +3280,12 @@ export class Mobject {
     // setter replacement per face per frame.  The flops run in the same order
     // as `bezier.interpolate`'s flat path (`a * (1-alpha) + b * alpha`), so
     // the result is bitwise identical; anything else falls through below.
-    if ((path_func === null || path_func === undefined) && typeof alpha === "number") {
+    // `Transform` always installs `path_along_arc(path_arc)`; for the default
+    // `path_arc=0` that is `straight_path()` == `bezier.interpolate`, not
+    // `null`.  Accepting only `null` therefore made this fast path unreachable
+    // for the common case.
+    const isStraightPath = path_func === null || path_func === undefined || path_func === straight_path();
+    if (isStraightPath && typeof alpha === "number") {
       // Raw targets: one proxy trap total instead of one per field access
       // below (see `_rawMobject`).  Slot reads: no per-face view objects.
       const raw1 = _rawMobject(mobject1);

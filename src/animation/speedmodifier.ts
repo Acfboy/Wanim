@@ -1,6 +1,6 @@
 import { Animation, Wait, prepare_animation, type AnimationOptions, type RateFunction } from "./animation.js";
 import { AnimationGroup } from "./composition.js";
-import { type Mobject, type _AnimationBuilder } from "../mobject/mobject.js";
+import { type Mobject, type MobjectUpdater, type _AnimationBuilder, updater_uses_dt } from "../mobject/mobject.js";
 
 export interface ChangeSpeedOptions extends AnimationOptions {
   speedinfo?: Record<number, number>;
@@ -190,7 +190,7 @@ export class ChangeSpeed extends Animation {
   }
 
   static add_updater(mobject: any, updateFunction: (...args: any[]) => any, index?: number, callUpdater = false): any {
-    if (updateFunction.length >= 2) {
+    if (updater_uses_dt(updateFunction as MobjectUpdater)) {
       mobject.add_updater((mob: any, dt: number) => updateFunction(mob, ChangeSpeed.is_changing_dt ? ChangeSpeed.dt : dt), index, callUpdater);
     } else mobject.add_updater(updateFunction, index, callUpdater);
     return mobject;
@@ -214,7 +214,13 @@ export class ChangeSpeed extends Animation {
   }
 
   clean_up_from_scene(scene: unknown): void {
-    this.anim.clean_up_from_scene(scene);
+    try {
+      this.anim.clean_up_from_scene(scene);
+    } finally {
+      // An exception inside the wrapped animation must not leave the static
+      // flag set: every later ChangeSpeed would then throw "only one ...".
+      ChangeSpeed.is_changing_dt = false;
+    }
   }
 
   _setup_scene(scene: unknown): void {

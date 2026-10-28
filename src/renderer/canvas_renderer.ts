@@ -64,6 +64,12 @@ export interface CanvasSceneRendererOptions extends JSONCairoRendererOptions {
   useWebGL?: boolean;
   /** Explicit paint backend (defaults to the plain Canvas2D backend). */
   backend?: CanvasBackend;
+  /**
+   * Backing-store scale for HiDPI canvases (default 1).  The camera keeps its
+   * logical `pixel_width`/`pixel_height`; drawing and the WebGL viewport are
+   * multiplied by this value.
+   */
+  pixelRatio?: number;
 }
 
 export interface CanvasRenderProgress {
@@ -119,6 +125,8 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
   useWebGL: boolean;
   /** Paint backend for the 2D display list. */
   readonly backend: CanvasBackend;
+  /** Backing-store scale (see `CanvasSceneRendererOptions.pixelRatio`). */
+  readonly pixelRatio: number;
   private _webgl: WebGLThreeDRenderer | null | undefined = undefined;
   private _pendingRecord: MJSONFrame | null = null;
   private _startedAt = 0;
@@ -134,6 +142,9 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     this.onFrame = options.onFrame ?? null;
     this.useWebGL = options.useWebGL ?? true;
     this.backend = options.backend ?? create_canvas_backend();
+    this.pixelRatio = Number.isFinite(options.pixelRatio) && (options.pixelRatio as number) > 0
+      ? (options.pixelRatio as number)
+      : 1;
     // Count scene construction (Tex/MathJax, mobject setup) as part of the
     // run; the renderer is created immediately before the Scene.
     this._startedAt = performance.now();
@@ -152,7 +163,7 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
   private webgl(): WebGLThreeDRenderer | null {
     if (!this.useWebGL) return null;
     if (this._webgl === undefined) {
-      this._webgl = new WebGLThreeDRenderer();
+      this._webgl = new WebGLThreeDRenderer({ pixelRatio: this.pixelRatio });
       if (!this._webgl.available()) this._webgl = null;
     }
     return this._webgl;
@@ -247,8 +258,8 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
         background_opacity: camera.background_opacity,
       });
       if (!this.draw_webgl_3d(camera, displayed, background)) {
-        clearCanvas(this.ctx, camera, background);
-        setCanvasTransform(this.ctx, camera);
+        clearCanvas(this.ctx, camera, background, this.pixelRatio);
+        setCanvasTransform(this.ctx, camera, this.pixelRatio);
         for (const mobject of displayed) {
           if (mobject instanceof VMobject) this.backend.draw(this.ctx, camera, mobject);
           else if (mobject instanceof AbstractImageMobject) {
@@ -314,15 +325,16 @@ export class CanvasSceneRenderer extends JSONCairoRenderer {
     }
     gl.flush(camera);
     if (gl.canvas === null) return false;
-    clearCanvas(this.ctx, camera, background);
+    clearCanvas(this.ctx, camera, background, this.pixelRatio);
+    const glCanvas = gl.canvas;
     this.ctx.drawImage(
-      gl.canvas as CanvasImageSource,
+      glCanvas as CanvasImageSource,
       0,
       0,
-      camera.pixel_width,
-      camera.pixel_height,
+      glCanvas.width,
+      glCanvas.height,
     );
-    setCanvasTransform(this.ctx, camera);
+    setCanvasTransform(this.ctx, camera, this.pixelRatio);
     for (let index = split; index < displayed.length; index += 1) {
       const mobject = displayed[index];
       if (mobject instanceof VMobject) drawVmobject(this.ctx, camera, mobject);

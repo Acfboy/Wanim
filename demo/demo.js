@@ -27,11 +27,8 @@ wanim.configure_fonts(wanim.DEFAULT_FONT_URLS);
 // page does not need an import map entry for it.
 const { createEditor } = await import("../dist/editor.browser.js");
 
-// Target logical frame rate for live playback.  Yields to requestAnimationFrame
-// until at least 1000/TARGET_FPS ms have passed before computing the next frame.
-const TARGET_FPS = 30;
 // Render resolution / animation frame rate (manim quality flag).  Kept fixed so
-// the UI stays simple; `-qm` is 1280x720 @ 30fps and matches TARGET_FPS.
+// the UI stays simple; the live scheduler uses the resulting `config.frame_rate`.
 const QUALITY = "-qm";
 const IDLE_HINT = "Press Run (Ctrl+Enter) to start the scene.";
 
@@ -475,7 +472,6 @@ async function run() {
       quality: QUALITY,
       mode: presentationMode,
       realtime: true,
-      fps: TARGET_FPS,
       drawFrames: true,
       recordFrames: false,
       signal: controller.signal,

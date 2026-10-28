@@ -8,6 +8,7 @@
  */
 import { configureWasm as numpyConfigureWasm, wasmFreeBytes } from "numpy-ts";
 import { Camera } from "./camera/camera.js";
+import { config } from "./_config/utils.js";
 import type { MJSONDocument, MJSONFrame, MJSONMeta } from "./renderer/canvas.js";
 import { backgroundCss } from "./renderer/canvas.js";
 import {
@@ -71,6 +72,12 @@ export function numpy_wasm_free_bytes(): number {
 export interface BrowserRenderOptions {
   /** Quality flag (`-ql`/`-qm`/`-qh`/`-q4k`); defaults to `-qm`. */
   quality?: string;
+  /**
+   * Backing-store scale (defaults to `window.devicePixelRatio`, capped at 4).
+   * CSS size stays `camera.pixel_width` x `camera.pixel_height`, so HiDPI
+   * screens get a sharp canvas without changing manim's logical resolution.
+   */
+  pixelRatio?: number;
   /** Draw every frame to the canvas during the run (default true). */
   drawFrames?: boolean;
   /** Serialize every frame into `frames` for later playback (default false). */
@@ -82,7 +89,7 @@ export interface BrowserRenderOptions {
    * than "compute everything, then play".
    */
   realtime?: boolean;
-  /** Target logical frame rate in realtime mode (default 30). */
+  /** Target logical frame rate in realtime mode (default: the scene's `config.frame_rate`). */
   fps?: number;
   /** Use the WebGL2 backend for 3D geometry when available (default true). */
   useWebGL?: boolean;
@@ -120,6 +127,33 @@ export interface BrowserRenderResult {
 /** Monotonic id used to tell several embeds on one page apart. */
 let nextPresentationId = 1;
 
+/** Resolve the backing-store scale, capped so a 5x DPR cannot allocate huge canvases. */
+function resolve_pixel_ratio(value: number | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.min(Math.max(value, 1), 4);
+  }
+  if (typeof window !== "undefined" && Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0) {
+    return Math.min(Math.max(window.devicePixelRatio, 1), 4);
+  }
+  return 1;
+}
+
+/**
+ * Size the canvas backing store for `camera` and keep its CSS size at the
+ * logical resolution.  Only fills in a CSS size when the embedder did not set
+ * one, so page styles remain authoritative.
+ */
+function size_canvas_for_camera(canvas: HTMLCanvasElement, camera: Camera, pixelRatio: number): void {
+  const cssWidth = camera.pixel_width;
+  const cssHeight = camera.pixel_height;
+  canvas.width = Math.max(1, Math.round(cssWidth * pixelRatio));
+  canvas.height = Math.max(1, Math.round(cssHeight * pixelRatio));
+  if (typeof canvas.style !== "undefined") {
+    if (canvas.style.width === "") canvas.style.width = `${cssWidth}px`;
+    if (canvas.style.height === "") canvas.style.height = `${cssHeight}px`;
+  }
+}
+
 function make_meta(camera: Camera, numFrames: number, numPlays: number): MJSONMeta {
   return {
     width: camera.pixel_width,
@@ -155,8 +189,8 @@ export async function render_scene_to_canvas(
   if (options.background !== undefined) {
     camera.background_color = options.background;
   }
-  canvas.width = camera.pixel_width;
-  canvas.height = camera.pixel_height;
+  const pixelRatio = resolve_pixel_ratio(options.pixelRatio);
+  size_canvas_for_camera(canvas, camera, pixelRatio);
   const ctx = canvas.getContext("2d");
   if (ctx === null) throw new Error("2d canvas context unavailable");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -174,6 +208,7 @@ export async function render_scene_to_canvas(
     abortSignal: options.signal,
     onFrame: options.onProgress,
     useWebGL: options.useWebGL,
+    pixelRatio,
   });
   if (options.background !== undefined) {
     // The scene adopts the renderer's camera, which the renderer constructs
@@ -198,7 +233,7 @@ export async function render_scene_to_canvas(
   const realtime = options.realtime ?? true;
   const previousScheduler = get_render_scheduler();
   const scheduler: RenderScheduler | null = realtime
-    ? create_frame_scheduler({ fps: options.fps ?? 30 })
+    ? create_frame_scheduler({ fps: options.fps ?? camera.frame_rate })
     : null;
   if (scheduler !== null) set_render_scheduler(scheduler);
   // Attach explicitly as well: a concurrently started run replaces the global
@@ -277,9 +312,10 @@ export async function render_presentation_to_canvas(
     throw new Error("render_presentation_to_canvas requires at least one Scene class");
   }
   apply_quality(options.quality ?? "-qm");
+  const pixelRatio = resolve_pixel_ratio(options.pixelRatio);
   const realtime = options.realtime ?? true;
   const scheduler: RenderScheduler | null = realtime
-    ? create_frame_scheduler({ fps: options.fps ?? 30 })
+    ? create_frame_scheduler({ fps: options.fps ?? config.frame_rate })
     : null;
   const domHost = typeof document !== "undefined" ? new DomInteractiveHost(canvas) : null;
   const host: InteractiveHost = domHost ?? new NullInteractiveHost();
@@ -343,8 +379,7 @@ export async function render_presentation_to_canvas(
     const cameraClass = default_camera_class(sceneClass);
     const camera = new cameraClass();
     if (options.background !== undefined) camera.background_color = options.background;
-    canvas.width = camera.pixel_width;
-    canvas.height = camera.pixel_height;
+    size_canvas_for_camera(canvas, camera, pixelRatio);
     const ctx = canvas.getContext("2d");
     if (ctx === null) throw new Error("2d canvas context unavailable");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -362,6 +397,7 @@ export async function render_presentation_to_canvas(
       abortSignal: options.signal,
       onFrame: options.onProgress,
       useWebGL: options.useWebGL,
+      pixelRatio,
     });
     if (options.background !== undefined) {
       renderer.camera.background_color = options.background;

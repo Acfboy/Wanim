@@ -83,7 +83,9 @@ export class AnimatedBoundary extends VGroup {
 
     if (time >= 1) {
       this.full_family_become_partial(fading, vmobject, 0, 1);
-      fading.set_stroke(colors[index - 1], (1 - fade_alpha) * msw);
+      // Python's negative list indexing wraps: colors[-1] is the last color.
+      const previous = colors.length === 0 ? colors[0] : colors[(index - 1 + colors.length) % colors.length];
+      fading.set_stroke(previous, (1 - fade_alpha) * msw);
     }
 
     this.total_time += dt;

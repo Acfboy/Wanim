@@ -357,6 +357,12 @@ export class Wiggle extends Animation {
   n_wiggles: number;
   scale_about_point: number[] | null;
   rotate_about_point: number[] | null;
+  /**
+   * Per-frame about points.  The old code recomputed the group's bounding-box
+   * center once per submobject, so `Wiggle` on 300 children was O(N^2).
+   */
+  private _frameScaleAbout: NDArray | null = null;
+  private _frameRotateAbout: NDArray | null = null;
 
   constructor(mobject: Mobject, options: WiggleOptions | number = {}) {
     // Python `Wiggle(mobject, scale_value=1.1, ...)` allows `scale_value` to be
@@ -380,12 +386,27 @@ export class Wiggle extends Animation {
     this.rotate_about_point = rotate_about_point === null || rotate_about_point === undefined ? null : [...rotate_about_point];
   }
 
+  override interpolate_mobject(alpha: number): void {
+    // Resolve the about points once per frame, not once per submobject.
+    const center = this.mobject.get_center();
+    const centerArray = (isNDArray(center)
+      ? (center as NDArray).copy()
+      : array(center as number[])) as NDArray;
+    this._frameScaleAbout = this.scale_about_point === null
+      ? centerArray
+      : array(this.scale_about_point as number[]) as NDArray;
+    this._frameRotateAbout = this.rotate_about_point === null
+      ? centerArray
+      : array(this.rotate_about_point as number[]) as NDArray;
+    super.interpolate_mobject(alpha);
+  }
+
   get_scale_about_point(): NDArray {
-    return this.aboutPointNDArray(this.scale_about_point);
+    return this._frameScaleAbout ?? this.aboutPointNDArray(this.scale_about_point);
   }
 
   get_rotate_about_point(): NDArray {
-    return this.aboutPointNDArray(this.rotate_about_point);
+    return this._frameRotateAbout ?? this.aboutPointNDArray(this.rotate_about_point);
   }
 
   private aboutPointNDArray(point: readonly number[] | null): NDArray {

@@ -210,6 +210,7 @@ export function clearCanvas(
   ctx: CanvasRenderingContext2D,
   camera: CanvasCamera,
   backgroundCss: string,
+  pixelRatio = 1,
 ): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = backgroundCss;
@@ -222,25 +223,25 @@ export function clearCanvas(
   // second run of a scene drew blue strokes with the context's default black
   // and the shapes vanished on the black background.
   state.stroke = null;
-  ctx.fillRect(0, 0, camera.pixel_width, camera.pixel_height);
+  ctx.fillRect(0, 0, camera.pixel_width * pixelRatio, camera.pixel_height * pixelRatio);
 }
 
 /** Set the world->device transform mirroring cairo's camera matrix. */
-export function setCanvasTransform(ctx: CanvasRenderingContext2D, camera: CanvasCamera): void {
+export function setCanvasTransform(ctx: CanvasRenderingContext2D, camera: CanvasCamera, pixelRatio = 1): void {
   const pw = camera.pixel_width;
   const ph = camera.pixel_height;
   const fw = camera.frame_width;
   const fh = camera.frame_height;
   const fc = pointRows(camera.frame_center, 3)[0] ?? [0, 0, 0];
-  const widthMult = pw / fw;
-  const heightMult = ph / fh;
+  const widthMult = (pw / fw) * pixelRatio;
+  const heightMult = (ph / fh) * pixelRatio;
   ctx.setTransform(
     widthMult,
     0,
     0,
     -heightMult,
-    pw / 2 - (fc[0] ?? 0) * widthMult,
-    ph / 2 + (fc[1] ?? 0) * heightMult,
+    (pw / 2 - (fc[0] ?? 0) * (pw / fw)) * pixelRatio,
+    (ph / 2 + (fc[1] ?? 0) * (ph / fh)) * pixelRatio,
   );
 }
 
@@ -789,6 +790,63 @@ export function computeSubpathRangesFlat(
 }
 
 /** Set `ctx`'s current path from a VMobject's points, mirroring `set_cairo_context_path`. */
+const PATH2D_CACHE = new WeakMap<VMobject, { version: number; path: Path2D }>();
+
+/**
+ * Cached `Path2D` for a 2D VMobject in world coordinates.
+ *
+ * Camera movement only changes `ctx.setTransform`, so a static shape can reuse
+ * the same path across frames.  ThreeDCamera projects points to screen space,
+ * so its paths are not cached (the camera can change every frame).  Returns
+ * null when the shape is not C-contiguous or `Path2D` is unavailable.
+ */
+function cachedPath2D(camera: CanvasCamera, vmobject: VMobject): Path2D | null {
+  if (typeof Path2D === "undefined" || camera instanceof ThreeDCamera) return null;
+  const flat = _cContiguousRows(vmobject.points);
+  if (flat === null || flat.rowDim < 2 || flat.rowCount === 0) return null;
+  const cached = PATH2D_CACHE.get(vmobject);
+  if (cached !== undefined && cached.version === vmobject.points_version) return cached.path;
+  const { data, rowDim, rowCount } = flat;
+  for (let index = 0; index < rowCount * rowDim; index += 1) {
+    if (!Number.isFinite(Number(data[index]))) return null;
+  }
+  const nppcc = vmobject.n_points_per_cubic_curve;
+  const ranges = computeSubpathRangesFlat(
+    data,
+    rowDim,
+    rowCount,
+    nppcc,
+    vmobject.tolerance_for_point_equality,
+    2,
+  );
+  if (ranges.length === 0) return null;
+  const path = new Path2D();
+  for (const [start, end] of ranges) {
+    if (end - start < nppcc) continue;
+    path.moveTo(data[start * rowDim] ?? 0, data[start * rowDim + 1] ?? 0);
+    for (let index = start; index <= end - nppcc; index += nppcc) {
+      const h1 = (index + 1) * rowDim;
+      const h2 = (index + 2) * rowDim;
+      const anchor = (index + 3) * rowDim;
+      path.bezierCurveTo(
+        data[h1] ?? 0, data[h1 + 1] ?? 0,
+        data[h2] ?? 0, data[h2 + 1] ?? 0,
+        data[anchor] ?? 0, data[anchor + 1] ?? 0,
+      );
+    }
+    if (
+      vmobject.consider_points_equals_2d(
+        [data[start * rowDim] ?? 0, data[start * rowDim + 1] ?? 0],
+        [data[(end - 1) * rowDim] ?? 0, data[(end - 1) * rowDim + 1] ?? 0],
+      )
+    ) {
+      path.closePath();
+    }
+  }
+  PATH2D_CACHE.set(vmobject, { version: vmobject.points_version, path });
+  return path;
+}
+
 export function setCanvasPath(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
   const projectedFlat = camera.transform_points_pre_display_flat?.(vmobject, vmobject.points) ?? null;
   const nppcc = vmobject.n_points_per_cubic_curve;
@@ -1044,7 +1102,7 @@ function colorInfoIsTransparent(info: { colors: number[][]; gradient: boolean })
   return (info.colors[0]![3] ?? 0) === 0 && (info.colors[1]![3] ?? 0) === 0;
 }
 
-export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject): void {
+export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCamera, vmobject: VMobject, path: Path2D | null = null): void {
   // Prefer the resolved colour info: it applies shading exactly once (the
   // rgba-array path feeds `get_fill_rgbas`, whose shading would otherwise be
   // applied a second time).
@@ -1057,7 +1115,8 @@ export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCam
       ctx.fillStyle = style;
       state.fill = style;
     }
-    ctx.fill();
+    if (path !== null) ctx.fill(path);
+    else ctx.fill();
     return;
   }
   const source = camera.get_fill_rgbas !== undefined
@@ -1072,7 +1131,8 @@ export function applyCanvasFill(ctx: CanvasRenderingContext2D, camera: CanvasCam
     ctx.fillStyle = style;
     state.fill = style;
   }
-  ctx.fill();
+  if (path !== null) ctx.fill(path);
+  else ctx.fill();
 }
 
 /** Stroke the current path, mirroring `apply_stroke`. */
@@ -1081,6 +1141,7 @@ export function applyCanvasStroke(
   camera: CanvasCamera,
   vmobject: VMobject,
   background = false,
+  path: Path2D | null = null,
 ): void {
   const width = vmobject.get_stroke_width(background);
   if (width === 0) return;
@@ -1106,7 +1167,8 @@ export function applyCanvasStroke(
   if (joint !== undefined) ctx.lineJoin = joint;
   const cap = CANVAS_LINE_CAP[vmobject.cap_style];
   if (cap !== undefined) ctx.lineCap = cap;
-  ctx.stroke();
+  if (path !== null) ctx.stroke(path);
+  else ctx.stroke();
 }
 
 /** Draw one VMobject: background stroke, fill, then foreground stroke. */
@@ -1123,10 +1185,11 @@ export function drawVmobject(ctx: CanvasRenderingContext2D, camera: CanvasCamera
   ) {
     return;
   }
-  setCanvasPath(ctx, camera, vmobject);
-  applyCanvasStroke(ctx, camera, vmobject, true);
-  applyCanvasFill(ctx, camera, vmobject);
-  applyCanvasStroke(ctx, camera, vmobject, false);
+  const path = cachedPath2D(camera, vmobject);
+  if (path === null) setCanvasPath(ctx, camera, vmobject);
+  applyCanvasStroke(ctx, camera, vmobject, true, path);
+  applyCanvasFill(ctx, camera, vmobject, path);
+  applyCanvasStroke(ctx, camera, vmobject, false, path);
 }
 
 /** `meta.background_color` + opacity -> a CSS colour for the canvas backdrop. */

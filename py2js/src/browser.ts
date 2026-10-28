@@ -73,6 +73,31 @@ function createSandbox(runtime: PythonRuntime): Sandbox {
   win.console = console;
   win.globalThis = win;
   win.__name__ = "__main__";
+  // The compiled baselib runs in this iframe realm, while wanim throws errors
+  // from the parent realm.  Python's `except Exception` lowers to
+  // `instanceof Error`, which is realm-sensitive, so a parent `Error` was not
+  // caught.  Route the iframe's standard error constructors to the parent's:
+  // baselib exceptions then inherit from the same `Error`, and wanim's errors
+  // satisfy `instanceof Error`/`TypeError`/... inside the sandbox.
+  for (const errorName of [
+    "Error",
+    "TypeError",
+    "RangeError",
+    "ReferenceError",
+    "SyntaxError",
+    "EvalError",
+    "URIError",
+    "AggregateError",
+  ]) {
+    const ctor = (globalThis as Any)[errorName];
+    if (typeof ctor === "function") {
+      try {
+        win[errorName] = ctor;
+      } catch {
+        /* read-only global in this browser */
+      }
+    }
+  }
   installPythonShims({
     Object: win.Object,
     Array: win.Array,
@@ -275,7 +300,9 @@ export async function runPythonOnCanvas(
     const result = await (wanim as Any).render_presentation_to_canvas(sceneClasses, canvas, {
       quality: options.quality ?? "-qm",
       realtime: options.realtime ?? true,
-      fps: options.fps ?? 30,
+      // Omit when the caller did not override it: the downstream renderer uses
+      // `config.frame_rate`, which the quality flag has just set.
+      fps: options.fps,
       drawFrames: options.drawFrames ?? true,
       recordFrames: options.recordFrames ?? false,
       background: options.background,

@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_FONT_URLS } from "../src/mobject/text/pango/font-loader.js";
 
 const LATIN = DEFAULT_FONT_URLS[0] as string;
+const NETWORK_TESTS = process.env.WANIM_TEST_NETWORK === "1";
+const itNetwork = NETWORK_TESTS ? it : it.skip;
 
 describe("preload_submodules", () => {
   it("is a no-op when names are omitted or empty", async () => {
@@ -55,7 +57,7 @@ describe("preload_submodules", () => {
     expect(mathjax.is_mathjax_loaded()).toBe(true);
   });
 
-  it("loads explicit font paths and reports the active chain in the status", async () => {
+  itNetwork("loads explicit font paths and reports the active chain in the status", async () => {
     vi.resetModules();
     const loader = await import("../src/loader.js");
     const pango = await import("../src/mobject/text/pango/svg-renderer.js");

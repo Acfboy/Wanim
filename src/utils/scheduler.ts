@@ -50,6 +50,15 @@ export interface FrameSchedulerOptions {
    * ~16 ms `setTimeout`.  Exposed for tests and non-DOM hosts.
    */
   wait_for_frame?: (callback: (time: number) => void) => void;
+  /** Clock used for pacing; defaults to `performance.now()`/`Date.now()`. */
+  now?: () => number;
+  /**
+   * Allowed early arrival in milliseconds.  `requestAnimationFrame` timestamps
+   * are quantized to the display refresh interval, so two 60 Hz ticks are
+   * 33.33333333333333 ms apart while `1000/30` is 33.333333333333336: without
+   * a small tolerance every other 30 fps frame is skipped.
+   */
+  tolerance_ms?: number;
 }
 
 function now(): number {
@@ -71,24 +80,34 @@ class FrameScheduler implements RenderScheduler {
   cancelled = false;
   private readonly interval: number;
   private readonly wait_for_frame: (callback: (time: number) => void) => void;
-  private last_frame_at = now();
+  private readonly tolerance: number;
+  private readonly clock: () => number;
+  private last_frame_at: number;
 
   constructor(options: FrameSchedulerOptions = {}) {
     const fps = options.fps ?? 30;
     this.interval = fps > 0 ? 1000 / fps : 0;
     this.wait_for_frame = options.wait_for_frame ?? default_wait_for_frame;
+    this.tolerance = Math.max(0, options.tolerance_ms ?? 1);
+    this.clock = options.now ?? now;
+    this.last_frame_at = this.clock();
   }
 
   async next_frame(): Promise<void> {
     if (this.cancelled) return;
     // Wait for the display to present, then skip any extra rAF ticks until the
-    // logical frame interval has elapsed.
+    // logical frame interval has elapsed.  Accumulate the deadline instead of
+    // resetting it to `at`, so scheduling jitter does not permanently lower the
+    // effective frame rate.  If the page was hidden/frozen for more than two
+    // intervals, re-anchor to `at` instead of bursting to catch up.
     for (;;) {
       await new Promise<void>((resolve) => this.wait_for_frame(() => resolve()));
       if (this.cancelled) return;
-      const at = now();
-      if (at - this.last_frame_at >= this.interval) {
-        this.last_frame_at = at;
+      const at = this.clock();
+      const elapsed = at - this.last_frame_at;
+      if (elapsed + this.tolerance >= this.interval) {
+        if (elapsed > this.interval * 2) this.last_frame_at = at;
+        else this.last_frame_at += this.interval;
         return;
       }
     }

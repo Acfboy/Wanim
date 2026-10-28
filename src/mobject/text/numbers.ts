@@ -39,6 +39,8 @@ const singleStringMathTexFactory: DecimalNumberMobFactory = (text, kwargs = {}) 
   new SingleStringMathTex(text, kwargs as never);
 
 export const string_to_mob_map = new Map<string, VMobject>();
+/** Bound the glyph-prototype cache; `always_redraw` with changing numbers grows it forever. */
+const STRING_TO_MOB_LIMIT = 512;
 
 // Glyph prototypes are cached per (factory, font size, string). The factory
 // must be part of the key: distinct `mob_class` factories (e.g. a plain
@@ -149,6 +151,10 @@ function glyph_proto(
       }
     }
     string_to_mob_map.set(key, proto);
+    if (string_to_mob_map.size > STRING_TO_MOB_LIMIT) {
+      const oldest = string_to_mob_map.keys().next().value;
+      if (oldest !== undefined) string_to_mob_map.delete(oldest);
+    }
     glyph_info_map.set(proto, measure_glyph(proto));
   }
   return proto;

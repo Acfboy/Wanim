@@ -17,8 +17,8 @@ export class Homotopy extends Animation {
     this.apply_function_kwargs = options.apply_function_kwargs ?? {};
   }
 
-  function_at_time_t(t: number): (point: number[] | NDArray | { re: number; im: number } | { real: number; imag: number }) => NDArray {
-    const mapping_function = (point: number[] | NDArray | { re: number; im: number } | { real: number; imag: number }): NDArray => {
+  function_at_time_t(t: number): (point: number[] | NDArray | { re: number; im: number } | { real: number; imag: number }) => number[] | NDArray {
+    const mapping_function = (point: number[] | NDArray | { re: number; im: number } | { real: number; imag: number }): number[] | NDArray => {
       let values: number[];
       if (isNDArray(point)) values = (nestedRows(point)[0] as unknown[] | undefined)?.map(Number) ?? [];
       else if (Array.isArray(point)) values = point.map(Number);
@@ -31,10 +31,12 @@ export class Homotopy extends Animation {
       }
       const [x, y, z] = values;
       const result = this.homotopy(x, y, z, t);
+      // Downstream `apply_function` accepts plain rows; wrapping every point in
+      // an NDArray was pure per-frame allocation for scalar/array homotopies.
       if (isNDArray(result)) return result.copy();
-      if (typeof result === "number") return array([result, 0, z]) as NDArray;
-      if (Array.isArray(result)) return array(result) as NDArray;
-      return array("re" in result ? [result.re, result.im, z] : [result.real, result.imag, z]) as NDArray;
+      if (typeof result === "number") return [result, 0, z];
+      if (Array.isArray(result)) return result.map(Number);
+      return "re" in result ? [result.re, result.im, z] : [result.real, result.imag, z];
     };
     return mapping_function;
   }

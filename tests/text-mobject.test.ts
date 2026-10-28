@@ -133,6 +133,17 @@ describe("SingleStringMathTex / MathTex / Tex", () => {
     expect(firstPath.get_fill_color().to_hex()).toBe("#FFFFFF");
   });
 
+  it("MathTex wraps multi-line align content in a MathJax environment", () => {
+    // `MathTex(r"a &= b \\ c &= d")` is the canonical manim spelling; the
+    // default align* environment must be translated to a MathJax inner
+    // environment, otherwise `&` produces an "merror" SVG.
+    const tex = new MathTex("a &= b \\\\ c &= d");
+    const svg = (tex as unknown as { _svg_string: string })._svg_string;
+    expect(svg).toContain("<svg");
+    expect(svg).not.toContain("merror");
+    expect(totalPoints(tex)).toBeGreaterThan(0);
+  });
+
   it("MathTex with multiple strings isolates parts and color maps", () => {
     const tex = new MathTex("a", "b", { tex_to_color_map: { a: "#ff0000" } });
     expect(tex.submobjects.length).toBe(2);

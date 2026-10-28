@@ -118,9 +118,13 @@ export class AnimationGroup extends Animation {
     this.anims_finished = Array.from({ length: numAnimations }, () => false);
     if (numAnimations === 0) return;
     const lags = runTimes.slice(0, -1).map((runTime) => runTime * this.lag_ratio);
+    // Running prefix sum; the previous `lags.slice(0, index).reduce(...)` was
+    // O(n^2) and ran for every AnimationGroup construction.
+    let start = 0;
     this.anims_with_timings.forEach((timing, index) => {
-      timing.start = index === 0 ? 0 : lags.slice(0, index).reduce((sum, value) => sum + value, 0);
-      timing.end = timing.start + runTimes[index];
+      timing.start = start;
+      timing.end = start + (runTimes[index] ?? 0);
+      start += lags[index] ?? 0;
     });
   }
 

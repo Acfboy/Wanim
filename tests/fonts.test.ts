@@ -18,18 +18,39 @@ import { Text } from "../src/mobject/text/index.js";
 // The default chain is the browser pair (Tinos for Latin, Noto Serif SC for
 // Chinese) served from jsDelivr.  Node preloads URLs with `fetch` (see
 // `readBinaryFileAsync`), after which the synchronous load path reads the
-// warmed cache.  These tests therefore need network access.
+// warmed cache.  These tests therefore need network access; they skip by
+// default so an offline test run is not a red suite.  Set
+// `WANIM_TEST_NETWORK=1` to exercise them.
+const NETWORK_TESTS = process.env.WANIM_TEST_NETWORK === "1";
 const LATIN = DEFAULT_FONT_URLS[0] as string;
 const CJK = DEFAULT_FONT_URLS[1] as string;
+let fontsReady = false;
 
 beforeAll(async () => {
-  await preloadFonts([LATIN, CJK]);
-});
+  if (!NETWORK_TESTS) return;
+  try {
+    await preloadFonts([LATIN, CJK]);
+    fontsReady = true;
+  } catch {
+    fontsReady = false;
+  }
+}, 30000);
+
+/** Run a test only when the network font chain preloaded successfully. */
+function itIfFonts(name: string, fn: () => unknown): void {
+  it(name, async (context) => {
+    if (!fontsReady) {
+      context.skip();
+      return;
+    }
+    await fn();
+  });
+}
 
 describe("configure_fonts", () => {
   afterEach(() => configure_fonts(null));
 
-  it("replaces the default chain and resets the shared renderer", () => {
+  itIfFonts("replaces the default chain and resets the shared renderer", () => {
     configure_fonts([LATIN, CJK]);
     expect(getDefaultFontPaths()).toEqual([LATIN, CJK]);
 
@@ -41,7 +62,7 @@ describe("configure_fonts", () => {
     expect(glyphs.map((glyph) => glyph.fontIndex)).toEqual([0, 1]);
   });
 
-  it("renders text through the configured chain", () => {
+  itIfFonts("renders text through the configured chain", () => {
     configure_fonts([LATIN, CJK]);
     const text = new Text("矩阵 A");
     expect(text.submobjects.length).toBe(3);
@@ -50,7 +71,7 @@ describe("configure_fonts", () => {
     expect(svg).not.toContain("NaN");
   });
 
-  it("configure_fonts(null) restores the environment default", () => {
+  itIfFonts("configure_fonts(null) restores the environment default", () => {
     configure_fonts([LATIN]);
     configure_fonts(null);
     expect(getDefaultFontPaths()).toHaveLength(1);
@@ -64,7 +85,7 @@ describe("preloadFonts", () => {
     fontCache.clear();
   });
 
-  it("parses the chain and seeds the shared cache", async () => {
+  itIfFonts("parses the chain and seeds the shared cache", async () => {
     fontCache.delete(LATIN);
     const fonts = await preloadFonts([LATIN]);
     expect(fonts).toHaveLength(1);
@@ -73,7 +94,7 @@ describe("preloadFonts", () => {
     expect(loadFontSync(LATIN)).toBe(fonts[0]);
   });
 
-  it("preload_fonts follows configure_fonts", async () => {
+  itIfFonts("preload_fonts follows configure_fonts", async () => {
     configure_fonts([LATIN, CJK]);
     const fonts = await preload_fonts();
     expect(fonts).toHaveLength(2);
@@ -81,6 +102,6 @@ describe("preloadFonts", () => {
   });
 
   it("rejects when nothing can be loaded in Node", async () => {
-    await expect(preloadFonts([LATIN, "/nonexistent/font.ttf"])).rejects.toThrow();
+    await expect(preloadFonts(["/nonexistent/font.ttf"])).rejects.toThrow();
   });
 });

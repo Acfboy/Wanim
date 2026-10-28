@@ -498,6 +498,29 @@ check("string replace/split shims delegate RegExp calls to native", () => {
   assert.deepEqual(Array.from(proto.split.call("a,b", ",")), ["a", "b"]);
   assert.deepEqual(Array.from(proto.split.call("  a  b ", undefined)), ["a", "b"]);
   assert.deepEqual(Array.from(proto.split.call("", undefined)), []);
+  // maxsplit keeps the unsplit remainder (CPython returns maxsplit+1 pieces).
+  assert.deepEqual(Array.from(proto.split.call("a,b,c", ",", 1)), ["a", "b,c"]);
+  assert.deepEqual(Array.from(proto.split.call("a,b,c", ",", 0)), ["a,b,c"]);
+  assert.deepEqual(Array.from(proto.split.call("  a  b  c ", undefined, 1)), ["a", "b  c "]);
+  assert.deepEqual(Array.from(proto.split.call("  a  b  c ", undefined, 2)), ["a", "b", "c "]);
+  assert.throws(() => proto.split.call("abc", ""), /empty separator/);
+});
+
+check("wrapWanimNamespace annotates top-level functions for kwargs", () => {
+  const calls = [];
+  function rotate_vector(vector, angle) {
+    calls.push([vector, angle]);
+    return angle;
+  }
+  const core2 = createRuntimeCore({
+    wanim: { rotate_vector },
+    np: {},
+    NDArray: class FakeNDArray {},
+  });
+  const wrapped = core2.wrapWanimNamespace({ rotate_vector });
+  assert.deepEqual(wrapped.rotate_vector.__argnames__, ["vector", "angle"]);
+  assert.equal(wrapped.rotate_vector.__handles_kwarg_interpolation__, true);
+  assert.equal(wrapped.rotate_vector, rotate_vector);
 });
 
 check("numpy facade accepts rapydscript range() objects as array-likes", () => {

@@ -1,5 +1,5 @@
 import { allclose, array, NDArray } from "numpy-ts";
-import { bump_mobject_geometry_epoch } from "../../utils/render_epoch.js";
+import { bump_mobject_geometry_epoch, bump_mobject_structure_epoch } from "../../utils/render_epoch.js";
 import { Mobject, _rawMobject, assertFinitePoints, hasNonFinite, type MobjectOptions, type MobjectSlice, type MobjectUpdater } from "../mobject.js";
 import { ManimColor, WHITE, BLACK, interpolate_color, type ParsableManimColor } from "../../utils/color/core.js";
 import { pointRows, pointsFrom, pointFrom, pointAt, numeric, addPoints, subtractPoints, scalePoint, norm, toPythonRepr, pythonTypeName, isNDArray, nestedRows, linspace, _cContiguousRows, _readFlatStore, _flatStoreSlots } from "../../utils/arrays.js";
@@ -455,6 +455,14 @@ export class VMobject extends Mobject {
   tolerance_for_point_equality = 1e-6;
   n_points_per_cubic_curve: number;
   _bezier_t_values: number[] = [];
+  /** Per-points-version curve lengths; `MoveAlongPath` samples every frame. */
+  private _arcLengthCache: {
+    version: number;
+    numCurves: number;
+    samplePoints: number | null;
+    lengths: Float64Array;
+    total: number;
+  } | null = null;
   // Accessors so colour changes bump the geometry epoch (see mobject.points).
   private _fill_rgbas?: NDArray;
   get fill_rgbas(): NDArray { return this._fill_rgbas as NDArray; }
@@ -2073,8 +2081,16 @@ export class VMobject extends Mobject {
       throw error;
     }
     const nppcc = this.n_points_per_cubic_curve;
+    const start = nppcc * index;
+    const end = nppcc * (index + 1);
+    const flat = _cContiguousRows(this.points);
+    if (flat !== null && flat.rowDim === this.dim && flat.rowCount >= end && flat.data instanceof Float64Array) {
+      const out = new Float64Array(nppcc * this.dim);
+      out.set(flat.data.subarray(start * this.dim, end * this.dim));
+      return array(out).reshape(nppcc, this.dim) as NDArray;
+    }
     return array(
-      rows(this.points, this.dim).slice(nppcc * index, nppcc * (index + 1)),
+      rows(this.points, this.dim).slice(start, end),
     ) as NDArray;
   }
 
@@ -2115,8 +2131,39 @@ export class VMobject extends Mobject {
   }
 
   get_nth_curve_length(n: number, sample_points: number | null = null): number {
-    const [, length] = this.get_nth_curve_function_with_length(n, sample_points);
-    return length;
+    if (!(n < this.get_num_curves())) {
+      const error = new Error("assert n < self.get_num_curves()");
+      error.name = "AssertionError";
+      throw error;
+    }
+    return this._cached_curve_lengths(sample_points).lengths[n] ?? 0;
+  }
+
+  private _cached_curve_lengths(sample_points: number | null): {
+    lengths: Float64Array;
+    total: number;
+  } {
+    const numCurves = this.get_num_curves();
+    const version = this.points_version;
+    const cached = this._arcLengthCache;
+    if (
+      cached !== null &&
+      cached.version === version &&
+      cached.numCurves === numCurves &&
+      cached.samplePoints === sample_points
+    ) {
+      return cached;
+    }
+    const lengths = new Float64Array(numCurves);
+    let total = 0;
+    for (let index = 0; index < numCurves; index += 1) {
+      const pieces = (nestedRows(this.get_nth_curve_length_pieces(index, sample_points))[0] ?? []) as number[];
+      const length = pieces.reduce((sum, value) => sum + Number(value), 0);
+      lengths[index] = length;
+      total += length;
+    }
+    this._arcLengthCache = { version, numCurves, samplePoints: sample_points, lengths, total };
+    return this._arcLengthCache;
   }
 
   getNthCurveLength(n: number, sample_points: number | null = null): number {
@@ -2125,15 +2172,16 @@ export class VMobject extends Mobject {
 
   get_nth_curve_function_with_length(index: number, sample_points: number | null = null): [(t: number) => number[], number] {
     const curve = this.get_nth_curve_function(index);
-    // NOTE: mirrors Python `length = np.sum(norms)`: the pieces array is 1D
-    // with shape (count - 1,), so nestedRows yields a single flat row.
-    const flat = (nestedRows(this.get_nth_curve_length_pieces(index, sample_points))[0] ?? []) as unknown[];
-    const length = (flat as number[]).reduce((sum, value) => sum + Number(value), 0);
+    const length = this._cached_curve_lengths(sample_points).lengths[index] ?? 0;
     return [curve, length];
   }
 
   get_curve_functions_with_lengths(sample_points: number | null = null): Array<[(t: number) => number[], number]> {
-    return Array.from({ length: this.get_num_curves() }, (_, index) => this.get_nth_curve_function_with_length(index, sample_points));
+    const lengths = this._cached_curve_lengths(sample_points).lengths;
+    return Array.from({ length: lengths.length }, (_, index) => [
+      this.get_nth_curve_function(index),
+      lengths[index] ?? 0,
+    ]);
   }
 
   *get_curve_functions(): Generator<(t: number) => number[], void, void> {
@@ -2147,7 +2195,7 @@ export class VMobject extends Mobject {
   }
 
   get_arc_length(sample_points_per_curve: number | null = null): number {
-    return this.get_curve_functions_with_lengths(sample_points_per_curve).reduce((sum, [, length]) => sum + length, 0);
+    return this._cached_curve_lengths(sample_points_per_curve).total;
   }
 
   get_points_defining_boundary(): NDArray {
@@ -2421,6 +2469,65 @@ export class VMobject extends Mobject {
     const [lower_index, lower_residue] = integer_interpolate(0, num_curves, a);
     const [upper_index, upper_residue] = integer_interpolate(0, num_curves, b);
     const nppc = this.n_points_per_curve;
+    const flat = _cContiguousRows(other.points);
+    if (
+      flat !== null &&
+      flat.rowDim === this.dim &&
+      flat.rowCount >= num_curves * nppc &&
+      flat.data instanceof Float64Array
+    ) {
+      // Fast path: copy complete middle curves with `set(subarray)` and run
+      // de Casteljau only on the two boundary curves.  The old implementation
+      // converted the whole point buffer to rows and allocated a 4x4 matrix
+      // per face on every Create/ShowPassingFlash frame.
+      const data = flat.data;
+      const dim = this.dim;
+      const readCurve = (curve: number): number[][] => {
+        const result: number[][] = new Array(nppc);
+        for (let point = 0; point < nppc; point += 1) {
+          const base = (curve * nppc + point) * dim;
+          const row = new Array<number>(dim);
+          for (let column = 0; column < dim; column += 1) row[column] = data[base + column] ?? 0;
+          result[point] = row;
+        }
+        return result;
+      };
+      const middleCurves = lower_index === upper_index ? 0 : Math.max(0, upper_index - lower_index - 1);
+      const outRows = nppc + middleCurves * nppc + (lower_index === upper_index ? 0 : nppc);
+      const out = new Float64Array(outRows * dim);
+      const writeRows = (sourceRows: number[][], atRow: number): number => {
+        for (let point = 0; point < sourceRows.length; point += 1) {
+          const row = sourceRows[point] ?? [];
+          const base = (atRow + point) * dim;
+          for (let column = 0; column < dim; column += 1) out[base + column] = row[column] ?? 0;
+        }
+        return atRow + sourceRows.length;
+      };
+      let outRow = 0;
+      if (lower_index === upper_index) {
+        outRow = writeRows(
+          _partial_bezier_points_flat(readCurve(lower_index), lower_residue, upper_residue),
+          outRow,
+        );
+      } else {
+        outRow = writeRows(
+          _partial_bezier_points_flat(readCurve(lower_index), lower_residue, 1),
+          outRow,
+        );
+        if (middleCurves > 0) {
+          const start = (lower_index + 1) * nppc * dim;
+          const end = upper_index * nppc * dim;
+          out.set(data.subarray(start, end), outRow * dim);
+          outRow += middleCurves * nppc;
+        }
+        outRow = writeRows(
+          _partial_bezier_points_flat(readCurve(upper_index), 0, upper_residue),
+          outRow,
+        );
+      }
+      this.points = array(out).reshape(outRows, dim) as NDArray;
+      return this;
+    }
     // Copy other.points when other is this to prevent in-place modification.
     const source = other === this ? rows(other.points, this.dim).map((row) => [...row]) : rows(other.points, this.dim);
     const slice = (curve: number): number[][] => source.slice(nppc * curve, nppc * (curve + 1));
@@ -2940,8 +3047,22 @@ export class VGroup extends VMobject {
   }
 
   __setitem__(key: number, value: VMobject | VMobject[]): void {
-    this._assert_valid_submobjects(tuplify(value) as VMobject[]);
-    this.submobjects[key] = value as VMobject;
+    // Python's `VGroup.__setitem__` delegates to a list assignment, so a
+    // negative key addresses from the end.  The old port wrote the string
+    // property "-1" and left the family caches stale.
+    const replacement = (Array.isArray(value) ? value : [value]) as VMobject[];
+    this._assert_valid_submobjects(replacement);
+    const length = this.submobjects.length;
+    const index = key < 0 ? key + length : key;
+    if (!Number.isInteger(index) || index < 0 || index >= length) {
+      const error = new Error("VGroup assignment index out of range");
+      error.name = "IndexError";
+      throw error;
+    }
+    if (replacement.length === 1) this.submobjects[index] = replacement[0] as VMobject;
+    else this.submobjects.splice(index, 1, ...replacement);
+    bump_mobject_geometry_epoch();
+    bump_mobject_structure_epoch();
   }
 
   override __getitem__(key: number | MobjectSlice): VMobject | VGroup {

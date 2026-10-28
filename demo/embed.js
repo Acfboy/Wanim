@@ -103,7 +103,6 @@ async function run() {
     const promise = py2js.runPythonOnCanvas(code, canvas, {
       quality,
       realtime: true,
-      fps: 30,
       drawFrames: true,
       recordFrames: false,
       signal: controller.signal,

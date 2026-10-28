@@ -28,6 +28,7 @@
  */
 import { Mobject } from "../mobject/mobject.js";
 import { Scene, type SceneConstructorOptions } from "./scene.js";
+import { mobject_geometry_epoch } from "../utils/render_epoch.js";
 import { isInteractiveControl, type InteractiveControl } from "../interactive/controls.js";
 import { NullInteractiveHost, type InteractiveHost } from "../interactive/host.js";
 import {
@@ -109,6 +110,10 @@ export class InteractiveScene extends Scene {
   private _stageClearPending = false;
   private _activeControl: InteractiveControl | null = null;
   private _hoveredControl: (Mobject & InteractiveControl) | null = null;
+  /** Timestamp of the previous `tick`, for real-time (not fixed-step) updates. */
+  private _last_tick_at: number | null = null;
+  /** Last rendered `(geometry, camera, hover, ...)` key, for idle skip. */
+  private _last_render_key: string | null = null;
   private _controlsCache: Array<Mobject & InteractiveControl> | null = null;
   /**
    * Set while the blueprint still needs a reaction pass: on entry it is set by
@@ -343,6 +348,8 @@ export class InteractiveScene extends Scene {
   async presentation_run_phase(phase: Phase): Promise<void> {
     if (this.is_aborted()) return;
     this._phaseKind = phase.kind;
+    this._last_render_key = null;
+    this._last_tick_at = null;
     // Entering a blueprint always earns one reaction pass, even without input,
     // so the page's initial state reflects the controls' initial values.
     if (phase.kind === "blueprint") this._reactionsPending = true;
@@ -602,25 +609,98 @@ export class InteractiveScene extends Scene {
   }
 
   private tick(render = true): void {
-    const frameRate = (this.camera?.frame_rate as number | undefined) ?? 30;
-    const dt = frameRate > 0 ? 1 / frameRate : 1 / 30;
+    const dt = this._real_tick_dt();
     // Blueprint phases drive mobjects through reactions; construct phases use
     // the ordinary updater machinery (matching `add_reaction` /
     // `add_updater` semantics).  Reactions only run when the page was just
     // entered or the reader interacted: an idle blueprint re-renders (hover,
     // camera gestures) without recomputing the model.
+    let ranReactions = false;
     if (this._phaseKind === "blueprint") {
       if (this._reactionsPending) {
         this._reactionsPending = false;
         this.apply_reactions();
+        ranReactions = true;
       }
     } else {
       this.update_mobjects(dt);
     }
     this.update_self(dt);
     if (render && typeof this.renderer?.render === "function") {
-      this.renderer.render(this, this.time, this.moving_mobjects);
+      // An idle blueprint page used to redraw at the display refresh rate even
+      // though nothing changed.  Skip the frame when geometry, camera, hover and
+      // pending reactions are all unchanged; construct phases still render.
+      const idleBlueprint = this._phaseKind === "blueprint" && !ranReactions && this._hoveredControl === null;
+      const key = this._render_key();
+      if (!idleBlueprint || key !== this._last_render_key) {
+        this.renderer.render(this, this.time, this.moving_mobjects);
+        this._last_render_key = key;
+      }
     }
+  }
+
+  /** Cheap-ish identity of everything that affects an idle interaction frame. */
+  private _render_key(): string {
+    const camera = this.camera as unknown as {
+      frame_center?: unknown;
+      background_color?: { to_hex?: () => string };
+      background_opacity?: number;
+      phi?: number;
+      theta?: number;
+      gamma?: number;
+      get_zoom?: () => number;
+    } | undefined;
+    let cameraKey = "";
+    if (camera !== undefined) {
+      const center = camera.frame_center as { toArray?: () => unknown } | undefined;
+      const centerKey = center !== undefined && typeof center.toArray === "function"
+        ? JSON.stringify(center.toArray())
+        : String(camera.frame_center ?? "");
+      cameraKey = [
+        centerKey,
+        camera.phi ?? "",
+        camera.theta ?? "",
+        camera.gamma ?? "",
+        camera.get_zoom?.() ?? "",
+        camera.background_color?.to_hex?.() ?? "",
+        camera.background_opacity ?? "",
+      ].join("|");
+    }
+    return [
+      mobject_geometry_epoch(),
+      cameraKey,
+      this._hoveredControl === null ? "" : "hover",
+      this._reactionsPending ? "react" : "",
+      this.theme,
+      this._phaseKind,
+    ].join("|");
+  }
+
+  /**
+   * Wall-clock delta between interaction frames.
+   *
+   * The previous implementation used a constant `1/frame_rate`, so a 120 Hz
+   * display advanced time-based updaters four times faster than a 30 Hz one.
+   * Clamp large gaps (tab restored, long compile) so a single frame cannot
+   * teleport a scene, and fall back to the logical frame duration on the first
+   * tick / hosts without `performance.now`.
+   */
+  private _real_tick_dt(): number {
+    const frameRate = (this.camera?.frame_rate as number | undefined) ?? 30;
+    const fallback = frameRate > 0 ? 1 / frameRate : 1 / 30;
+    const clock = (): number =>
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const at = clock();
+    if (this._last_tick_at === null) {
+      this._last_tick_at = at;
+      return fallback;
+    }
+    const elapsed = (at - this._last_tick_at) / 1000;
+    this._last_tick_at = at;
+    if (!Number.isFinite(elapsed) || elapsed <= 0) return 0;
+    return Math.min(elapsed, 0.1);
   }
 
   /**
@@ -644,6 +724,8 @@ export class InteractiveScene extends Scene {
     this.setup();
     this._phaseKind = "blueprint";
     this._reactionsPending = true;
+    this._last_render_key = null;
+    this._last_tick_at = null;
     this.blueprint();
     this.interactive_controls();
   }

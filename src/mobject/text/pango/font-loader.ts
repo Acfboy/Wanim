@@ -224,21 +224,27 @@ async function readBinaryFileAsync(filePath: string): Promise<ArrayBuffer> {
  * `loadFontSync`.
  */
 export async function preloadFonts(fontPaths: string[] = resolveDefaultFontPaths()): Promise<Font[]> {
-  const fonts: Font[] = [];
-  const errors: unknown[] = [];
-  for (const fontPath of fontPaths) {
+  // Deduplicate before fetching: the default chain can repeat a fallback, and
+  // concurrent duplicate downloads would parse the same font twice.
+  const uniquePaths = [...new Set(fontPaths)];
+  const results = await Promise.all(uniquePaths.map(async (fontPath) => {
     const cached = FONT_CACHE.get(fontPath);
-    if (cached !== undefined) {
-      fonts.push(cached);
-      continue;
-    }
+    if (cached !== undefined) return { font: cached, error: null as unknown };
     try {
       const parsed = parseFontFromBuffer(await readBinaryFileAsync(fontPath));
       FONT_CACHE.set(fontPath, parsed);
-      fonts.push(parsed);
+      return { font: parsed, error: null as unknown };
     } catch (error) {
-      if (!IS_BROWSER) throw error;
-      errors.push(error);
+      return { font: null as Font | null, error };
+    }
+  }));
+  const fonts: Font[] = [];
+  const errors: unknown[] = [];
+  for (const result of results) {
+    if (result.font !== null) fonts.push(result.font);
+    else {
+      if (!IS_BROWSER) throw result.error;
+      errors.push(result.error);
     }
   }
   if (fonts.length === 0) {

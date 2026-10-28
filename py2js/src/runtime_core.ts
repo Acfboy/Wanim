@@ -237,6 +237,8 @@ function extractParamList(src: string, open: number): (string | null)[] | null {
   });
 }
 
+const paramNamesCache = new WeakMap<Function, (string | null)[] | null>();
+
 function parseParamNames(fn: (...a: Any[]) => Any): (string | null)[] | null {
   // Explicit `__argnames__` (set in wanim source) survives bundling, while
   // `Function.prototype.toString` parameter names do not: esbuild renames
@@ -245,8 +247,13 @@ function parseParamNames(fn: (...a: Any[]) => Any): (string | null)[] | null {
   // Python kwargs -> positional mapping. Prefer the explicit metadata.
   const explicit = (fn as Any).__argnames__;
   if (Array.isArray(explicit)) return [...explicit];
+  const cached = paramNamesCache.get(fn);
+  if (cached !== undefined) return cached === null ? null : [...cached];
   const src = stripJsComments(Function.prototype.toString.call(fn));
-  return extractParamList(src, src.indexOf("("));
+  if (src.includes("[native code]")) return null;
+  const parsed = extractParamList(src, src.indexOf("("));
+  paramNamesCache.set(fn, parsed);
+  return parsed === null ? null : [...parsed];
 }
 
 const OPTIONS_PARAM = /(options|opts|kwargs|config|parameters)$/i;
@@ -904,14 +911,47 @@ export function installPythonShims(sandbox: Record<string, Any>): void {
     value: function (this: Any, sep?: Any, maxsplit?: number) {
       const text = String(this);
       if (isRegExpValue(sep)) return natives.split.call(text, sep, maxsplit);
+      const rawLimit = maxsplit === undefined ? -1 : Math.trunc(Number(maxsplit));
+      const unlimited = rawLimit < 0;
       if (sep === undefined || sep === null) {
-        const trimmed = text.trim();
-        if (trimmed === "") return [];
-        const parts = natives.split.call(trimmed, /\s+/);
-        return maxsplit === undefined ? parts : parts.slice(0, maxsplit);
+        // CPython ignores leading whitespace even for maxsplit=0 and, when
+        // unlimited, also ignores trailing whitespace; a finite maxsplit keeps
+        // the untouched remainder (including trailing whitespace).
+        if (unlimited) {
+          const trimmed = text.trim();
+          if (trimmed === "") return [];
+          return natives.split.call(trimmed, /\s+/);
+        }
+        const leading = /^\s*/.exec(text)?.[0].length ?? 0;
+        if (leading >= text.length) return [];
+        const parts: string[] = [];
+        let index = leading;
+        for (let splits = 0; splits < rawLimit; splits += 1) {
+          const match = /\s+/.exec(text.slice(index));
+          if (match === null) break;
+          parts.push(text.slice(index, index + match.index));
+          index += match.index + match[0].length;
+        }
+        parts.push(text.slice(index));
+        return parts;
       }
-      const parts = natives.split.call(text, String(sep));
-      return maxsplit === undefined ? parts : parts.slice(0, maxsplit + 1);
+      const separator = String(sep);
+      if (separator === "") {
+        const error = new Error("empty separator");
+        error.name = "ValueError";
+        throw error;
+      }
+      if (rawLimit === 0) return [text];
+      const parts: string[] = [];
+      let index = 0;
+      for (let splits = 0; unlimited || splits < rawLimit; splits += 1) {
+        const found = text.indexOf(separator, index);
+        if (found < 0) break;
+        parts.push(text.slice(index, found));
+        index = found + separator.length;
+      }
+      parts.push(text.slice(index));
+      return parts;
     },
   });
 }
@@ -2630,6 +2670,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonAdd(a: Any, b: Any): Any {
+    // The overwhelmingly common case: plain Python numbers.  Keep it ahead of
+    // the complex/array/dunder dispatch, which costs several shape checks.
+    if (typeof a === "number" && typeof b === "number") return a + b;
     if (needsComplexArrayOp(a, b)) {
       const r = tryComplexArrayOp("add", a, b);
       if (r !== undefined) return r;
@@ -2667,6 +2710,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonSub(a: Any, b: Any): Any {
+    if (typeof a === "number" && typeof b === "number") return a - b;
     if (needsComplexArrayOp(a, b)) {
       const r = tryComplexArrayOp("sub", a, b);
       if (r !== undefined) return r;
@@ -2687,6 +2731,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   }
 
   function pythonMul(a: Any, b: Any): Any {
+    if (typeof a === "number" && typeof b === "number") return a * b;
     if (needsComplexArrayOp(a, b)) {
       const r = tryComplexArrayOp("mul", a, b);
       if (r !== undefined) return r;
@@ -3969,6 +4014,16 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     return false;
   }
 
+  /**
+   * Per-object cache of bound-method wrappers, keyed by the raw function.
+   *
+   * Each Python attribute read used to walk the prototype chain looking for an
+   * accessor and allocate a fresh bound closure.  The cache still reads
+   * `obj[name]` first (so replacements are noticed), then reuses the wrapper
+   * only when the underlying function is identical.
+   */
+  const dotCache = new WeakMap<Any, Map<string, { value: Any; bound: Any }>>();
+
   function getDot(obj: Any, name: string): Any {
     const value = (obj as Any)[name];
     if ((value === undefined || value === null) && (name === "real" || name === "imag")) {
@@ -3987,8 +4042,21 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (typeof value !== "function") return value;
     if (obj === null || obj === undefined) return value;
     if (typeof obj !== "object" && typeof obj !== "function") return value;
-    if (isAccessorProperty(obj, name)) return value;
-    if ((value as Any).__self__ === obj) return value;
+    let cache = dotCache.get(obj);
+    if (cache === undefined) {
+      cache = new Map();
+      dotCache.set(obj, cache);
+    }
+    const cached = cache.get(name);
+    if (cached !== undefined && cached.value === value) return cached.bound;
+    if (isAccessorProperty(obj, name)) {
+      cache.set(name, { value, bound: value });
+      return value;
+    }
+    if ((value as Any).__self__ === obj) {
+      cache.set(name, { value, bound: value });
+      return value;
+    }
     // Own data properties are plain attributes, not bound methods: module
     // namespaces (`np.linalg.norm` lives directly on the `linalg` object)
     // and instance-held closures (`self.cb = lambda: ...`) must keep their
@@ -3996,7 +4064,10 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // CPython (where `type(obj).__dict__[name]` being a function yields a
     // bound method, while an instance `__dict__` entry does not).
     try {
-      if (Object.prototype.hasOwnProperty.call(obj, name)) return value;
+      if (Object.prototype.hasOwnProperty.call(obj, name)) {
+        cache.set(name, { value, bound: value });
+        return value;
+      }
     } catch {
       /* hostile Proxy: fall through to bind (the property read above succeeded) */
     }
@@ -4009,6 +4080,7 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     // (see `bind_mobject_method` in wanim).
     bound.mobject = obj;
     bound.originalMethod = value;
+    cache.set(name, { value, bound });
     return bound;
   }
 
@@ -4209,13 +4281,51 @@ export function createRuntimeCore(deps: RuntimeDeps) {
   // class prototype was pure overhead.
   const wrappedNamespaceCache = new WeakMap<object, Record<string, Any>>();
 
+  /**
+   * Attach `__argnames__` to a plain (non-class) wanim export.
+   *
+   * `ρσ_interpolate_kwargs` only maps keyword arguments when the callee exposes
+   * `__argnames__`; `wrapWanimNamespace` used to wrap classes only, so
+   * `rotate_vector(RIGHT, angle=PI/2)` passed the kwargs bag as the `angle`
+   * positional argument and broke. Parsing the source once per function and
+   * caching it on the function makes top-level functions behave like methods.
+   * Functions that already carry explicit metadata (or whose signature cannot
+   * be parsed) are left untouched.
+   */
+  function ensureFunctionArgNames(fn: Any): void {
+    if (typeof fn !== "function" || isNativeClass(fn)) return;
+    if (Array.isArray(fn.__argnames__)) return;
+    const params = parseParamNames(fn);
+    if (params === null) return;
+    try {
+      Object.defineProperty(fn, "__argnames__", {
+        configurable: true,
+        value: params,
+      });
+      // Let rapydscript keep the trailing kwargs bag as the final argument:
+      // TS functions with a rest/options parameter need it, and fixed-arity
+      // functions simply ignore the extra argument.
+      Object.defineProperty(fn, "__handles_kwarg_interpolation__", {
+        configurable: true,
+        value: true,
+      });
+    } catch {
+      /* frozen/read-only function: keep the no-metadata fallback */
+    }
+  }
+
   /** Wrap every wanim class so rapydscript can `new` it via a plain call. */
   function wrapWanimNamespace(ns: Record<string, Any>): Record<string, Any> {
     const cached = wrappedNamespaceCache.get(ns);
     if (cached !== undefined) return cached;
     const out: Record<string, Any> = {};
     for (const [key, value] of Object.entries(ns)) {
-      out[key] = isNativeClass(value) ? wrapNativeClass(value as Any) : value;
+      if (isNativeClass(value)) {
+        out[key] = wrapNativeClass(value as Any);
+      } else {
+        ensureFunctionArgNames(value);
+        out[key] = value;
+      }
     }
     wrappedNamespaceCache.set(ns, out);
     return out;

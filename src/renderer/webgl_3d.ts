@@ -246,10 +246,14 @@ interface GeometryRecord {
    */
   rangeList: Array<readonly [number, number]>;
   rowDim: number;
+  /** Frame number this record was last pushed, for dead-record reclamation. */
+  lastUsedFrame: number;
 }
 
 export interface WebGLThreeDRendererOptions {
   antialias?: boolean;
+  /** Backing-store scale for HiDPI (default 1; camera sizes stay logical). */
+  pixelRatio?: number;
 }
 
 function isColorTransparent(info: BaseColorInfo): boolean {
@@ -732,6 +736,8 @@ export class WebGLThreeDRenderer {
   private modelVbo: WebGLBuffer | null = null;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private records = new Map<VMobject, GeometryRecord>();
+  /** Monotonic frame counter used to retire records no longer in the scene. */
+  private frameNumber = 0;
   /** CPU staging copy of the shared vertex heap (offsets survive growth). */
   private vertexHeap = new Float32Array(4096 * FLOATS_PER_VERTEX);
   private vertexHeapUsed = 0;
@@ -752,6 +758,7 @@ export class WebGLThreeDRenderer {
   private pendingModelMax = -Infinity;
   private width = 0;
   private height = 0;
+  private readonly pixelRatio: number;
   /**
    * When the global geometry epoch and the camera's record-relevant state are
    * unchanged from the previous frame, every cached record is still valid and
@@ -774,6 +781,9 @@ export class WebGLThreeDRenderer {
   private lastFittedModel: Float32Array | null = null;
 
   constructor(options: WebGLThreeDRendererOptions = {}) {
+    this.pixelRatio = Number.isFinite(options.pixelRatio) && (options.pixelRatio as number) > 0
+      ? (options.pixelRatio as number)
+      : 1;
     try {
       const canvas = typeof OffscreenCanvas !== "undefined"
         ? new OffscreenCanvas(1, 1)
@@ -901,8 +911,8 @@ export class WebGLThreeDRenderer {
   begin(camera: ThreeDCamera): void {
     const gl = this.gl;
     if (gl === null || this.canvas === null) return;
-    const width = camera.pixel_width;
-    const height = camera.pixel_height;
+    const width = Math.max(1, Math.round(camera.pixel_width * this.pixelRatio));
+    const height = Math.max(1, Math.round(camera.pixel_height * this.pixelRatio));
     if (this.width !== width || this.height !== height) {
       this.width = width;
       this.height = height;
@@ -912,6 +922,8 @@ export class WebGLThreeDRenderer {
     this.indexCount = 0;
     this.frameRecords.length = 0;
     this.frameModelSlots.clear();
+    this.frameNumber += 1;
+    this.sweep_stale_records();
     // NOTE: dirty vertex/model ranges are *not* reset here — `prepare` builds
     // (and dirties) records before `begin`, and only `upload_pending` (called
     // from `flush`) may clear them.
@@ -940,7 +952,7 @@ export class WebGLThreeDRenderer {
       fif: camera.fixed_in_frame_mobjects.size,
       fio: camera.fixed_orientation_mobjects.size,
       frameHeight: camera.frame_height,
-      pixelHeight: camera.pixel_height,
+      pixelHeight: camera.pixel_height * this.pixelRatio,
     };
   }
 
@@ -952,13 +964,19 @@ export class WebGLThreeDRenderer {
   prepare(mobject: VMobject, camera: ThreeDCamera): GeometryRecord | null {
     if (this.recordsValid) {
       const existing = this.records.get(mobject);
-      if (existing !== undefined) return existing;
+      if (existing !== undefined) {
+        existing.lastUsedFrame = this.frameNumber;
+        return existing;
+      }
     }
-    return this.ensure_record(mobject, camera);
+    const record = this.ensure_record(mobject, camera);
+    if (record !== null) record.lastUsedFrame = this.frameNumber;
+    return record;
   }
 
   /** Append a prepared record to the current frame batch. */
   push(record: GeometryRecord): void {
+    record.lastUsedFrame = this.frameNumber;
     if (record.indexData.length === 0) return;
     const needed = this.indexCount + record.indexData.length;
     this.ensure_index_capacity(needed);
@@ -973,8 +991,8 @@ export class WebGLThreeDRenderer {
     if (gl === null || this.program === null || this.vao === null || this.vbo === null || this.ebo === null) return;
     if (this.indexCount === 0) return;
     this.assign_model_slots(gl);
-    const pixelWidth = camera.pixel_width;
-    const pixelHeight = camera.pixel_height;
+    const pixelWidth = camera.pixel_width * this.pixelRatio;
+    const pixelHeight = camera.pixel_height * this.pixelRatio;
     const frameWidth = camera.frame_width;
     const frameHeight = camera.frame_height;
     const widthMult = pixelWidth / frameWidth;
@@ -1144,6 +1162,22 @@ export class WebGLThreeDRenderer {
     if (offset + count > this.pendingVertexMax) this.pendingVertexMax = offset + count;
     if (vertexBase < this.pendingModelMin) this.pendingModelMin = vertexBase;
     if (vertexBase + record.vertexCount > this.pendingModelMax) this.pendingModelMax = vertexBase + record.vertexCount;
+  }
+
+  /**
+   * Retire records that have not been drawn for a few frames.
+   *
+   * `always_redraw(Surface)`, `become`, and Transform create new VMobjects
+   * every frame; the old records stayed in `records` (and kept their vertex
+   * ranges) until `dispose`, so long-lived 3D pages leaked GPU memory.
+   */
+  private sweep_stale_records(): void {
+    const ttl = 2;
+    for (const [mobject, record] of this.records) {
+      if (this.frameNumber - record.lastUsedFrame <= ttl) continue;
+      this.free_vertices(record);
+      this.records.delete(mobject);
+    }
   }
 
   private free_vertices(record: GeometryRecord): void {
@@ -1467,6 +1501,7 @@ export class WebGLThreeDRenderer {
       model: null,
       modelSlot: 0,
       forceRebuild: false,
+      lastUsedFrame: 0,
     };
     if (!drawFill && !drawStroke && !drawBgStroke) {
       // Nothing visible: an empty record still lets the mobject be "handled".
@@ -1484,7 +1519,7 @@ export class WebGLThreeDRenderer {
       };
     }
     // Flattening tolerance: a quarter device pixel at the current zoom.
-    const tolerance = Math.max(camera.frame_height / camera.pixel_height, 1e-9) * 0.25 / Math.max(1, zoom);
+    const tolerance = Math.max(camera.frame_height / (camera.pixel_height * this.pixelRatio), 1e-9) * 0.25 / Math.max(1, zoom);
     const ranges = computeSubpathRangesFlat(
       pts.data,
       pts.rowDim,
@@ -1522,7 +1557,7 @@ export class WebGLThreeDRenderer {
 
     // Device-space stroke half-widths (see `apply_stroke`: width *
     // cairo_line_width_multiple, then the world->device x scale).
-    const deviceScale = camera.pixel_width / camera.frame_width;
+    const deviceScale = (camera.pixel_width * this.pixelRatio) / camera.frame_width;
     const halfWidth = (strokeWidth * lineMultiple * deviceScale) / 2;
     const bgHalfWidth = (bgStrokeWidth * lineMultiple * deviceScale) / 2;
 

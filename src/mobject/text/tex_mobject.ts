@@ -23,7 +23,7 @@ import { SVGMobject, type SVGMobjectOptions } from "../svg/svg_mobject.js";
 import { Line } from "../geometry/line.js";
 import { setMathTexLabelFactory } from "../geometry/arc.js";
 import { setTexFactory } from "../types/vectorized_mobject.js";
-import { texToSvg, texToSvgCached } from "./mathjax.js";
+import { texToSvg, texToSvgCached, normalizeTexEnvironment } from "./mathjax.js";
 
 export const MATHTEX_SUBSTRING = "substring";
 export const TEX_MOB_SCALE_FACTOR = 0.008;
@@ -84,7 +84,9 @@ export class SingleStringMathTex extends SVGMobject {
     this.tex_template = tex_template ?? null;
     this.tex_string = texString;
 
-    const svg_string = texToSvgCached(this._get_modified_expression(texString));
+    const svg_string = texToSvgCached(this._get_modified_expression(texString), {
+      environment: this.tex_environment,
+    });
     (this as unknown as { _svg_string: string | null })._svg_string = svg_string;
     // Use the SVG-mobject cache (as Python's SVGMobject.__init__ does): the
     // first construction of a given expression parses the MathJax SVG, later
@@ -285,7 +287,7 @@ function mathTexCacheKey(texStrings: string[], options: MathTexOptions): string 
     "arg_separator", "tex_environment", "font_size", "color", "stroke_width",
     "fill_color", "fill_opacity", "stroke_color", "stroke_opacity",
     "should_center", "height", "width", "organize_left_to_right",
-    "disable_ligatures", "warn_missing_font",
+    "disable_ligatures", "warn_missing_font", "z_index", "sheen_factor",
   ] as const;
   for (const key of simpleKeys) {
     const value = (options as Record<string, unknown>)[key];
@@ -296,6 +298,12 @@ function mathTexCacheKey(texStrings: string[], options: MathTexOptions): string 
       return null;
     }
   }
+  // Templates and sheen directions are objects (or arrays); their identity
+  // affects the result, so do not reuse a cached MathTex for them.
+  if ((options as Record<string, unknown>).tex_template !== undefined &&
+      (options as Record<string, unknown>).tex_template !== null) return null;
+  if ((options as Record<string, unknown>).sheen_direction !== undefined &&
+      (options as Record<string, unknown>).sheen_direction !== null) return null;
   const substrings = (options as Record<string, unknown>).substrings_to_isolate;
   if (substrings !== undefined && substrings !== null) return null;
   const colorMap = (options as Record<string, unknown>).tex_to_color_map;
@@ -348,11 +356,26 @@ export class MathTex extends SingleStringMathTex {
     substrings.push(...Object.keys(colorMap));
     const braceSplit = { occurred: false };
     const prepared = MathTex._prepare_tex_strings(texStrings, braceSplit);
-    let joined = MathTex._join_tex_strings_with_unique_delimiters(
-      prepared,
-      substrings,
-      arg_separator,
-    );
+    let joined: { joined_string: string; matches: Array<[string, string]> };
+    const singleEnvironment = prepared.length === 1 && substrings.length === 0
+      ? normalizeTexEnvironment(tex_environment, prepared[0] as string)
+      : null;
+    if (singleEnvironment !== null) {
+      // A single `MathTex("a &= b \\\\ c &= d")` is the canonical aligned
+      // form.  Wrapping the *content* in `\cssId` breaks `&`, but wrapping the
+      // environment works: `\cssId{id}{\begin{aligned}...\end{aligned}}`.
+      const id = "unique000";
+      joined = {
+        joined_string: `\\cssId{${id}}{\\begin{${singleEnvironment}}${prepared[0] as string}\\end{${singleEnvironment}}}`,
+        matches: [[prepared[0] as string, id]],
+      };
+    } else {
+      joined = MathTex._join_tex_strings_with_unique_delimiters(
+        prepared,
+        substrings,
+        arg_separator,
+      );
+    }
 
     // NOTE: substring isolation via `\cssId` is *not* transparent to the TeX
     // parser (unlike Python's dvisvgm `\special` raw groups). Isolating a
@@ -368,7 +391,9 @@ export class MathTex extends SingleStringMathTex {
     // their containing parts (see `set_color_by_tex_to_color_map`).
     if (substrings.length > 0 && prepared.length > 0) {
       try {
-        const probeSvg = texToSvgCached(joined.joined_string.trim());
+        const probeSvg = texToSvgCached(joined.joined_string.trim(), {
+          environment: tex_environment,
+        });
         const hasMerror =
           probeSvg.includes("merror") ||
           probeSvg.includes("Missing superscript") ||

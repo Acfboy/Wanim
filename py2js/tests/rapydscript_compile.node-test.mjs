@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { createRuntimeCore } from "../dist/runtime_core.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..");
@@ -624,6 +625,26 @@ await check("await_scene_methods: self.move_camera is auto-awaited", async () =>
     { ...TRUTHY, await_scene_methods: true },
   );
   assert.match(js, /await.*move_camera/);
+});
+
+await check("top-level function kwargs map through __argnames__", async () => {
+  const calls = [];
+  function rotate_vector(vector, angle) {
+    calls.push([vector, angle]);
+    return angle;
+  }
+  const core = createRuntimeCore({
+    wanim: {},
+    np: {},
+    NDArray: class FakeNDArray {},
+  });
+  const wrapped = core.wrapWanimNamespace({ rotate_vector });
+  sandbox.rotate_vector = wrapped.rotate_vector;
+  sandbox.RIGHT = [1, 0, 0];
+  sandbox.PI = Math.PI;
+  const lines = await runPython("print(rotate_vector(RIGHT, angle=PI/2))\n");
+  assert.deepEqual(lines, [String(Math.PI / 2)]);
+  assert.deepEqual(calls, [[[1, 0, 0], Math.PI / 2]]);
 });
 
 console.log(`\n${passed} passed`);
