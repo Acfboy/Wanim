@@ -148,9 +148,13 @@ function size_canvas_for_camera(canvas: HTMLCanvasElement, camera: Camera, pixel
   const cssHeight = camera.pixel_height;
   canvas.width = Math.max(1, Math.round(cssWidth * pixelRatio));
   canvas.height = Math.max(1, Math.round(cssHeight * pixelRatio));
-  if (typeof canvas.style !== "undefined") {
-    if (canvas.style.width === "") canvas.style.width = `${cssWidth}px`;
-    if (canvas.style.height === "") canvas.style.height = `${cssHeight}px`;
+  // Do not write `style.width/height` here: pages commonly constrain the
+  // canvas with `max-width`/`max-height` and `width/height: auto`.  Pinning
+  // both axes to the logical size made those constraints shrink only one axis
+  // (the "squashed" preview).  The intrinsic aspect ratio is preserved by the
+  // backing-store dimensions, and the page CSS owns the display box.
+  if (typeof canvas.style !== "undefined" && canvas.style.aspectRatio === "") {
+    canvas.style.aspectRatio = `${cssWidth} / ${cssHeight}`;
   }
 }
 
