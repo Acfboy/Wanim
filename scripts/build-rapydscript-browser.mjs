@@ -12,7 +12,7 @@
 //   RAPYDSCRIPT_OUT_DIR   where to write rapydscript.js (default: <wanim>/dist)
 //   RAPYDSCRIPT_FORCE     "1" to re-clone from scratch
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, copyFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -95,6 +95,33 @@ function buildCompiler() {
   });
 }
 
+
+/**
+ * The web REPL export bundles tooling and stdlib modules that wanim's compiler
+ * never loads (it calls `compile()` without source maps/treeshaking).  Drop
+ * those entries from the embedded module table; unknown Python imports are
+ * rejected by `preprocess.ts` before the compiler runs.
+ */
+function pruneEmbeddedModules(file) {
+  const source = readFileSync(file, "utf8");
+  const match = /var data = (\{[\s\S]*?\});\n\n\/\/ End embedded modules/.exec(source);
+  if (match === null) return;
+  try {
+    const data = JSON.parse(match[1]);
+    const drop = new Set([
+      "__stdlib__/aes.pyj",
+      "__stdlib__/elementmaker.pyj",
+      "__stdlib__/encodings.pyj",
+      "__stdlib__/gettext.pyj",
+      "__stdlib__/uuid.pyj",
+    ]);
+    for (const key of drop) delete data[key];
+    writeFileSync(file, source.replace(match[0], () => `var data = ${JSON.stringify(data)};\n\n// End embedded modules`));
+  } catch (error) {
+    console.warn(`wanim: could not prune embedded modules (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+
 function exportBrowserCompiler() {
   const tmp = join(cacheDir, ".wanim-export");
   rmSync(tmp, { recursive: true, force: true });
@@ -108,6 +135,7 @@ function exportBrowserCompiler() {
   const out = join(outDir, "rapydscript.js");
   copyFileSync(join(tmp, "rapydscript.js"), out);
   rmSync(tmp, { recursive: true, force: true });
+  pruneEmbeddedModules(out);
   console.log(`wanim: wrote ${out}`);
 }
 
