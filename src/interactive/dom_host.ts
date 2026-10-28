@@ -328,13 +328,18 @@ export class DomInteractiveHost implements InteractiveHost {
 
   pointFromEvent(event: PointerEvent, camera: unknown): number[] {
     const rect = this.canvas.getBoundingClientRect();
-    const width = this.canvas.width || rect.width || 1;
-    const height = this.canvas.height || rect.height || 1;
+    const cam = camera as CameraLike;
+    // `canvas.width` is the backing store, which is DPR-scaled.  The camera
+    // and `pixelToWorld` work in logical pixels, so divide by the logical
+    // width, not by the backing width: otherwise the pointer lands at
+    // `dpr * x - (dpr - 1) * width / 2` and controls cannot be grabbed.
+    const width = cam.pixel_width ?? this.canvas.width ?? rect.width ?? 1;
+    const height = cam.pixel_height ?? this.canvas.height ?? rect.height ?? 1;
     const scaleX = rect.width > 0 ? width / rect.width : 1;
     const scaleY = rect.height > 0 ? height / rect.height : 1;
     const pixelX = (event.clientX - rect.left) * scaleX;
     const pixelY = (event.clientY - rect.top) * scaleY;
-    return this.pixelToWorld(pixelX, pixelY, camera as CameraLike);
+    return this.pixelToWorld(pixelX, pixelY, cam);
   }
 
   /**
@@ -704,8 +709,10 @@ export class DomInteractiveHost implements InteractiveHost {
     if (row === undefined) {
       return { x: canvasRect.left + canvasRect.width / 2, y: canvasRect.top + canvasRect.height / 2 };
     }
-    const scaleX = this.canvas.width > 0 ? canvasRect.width / this.canvas.width : 1;
-    const scaleY = this.canvas.height > 0 ? canvasRect.height / this.canvas.height : 1;
+    const pixelWidth = camera.pixel_width ?? this.canvas.width;
+    const pixelHeight = camera.pixel_height ?? this.canvas.height;
+    const scaleX = pixelWidth > 0 ? canvasRect.width / pixelWidth : 1;
+    const scaleY = pixelHeight > 0 ? canvasRect.height / pixelHeight : 1;
     return {
       x: (row[0] ?? 0) * scaleX + canvasRect.left,
       y: (row[1] ?? 0) * scaleY + canvasRect.top,
@@ -779,8 +786,10 @@ export class DomInteractiveHost implements InteractiveHost {
     if (corners.length < 2) {
       return { left: canvasRect.left + canvasRect.width / 2, top: canvasRect.top + canvasRect.height / 2, width: 0, height: 0 };
     }
-    const scaleX = this.canvas.width > 0 ? canvasRect.width / this.canvas.width : 1;
-    const scaleY = this.canvas.height > 0 ? canvasRect.height / this.canvas.height : 1;
+    const pixelWidth = camera.pixel_width ?? this.canvas.width;
+    const pixelHeight = camera.pixel_height ?? this.canvas.height;
+    const scaleX = pixelWidth > 0 ? canvasRect.width / pixelWidth : 1;
+    const scaleY = pixelHeight > 0 ? canvasRect.height / pixelHeight : 1;
     const x1 = (corners[0]?.[0] ?? 0) * scaleX + canvasRect.left;
     const y1 = (corners[0]?.[1] ?? 0) * scaleY + canvasRect.top;
     const x2 = (corners[1]?.[0] ?? 0) * scaleX + canvasRect.left;
