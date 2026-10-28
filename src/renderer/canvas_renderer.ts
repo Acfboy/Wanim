@@ -501,6 +501,7 @@ export class MJSONCanvasPlayer {
     const fps = options.fps ?? this.document.meta.frame_rate;
     const loop = options.loop ?? true;
     const startedAt = performance.now();
+    let lastIndex = -1;
     let handle: MJSONPlayerHandle;
     const tick = (): void => {
       const elapsed = (performance.now() - startedAt) / 1000;
@@ -519,8 +520,13 @@ export class MJSONCanvasPlayer {
         }
         index %= this.flatFrames.length;
       }
-      this.renderFrame(index);
-      options.onFrame?.(index);
+      // rAF can fire faster than the recorded frame rate; don't redraw (or
+      // re-serialize the display list) when the frame number did not change.
+      if (index !== lastIndex) {
+        this.renderFrame(index);
+        lastIndex = index;
+        options.onFrame?.(index);
+      }
       handle._setRaf(requestAnimationFrame(tick));
     };
     handle = new MJSONPlayerHandle(() => cancelAnimationFrame(handle._getRaf()));

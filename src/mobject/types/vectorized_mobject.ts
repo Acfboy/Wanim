@@ -2438,7 +2438,46 @@ export class VMobject extends Mobject {
         }
       }
     }
-    const attributes = ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas", "stroke_width", "background_stroke_width", "sheen_direction", "sheen_factor"] as const;
+    const colorAttributes = ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"] as const;
+    let colorsInPlace = false;
+    if (alpha !== 1) {
+      // Morphing colours used to allocate three fresh NDArrays per face per
+      // frame.  If the destination already has compatible, non-aliased
+      // storage, lerp it in place; `interpolateArray` still handles the first
+      // frame / exotic dtypes / aliasing cases.
+      const stores: Array<[Float64Array, Float64Array, Float64Array, number]> = [];
+      let canWrite = true;
+      for (const attribute of colorAttributes) {
+        const first = _cContiguousRows(raw1[attribute]);
+        const second = _cContiguousRows(raw2[attribute]);
+        const dest = _cContiguousRows(rawSelf[attribute]);
+        if (
+          first === null || second === null || dest === null ||
+          !(first.data instanceof Float64Array) ||
+          !(second.data instanceof Float64Array) ||
+          !(dest.data instanceof Float64Array) ||
+          first.rowDim !== second.rowDim || first.rowDim !== dest.rowDim ||
+          first.rowCount !== second.rowCount || first.rowCount !== dest.rowCount ||
+          dest.data === first.data || dest.data === second.data
+        ) {
+          canWrite = false;
+          break;
+        }
+        stores.push([first.data, second.data, dest.data, first.rowCount * first.rowDim]);
+      }
+      if (canWrite && stores.length === colorAttributes.length) {
+        for (const [first, second, dest, length] of stores) {
+          for (let index = 0; index < length; index += 1) {
+            dest[index] = (first[index] ?? 0) * (1 - alpha) + (second[index] ?? 0) * alpha;
+          }
+        }
+        bump_mobject_geometry_epoch();
+        colorsInPlace = true;
+      }
+    }
+    const attributes = colorsInPlace
+      ? ["stroke_width", "background_stroke_width", "sheen_direction", "sheen_factor"] as const
+      : ["fill_rgbas", "stroke_rgbas", "background_stroke_rgbas", "stroke_width", "background_stroke_width", "sheen_direction", "sheen_factor"] as const;
     for (const attribute of attributes) {
       const first = raw1[attribute];
       const second = raw2[attribute];

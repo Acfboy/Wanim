@@ -54,7 +54,7 @@ export class MultiCamera extends MovingCamera {
 
   update_sub_cameras(): void {
     for (const imfc of this.image_mobjects_from_cameras) {
-      const [pixel_height = 0, pixel_width = 0] = this.pixel_array.shape.slice(0, 2);
+      const [pixel_height = 0, pixel_width = 0] = this.background.shape.slice(0, 2);
       // NOTE: Python int() truncates toward zero; pixel counts are
       // non-negative here, matching Math.trunc.
       imfc.camera.reset_pixel_shape(

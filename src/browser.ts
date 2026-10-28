@@ -191,7 +191,9 @@ export async function render_scene_to_canvas(
   }
   const pixelRatio = resolve_pixel_ratio(options.pixelRatio);
   size_canvas_for_camera(canvas, camera, pixelRatio);
-  const ctx = canvas.getContext("2d");
+  // Opaque backdrops can skip per-pixel alpha compositing; transparent embeds
+  // (background_opacity < 1) keep the default RGBA context.
+  const ctx = canvas.getContext("2d", { alpha: camera.background_opacity < 1 });
   if (ctx === null) throw new Error("2d canvas context unavailable");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = backgroundCss({
@@ -380,7 +382,7 @@ export async function render_presentation_to_canvas(
     const camera = new cameraClass();
     if (options.background !== undefined) camera.background_color = options.background;
     size_canvas_for_camera(canvas, camera, pixelRatio);
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: camera.background_opacity < 1 });
     if (ctx === null) throw new Error("2d canvas context unavailable");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = backgroundCss({

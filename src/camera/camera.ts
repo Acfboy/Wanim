@@ -103,7 +103,12 @@ export class Camera {
   cairo_line_width_multiple: number;
   use_z_index: boolean;
   background!: NDArray;
-  pixel_array!: NDArray;
+  /**
+   * Pixel buffer, allocated lazily.  The realtime Canvas/WebGL paths never read
+   * it, so eagerly copying the full background into every camera wasted ~8 MB
+   * per 1080p camera (and `render_scene_to_canvas` constructs two).
+   */
+  private _pixel_array: NDArray | undefined;
   pixel_height: number;
   pixel_width: number;
   frame_rate: number;
@@ -234,6 +239,17 @@ export class Camera {
     this.background = cachedBackground(height, width, this.n_channels, rgba);
   }
 
+  get pixel_array(): NDArray {
+    if (this._pixel_array === undefined) {
+      this._pixel_array = (asArray(this.background) as NDArray).copy() as NDArray;
+    }
+    return this._pixel_array;
+  }
+
+  set pixel_array(value: NDArray) {
+    this._pixel_array = value;
+  }
+
   get_image(pixel_array?: unknown): unknown {
     if (pixel_array === undefined || pixel_array === null) {
       pixel_array = this.pixel_array;
@@ -254,13 +270,13 @@ export class Camera {
   set_pixel_array(pixel_array: unknown, convert_from_floats = false): void {
     const converted = convert_from_floats ? this.convert_pixel_array(pixel_array) : asArray(pixel_array);
     if (
-      this.pixel_array !== undefined &&
-      this.pixel_array !== null &&
-      shapesEqual((this.pixel_array as NDArray).shape, (converted as NDArray).shape)
+      this._pixel_array !== undefined &&
+      this._pixel_array !== null &&
+      shapesEqual(this._pixel_array.shape, (converted as NDArray).shape)
     ) {
-      copyto(this.pixel_array as never, converted as never);
+      copyto(this._pixel_array as never, converted as never);
     } else {
-      this.pixel_array = (converted as NDArray).copy();
+      this._pixel_array = (converted as NDArray).copy() as NDArray;
     }
   }
 
@@ -283,7 +299,11 @@ export class Camera {
   }
 
   reset(): this {
-    this.set_pixel_array(this.background);
+    // Allocate only if a previous caller already owns a buffer; otherwise the
+    // lazy getter materializes it on first access.
+    if (this._pixel_array !== undefined) {
+      copyto(this._pixel_array as never, this.background as never);
+    }
     return this;
   }
 
