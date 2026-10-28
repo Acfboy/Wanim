@@ -431,6 +431,21 @@ function projectImageCorners(camera: CanvasCamera, imageMobject: AbstractImageMo
  * `ctx`), this composes an absolute device-space matrix so 3D-projected quads
  * work as well.
  */
+/**
+ * Logical-pixel -> backing-store scale for the canvas.  Image and point-cloud
+ * painters reset the transform and work in camera/device coordinates; on a
+ * HiDPI canvas they must still fill the backing store instead of drawing into
+ * its top-left logical-sized corner.
+ */
+function backingScale(ctx: CanvasRenderingContext2D, camera: CanvasCamera): [number, number] {
+  const width = ctx.canvas?.width ?? 0;
+  const height = ctx.canvas?.height ?? 0;
+  return [
+    width > 0 && camera.pixel_width > 0 ? width / camera.pixel_width : 1,
+    height > 0 && camera.pixel_height > 0 ? height / camera.pixel_height : 1,
+  ];
+}
+
 export function drawImageMobject(
   ctx: CanvasRenderingContext2D,
   camera: CanvasCamera,
@@ -443,7 +458,8 @@ export function drawImageMobject(
   const [ul, ur, dl] = [corners[0]!, corners[1]!, corners[2]!];
   const { width, height } = source;
   ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const [ratioX, ratioY] = backingScale(ctx, camera);
+  ctx.setTransform(ratioX, 0, 0, ratioY, 0, 0);
   ctx.transform(
     ((ur[0] ?? 0) - (ul[0] ?? 0)) / width,
     ((ur[1] ?? 0) - (ul[1] ?? 0)) / width,
@@ -678,7 +694,8 @@ export function drawPointCloud(
   layer.dirty = dirty;
   // The layer is device-space; `ctx` still carries the camera transform.
   ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const [ratioX, ratioY] = backingScale(ctx, camera);
+  ctx.setTransform(ratioX, 0, 0, ratioY, 0, 0);
   ctx.drawImage(layer.canvas, ...dirty, ...dirty);
   ctx.restore();
 }
