@@ -27,8 +27,22 @@ const PATCH = resolve(wanimRoot, "py2js", "patches", "rapydscript-ng.patch");
 const cacheDir = resolve(process.env.RAPYDSCRIPT_DIR ?? join(wanimRoot, ".rapydscript-ng"));
 const outDir = resolve(process.env.RAPYDSCRIPT_OUT_DIR ?? join(wanimRoot, "dist"));
 
-function git(args) {
-  execFileSync("git", ["-C", cacheDir, ...args], { stdio: "inherit" });
+function git(args, options = {}) {
+  execFileSync("git", ["-C", cacheDir, ...args], { stdio: "inherit", ...options });
+}
+
+/** True when the pinned commit is already available in the local checkout. */
+function hasPinnedCommit() {
+  try {
+    execFileSync(
+      "git",
+      ["-C", cacheDir, "cat-file", "-e", `${RAPYDSCRIPT_COMMIT}^{commit}`],
+      { stdio: "ignore" },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function ensureCheckout() {
@@ -38,14 +52,33 @@ function ensureCheckout() {
   if (!existsSync(join(cacheDir, ".git"))) {
     console.log(`wanim: cloning rapydscript-ng -> ${cacheDir}`);
     rmSync(cacheDir, { recursive: true, force: true });
-    execFileSync("git", ["clone", RAPYDSCRIPT_REPO, cacheDir], { stdio: "inherit" });
+    execFileSync("git", ["clone", RAPYDSCRIPT_REPO, cacheDir], {
+      stdio: "inherit",
+      timeout: 120_000,
+    });
   }
-  if (process.env.RAPYDSCRIPT_SKIP_FETCH !== "1") {
+  // Fetching on every build was the source of a multi-minute silent stall:
+  // the pinned commit is normally already in the checkout, so only touch the
+  // network when it is actually missing.  The timeout keeps a blocked GitHub
+  // from hanging `build:demo` forever.
+  if (!hasPinnedCommit()) {
+    if (process.env.RAPYDSCRIPT_SKIP_FETCH === "1") {
+      throw new Error(
+        `wanim: pinned rapydscript commit ${RAPYDSCRIPT_COMMIT} is missing from ${cacheDir}; ` +
+          "run without RAPYDSCRIPT_SKIP_FETCH=1 once to fetch it.",
+      );
+    }
+    console.log(`wanim: fetching pinned rapydscript commit ${RAPYDSCRIPT_COMMIT.slice(0, 10)}…`);
     try {
-      git(["fetch", "--quiet", "origin", RAPYDSCRIPT_COMMIT]);
+      git(["fetch", "--quiet", "origin", RAPYDSCRIPT_COMMIT], { timeout: 60_000 });
     } catch {
-      // Offline: fall through to the checkout below, which fails loudly if the
-      // pinned commit is not already present in the local checkout.
+      // Fall through: the clear error below beats a silent multi-minute hang.
+    }
+    if (!hasPinnedCommit()) {
+      throw new Error(
+        `wanim: could not fetch pinned rapydscript commit ${RAPYDSCRIPT_COMMIT}; ` +
+          `check network access to ${RAPYDSCRIPT_REPO} or set RAPYDSCRIPT_DIR to a prepared checkout.`,
+      );
     }
   }
   git(["checkout", "--force", "--detach", RAPYDSCRIPT_COMMIT]);
