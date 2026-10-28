@@ -31,7 +31,8 @@ const MATHJAX_PATTERN =
   /\b(?:MathTex|SingleStringMathTex|Tex|BulletedList|Title|DecimalNumber|Integer|Variable|Matrix|DecimalMatrix|IntegerMatrix|MobjectMatrix|Table|DecimalTable|IntegerTable|MathTable|Brace|BraceBetweenPoints|BraceLabel|BraceText|Label|LabeledLine|LabeledArrow|LabeledPolygram|get_axis_labels|get_coordinate_labels|get_graph_label|include_numbers|numbers_to_include|InputDecimalNumber|InputInteger|SampleSpace)\b/;
 
 /** Python identifiers that build Pango/opentype text (not TeX). */
-const FONTS_PATTERN = /\b(?:Text|MarkupText|Paragraph|BraceText|register_font)\b/;
+const FONTS_PATTERN =
+  /\b(?:Text|MarkupText|Paragraph|BraceText|register_font|Slider|Switch|Checkbox|Toggle|Button|add_slider|add_switch|add_checkbox|add_toggle|add_button)\b/;
 
 /** Detect which optional modules `source` is likely to need. */
 export function detectPreloadNeeds(source: string): PreloadNeeds {
