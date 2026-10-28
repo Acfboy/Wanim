@@ -423,135 +423,14 @@ export function init_alignments(alignments: string | null | undefined, num: numb
 // unbounded attribute enumeration (which previously OOM'd vitest's
 // pretty-printer).  Hoisted to module scope: a fresh Set per Mobject creation
 // dominated `copy()`/constructor profiles.
-const PROTOCOL_PROPS = new Set([
-  "then",
-  "asymmetricMatch",
-  "nodeType",
-  "tagName",
-  "$$typeof",
-  "toJSON",
-  "@@iterator",
-  "@@toStringTag",
-  "size",
-]);
-
 /**
- * Escape hatch from the Mobject Proxy.  Reading it returns the raw (un-proxied)
- * target object so internal hot paths (notably `copy_with_seen`) can enumerate
- * own properties without paying the `get` trap once per property.  Not a public
- * API and not enumerable (it only resolves through the trap).
- */
-const RAW_MOBJECT_TARGET = Symbol("wanim.raw_mobject_target");
-
-/** Raw/un-proxied target for a Mobject, or the value itself if it is not proxied. */
-function rawMobjectTarget(value: Mobject): Mobject {
-  const raw = (value as unknown as { [RAW_MOBJECT_TARGET]?: Mobject })[RAW_MOBJECT_TARGET];
-  return raw ?? value;
-}
-
-/**
- * Internal escape hatch from the Mobject Proxy for per-frame hot paths.
- *
- * Reading/writing known-existing fields through the proxy pays the `get`/`set`
- * (and `has`) traps on every access; with thousands of faces per frame that
- * dominates `Transform` playback.  The raw target exposes the same values
- * (accessors run with the target as receiver), so hot loops use this after a
- * single trap.  Only for fields known to exist: unlike the proxy, raw reads
- * of missing attributes return `undefined` instead of raising AttributeError.
+ * Kept for hot paths that used to unwrap the Mobject Proxy.  Mobjects are now
+ * plain objects, so this is an identity helper (and still documents intent).
  *
  * @internal
  */
 export function _rawMobject(value: Mobject): Mobject {
-  return rawMobjectTarget(value);
-}
-
-function createMobjectProxy(target: Mobject): Mobject {
-  return new Proxy(target, {
-    get: (object, property, receiver) => {
-      if (property === RAW_MOBJECT_TARGET) return object;
-      if (property in object || typeof property === "symbol") return Reflect.get(object, property, receiver);
-      // NOTE (error 373): rapydscript's `ρσ_interpolate_kwargs` probes
-      // `f.__argnames__` (and `__handles_kwarg_interpolation__`) on any
-      // callee via a plain attribute read. Mobject instances are Proxies
-      // that raise AttributeError for unknown attributes, so passing a
-      // builder/Mobject through that probe threw
-      // `VGroup object has no attribute '__argnames__'` (e.g.
-      // `bunch.animate(run_time=1.5)` where `bunch.animate` is a callable
-      // builder Proxy). Dunders that are not real members must resolve to
-      // `undefined` (like a plain JS function without the metadata) instead
-      // of throwing, so the kwargs bridge takes its no-mapping path.
-      if (typeof property === "string" && property.startsWith("__")) return undefined;
-      if (property === "toJSON") {
-        const typed = object as unknown as {
-          get_num_points?: () => number;
-          get_center?: () => number[];
-          submobjects?: unknown[];
-        };
-        return () => ({
-          name: (object as unknown as { name?: unknown }).name,
-          type: object.constructor.name,
-          num_points: typeof typed.get_num_points === "function" ? typed.get_num_points() : undefined,
-          // Include the center so callers that serialize mobjects (e.g. the
-          // render hash) still observe position changes.
-          center: typeof typed.get_center === "function" ? [...typed.get_center()] : undefined,
-          submobjects: Array.isArray(typed.submobjects) ? typed.submobjects.length : undefined,
-        });
-      }
-      if (typeof property === "string" && property.startsWith("get_")) {
-        return () => {
-          const name = property.slice(4);
-          if (!(name in object)) {
-            const error = new Error(`${object.constructor.name} object has no attribute '${name}'`);
-            error.name = "AttributeError";
-            throw error;
-          }
-          return (object as unknown as Record<string, unknown>)[name];
-        };
-      }
-      if (typeof property === "string" && property.startsWith("set_")) {
-        return (value: unknown) => {
-          (object as unknown as Record<string, unknown>)[property.slice(4)] = value;
-          return receiver;
-        };
-      }
-      if (PROTOCOL_PROPS.has(property) || (typeof property === "string" && property.startsWith("@@"))) return undefined;
-      // Array-like view for rapydscript `f(*mobject)` splats, which compile to
-      // `f.apply(thisArg, mobject)` and read `length` plus numeric indices
-      // natively. Mirrors `__iter__` order (self first when it has points,
-      // then submobjects), consistent with `__len__`/`__getitem__`.
-      if (property === "length") return object.__len__();
-      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) {
-        const index = Number(property);
-        const count = object.__len__();
-        if (index < count) {
-          if (object.has_no_points()) return object.submobjects[index];
-          return index === 0 ? receiver : object.submobjects[index - 1];
-        }
-        return undefined;
-      }
-      const error = new Error(`${object.constructor.name} object has no attribute '${String(property)}'`);
-      error.name = "AttributeError";
-      throw error;
-    },
-    // NOTE: native `Array.prototype.concat` spreads concat-spreadable objects
-    // via `HasProperty` (not `Get`): without this trap `'0' in mobject` is
-    // false, so a chained `a.concat(b).concat(c)` (rapydscript `f(*a, *b,
-    // *c)`) keeps the first splat (custom `Mobject.concat`, iterator-based)
-    // but turns every later Mobject splat into holes. Report the same
-    // array-like view (`length` + numeric indices mirroring `__iter__`) here.
-    has: (object, property) => {
-      if (property === "length") return true;
-      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) {
-        try {
-          return Number(property) < object.__len__();
-        } catch {
-          return false;
-        }
-      }
-      return Reflect.has(object, property);
-    },
-    set: (object, property, value, receiver) => Reflect.set(object, property, value, receiver),
-  });
+  return value;
 }
 
 export type BackgroundRectangleFactory = (
@@ -759,7 +638,6 @@ export class Mobject {
     this.reset_points();
     this.generate_points();
     Mobject.prototype.init_colors.call(this);
-    return createMobjectProxy(this);
   }
 
   static set_default(kwargs: Record<string, unknown> = {}): void {
@@ -1081,12 +959,8 @@ export class Mobject {
   copy_with_seen(seen: Map<object, unknown>): this {
     if (seen.has(this)) return seen.get(this) as this;
     const raw = Object.create(Object.getPrototypeOf(this)) as this;
-    const result = createMobjectProxy(raw);
-    seen.set(this, result);
-    // Enumerate the raw target: `this` is the Proxy, and `Object.entries(this)`
-    // would invoke the get trap once per property (dozens of times per mobject,
-    // for every mobject in a copy family).
-    const source = rawMobjectTarget(this) as unknown as Record<string, unknown>;
+    seen.set(this, raw);
+    const source = this as unknown as Record<string, unknown>;
     const rawTarget = raw as unknown as Record<string, unknown>;
     const keys = Object.keys(source);
     for (let index = 0; index < keys.length; index += 1) {
@@ -1103,15 +977,14 @@ export class Mobject {
       }
     }
     raw.original_id = String(Math.random());
-    return result as this;
+    return raw;
   }
 
   __deepcopy__(clone_from_id: Map<object, unknown> = new Map()): this {
     if (clone_from_id.has(this)) return clone_from_id.get(this) as this;
     const raw = Object.create(Object.getPrototypeOf(this)) as this;
-    const result = createMobjectProxy(raw);
-    clone_from_id.set(this, result);
-    const source = rawMobjectTarget(this) as unknown as Record<string, unknown>;
+    clone_from_id.set(this, raw);
+    const source = this as unknown as Record<string, unknown>;
     const rawTarget = raw as unknown as Record<string, unknown>;
     const keys = Object.keys(source);
     for (let index = 0; index < keys.length; index += 1) {
@@ -1121,7 +994,7 @@ export class Mobject {
       else rawTarget[key] = cloneValue(value, clone_from_id);
     }
     raw.original_id = String(Math.random());
-    return result as this;
+    return raw;
   }
 
   generate_target(useDeepcopy = false): Mobject | null {
@@ -1294,13 +1167,13 @@ export class Mobject {
 
   // NOTE: Python `get_width()` / `get_height()` / `get_depth()` (mirrors of
   // the `width` / `height` / `depth` properties).  They must exist as real
-  // prototype methods, not only via the Mobject Proxy `get_*` fallback:
-  // rapydscript subclasses of wanim classes (e.g. `class BitRow(VGroup)`)
-  // are plain objects (the native `__init__` does `Object.assign(this,
-  // new Ctor(...))`), so they never go through the Proxy `get` trap and
-  // `rows[0].get_height()` on such an instance fails with
-  // `TypeError: ...get_height is not a function` (error 349).  Same reason
-  // `set_width` / `set_height` / `set_depth` below are real methods.
+  // prototype methods, not only via the dynamic `get_*` layer: rapydscript
+  // subclasses of wanim classes (e.g. `class BitRow(VGroup)`) are plain
+  // objects (the native `__init__` does `Object.assign(this,
+  // new Ctor(...))`), so `rows[0].get_height()` on such an instance would
+  // otherwise fail with `TypeError: ...get_height is not a function`
+  // (error 349).  Same reason `set_width` / `set_height` / `set_depth` below
+  // are real methods.
   get_width(): number { return this.width; }
   get_height(): number { return this.height; }
   get_depth(): number { return this.depth; }
@@ -1383,7 +1256,7 @@ export class Mobject {
   // `width`/`height`/`depth` properties plus `scale_to_fit_*` /
   // `stretch_to_fit_*`. Keep the legacy names so 3b1b dataset scenes keep
   // working (e.g. `mu_box.set_width(1.1, stretch=True)`). Without explicit
-  // methods the Mobject Proxy `set_*` fallback would silently ignore the
+  // methods the dynamic `set_*` fallback would silently ignore the
   // `stretch` flag and always scale.
   set_width(width: number, stretch: boolean | Record<string, unknown> = false, about_point?: readonly number[] | NDArray | null, about_edge?: readonly number[] | NDArray | null, kwargs?: Record<string, unknown>): this {
     const opts = normalizeMatchKwargs(kwargs, stretch, about_point, about_edge);
@@ -2197,6 +2070,25 @@ export class Mobject {
 
   get_start(): NDArray { return array(this._get_start_flat()) as NDArray; }
   get_end(): NDArray { return array(this._get_end_flat()) as NDArray; }
+
+  /**
+   * Compatibility accessor for the dynamic `get_length()` the Proxy used to
+   * synthesize from the `length` property (e.g. StealthTip).  Classes with a
+   * real `length` override still win.
+   */
+  get_length(): number {
+    if (!("length" in this)) {
+      const error = new Error(`${this.constructor.name} object has no attribute 'length'`);
+      error.name = "AttributeError";
+      throw error;
+    }
+    return Number((this as unknown as { length: number }).length);
+  }
+
+  set_length(value: number): this {
+    (this as unknown as { length: number }).length = value;
+    return this;
+  }
   get_midpoint(): NDArray { return this.point_from_proportion(0.5); }
 
   /**
@@ -3081,13 +2973,6 @@ export class Mobject {
     yield* this.__iter__();
   }
 
-  /** Let native `Array.prototype.concat` spread Mobjects (e.g. rapydscript
-   * `[...]` splats compiling to `[].concat(mobject)`), mirroring `__iter__`
-   * order via the Proxy-provided `length`/indices. */
-  get [Symbol.isConcatSpreadable](): boolean {
-    return true;
-  }
-
   __len__(): number { return this.submobjects.length + (this.has_points() ? 1 : 0); }
 
   /** Python `x in mobject` membership (``in``/``not in`` operators).
@@ -3097,10 +2982,8 @@ export class Mobject {
    * default identity equality, hence an identity scan over `__iter__` order
    * (self first when it has points, then submobjects).
    *
-   * This also keeps rapydscript's `ρσ_in(val, arr)` working on proxied
-   * mobjects: it probes `typeof arr.__contains__`, and reading any other
-   * missing attribute through the Mobject proxy raises `AttributeError`
-   * instead of yielding `undefined`. */
+   * This also keeps rapydscript's `ρσ_in(val, arr)` working: it probes
+   * `typeof arr.__contains__`, which is now a real prototype method. */
   __contains__(value: unknown): boolean {
     for (const item of this.__iter__()) {
       if (item === value) return true;
@@ -3286,8 +3169,8 @@ export class Mobject {
     // for the common case.
     const isStraightPath = path_func === null || path_func === undefined || path_func === straight_path();
     if (isStraightPath && typeof alpha === "number") {
-      // Raw targets: one proxy trap total instead of one per field access
-      // below (see `_rawMobject`).  Slot reads: no per-face view objects.
+      // Raw targets: identity now (the Proxy is gone); slot reads avoid
+      // per-face view objects.
       const raw1 = _rawMobject(mobject1);
       const raw2 = _rawMobject(mobject2);
       const rawSelf = _rawMobject(this);
@@ -3375,6 +3258,23 @@ export class Mobject {
 
   toString(): string { return this.name; }
   valueOf(): string { return this.toString(); }
+
+  /** Stable summary for `JSON.stringify` / render hashes (formerly Proxy-only). */
+  toJSON(): {
+    name: unknown;
+    type: string;
+    num_points: number | undefined;
+    center: number[] | undefined;
+    submobjects: number | undefined;
+  } {
+    return {
+      name: this.name,
+      type: this.constructor.name,
+      num_points: typeof this.get_num_points === "function" ? this.get_num_points() : undefined,
+      center: typeof this.get_center === "function" ? [...(this.get_center() as unknown as number[])] : undefined,
+      submobjects: Array.isArray(this.submobjects) ? this.submobjects.length : undefined,
+    };
+  }
 }
 
 // Explicit Python parameter names for `arrange`/`arrange_in_grid`, surviving
@@ -3627,7 +3527,7 @@ export class _AnimationBuilder {
         // `ρσ_interpolate_kwargs.call(bunch, bunch.animate, [bag])`, which
         // reads `f.__argnames__` directly. Routing that probe through
         // `__getattr__` threw `VGroup object has no attribute
-        // '__argnames__'`. Like the Mobject Proxy above, unknown dunders
+        // '__argnames__'`. Like the removed Mobject Proxy, unknown dunders
         // resolve to `undefined` so the kwargs bridge takes its no-mapping
         // path (`f.apply(this, args)`). `then` does the same to keep the
         // builder from looking like a Promise. `apply`/`bind` are restored

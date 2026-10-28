@@ -506,12 +506,12 @@ describe("Mobject.__getattr__", () => {
     expect(Reflect.get(mobject, "bar")).toEqual({ value: 7 });
   });
 
-  it("supports the same compatibility layer through property access", () => {
+  it("no longer intercepts arbitrary JavaScript property reads", () => {
+    // Removing the per-object Proxy is deliberate: Python-side reads go
+    // through the bridge's getDot()/__getattr__ fallback, while plain JS reads
+    // stay plain JS (and do not allocate a trap per Mobject).
     const mobject = new Mobject();
-    const dynamicGetter = Reflect.get(mobject, "get_answer") as () => unknown;
-    const dynamicSetter = Reflect.get(mobject, "set_answer") as (value: unknown) => Mobject;
-    expect(dynamicSetter(42) === mobject).toBe(true);
-    expect(dynamicGetter()).toBe(42);
+    expect(Reflect.get(mobject, "get_answer")).toBeUndefined();
   });
 
   it("raises Python's AttributeError for an unknown name", () => {

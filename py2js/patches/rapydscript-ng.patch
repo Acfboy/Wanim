@@ -90,7 +90,7 @@ index 7c28645..e1ea319 100644
  
  
 diff --git a/src/baselib-builtins.pyj b/src/baselib-builtins.pyj
-index fc6322b..34b91bc 100644
+index fc6322b..98d9d6d 100644
 --- a/src/baselib-builtins.pyj
 +++ b/src/baselib-builtins.pyj
 @@ -7,7 +7,47 @@
@@ -168,6 +168,35 @@ index fc6322b..34b91bc 100644
      if jstype(val) is 'number':
          ans = val
      else:
+@@ -237,6 +289,15 @@ def ρσ_getattr(obj, name, defval):
+             raise AttributeError('The attribute ' + name + ' is not present')
+         return defval
+     if ret is undefined and not v'(name in obj)':
++        # wanim: Mobjects are plain objects, so preserve Python's __getattr__
++        # protocol for dynamic get_*/set_* and custom __getattr__ hooks.
++        if jstype(obj.__getattr__) is 'function':
++            try:
++                return obj.__getattr__(name)
++            except:
++                if defval is undefined:
++                    raise
++                return defval
+         if defval is undefined:
+             raise AttributeError('The attribute ' + name + ' is not present')
+         ret = defval
+@@ -248,7 +309,11 @@ def ρσ_setattr(obj, name, value):
+ 
+ 
+ def ρσ_hasattr(obj, name):
+-    return v'name in obj'
++    try:
++        ρσ_getattr(obj, name)
++        return True
++    except:
++        return False
+ 
+ ρσ_len = (def ():
+     def len(obj):
 diff --git a/src/baselib-internal.pyj b/src/baselib-internal.pyj
 index e0ec495..ed23bcf 100644
 --- a/src/baselib-internal.pyj
@@ -654,10 +683,10 @@ index a16673a..10a6703 100644
  def print_getattr(self, output, skip_expression):  # AST_Dot
 +    expr = self.expression
 +    p = output.parent()
-+    # A call binds `this` on its own (`square.scale(1.5)`) and an assignment
-+    # target has to stay an lvalue (`square.x = ...`), so only plain reads are
-+    # routed through the runtime helper.
-+    is_callee = is_node_type(p, AST_BaseCall) and p.expression is self
++    # Assignment targets have to stay lvalues (`square.x = ...`); every other
++    # read, including a callee (`square.scale(1.5)`), is routed through the
++    # runtime helper so attribute fallbacks (AttributeError, dynamic get_*)
++    # work without a per-Mobject Proxy.
 +    # `output._in_lvalue` covers targets printed via `output.assign` (tuple
 +    # unpacking `r, self.x = ...`, loop targets), where the direct parent is
 +    # not the `AST_Assign` itself, plus dots nested inside a larger target
@@ -667,7 +696,7 @@ index a16673a..10a6703 100644
 +        or output._in_lvalue > 0
 +    )
 +    if (output.options.operator_overloading and not skip_expression
-+            and not is_callee and not is_lvalue):
++            and not is_lvalue):
 +        # Route value/reference reads through ρσ_getdot so a bound Mobject
 +        # method read (`ApplyMethod(square.scale, ...)`, updaters) comes back
 +        # as a Python bound method carrying `__self__`/`__func__`.  Non-function

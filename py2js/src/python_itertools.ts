@@ -148,7 +148,7 @@ function isNone(value: Any): boolean {
  * Plain arrays (rapydscript lists/tuples) are copied; strings split into
  * chars (like CPython iteration); anything with `Symbol.iterator` (NDArrays,
  * wanim Mobjects/VGroups, generators) is spread; otherwise a numeric
- * `length` plus indexing is used (the Mobject Proxy array-like view).
+ * `length` plus indexing is used (plain array-likes).
  */
 function toArray(iterable: Any, fn: string): Any[] {
   if (Array.isArray(iterable)) return iterable.slice();

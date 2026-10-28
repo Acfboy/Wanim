@@ -647,4 +647,20 @@ await check("top-level function kwargs map through __argnames__", async () => {
   assert.deepEqual(calls, [[[1, 0, 0], Math.PI / 2]]);
 });
 
+await check("attribute callees are routed through getdot without a Mobject Proxy", async () => {
+  const js = await compilePython(
+    [
+      "x = m.get_answer()",
+      "y = m.width",
+      "m.width = 3",
+      "",
+    ].join("\n"),
+    { operator_overloading: true },
+  );
+  assert.match(js, /ρσ_getdot\(m, "get_answer"\)\(\)/);
+  assert.match(js, /ρσ_getdot\(m, "width"\)/);
+  // Assignment targets stay lvalues, not helper calls.
+  assert.match(js, /m\.width = 3/);
+});
+
 console.log(`\n${passed} passed`);

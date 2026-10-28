@@ -40,11 +40,13 @@ function ensureCheckout() {
     rmSync(cacheDir, { recursive: true, force: true });
     execFileSync("git", ["clone", RAPYDSCRIPT_REPO, cacheDir], { stdio: "inherit" });
   }
-  try {
-    git(["fetch", "--quiet", "origin", RAPYDSCRIPT_COMMIT]);
-  } catch {
-    // Offline: fall through to the checkout below, which fails loudly if the
-    // pinned commit is not already present in the local checkout.
+  if (process.env.RAPYDSCRIPT_SKIP_FETCH !== "1") {
+    try {
+      git(["fetch", "--quiet", "origin", RAPYDSCRIPT_COMMIT]);
+    } catch {
+      // Offline: fall through to the checkout below, which fails loudly if the
+      // pinned commit is not already present in the local checkout.
+    }
   }
   git(["checkout", "--force", "--detach", RAPYDSCRIPT_COMMIT]);
   // Drop the previous patch (if any) so it can be applied cleanly every time.

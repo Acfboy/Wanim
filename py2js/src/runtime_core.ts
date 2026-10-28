@@ -2356,9 +2356,8 @@ export function createRuntimeCore(deps: RuntimeDeps) {
     if (Array.isArray(iterable)) return [...iterable].reverse();
     if (iterable !== null && iterable !== undefined) {
       const obj = iterable as Any;
-      // NOTE: wanim `Mobject`s are Proxies whose `get` trap throws
-      // `AttributeError` for absent attributes (see `createMobjectProxy`), so
-      // dunders must be probed with `in` (the `has` trap), never read blindly.
+      // NOTE: wanim Mobjects are plain objects now; dunders are still probed
+      // with `in` so a missing method is not read as `undefined`.
       const dunder = (name: string): Any => {
         try {
           if (
@@ -2390,9 +2389,9 @@ export function createRuntimeCore(deps: RuntimeDeps) {
         const items = obj instanceof Map ? [...obj.keys()] : [...(obj as Iterable<Any>)];
         return items.reverse();
       }
-      // Sequence-protocol fallback (`__len__` + `__getitem__`); `length` covers
-      // the Mobject Proxy's array-like view (`f(*mobject)` splats, see
-      // `createMobjectProxy`) and plain array-likes rapydscript cannot see.
+      // Sequence-protocol fallback (`__len__` + `__getitem__`); `length`
+      // covers plain array-likes rapydscript cannot see.  Mobjects iterate via
+      // `Symbol.iterator`, so the Proxy array-like view is no longer needed.
       const lenMethod = dunder("__len__");
       let len: Any;
       try {
@@ -4024,6 +4023,14 @@ export function createRuntimeCore(deps: RuntimeDeps) {
    */
   const dotCache = new WeakMap<Any, Map<string, { value: Any; bound: Any }>>();
 
+  // Probe-only names that must resolve to `undefined` on a Mobject instead of
+  // raising AttributeError (JSON/vitest/framework introspection).  The old
+  // Mobject Proxy handled these in its `get` trap.
+  const mobjectProtocolProps = new Set([
+    "then", "asymmetricMatch", "nodeType", "tagName", "$$typeof", "toJSON",
+    "@@iterator", "@@toStringTag", "size",
+  ]);
+
   function getDot(obj: Any, name: string): Any {
     const value = (obj as Any)[name];
     if ((value === undefined || value === null) && (name === "real" || name === "imag")) {
@@ -4038,6 +4045,30 @@ export function createRuntimeCore(deps: RuntimeDeps) {
       } catch {
         /* fall through to the raw (undefined) value */
       }
+    }
+    if (
+      value === undefined &&
+      obj !== null && obj !== undefined &&
+      typeof obj === "object" &&
+      isMobjectLike(obj) &&
+      !(name in (obj as object))
+    ) {
+      // Mobjects are plain objects now; reproduce the old Proxy fallbacks at
+      // the Python attribute-read boundary.  `__getattr__` implements the
+      // dynamic get_*/set_* helpers and raises AttributeError for unknown
+      // names; `length`/indices keep array-like splat compatibility.
+      if (name.startsWith("__") || name.startsWith("@@") || mobjectProtocolProps.has(name)) return undefined;
+      if (name === "length") return (obj as Any).__len__();
+      if (/^(0|[1-9]\d*)$/.test(name)) {
+        const index = Number(name);
+        if (index < (obj as Any).__len__()) {
+          if ((obj as Any).has_no_points()) return (obj as Any).submobjects[index];
+          return index === 0 ? obj : (obj as Any).submobjects[index - 1];
+        }
+        return undefined;
+      }
+      const attr = (obj as Any).__getattr__;
+      if (typeof attr === "function") return attr.call(obj, name);
     }
     if (typeof value !== "function") return value;
     if (obj === null || obj === undefined) return value;

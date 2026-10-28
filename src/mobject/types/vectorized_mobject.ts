@@ -2404,9 +2404,8 @@ export class VMobject extends Mobject {
   }
 
   interpolate_color(mobject1: VMobject, mobject2: VMobject, alpha: number): this {
-    // Raw targets: one proxy trap per mobject instead of one per attribute
-    // access below (24+ traps per face per frame otherwise; see `_rawMobject`).
-    // All seven attributes always exist on VMobjects, so raw access is exact.
+    // Raw targets: identity now (the Mobject Proxy is gone).  All seven
+    // attributes always exist on VMobjects, so direct access is exact.
     const raw1 = _rawMobject(mobject1) as unknown as Record<string, unknown>;
     const raw2 = _rawMobject(mobject2) as unknown as Record<string, unknown>;
     const rawSelf = _rawMobject(this) as unknown as Record<string, unknown>;
@@ -3365,9 +3364,9 @@ export class DashedVMobject extends VMobject {
     // tip, leading to many overlapping arrowheads. Pop tips from the working
     // copy and re-attach them only once after the dashes are created.
     let tips: VMobject | null = null;
-    // NOTE: mirrors Python `hasattr(vmobject, "pop_tips")`. The Mobject proxy
-    // throws AttributeError on plain property reads, so use `in` (the `has`
-    // trap) instead of reading the property directly.
+    // NOTE: mirrors Python `hasattr(vmobject, "pop_tips")`.  Use `in` so a
+    // missing method is not read as `undefined`; this also works for the
+    // dynamic `get_*` layer.
     if ("pop_tips" in (working as unknown as Record<string, unknown>)) {
       const maybe_pop_tips = (working as unknown as { pop_tips?: () => VGroup }).pop_tips;
       if (typeof maybe_pop_tips === "function") {

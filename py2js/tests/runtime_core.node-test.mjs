@@ -1237,4 +1237,37 @@ check("subclass constructors do not inherit the parent's __argnames__", () => {
   assert.deepEqual(instance.options.start, [-2, 0, 0]);
 });
 
+check("getDot reproduces Mobject get_/set_/AttributeError fallbacks without a Proxy", () => {
+  class FakeMobject {
+    constructor() {
+      this.answer = 0;
+      this.submobjects = [{}, {}];
+    }
+    has_no_points() { return false; }
+    __len__() { return 2; }
+    __getattr__(name) {
+      if (name === "get_answer") return () => this.answer;
+      if (name === "set_answer") return (value) => { this.answer = value; return this; };
+      const error = new Error(`FakeMobject object has no attribute '${name}'`);
+      error.name = "AttributeError";
+      throw error;
+    }
+  }
+  const core2 = createRuntimeCore({
+    wanim: { Mobject: FakeMobject },
+    np: {},
+    NDArray: class FakeNDArray {},
+  });
+  const mob = new FakeMobject();
+  mob.answer = 42;
+  assert.equal(core2.getDot(mob, "get_answer")(), 42);
+  const setter = core2.getDot(mob, "set_answer");
+  assert.equal(setter(7), mob);
+  assert.equal(mob.answer, 7);
+  assert.throws(() => core2.getDot(mob, "missing"), /AttributeError/);
+  assert.equal(core2.getDot(mob, "length"), 2);
+  assert.equal(core2.getDot(mob, "0"), mob);
+  assert.equal(core2.getDot(mob, "1"), mob.submobjects[0]);
+});
+
 console.log(`\n${passed} tests passed`);

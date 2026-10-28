@@ -1,15 +1,13 @@
-// P1-G: Mobject proxy robustness.
+// Mobject attribute semantics after removing the per-object Proxy.
 //
-// The proxy used to throw AttributeError for ANY unknown property, which made
-// pretty-format / JSON.stringify / introspection enumerate unboundedly and
-// OOM. Genuine misses must still raise AttributeError, but protocol probes
-// (then/toJSON/Symbol.toPrimitive/constructor/Symbol.toStringTag/inspect
-// symbols) resolve safely.
+// JS property reads stay plain; Python reads go through getDot/__getattr__.
+// JSON.stringify must stay small and protocol probes (then/Symbol.toPrimitive/
+// Symbol.toStringTag) must resolve safely.
 import { describe, expect, it } from "vitest";
 import { VMobject } from "../src/mobject/types/vectorized_mobject.js";
 import { Square } from "../src/mobject/geometry/polygram.js";
 
-describe("Mobject proxy robustness", () => {
+describe("Mobject attribute semantics without a Proxy", () => {
   it("JSON.stringify is safe and returns a small serializable summary", () => {
     const square = new Square();
     const json = JSON.stringify(square);
@@ -34,10 +32,10 @@ describe("Mobject proxy robustness", () => {
     expect((vm as unknown as Record<symbol, unknown>)[Symbol.toStringTag]).toBeUndefined();
   });
 
-  it("still exposes the real constructor and raises AttributeError on genuine misses", () => {
+  it("exposes the real constructor and raises AttributeError through __getattr__", () => {
     const vm = new VMobject();
     expect(vm.constructor.name).toBe("VMobject");
-    expect(() => (vm as unknown as Record<string, unknown>)["definitely_not_a_real_attribute"]).toThrow(/AttributeError|no attribute/);
+    expect(() => vm.__getattr__("definitely_not_a_real_attribute")).toThrow(/AttributeError|no attribute/);
   });
 
   it("a failing expect(mob).toBe(...) does not OOM", () => {
