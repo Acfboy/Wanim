@@ -195,7 +195,11 @@ time.
 - Math uses MathJax, not LaTeX. Common `MathTex` input works; unusual LaTeX
   packages do not.
 - Glyph coverage depends on the fonts you configure. Fonts can be self-hosted
-  with `configure_fonts([...])`, called before the first scene runs.
+  with `configure_fonts([...])`, called before the first scene runs. Browser
+  text is cache-only on the synchronous path: `runPythonOnCanvas` waits for
+  detected text scenes, and custom hosts must `await`
+  `preload_submodules("fonts")` before building `Text` themselves. A cold
+  synchronous load throws instead of blocking the page on an XHR.
 - Some relatively complex numpy usage is not supported yet. If you hit a common
   pattern that should work, please open an issue.
 

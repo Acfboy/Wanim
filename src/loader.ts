@@ -14,6 +14,10 @@
  * page that never uses TeX or web fonts never pays for those chunks.  Font
  * *configuration* is a separate concern: see
  * `configure_fonts` in `mobject/text/pango/svg-renderer.ts`.
+ *
+ * The browser's synchronous font path is cache-only: it never performs a
+ * blocking XHR.  Hosts must await a font preload before the first `Text`;
+ * `runPythonOnCanvas` does that automatically for detected text scenes.
  */
 import { fontCache, getDefaultFontPaths } from "./mobject/text/pango/index.js";
 import { preload_fonts } from "./mobject/text/pango/svg-renderer.js";

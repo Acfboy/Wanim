@@ -23,6 +23,28 @@ const FONT_CACHE = new Map<string, Font>();
 /** True in a browser/worker (no synchronous filesystem). */
 const IS_BROWSER = typeof window !== "undefined" || typeof (globalThis as { importScripts?: unknown }).importScripts === "function";
 
+/**
+ * Thrown when the synchronous browser font path finds no parsed font.
+ *
+ * The browser has no non-blocking way to read a font synchronously, so
+ * `loadFontSync` is cache-only there.  Call `preload_submodules("fonts")`
+ * (or `preloadFonts`) first and let the async load finish; the synchronous
+ * path then serves the warmed cache with no I/O.
+ */
+export class FontNotPreloadedError extends Error {
+  readonly fontPath: string;
+
+  constructor(fontPath: string, detail?: string) {
+    super(
+      `wanim: font ${fontPath} is not preloaded; ` +
+        `await preload_submodules("fonts") (or preloadFonts) before building Text.` +
+        (detail === undefined ? "" : ` (${detail})`),
+    );
+    this.name = "FontNotPreloadedError";
+    this.fontPath = fontPath;
+  }
+}
+
 /** True for http(s) URLs (fetched asynchronously on every platform). */
 function isRemoteUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
@@ -116,32 +138,18 @@ export function resolveLegacyFontPath(): string {
 }
 
 /**
- * Synchronously fetch `url` as raw bytes in the browser.  The font loader's
- * API is synchronous (`loadFontSync`) so a blocking XHR is the only option;
- * the font is served from the same origin as the bundle.
+ * Read a binary file into an ArrayBuffer.
+ *
+ * Browser callers must go through the async cache: a synchronous network read
+ * would block the page for the whole download.  Node still reads local files
+ * synchronously (there is no UI thread to block) and rejects remote URLs.
  */
-function readBinaryFileBrowser(url: string): ArrayBuffer {
-  const xhr = new XMLHttpRequest();
-  xhr.open("GET", url, false);
-  xhr.overrideMimeType("text/plain; charset=x-user-defined");
-  xhr.send();
-  if (xhr.status !== 0 && (xhr.status < 200 || xhr.status >= 300)) {
-    throw new Error(`Failed to load font ${url}: HTTP ${xhr.status}`);
-  }
-  const text = xhr.responseText;
-  const bytes = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i) & 0xff;
-  return bytes.buffer;
-}
-
-/** Read a binary file into an ArrayBuffer (fs in Node, XHR in the browser). */
 function readBinaryFile(filePath: string): ArrayBuffer {
-  if (IS_BROWSER) return readBinaryFileBrowser(filePath);
+  if (IS_BROWSER) {
+    throw new FontNotPreloadedError(filePath, "the browser cache is cold");
+  }
   if (isRemoteUrl(filePath)) {
-    throw new Error(
-      `wanim: cannot load the remote font ${filePath} synchronously in Node; ` +
-        'preload the chain first (e.g. preload_submodules("fonts")).',
-    );
+    throw new FontNotPreloadedError(filePath, "remote fonts are only fetched asynchronously");
   }
   // `readFileSync(path, "base64")` returns a base64 string; decoding through
   // `atob` avoids depending on the Node `Buffer` type in this port.
@@ -152,7 +160,13 @@ function readBinaryFile(filePath: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-/** Load and cache a font from a local file path. */
+/**
+ * Load and cache a font from a local file path.
+ *
+ * In the browser this is a cache-only read: preload the chain asynchronously
+ * first.  A cold cache throws {@link FontNotPreloadedError} instead of
+ * blocking on a synchronous XHR.  Node reads local files synchronously.
+ */
 export function loadFontSync(fontPath: string = resolveDefaultFontPath()): Font {
   const cached = FONT_CACHE.get(fontPath);
   if (cached !== undefined) return cached;
@@ -169,20 +183,32 @@ export async function loadFont(fontPath: string = resolveDefaultFontPath()): Pro
 /**
  * Load a fallback chain of fonts.
  *
- * In the browser a missing file (e.g. a deployment that predates the shipped
- * fonts) is skipped instead of aborting, and the legacy `DejaVuSans.ttf` is
- * tried when nothing else loaded; Node still throws on explicit bad paths.
+ * In the browser a missing font is skipped when another font of the chain is
+ * already cached; if none is cached this throws {@link FontNotPreloadedError}
+ * so the host can await the async preload instead of silently blocking.  Node
+ * still throws on explicit bad paths (and does not use the legacy fallback for
+ * a non-empty chain).
  */
 export function loadFontsFallbackSync(fontPaths: string[]): Font[] {
   const fonts: Font[] = [];
+  const errors: unknown[] = [];
   for (const fontPath of fontPaths) {
     try {
       fonts.push(loadFontSync(fontPath));
     } catch (error) {
       if (!IS_BROWSER) throw error;
+      errors.push(error);
     }
   }
   if (fonts.length === 0) {
+    if (IS_BROWSER) {
+      const first = errors.find((error) => error instanceof FontNotPreloadedError);
+      if (first instanceof FontNotPreloadedError) throw first;
+      throw new FontNotPreloadedError(
+        fontPaths.join(", ") || "<default chain>",
+        "no font in the chain is cached",
+      );
+    }
     try {
       fonts.push(loadFontSync(resolveLegacyFontPath()));
     } catch {
@@ -213,17 +239,34 @@ async function readBinaryFileAsync(filePath: string): Promise<ArrayBuffer> {
 /**
  * Warm the in-memory font cache before the first text mobject is built.
  *
- * The renderer's load path is synchronous — `loadFontSync` blocks the main
- * thread on an XHR in the browser — so call this during app startup to
- * download and parse the chain in the background; a later `Text` then finds
- * the parsed fonts in {@link fontCache} and performs no I/O at all.
+ * This is the async half of the font pipeline: download and parse the chain
+ * without touching the synchronous renderer path.  Concurrent calls for the
+ * same chain share one in-flight promise, so the startup warm-up and a scene's
+ * preload cannot download or parse the same fonts twice.  A later `Text` then
+ * finds the parsed fonts in {@link fontCache} and performs no I/O at all.
  *
- * Browser failures of individual fonts are skipped (the synchronous fallback
- * chain still runs later), but a chain where nothing loads rejects so the
- * caller can `configure_fonts` a fallback chain.  Node rejects like
- * `loadFontSync`.
+ * Browser failures of individual fonts are skipped when at least one font
+ * loads; a chain where nothing loads rejects so the caller can
+ * `configure_fonts` a fallback chain.  Node rejects like `loadFontSync`.
  */
-export async function preloadFonts(fontPaths: string[] = resolveDefaultFontPaths()): Promise<Font[]> {
+const PRELOAD_PROMISES = new Map<string, Promise<Font[]>>();
+
+export function preloadFonts(fontPaths: string[] = resolveDefaultFontPaths()): Promise<Font[]> {
+  const key = JSON.stringify(fontPaths);
+  const pending = PRELOAD_PROMISES.get(key);
+  if (pending !== undefined) return pending;
+  // Keep only the in-flight promise: once it settles, a later call re-enters
+  // the implementation, finds everything in FONT_CACHE and resolves without
+  // parsing.  Dropping the settled entry also keeps failures (and explicit
+  // cache resets in tests) from pinning a stale result.
+  const promise = preloadFontsImpl(fontPaths).finally(() => {
+    PRELOAD_PROMISES.delete(key);
+  });
+  PRELOAD_PROMISES.set(key, promise);
+  return promise;
+}
+
+async function preloadFontsImpl(fontPaths: string[]): Promise<Font[]> {
   // Deduplicate before fetching: the default chain can repeat a fallback, and
   // concurrent duplicate downloads would parse the same font twice.
   const uniquePaths = [...new Set(fontPaths)];

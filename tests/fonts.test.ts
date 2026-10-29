@@ -11,7 +11,7 @@ import {
 } from "../src/mobject/text/pango/index.js";
 // `preload_fonts` / `preloadFonts` are internal since the unified loader API
 // (`preload_submodules("fonts")`); tested here through their deep paths.
-import { preloadFonts } from "../src/mobject/text/pango/font-loader.js";
+import { FontNotPreloadedError, preloadFonts } from "../src/mobject/text/pango/font-loader.js";
 import { preload_fonts } from "../src/mobject/text/pango/svg-renderer.js";
 import { Text } from "../src/mobject/text/index.js";
 
@@ -92,6 +92,21 @@ describe("preloadFonts", () => {
     expect(fontCache.get(LATIN)).toBe(fonts[0]);
     // A later synchronous load must hit the warmed cache, not the network.
     expect(loadFontSync(LATIN)).toBe(fonts[0]);
+  });
+
+  itIfFonts("shares one in-flight load between concurrent calls", async () => {
+    fontCache.delete(LATIN);
+    const first = preloadFonts([LATIN]);
+    const second = preloadFonts([LATIN]);
+    expect(first).toBe(second);
+    const fonts = await first;
+    expect(fontCache.get(LATIN)).toBe(fonts[0]);
+  });
+
+  it("rejects a cold synchronous browser/remote load without touching the network", () => {
+    // Node cannot read http(s) fonts synchronously either; the important part
+    // is that the failure is actionable and never falls back to an XHR.
+    expect(() => loadFontSync("https://example.invalid/font.ttf")).toThrow(FontNotPreloadedError);
   });
 
   itIfFonts("preload_fonts follows configure_fonts", async () => {
