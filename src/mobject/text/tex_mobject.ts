@@ -365,8 +365,16 @@ export class MathTex extends SingleStringMathTex {
       // form.  Wrapping the *content* in `\cssId` breaks `&`, but wrapping the
       // environment works: `\cssId{id}{\begin{aligned}...\end{aligned}}`.
       const id = "unique000";
+      // `aligned`/`gathered` take an optional position argument right after
+      // `\\begin{...}`. A part that starts with `[` would be parsed as that
+      // argument (e.g. `MathTex("[A,B]=")` lost `[A,B]`), so guard it with an
+      // empty group.
+      const content = (singleEnvironment === "aligned" || singleEnvironment === "gathered")
+        && prepared[0]!.trimStart().startsWith("[")
+        ? `{}${prepared[0] as string}`
+        : (prepared[0] as string);
       joined = {
-        joined_string: `\\cssId{${id}}{\\begin{${singleEnvironment}}${prepared[0] as string}\\end{${singleEnvironment}}}`,
+        joined_string: `\\cssId{${id}}{\\begin{${singleEnvironment}}${content}\\end{${singleEnvironment}}}`,
         matches: [[prepared[0] as string, id]],
       };
     } else {

@@ -118,9 +118,18 @@ export function normalizeTexEnvironment(
 export function texToSvg(expression: string, options: TexToSvgOptions = {}): string {
   const { doc, adaptor } = getMathJax();
   const environment = normalizeTexEnvironment(options.environment, expression);
+  // `aligned`/`gathered` accept an optional vertical-position argument
+  // (`[t]`, `[b]`, `[c]`) immediately after `\\begin{...}`. A MathTex
+  // expression that itself starts with `[` (e.g. `[A,B]=`) would otherwise be
+  // consumed as that argument and the first bracket group would disappear
+  // (only `=` remained for `MathTex("[A,B]=")`). An empty group before the
+  // expression keeps the leading bracket as ordinary math content.
+  const needsEmptyGroup = (environment === "aligned" || environment === "gathered")
+    && expression.trimStart().startsWith("[");
+  const body = needsEmptyGroup ? `{}${expression}` : expression;
   const source = environment === null
-    ? expression
-    : `\\begin{${environment}}${expression}\\end{${environment}}`;
+    ? body
+    : `\\begin{${environment}}${body}\\end{${environment}}`;
   const node = doc.convert(source, { display: options.display ?? false });
   const html = adaptor.outerHTML(node as never);
   return extractSvg(html);
