@@ -108,6 +108,23 @@ export class Transform extends Animation {
     super.begin();
   }
 
+  /**
+   * Point the animation's target at the current mobject after a method
+   * animation has applied its methods. `Transform.begin` aligns
+   * `target_copy` to the *starting* family; a method such as `become` can
+   * replace that family wholesale, so a later `interpolate(1)` must not use
+   * the stale zipped families.
+   */
+  protected reset_target_after_method(): void {
+    // Rebuild the aligned copy from the semantic target, not from the
+    // (possibly double-applied) current mobject: `super.finish()` then lands
+    // exactly on the target for point-only methods and for methods that
+    // replaced the submobject list.
+    this.target_copy = this.target_mobject.copy();
+    this._families_zipped = null;
+    this._families_zipped_epoch = -1;
+  }
+
   override interpolate_mobject(alpha: number): void {
     const families = this.get_all_families_zipped();
     // Fast path: with zero lag every face shares one sub-alpha
@@ -674,6 +691,13 @@ export class _MethodAnimation extends MoveToTarget {
       if (Object.keys(item.kwargs ?? {}).length > 0) func.apply(this.mobject, [...item.args, item.kwargs]);
       else func.apply(this.mobject, item.args);
     }
+    // The method just defined the final state. `super.finish()` otherwise
+    // interpolates towards `target_copy`, whose family was aligned to the
+    // *pre-method* structure; for `.animate.become` on a DashedLine that
+    // stale pairing collapsed 100 dashes into the first 23 segments. Point
+    // the final interpolation at the current mobject (a no-op for ordinary
+    // point-only methods such as shift/scale).
+    this.reset_target_after_method();
     super.finish();
   }
 }
