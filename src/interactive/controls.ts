@@ -1763,32 +1763,57 @@ export class InputDecimalMatrix extends DecimalMatrix {
   constructor(matrix: unknown[][], options: InputDecimalMatrixOptions = {}) {
     const {
       element_to_mobject = inputDecimalNumberElement,
-      element_to_mobject_config = { num_decimal_places: 1 },
+      element_to_mobject_config = {},
+      num_decimal_places,
+      font_size,
       ...rest
     } = options;
-    super(matrix, { element_to_mobject, element_to_mobject_config, ...rest });
+    // Matrix/DecimalMatrix accept `num_decimal_places`/`font_size` only per
+    // cell (`element_to_mobject_config`); the docs also show them at the top
+    // level, so fold them into the cell config. An explicit
+    // `element_to_mobject_config` still wins over the shorthand.
+    const config: Record<string, unknown> = {
+      num_decimal_places: 1,
+      ...(typeof num_decimal_places === "number" ? { num_decimal_places } : {}),
+      ...(typeof font_size === "number" ? { font_size } : {}),
+      ...element_to_mobject_config,
+    };
+    super(matrix, { element_to_mobject, element_to_mobject_config: config, ...rest });
     attachRelayout(this.mob_matrix, () => this.relayout());
+  }
+
+  /** Value of the editable cell at `(i, j)`. */
+  get_value(i: number, j: number): DecimalNumberValue {
+    const cell = this.mob_matrix[i]?.[j] as { get_value?: () => DecimalNumberValue } | undefined;
+    if (cell === undefined || typeof cell.get_value !== "function") {
+      const error = new Error(`matrix index out of range: (${i}, ${j})`);
+      error.name = "IndexError";
+      throw error;
+    }
+    return cell.get_value();
   }
 
   /**
    * Re-place the cells on the shared content-aware grid (the same algorithm
    * used at construction), re-fit the brackets, and shift everything back to
-   * its previous center.
+   * its previous center. The layout buffs are scaled with the matrix so an
+   * edit does not undo a previous `scale()`.
    */
   relayout(): this {
     const savedCenter = this.get_center();
-    this._organize_mob_matrix(this.mob_matrix);
+    const scale = this._content_scale();
+    this._organize_mob_matrix(this.mob_matrix, scale);
     if (this.stretch_brackets) {
-      this.brackets.stretch_to_fit_height(this.elements.height + 2 * this.bracket_v_buff);
+      this.brackets.stretch_to_fit_height(this.elements.height + 2 * this.bracket_v_buff * scale);
     }
     const brackets = this.brackets.submobjects as VMobject[];
     const leftBracket = brackets[0];
     const rightBracket = brackets[1];
     if (leftBracket !== undefined) {
-      leftBracket.next_to(this.elements, [...LEFT], this.bracket_h_buff);
+      leftBracket.next_to(this.elements, [...LEFT], this.bracket_h_buff * scale);
     }
     if (rightBracket !== undefined) {
-      rightBracket.next_to(this.elements, [...RIGHT], this.bracket_h_buff);
+      rightBracket.next_to(this.elements, [...RIGHT], this.bracket_h_buff * scale);
     }
     const newCenter = pointRows(this.get_center(), this.dim)[0] ?? [0, 0, 0];
     const savedCenterRow = pointRows(savedCenter, this.dim)[0] ?? [0, 0, 0];
@@ -1812,10 +1837,18 @@ export class InputDecimalTable extends DecimalTable {
   constructor(table: TableData | TableOptions = [], options: InputDecimalTableOptions = {}) {
     const {
       element_to_mobject = inputDecimalNumberElement,
-      element_to_mobject_config = { num_decimal_places: 1 },
+      element_to_mobject_config = {},
+      num_decimal_places,
+      font_size,
       ...rest
     } = options;
-    super(table, { element_to_mobject, element_to_mobject_config, ...rest });
+    const config: Record<string, unknown> = {
+      num_decimal_places: 1,
+      ...(typeof num_decimal_places === "number" ? { num_decimal_places } : {}),
+      ...(typeof font_size === "number" ? { font_size } : {}),
+      ...element_to_mobject_config,
+    };
+    super(table, { element_to_mobject, element_to_mobject_config: config, ...rest });
     attachRelayout(this.mob_table, () => this.relayout());
   }
 

@@ -208,7 +208,30 @@ export class Matrix extends VMobject {
     );
   }
 
-  _organize_mob_matrix(matrix: VMobject[][]): this {
+  /** Scale applied to the matrix since construction, inferred from a numeric
+   * cell's current font size. `relayout` must scale the layout buffs too, or a
+   * scaled matrix shrinks back towards its unscaled row/column pitch. */
+  _content_scale(): number {
+    for (const row of this.mob_matrix) {
+      for (const cell of row) {
+        const font = (cell as unknown as { font_size?: unknown }).font_size;
+        const base = (cell as unknown as { _font_size?: unknown })._font_size;
+        if (
+          typeof font === "number" &&
+          typeof base === "number" &&
+          Number.isFinite(font) &&
+          Number.isFinite(base) &&
+          base > 0 &&
+          font > 0
+        ) {
+          return font / base;
+        }
+      }
+    }
+    return 1;
+  }
+
+  _organize_mob_matrix(matrix: VMobject[][], layoutScale = 1): this {
     // NOTE: intentionally deviates from upstream manim, which anchors every
     // entry's alignment corner on the fixed grid `(j*h_buff, -i*v_buff)` and
     // lets entries wider/taller than the pitch overlap their neighbour. Here
@@ -216,6 +239,11 @@ export class Matrix extends VMobject {
     //   pitch_j = max(h_buff, leftExtent_j + rightExtent_{j-1} + entry_gap)
     // and analogously per row. When every entry fits inside the buffs this is
     // exactly the upstream fixed grid, so ordinary matrices are unchanged.
+    // `layoutScale` keeps the gap/pitch proportional after the whole matrix
+    // was scaled; cell extents are already in the scaled world.
+    const h_buff = this.h_buff * layoutScale;
+    const v_buff = this.v_buff * layoutScale;
+    const entry_gap = this.entry_gap * layoutScale;
     const rows = matrix.length;
     const cols = rows > 0 ? matrix[0]!.length : 0;
     if (rows === 0 || cols === 0) return this;
@@ -245,16 +273,16 @@ export class Matrix extends VMobject {
     const xs = new Array<number>(cols).fill(0);
     for (let j = 1; j < cols; j += 1) {
       const pitch = Math.max(
-        this.h_buff,
-        leftExtents[j]! + rightExtents[j - 1]! + this.entry_gap,
+        h_buff,
+        leftExtents[j]! + rightExtents[j - 1]! + entry_gap,
       );
       xs[j] = xs[j - 1]! + pitch;
     }
     const ys = new Array<number>(rows).fill(0);
     for (let i = 1; i < rows; i += 1) {
       const pitch = Math.max(
-        this.v_buff,
-        topExtents[i]! + bottomExtents[i - 1]! + this.entry_gap,
+        v_buff,
+        topExtents[i]! + bottomExtents[i - 1]! + entry_gap,
       );
       ys[i] = ys[i - 1]! - pitch;
     }
