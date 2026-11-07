@@ -7,7 +7,7 @@ import { Mobject } from "../src/mobject/mobject.js";
 describe("move_to keyword bridge", () => {
   it("pins the Python parameter names", () => {
     expect((Mobject.prototype.move_to as unknown as { __argnames__?: string[] }).__argnames__).toEqual([
-      "pointOrMobject",
+      "point_or_mobject",
       "aligned_edge",
       "coor_mask",
     ]);

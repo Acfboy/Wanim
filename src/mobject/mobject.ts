@@ -1661,7 +1661,7 @@ export class Mobject {
   }
 
   move_to(
-    pointOrMobject: Mobject | readonly number[] | NDArray,
+    point_or_mobject: Mobject | readonly number[] | NDArray,
     aligned_edge: readonly number[] | NDArray | Record<string, unknown> = ORIGIN,
     coor_mask: readonly number[] | NDArray | Record<string, unknown> = [1, 1, 1],
   ): this {
@@ -1687,10 +1687,10 @@ export class Mobject {
     assertFinite(vector(resolved_aligned_edge, this.dim));
     assertFinite(vector(resolved_coor_mask, this.dim));
     let target: number[];
-    if (pointOrMobject instanceof Mobject) {
-      target = pointOrMobject._get_critical_point_flat(resolved_aligned_edge);
+    if (point_or_mobject instanceof Mobject) {
+      target = point_or_mobject._get_critical_point_flat(resolved_aligned_edge);
     } else {
-      target = vector(pointOrMobject, this.dim);
+      target = vector(point_or_mobject, this.dim);
     }
     assertFinite(target);
     const pointToAlign = this._get_critical_point_flat(resolved_aligned_edge);
@@ -3428,7 +3428,7 @@ for (const name of ["scale_to_fit_width", "scale_to_fit_height", "scale_to_fit_d
 // camelCase and a Python `aligned_edge=` bag was silently treated as the
 // alignment direction (see the NOTE in `move_to`).
 (Mobject.prototype.move_to as unknown as { __argnames__?: string[] }).__argnames__ = [
-  "pointOrMobject",
+  "point_or_mobject",
   "aligned_edge",
   "coor_mask",
 ];
