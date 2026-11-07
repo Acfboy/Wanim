@@ -956,62 +956,144 @@ function flatPoint(value: NDArray): number[] {
   return out;
 }
 
-export class Line3D {
+function line3dPointify(
+  mobOrPoint: Mobject | number[] | readonly number[] | NDArray,
+  direction?: number[] | readonly number[],
+): NDArray {
+  if (mobOrPoint instanceof Mobject) {
+    const mob = mobOrPoint;
+    if (direction === undefined || direction === null) return array([...mob.get_center()]) as NDArray;
+    const boundary = mob.get_boundary_point(direction);
+    return array([...boundary]) as NDArray;
+  }
+  if (isNDArray(mobOrPoint)) return (mobOrPoint as NDArray).copy();
+  return array([...(mobOrPoint as readonly number[])].map(Number)) as NDArray;
+}
+
+export interface Line3DOptions extends CylinderOptions {
+  start?: Line3DEndpoint;
+  end?: Line3DEndpoint;
+  thickness?: number;
+  color?: ParsableManimColor | null;
+  resolution?: number | [number, number];
+  [key: string]: unknown;
+}
+
+/**
+ * A cylindrical line for `ThreeDScene`, mirroring manimce's
+ * `Line3D(Cylinder)`.  It used to be a plain data stub: it stored endpoints
+ * but was not a `Mobject`, so it could not be added to a scene, copied or
+ * colored.  It now builds the same `Cylinder` geometry and carries the
+ * endpoint attributes used by `Arrow3D` and the `parallel_to` helpers.
+ */
+export class Line3D extends Cylinder {
   thickness: number;
-  color: ParsableManimColor | null;
+  /** The constructor's optional `color` argument; `null` keeps the Cylinder
+   * fill/stroke colors. The inherited `color` property is the actual
+   * ManimColor applied to the geometry. */
+  line_color: ParsableManimColor | null;
   resolution: [number, number];
   vect!: number[];
   length!: number;
-  direction!: number[];
+  declare direction: number[];
   start!: NDArray;
   end!: NDArray;
 
   constructor(
-    startOrOptions: Line3DEndpoint | {
-      start?: Line3DEndpoint;
-      end?: Line3DEndpoint;
-      thickness?: number;
-      color?: ParsableManimColor | null;
-      resolution?: number | [number, number];
-    } = [...LEFT],
+    startOrOptions: Line3DEndpoint | Line3DOptions = [...LEFT],
     end: Line3DEndpoint = [...RIGHT],
     thickness = 0.02,
     color: ParsableManimColor | null = null,
     resolution: number | [number, number] = 24,
+    options: Line3DOptions = {},
   ) {
     // Python: Line3D(start=LEFT, end=RIGHT, thickness=0.02, color=None,
     // resolution=24, **kwargs). Accept a leading kwargs bag.
     const isBag = isPlainOptionsBag(startOrOptions);
     const bag = isBag
-      ? { ...(startOrOptions as Record<string, unknown>) }
-      : {} as Record<string, unknown>;
-    const start = isBag
-      ? (bag["start"] as Line3DEndpoint | undefined) ?? [...LEFT]
-      : (startOrOptions as Line3DEndpoint);
-    end = isBag ? (bag["end"] as Line3DEndpoint | undefined) ?? end : end;
+      ? { ...(startOrOptions as Record<string, unknown>), ...(options as Record<string, unknown>) }
+      : { ...(options as Record<string, unknown>) };
+    const positionalStart = isBag ? undefined : (startOrOptions as Line3DEndpoint);
+    const start = positionalStart ?? (bag["start"] as Line3DEndpoint | undefined) ?? [...LEFT];
+    end = (bag["end"] as Line3DEndpoint | undefined) ?? end;
     thickness = (bag["thickness"] as number | undefined) ?? thickness;
     color = (bag["color"] as ParsableManimColor | null | undefined) ?? color;
     resolution = (bag["resolution"] as number | [number, number] | undefined) ?? resolution;
+    delete bag["start"];
+    delete bag["end"];
+    delete bag["thickness"];
+    delete bag["color"];
+    delete bag["resolution"];
+
+    const roughStart = flatPoint(line3dPointify(start));
+    const roughEnd = flatPoint(line3dPointify(end));
+    const vect = roughEnd.map((value, index) => value - (roughStart[index] ?? 0));
+    const length = Math.hypot(...vect);
+    const direction = _normalize_flat(vect);
+    const startPoint = line3dPointify(start, direction);
+    const endPoint = line3dPointify(end, direction.map((value) => -value));
+    const resolutionTuple: [number, number] = typeof resolution === "number" ? [2, resolution] : [...resolution] as [number, number];
+
+    // `...bag` may carry fill_color/stroke_color/show_ends/surface_piece_config;
+    // explicit geometry wins over anything in the bag.
+    super({
+      ...bag,
+      radius: thickness,
+      height: length,
+      direction,
+      resolution: resolutionTuple,
+    });
+
     this.thickness = thickness;
-    // NOTE: color is accepted (same position as Python's __init__) and stored,
-    // but applying it to geometry awaits the Cylinder port, which needs the
-    // cairo renderer (out of scope for the interpreter target).
-    this.color = color;
-    this.resolution = typeof resolution === "number" ? [2, resolution] : [...resolution] as [number, number];
-    this.set_start_and_end_attrs(start, end);
+    this.line_color = color;
+    this.resolution = resolutionTuple;
+    this.vect = vect;
+    this.length = length;
+    this.direction = direction;
+    this.start = startPoint;
+    this.end = endPoint;
+    this.radius = thickness;
+    this._height = length;
+    this.shift([
+      ((startPoint.toArray() as number[])[0] ?? 0) + ((endPoint.toArray() as number[])[0] ?? 0),
+      ((startPoint.toArray() as number[])[1] ?? 0) + ((endPoint.toArray() as number[])[1] ?? 0),
+      ((startPoint.toArray() as number[])[2] ?? 0) + ((endPoint.toArray() as number[])[2] ?? 0),
+    ].map((value) => value / 2));
+    if (color !== null && color !== undefined) this.set_color(color);
   }
 
+  /** Recompute the endpoint attributes and rebuild the cylinder geometry. */
   set_start_and_end_attrs(start: Line3DEndpoint, end: Line3DEndpoint): this {
-    const rough_start = flatPoint(this.pointify(start));
-    const rough_end = flatPoint(this.pointify(end));
-    this.vect = rough_end.map((value, index) => value - (rough_start[index] ?? 0));
+    const roughStart = flatPoint(this.pointify(start));
+    const roughEnd = flatPoint(this.pointify(end));
+    this.vect = roughEnd.map((value, index) => value - (roughStart[index] ?? 0));
     this.length = Math.hypot(...this.vect);
     this.direction = _normalize_flat(this.vect);
-    // NOTE: Python also rebuilds Cylinder geometry here (super().__init__
-    // with height/radius/direction) and shifts to the midpoint; the TS port
-    // is a lightweight stub that only tracks the endpoint attributes.
     this.start = this.pointify(start, this.direction);
     this.end = this.pointify(end, this.direction.map((value) => -value));
+
+    const body = new Cylinder({
+      radius: this.thickness,
+      height: this.length,
+      direction: this.direction,
+      resolution: this.resolution,
+      fill_color: (this.line_color ?? this.fill_color) as ParsableManimColor,
+      fill_opacity: this.fill_opacity,
+      stroke_color: (this.stroke_color ?? LIGHT_GREY) as ParsableManimColor,
+      stroke_width: this.stroke_width,
+    });
+    this.become(body);
+    this.radius = this.thickness;
+    this._height = this.length;
+    const startRow = this.start.toArray() as number[];
+    const endRow = this.end.toArray() as number[];
+    this.shift([
+      ((startRow[0] ?? 0) + (endRow[0] ?? 0)) / 2,
+      ((startRow[1] ?? 0) + (endRow[1] ?? 0)) / 2,
+      ((startRow[2] ?? 0) + (endRow[2] ?? 0)) / 2,
+    ]);
+    const lineColor = this.line_color;
+    if (lineColor !== null && lineColor !== undefined) this.set_color(lineColor);
     return this;
   }
 
@@ -1023,17 +1105,11 @@ export class Line3D {
     return this.end;
   }
 
-  pointify(mob_or_point: Mobject | number[] | readonly number[] | NDArray, direction?: number[] | readonly number[]): NDArray {
-    if (mob_or_point instanceof Mobject) {
-      const mob = mob_or_point;
-      if (direction === undefined || direction === null) return array([...mob.get_center()]) as NDArray;
-      const boundary = (mob as unknown as { get_boundary_point: (d: unknown) => number[] }).get_boundary_point(direction);
-      return array([...boundary]) as NDArray;
-    }
-    // Python accepts any array-like (plain sequences and np.ndarray alike)
-    // and returns np.array(...) preserving shape; mirror that with a copy.
-    if (isNDArray(mob_or_point)) return (mob_or_point as NDArray).copy();
-    return array([...(mob_or_point as readonly number[])].map(Number)) as NDArray;
+  pointify(
+    mob_or_point: Mobject | number[] | readonly number[] | NDArray,
+    direction?: number[] | readonly number[],
+  ): NDArray {
+    return line3dPointify(mob_or_point, direction);
   }
 
   static parallel_to(
@@ -1130,11 +1206,8 @@ export class Arrow3D extends Line3D {
     const np_end = pointRows(end, 3)[0] ?? [0, 0, 0];
     this.cone.shift(np_end);
     this.end_point = new VectorizedPoint(np_end);
-    // NOTE: Python adds end_point/cone as submobjects and applies set_color
-    // to the whole group; the TS Line3D base is a lightweight stub (not a
-    // Mobject), so they are stored as fields and only the color attribute is
-    // updated here.
-    this.color = color;
+    this.add(this.end_point, this.cone);
+    this.set_color(color);
   }
 
   override get_end(): NDArray {

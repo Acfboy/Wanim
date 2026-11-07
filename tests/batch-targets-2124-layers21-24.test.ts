@@ -162,7 +162,7 @@ describe("Arrow3D.__init__ extras", () => {
     expectRowsClose(a.end, [[0, 0, 1.5]]);
     expectRowsClose(a.get_end(), [[0, 0, 2]]);
     expectClose(a.cone.new_height, 0.5, 1e-12);
-    expect(a.color).toBe("#ff0000");
+    expect(a.color.to_hex()).toBe("#FF0000");
     expect(a.resolution).toEqual([2, 8]);
   });
 

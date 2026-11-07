@@ -163,7 +163,7 @@ describe("Line3D constructor + get_start/get_end", () => {
   it("takes color in the Python 4th position without shifting resolution", () => {
     // Python signature: (start, end, thickness, color, resolution).
     const line = new Line3D([0, 0, 0], [1, 0, 0], 0.02, "#FF0000");
-    expect(line.color).toBe("#FF0000");
+    expect(line.color.to_hex()).toBe("#FF0000");
     expect(line.resolution).toEqual([2, 24]);
     const line2 = new Line3D([0, 0, 0], [1, 0, 0], 0.02, null, 12);
     expect(line2.resolution).toEqual([2, 12]);
