@@ -663,4 +663,41 @@ await check("attribute callees are routed through getdot without a Mobject Proxy
   assert.match(js, /m\.width = 3/);
 });
 
+await check("nested helper can await an async sibling", async () => {
+  const js = await compilePython(
+    [
+      "class Demo(Scene):",
+      "    def construct(self):",
+      "        def a():",
+      "            b()",
+      "        def b():",
+      "            self.play(Create(Circle()))",
+      "        a()",
+      "",
+    ].join("\n"),
+    { operator_overloading: true, await_scene_methods: true },
+  );
+  assert.match(js, /async function a\(\)/);
+  assert.match(js, /await b\(\)/);
+  assert.match(js, /await a\(\)/);
+});
+
+await check("nested def with self.play is awaited at its call site", async () => {
+  const js = await compilePython(
+    [
+      "class Demo(Scene):",
+      "    def construct(self):",
+      "        def step():",
+      "            self.play(Create(Circle()))",
+      "            self.wait(1)",
+      "        step()",
+      "        self.wait(2)",
+      "",
+    ].join("\n"),
+    { operator_overloading: true, await_scene_methods: true },
+  );
+  assert.match(js, /async function step\(\)/);
+  assert.match(js, /await step\(\)/);
+});
+
 console.log(`\n${passed} passed`);
