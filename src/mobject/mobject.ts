@@ -1662,18 +1662,39 @@ export class Mobject {
 
   move_to(
     pointOrMobject: Mobject | readonly number[] | NDArray,
-    alignedEdge: readonly number[] | NDArray = ORIGIN,
-    coorMask: readonly number[] | NDArray = [1, 1, 1],
+    aligned_edge: readonly number[] | NDArray | Record<string, unknown> = ORIGIN,
+    coor_mask: readonly number[] | NDArray | Record<string, unknown> = [1, 1, 1],
   ): this {
+    // NOTE (py2js kwargs bridge): Python's `move_to(point, aligned_edge=LEFT)`
+    // must map onto the second positional slot. The parameter used to be
+    // named `alignedEdge`, which the bridge could not map from the Python
+    // spelling; the whole kwargs bag then landed in this slot, and
+    // `get_critical_point` coerced the object to NaN, which its
+    // `key < 0 ? min : key === 0 ? center : max` branch turns into the RIGHT
+    // edge. Unwrap a bag defensively here as well, for direct
+    // calls and `animate` paths that bypass the bridge.
+    let resolved_aligned_edge = aligned_edge as readonly number[] | NDArray;
+    let resolved_coor_mask = coor_mask as readonly number[] | NDArray;
+    if (isPlainOptionsObject(aligned_edge)) {
+      const bag = aligned_edge as Record<string, unknown>;
+      resolved_aligned_edge = (bag["aligned_edge"] ?? ORIGIN) as never;
+      if (bag["coor_mask"] !== undefined) resolved_coor_mask = bag["coor_mask"] as never;
+    }
+    if (isPlainOptionsObject(coor_mask)) {
+      const bag = coor_mask as Record<string, unknown>;
+      resolved_coor_mask = (bag["coor_mask"] ?? [1, 1, 1]) as never;
+    }
+    assertFinite(vector(resolved_aligned_edge, this.dim));
+    assertFinite(vector(resolved_coor_mask, this.dim));
     let target: number[];
     if (pointOrMobject instanceof Mobject) {
-      target = pointOrMobject._get_critical_point_flat(alignedEdge);
+      target = pointOrMobject._get_critical_point_flat(resolved_aligned_edge);
     } else {
       target = vector(pointOrMobject, this.dim);
     }
     assertFinite(target);
-    const pointToAlign = this._get_critical_point_flat(alignedEdge);
-    const mask = vector(coorMask, this.dim);
+    const pointToAlign = this._get_critical_point_flat(resolved_aligned_edge);
+    const mask = vector(resolved_coor_mask, this.dim);
     assertFinite(mask);
     const delta = subtractPoints(target, pointToAlign, this.dim).map((value, index) => value * (mask[index] ?? 1));
     return this.shift(delta);
@@ -3399,6 +3420,16 @@ for (const name of ["scale_to_fit_width", "scale_to_fit_height", "scale_to_fit_d
   "aligned_edge",
   "submobject_to_align",
   "index_of_submobject_to_align",
+  "coor_mask",
+];
+
+// `move_to(point, aligned_edge=, coor_mask=)`; same bridge mapping as
+// `next_to`. Without explicit metadata the bundle's parameter names are
+// camelCase and a Python `aligned_edge=` bag was silently treated as the
+// alignment direction (see the NOTE in `move_to`).
+(Mobject.prototype.move_to as unknown as { __argnames__?: string[] }).__argnames__ = [
+  "pointOrMobject",
+  "aligned_edge",
   "coor_mask",
 ];
 
