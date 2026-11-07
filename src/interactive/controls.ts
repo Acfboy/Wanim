@@ -344,7 +344,48 @@ export class PathSlider extends VGroup implements InteractiveControl {
   }
 
   get_value(): number {
-    return this._value;
+    // `_value` is the source of truth for drags and `set_value`, but a
+    // generic Mobject animation (`slider.animate.set_value(x)`) only
+    // interpolates the knob's points: `_value`/`_t` stay at the old value
+    // until `_MethodAnimation.finish` re-applies `set_value`. Read the live
+    // knob position back so reactions see the value the reader sees; keep
+    // the exact stored value while the knob still sits on `_point_at(_t)`
+    // (the common idle/drag case, and it avoids the projection cost).
+    const [low, high] = this.value_range;
+    const span = high - low;
+    if (span === 0) return low;
+    const anchor = this._knob_anchor();
+    const expected = this._point_at(this._t);
+    const dx = (anchor[0] ?? 0) - (expected[0] ?? 0);
+    const dy = (anchor[1] ?? 0) - (expected[1] ?? 0);
+    if (dx * dx + dy * dy <= 1e-12) return this._value;
+    const t = this._proportion_from_point(anchor);
+    return low + (this.is_closed ? wrap01(t) : clamp01(t)) * span;
+  }
+
+  /** Centre of the knob's own geometry, ignoring any mobject attached to it. */
+  private _knob_anchor(): number[] {
+    const rows = pointRows(this.knob.points, 3);
+    if (rows.length === 0) {
+      return pointRows(this.knob.get_center(), 3)[0] ?? [0, 0, 0];
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const row of rows) {
+      const x = row[0] ?? 0;
+      const y = row[1] ?? 0;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+      return pointRows(this.knob.get_center(), 3)[0] ?? [0, 0, 0];
+    }
+    return [(minX + maxX) / 2, (minY + maxY) / 2, 0];
   }
 
   set_value(value: number): this {
