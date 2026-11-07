@@ -862,7 +862,42 @@ export class DraggablePoint extends Dot implements InteractiveControl {
   override get_center(): NDArray {
     // `super(...)` generates the circle's points before `_point` exists.
     if (!("_point" in (this as object))) return super.get_center();
+    // A generic animation interpolates the dot's points without going through
+    // `shift`, so `_point` is stale until `_MethodAnimation.finish` calls the
+    // method again. Return the live geometry while it differs; idle/drag
+    // positions still return the exact stored anchor (attached labels must
+    // not skew it).
+    const geometry = this._geometry_center();
+    const dx = geometry[0] - this._point[0];
+    const dy = geometry[1] - this._point[1];
+    if (dx * dx + dy * dy > 1e-12) return array(geometry) as NDArray;
     return array([...this._point]) as NDArray;
+  }
+
+  /** Centre of the dot's own points (never an attached child's bbox). */
+  private _geometry_center(): number[] {
+    const rows = pointRows(this.points, 3);
+    if (rows.length === 0) return [...this._point];
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const row of rows) {
+      const x = row[0] ?? 0;
+      const y = row[1] ?? 0;
+      const z = row[2] ?? 0;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    if (!Number.isFinite(minX)) return [...this._point];
+    return [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
   }
 
   /** The control protocol value: the same position as {@link get_center}. */
