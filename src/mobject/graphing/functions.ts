@@ -739,7 +739,9 @@ export class ImplicitFunction extends VMobject {
     // a no-op; the constructor regenerates afterwards.
     if (this.x_range === undefined || this.y_range === undefined) return this;
     if (isolineComputer === null) {
-      throw new Error("TODO: ImplicitFunction.generate_points needs the `isosurfaces` plot_isoline routine, not ported yet");
+      throw new Error(
+        "ImplicitFunction.generate_points needs an isoline computer; it was disabled with setIsolineComputer(null).",
+      );
     }
     const pmin: [number, number] = [this.x_range[0] ?? 0, this.y_range[0] ?? 0];
     const pmax: [number, number] = [this.x_range[1] ?? 0, this.y_range[1] ?? 0];

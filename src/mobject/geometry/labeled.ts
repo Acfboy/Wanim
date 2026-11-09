@@ -74,7 +74,7 @@ export class Label extends VGroup {
       this.rendered_label = label;
     } else {
       throw new TypeError(
-        "Unsupported label type. Must be MathTex, Tex, Text, Typst, or MathTypst.",
+        "Unsupported label type. Must be MathTex, Tex, or Text.",
       );
     }
 

@@ -347,11 +347,13 @@ describe("Mobject family/error/updating/background-rectangle", () => {
     expect(m.resume_updating(false)).toBe(m);
     expect(m.updating_suspended).toBe(false);
   });
-  it("add_background_rectangle* throws TODO without a factory (shape_matchers unported)", () => {
+  it("add_background_rectangle* throws when shape_matchers was not imported", () => {
     const m = new Mobject();
     setPoints(m, [[0, 0, 0]]);
-    expect(() => m.add_background_rectangle()).toThrowError(/BackgroundRectangle.*not ported/);
-    expect(() => m.add_background_rectangle_to_family_members_with_points()).toThrowError(/not ported/);
+    expect(() => m.add_background_rectangle()).toThrowError(/BackgroundRectangle.*shape_matchers/);
+    expect(() => m.add_background_rectangle_to_family_members_with_points()).toThrowError(
+      /shape_matchers/,
+    );
   });
   it("add_background_rectangle_to_family_members_with_points fans out via stub factory", () => {
     // Integration: stub BackgroundRectangle factory records (mobject, color,

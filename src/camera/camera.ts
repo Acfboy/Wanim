@@ -211,7 +211,7 @@ export class Camera {
         return type;
       }
     }
-    throw new TypeError(`Displaying an object of class ${Mobject.name} is not supported`);
+    throw new TypeError(`Displaying an object of class ${mobject.constructor.name} is not supported`);
   }
 
   reset_pixel_shape(new_height: number, new_width: number): void {

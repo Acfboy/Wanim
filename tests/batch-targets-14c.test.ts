@@ -518,17 +518,17 @@ describe("ImplicitFunction", () => {
     }
   });
 
-  it("throws a TODO error when no isoline computer is registered", () => {
+  it("throws when the isoline computer was disabled", () => {
     // NOTE: the TS constructor stays lazy (empty mobject) while no computer
-    // is registered and fails fast only once points are actually requested,
-    // because the `isosurfaces` plot_isoline routine is not ported yet.
+    // is registered and fails fast only once points are actually requested.
+    // The default computer is ported; null is the explicit disable hook.
     setIsolineComputer(null);
     const f = new ImplicitFunction((x: number, y: number) => x * x + y * y - 1, {
       x_range: [-1, 1],
       y_range: [-1, 1],
     });
     expect(f.get_num_points()).toBe(0);
-    expect(() => f.generate_points()).toThrowError(/isosurfaces|not ported/);
+    expect(() => f.generate_points()).toThrowError(/isoline computer/);
   });
 });
 

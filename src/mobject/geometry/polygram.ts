@@ -139,7 +139,7 @@ export class Polygram extends VMobject {
     }
     if (roundCornersArcConstructor === null || roundCornersLineConstructor === null) {
       throw new Error(
-        "TODO: Polygram.round_corners with nonzero radius needs the geometry/line module to be imported (register ArcBetweenPoints/Line via set_round_corners_constructors)",
+        "Polygram.round_corners with a nonzero radius needs the geometry/line module; import manim.mobject.geometry.line before calling it.",
       );
     }
     const arcCtor = roundCornersArcConstructor;
@@ -535,7 +535,7 @@ export class Rectangle extends Polygon {
       // import Line` (see module hook above).
       if (gridLineConstructor === null) {
         throw new Error(
-          "TODO: Rectangle grid lines need line.ts to be imported (register Line via set_grid_line_constructor)",
+          "Rectangle grid lines need the geometry/line module; import manim.mobject.geometry.line before constructing the Rectangle.",
         );
       }
       v = pointRows(this.get_vertices(), this.dim);

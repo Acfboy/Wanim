@@ -126,6 +126,19 @@ check("pythonSum matches CPython on numbers, lists and generators", () => {
   assert.throws(() => core.pythonSum(), TypeError);
 });
 
+check("Python operators add and scale manim direction vectors", () => {
+  // Compiled Python lowers these expressions to ρσ_op_add/ρσ_op_mul, so the
+  // operator-overloading path must handle plain direction constants.  This is
+  // a real feature; it is not a "JS does not broadcast" limitation.
+  const UP = [0, 1, 0];
+  const DOWN = [0, -1, 0];
+  assert.deepEqual(core.pythonAdd(UP, DOWN), [0, 0, 0]);
+  assert.deepEqual(core.pythonAdd(UP, [-1, 0, 0]), [-1, 1, 0]);
+  assert.deepEqual(core.pythonMul(3, UP), [0, 3, 0]);
+  assert.deepEqual(core.pythonMul(UP, 3), [0, 3, 0]);
+  assert.deepEqual(core.pythonDiv(UP, 2), [0, 0.5, 0]);
+});
+
 check("pythonSum adds NDArray terms elementwise (error 270)", () => {
   ndCore.buildRuntime(); // NDArray prototype patch like the browser
   const np = ndCore.buildNumpy();

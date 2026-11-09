@@ -700,4 +700,14 @@ await check("nested def with self.play is awaited at its call site", async () =>
   assert.match(js, /await step\(\)/);
 });
 
+await check("direction-vector arithmetic lowers to ρσ_op_* helpers", async () => {
+  const js = await compilePython(
+    ["a = UP + DOWN", "b = 3 * UP", "c = UP * 3", ""].join("\n"),
+    { operator_overloading: true },
+  );
+  assert.match(js, /ρσ_op_add\(UP, DOWN\)/);
+  assert.match(js, /ρσ_op_mul\(3, UP\)/);
+  assert.match(js, /ρσ_op_mul\(UP, 3\)/);
+});
+
 console.log(`\n${passed} passed`);

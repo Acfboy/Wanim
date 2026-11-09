@@ -196,7 +196,7 @@ export class TipableVMobject extends VMobject {
     let shape = tip_shape ?? null;
     if (shape === null || shape === undefined) {
       if (default_tip_shape === null) {
-        throw new Error("TODO: default tip shape (ArrowTriangleFilledTip) requires importing the geometry/tips module, not ported yet in this context");
+        throw new Error("Arrow's default tip needs the geometry/tips module; import manim.mobject.geometry.tips before constructing the arrow.");
       }
       shape = default_tip_shape;
     }
@@ -1277,7 +1277,7 @@ export class ArcPolygonFromArcs extends VMobject {
     // because ArcPolygonFromArcs[0] returns itself, not the first Arc.
     this.arcs = [...arcs];
     if (line_constructor === null) {
-      throw new Error("TODO: ArcPolygonFromArcs needs Line (import the geometry/line module), not loaded yet");
+      throw new Error("ArcPolygonFromArcs needs Line from manim.mobject.geometry.line; import that module before constructing it.");
     }
     for (const pair of adjacent_pairs(arcs)) {
       const arc1 = pair[0] as Arc;

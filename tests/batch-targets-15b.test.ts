@@ -697,10 +697,10 @@ describe("FunctionGraph", () => {
 //   computes a 784-point circle. TS wiring is verified with a stub computer.
 // ---------------------------------------------------------------------------
 describe("ImplicitFunction.generate_points", () => {
-  it("defers without a registered isoline computer (D6)", () => {
+  it("defers without an enabled isoline computer (D6)", () => {
     // NOTE: Python always runs plot_isoline in __init__; the TS port defers
     // (construction yields an empty mobject) and only an explicit
-    // generate_points() call raises the TODO.
+    // generate_points() call on a disabled computer raises.
     setIsolineComputer(null);
     const im = new ImplicitFunction(
       (x: number, y: number) => x ** 2 + y ** 2 - 1,
@@ -713,7 +713,7 @@ describe("ImplicitFunction.generate_points", () => {
       },
     );
     expect(im.get_num_points()).toBe(0);
-    expect(() => im.generate_points()).toThrowError(/plot_isoline/);
+    expect(() => im.generate_points()).toThrowError(/isoline computer/);
   });
 
   it("pads stub isolines with z=0 and lays them as corners", () => {

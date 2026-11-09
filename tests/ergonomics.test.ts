@@ -187,11 +187,13 @@ describe("graphing options-bag (kwargs) normalization", () => {
 });
 
 describe("fail-fast on non-finite geometry", () => {
-  it("Mobject.shift(3 * UP) throws the actionable error", () => {
+  it("direct JS array arithmetic with 3 * UP fails fast", () => {
     const circle = new Circle();
-    // @ts-expect-error -- deliberately mirrors the documented JS footgun.
+    // Raw JS has no operator overloading: `3 * [0, 1, 0]` is NaN.  Compiled
+    // Python is different -- `3 * UP` compiles to ρσ_op_mul and works (see
+    // py2js/tests/runtime_core.node-test.mjs).
+    // @ts-expect-error -- deliberately exercises the raw-JS footgun.
     expect(() => circle.shift(3 * UP)).toThrow(/non-finite point\/vector value/);
-    expect(() => circle.shift(3 * UP)).toThrow(/JS does not broadcast/);
   });
 
   it("Mobject.scale / move_to reject non-finite inputs", () => {
@@ -213,13 +215,15 @@ describe("fail-fast on non-finite geometry", () => {
     ).toThrow(/non-finite/);
   });
 
-  it("the error message names the direct remediation", () => {
+  it("the error states the rejected value without guessing a cause", () => {
     try {
       new Circle().shift(3 * UP);
       throw new Error("expected shift to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain("scalePoint(UP, 3)");
+      const message = (error as Error).message;
+      expect(message).toContain("non-finite point/vector value (NaN/Infinity).");
+      expect(message).not.toMatch(/scalar \* DIRECTION|does not broadcast|scalePoint/);
     }
   });
 

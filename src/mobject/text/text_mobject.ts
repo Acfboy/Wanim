@@ -866,8 +866,10 @@ export class Paragraph extends VGroup {
   }
 }
 
-/** Temporarily add a font file to the font search path (unsupported: PangoJS
- * uses a single bundled font, so this always raises). */
+/** Register a font file with the PangoJS port (unsupported: fonts are
+ * configured up front with `configure_fonts([...])`, not registered later). */
 export function register_font(_fontFile: string): void {
-  throw new Error("TODO: register_font is not supported by the PangoJS port (single bundled font).");
+  throw new Error(
+    "register_font is not supported; call configure_fonts([...]) with font paths/URLs before creating Text/MathTex.",
+  );
 }

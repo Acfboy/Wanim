@@ -206,14 +206,16 @@ function vector(value: unknown, dim = 3): number[] {
 }
 
 /**
- * Hint appended to every non-finite geometry error. In JS there is no numpy
- * broadcasting, so `3 * UP` evaluates `3 * [0,1,0]` to `NaN` instead of
- * `[0,3,0]`; that silently poisons every downstream point and only explodes
- * much later (renderer errors / truncated videos). See Mobject.shift/scale/
- * move_to/set_points and renderer/json_renderer.ts.
+ * Message appended to every non-finite geometry error.
+ *
+ * It states only what was rejected.  In particular it must not suggest
+ * `scalar * DIRECTION` as a cause: compiled Python routes `3 * UP` and
+ * `UP + DOWN` through the operator-overloading helpers, so those expressions
+ * are valid wanim code.  Guessing a cause here previously sent users down the
+ * wrong path (see the 2026-10-17 parser report).
  */
 export const NON_FINITE_GEOMETRY_HINT =
-  "non-finite point/vector value (NaN/Infinity). Common cause: `scalar * DIRECTION` (e.g. `3 * UP`) — JS does not broadcast; use `[0,3,0]` or `scalePoint(UP, 3)` instead.";
+  "non-finite point/vector value (NaN/Infinity).";
 
 /** Build the actionable non-finite error (optionally prefixed with context). */
 export function nonFiniteGeometryError(context?: string): Error {
@@ -2291,7 +2293,9 @@ export class Mobject {
     kwargs: Record<string, unknown> = {},
   ): this {
     if (backgroundRectangleFactory === null) {
-      throw new Error("TODO: add_background_rectangle needs BackgroundRectangle (manim.mobject.geometry.shape_matchers), not ported yet");
+      throw new Error(
+        "add_background_rectangle needs BackgroundRectangle from manim.mobject.geometry.shape_matchers; import that module before calling it.",
+      );
     }
     this.background_rectangle = backgroundRectangleFactory(this, color ?? null, opacity, kwargs);
     this.add_to_back(this.background_rectangle);
